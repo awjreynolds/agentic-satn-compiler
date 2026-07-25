@@ -7,6 +7,7 @@ import logging
 import threading
 import time
 from collections.abc import Mapping
+from copy import deepcopy
 from typing import Any
 
 DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30.0
@@ -32,7 +33,7 @@ class StageHeartbeat:
             raise ValueError("heartbeat interval_seconds must be positive")
         self._logger = logger
         self._stage = stage
-        self._context = json.dumps(dict(context), sort_keys=True, default=str)
+        self._context = dict(context)
         self._interval_seconds = interval_seconds
         self._started = 0.0
         self._stop_event = threading.Event()
@@ -63,6 +64,20 @@ class StageHeartbeat:
         with self._stage_lock:
             self._stage = stage
 
+    def update_context(self, context: Mapping[str, Any]) -> None:
+        """Merge ephemeral operational context into later heartbeat records.
+
+        This context belongs only to liveness logs.  Callers must not use it to
+        construct reproducible compiler or publication artifacts.
+        """
+        with self._stage_lock:
+            self._context.update(dict(context))
+
+    def context_snapshot(self) -> dict[str, Any]:
+        """Return a defensive snapshot of the current operational context."""
+        with self._stage_lock:
+            return deepcopy(self._context)
+
     def stop(self) -> None:
         """Stop and join the thread, including when the guarded work failed."""
         thread = self._thread
@@ -82,9 +97,10 @@ class StageHeartbeat:
         while not self._stop_event.wait(self._interval_seconds):
             with self._stage_lock:
                 stage = self._stage
+                context = json.dumps(self._context, sort_keys=True, default=str)
             self._logger.info(
                 "event=satn_heartbeat stage=%s elapsed_seconds=%.1f context=%s",
                 stage,
                 time.perf_counter() - self._started,
-                self._context,
+                context,
             )

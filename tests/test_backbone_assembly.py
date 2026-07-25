@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 from pathlib import Path
+from types import SimpleNamespace
 
 import geopandas as gpd
 import networkx as nx
@@ -9,13 +12,18 @@ import pytest
 from shapely.geometry import LineString, Point, Polygon
 
 import satn.backbone as backbone_module
+import satn.compiler as compiler_module
 from satn.agents import AgentRole, FakeAgentRuntime
 from satn.compiler import compile_network
+from satn.heartbeat import StageHeartbeat
 from satn.models import CouncilConfig, TrafficLight
-from satn.publisher import publish
+from satn.publisher import _write_json_records, publish
 from satn.routing import RouteOption
 
 PROJECT = Path(__file__).parents[1]
+PARALLEL_SPINE_PRE_INSTRUMENTATION_STRUCTURAL_DIGEST = (
+    "61b428342dcb599b68a4f5842883c29440b8a8b1761744a184ec503401f36abe"
+)
 
 
 def config() -> CouncilConfig:
@@ -223,6 +231,37 @@ def backbone_snapshot(compiled: object) -> dict[str, object]:
     }
 
 
+def governed_structural_digest(compiled: object) -> str:
+    """Hash the old fixture's topology, stable identifiers and provenance only.
+
+    This intentionally excludes diagnostics and every wall-clock observation:
+    instrumentation may evolve operational reporting, but it must not alter the
+    governed network generated from this fixed pre-instrumentation fixture.
+    """
+    payload = {
+        "access": sorted(
+            (row.access_connection_id, row.geometry.wkb_hex, str(row.provenance))
+            for row in compiled.spine_access_connections.itertuples()
+        ),
+        "meetings": sorted(
+            (row.meeting_connection_id, row.geometry.wkb_hex, str(row.provenance))
+            for row in compiled.branch_meeting_connections.itertuples()
+        ),
+        "connectors": sorted(
+            (
+                row.cross_spine_connector_id,
+                row.meeting_connection_id,
+                row.geometry.wkb_hex,
+                str(row.provenance),
+            )
+            for row in compiled.cross_spine_connectors.itertuples()
+        ),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
 def with_source_costs_below_geometry(
     source: dict[str, gpd.GeoDataFrame],
 ) -> dict[str, gpd.GeoDataFrame]:
@@ -238,6 +277,9 @@ def test_all_spines_seed_order_independent_growth_and_hinterland_chaining() -> N
 
     assert topology(first) == topology(reordered)
     assert cross_spine_topology(first) == cross_spine_topology(reordered)
+    assert first.compilation_diagnostics["cross_spine"] == reordered.compilation_diagnostics[
+        "cross_spine"
+    ]
     assert len(first.spine_access_connections) == 3
     assert len(first.access_obligations) == 3
     assert set(first.access_obligations["service_status"]) == {"served"}
@@ -295,6 +337,73 @@ def test_all_spines_seed_order_independent_growth_and_hinterland_chaining() -> N
     assert connector.geometry.covers(meeting.geometry)
     assert first.criteria["spine_network"]["cross_spine_traversal"] == "green"
     assert first.criteria["spine_network"]["parallel_meetings_suppressed"] == "green"
+
+
+def test_compiler_progress_adapter_updates_real_heartbeat_without_changing_governed_network(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    council = config()
+    council.publication.output_dir = tmp_path / "published"
+    heartbeat = StageHeartbeat(
+        logging.getLogger("tests.cross-spine-progress"),
+        "network-compilation",
+        {"area_id": council.area_id},
+    )
+    ticks = iter((100.0, 101.0, 102.0, 103.0))
+    monkeypatch.setattr(
+        compiler_module,
+        "time",
+        SimpleNamespace(perf_counter=lambda: next(ticks)),
+    )
+
+    def malicious_benchmark_observer(
+        _assessed: int,
+        _total: int,
+        diagnostics: dict[str, object],
+    ) -> None:
+        diagnostics["candidate_connectors"] = -1
+        typed = diagnostics["typed_refinement_findings"]
+        assert isinstance(typed, dict)
+        typed["route-refinement-required"] = -1
+
+    compiled = compiler_module.compile_network(
+        council,
+        parallel_spine_source(),
+        FakeAgentRuntime(),
+        heartbeat=heartbeat,
+        cross_spine_progress=malicious_benchmark_observer,
+    )
+
+    # Controlled time makes the compiler -> adapter -> actual StageHeartbeat
+    # operation deterministic without persisting a timing baseline.
+    assert heartbeat.context_snapshot() == {
+        "area_id": council.area_id,
+        "cross_spine_connectors_assessed": 1,
+        "cross_spine_connectors_total": 1,
+        "cross_spine_elapsed_seconds": 3.0,
+        "cross_spine_throughput_connectors_per_second": 0.333,
+        "cross_spine_estimated_remaining_seconds": 0.0,
+        "cross_spine_peak_noded_graph_edges": 1,
+    }
+    diagnostics = compiled.compilation_diagnostics["cross_spine"]
+    assert diagnostics["candidate_connectors"] == 1
+    assert diagnostics["typed_refinement_findings"] == {
+        "route-refinement-required": 0
+    }
+    assert (
+        governed_structural_digest(compiled)
+        == PARALLEL_SPINE_PRE_INSTRUMENTATION_STRUCTURAL_DIGEST
+    )
+    # The run carries only the deterministic diagnostic contract: never the
+    # heartbeat's clock, throughput, or ETA fields.
+    output = tmp_path / "run-only"
+    output.mkdir()
+    _write_json_records(output, council, compiled, "run-progress-adapter")
+    run = json.loads((output / "run.json").read_text())
+    run_diagnostics = run["compilation_diagnostics"]["cross_spine"]
+    assert run_diagnostics == diagnostics
+    assert not any("second" in key or "throughput" in key for key in run_diagnostics)
 
 
 def test_reachable_attachment_can_bypass_a_nearer_disconnected_fragment() -> None:
@@ -455,6 +564,26 @@ def test_first_meetings_connect_three_roots_without_forming_a_mesh() -> None:
         )
     )
     assert nx.is_tree(root_graph)
+    diagnostics = compiled.compilation_diagnostics["cross_spine"]
+    # All three unordered root pairs were searched; only two were submitted to
+    # the meeting agent because the third would form a cycle in the accepted
+    # root tree.  Traversal remains a separate later operation.
+    assert diagnostics["root_pairs_considered"] == 3
+    assert diagnostics["root_pair_candidate_searches"] == 3
+    assert diagnostics["meeting_agent_evaluations"] == 2
+    assert diagnostics["meeting_agent_evaluation_initial_outcomes"] == {
+        "accept": 2,
+        "reject": 0,
+        "gap": 0,
+    }
+    assert diagnostics["meeting_agent_evaluation_final_dispositions"] == {
+        "accept": 2,
+        "reject": 0,
+        "gap": 0,
+        "superseded": 0,
+    }
+    assert diagnostics["candidate_connectors"] == 2
+    assert diagnostics["connector_traversal_attempts"] == 2
 
 
 def test_rejected_first_meeting_falls_through_to_next_adjacency() -> None:
@@ -483,6 +612,27 @@ def test_rejected_first_meeting_falls_through_to_next_adjacency() -> None:
         compiled.branch_meeting_connections.iloc[0]["meeting_connection_id"]
         == meeting_records[-1].connection_id
     )
+    diagnostics = compiled.compilation_diagnostics["cross_spine"]
+    # Both candidate attempts reached the agent.  The first agent rejection is
+    # later superseded only because the second candidate is accepted; it must
+    # remain visible as prior agent work, not be misreported as no rejection.
+    assert diagnostics["root_pairs_considered"] == 1
+    assert diagnostics["root_pair_candidate_searches"] == 2
+    assert diagnostics["meeting_agent_evaluations"] == 2
+    assert diagnostics["meeting_agent_evaluation_initial_outcomes"] == {
+        "accept": 1,
+        "reject": 1,
+        "gap": 0,
+    }
+    assert diagnostics["meeting_agent_evaluation_final_dispositions"] == {
+        "accept": 1,
+        "reject": 0,
+        "gap": 0,
+        "superseded": 1,
+    }
+    assert diagnostics["candidate_connectors"] == 1
+    assert diagnostics["authoritative_connectors"] == 1
+    assert diagnostics["route_refinement_findings"] == 0
 
 
 def test_rejected_meetings_superseded_when_other_tree_edges_connect_the_roots() -> None:

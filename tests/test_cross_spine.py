@@ -10,7 +10,7 @@ import pytest
 from shapely.geometry import LineString, MultiLineString
 
 import satn.cross_spine as cross_spine
-from satn.cross_spine import resolve_cross_spine_assembly
+from satn.cross_spine import CROSS_SPINE_DIAGNOSTICS_SCHEMA_VERSION, resolve_cross_spine_assembly
 from satn.identifiers import stable_id
 from satn.models import AgentRecord, PublishedFeatureReference, TrafficLight
 
@@ -74,6 +74,7 @@ def _accepted_record(connector_id: str) -> AgentRecord:
 def test_assembly_selects_a_deterministic_named_root_path_without_mutating_lineage() -> None:
     """Input ordering/orientation cannot change an authoritative connector or its input audit."""
     routes: list[tuple[str, list[tuple[float, float]]]] = []
+    diagnostics: list[dict[str, object]] = []
     segments = [
         [(0, 0), (50, 50)],
         [(50, 50), (100, 0)],
@@ -88,12 +89,72 @@ def test_assembly_selects_a_deterministic_named_root_path_without_mutating_linea
         connector = result.valid_connectors.iloc[0]
 
         routes.append((connector.geometry.wkb_hex, list(connector.geometry.coords)))
+        diagnostics.append(result.diagnostics)
         assert connectors.iloc[0]["provenance"] == json.dumps(
             {"source_ids": ["connector-evidence"]}
         )
         assert [reference.feature_id for reference in record.derived_features] == ["diamond"]
         assert result.agent_records[0] is not record
     assert routes == [(routes[0][0], [(0.0, 0.0), (50.0, -50.0), (100.0, 0.0)])] * 2
+    assert diagnostics == [diagnostics[0]] * 2
+    assert diagnostics[0] == {
+        "schema_version": CROSS_SPINE_DIAGNOSTICS_SCHEMA_VERSION,
+        "root_pairs_considered": 0,
+        "root_pair_candidate_searches": 0,
+        "meeting_agent_evaluations": 0,
+        "meeting_agent_evaluation_initial_outcomes": {
+            "accept": 0,
+            "reject": 0,
+            "gap": 0,
+        },
+        "meeting_agent_evaluation_final_dispositions": {
+            "accept": 0,
+            "reject": 0,
+            "gap": 0,
+            "superseded": 0,
+        },
+        "candidate_connectors": 1,
+        "authoritative_connectors": 1,
+        "route_refinement_findings": 0,
+        "typed_refinement_findings": {"route-refinement-required": 0},
+        "noded_graphs_built": 1,
+        "noded_graph_nodes_total": 2,
+        "noded_graph_edges_total": 1,
+        "peak_noded_graph_nodes": 2,
+        "peak_noded_graph_edges": 1,
+        "root_candidate_nodes_examined": 4,
+        "eligible_root_endpoint_candidates": 2,
+        "endpoint_pairs_considered": 1,
+        "weighted_shortest_path_searches": 1,
+        "weighted_shortest_path_nodes_settled": 2,
+        "weighted_shortest_path_edge_relaxations": 2,
+        "peak_shortest_path_frontier": 1,
+        "deterministic_path_nodes_selected": 2,
+        "connector_traversal_attempts": 1,
+    }
+
+
+def test_progress_observer_receives_a_deep_defensive_diagnostics_snapshot() -> None:
+    connectors = gpd.GeoDataFrame(
+        [_connector("defensive", LineString([(0, 0), (100, 0)]))], crs=27700
+    )
+
+    def malicious_observer(_assessed: int, _total: int, diagnostics: dict[str, object]) -> None:
+        diagnostics["candidate_connectors"] = -1
+        typed = diagnostics["typed_refinement_findings"]
+        assert isinstance(typed, dict)
+        typed["route-refinement-required"] = -1
+
+    result = resolve_cross_spine_assembly(
+        connectors,
+        _roots(),
+        progress=malicious_observer,
+    )
+
+    assert result.diagnostics["candidate_connectors"] == 1
+    assert result.diagnostics["typed_refinement_findings"] == {
+        "route-refinement-required": 0
+    }
 
 
 def test_assembly_rejects_missing_named_root_as_a_producer_invariant() -> None:
@@ -124,6 +185,12 @@ def test_assembly_withholds_disconnected_exact_intersections_as_one_point_only_f
     assert finding["network_role"] == "cross-spine-connector-gap"
     assert finding.geometry.geom_type == "MultiPoint"
     assert "disconnected exact named-root intersections" in finding["selection_reason"]
+    assert result.diagnostics["candidate_connectors"] == 1
+    assert result.diagnostics["authoritative_connectors"] == 0
+    assert result.diagnostics["route_refinement_findings"] == 1
+    assert result.diagnostics["typed_refinement_findings"] == {
+        "route-refinement-required": 1
+    }
 
 
 def test_assembly_enforces_named_root_closure_budget_and_reconciles_agent_audit() -> None:

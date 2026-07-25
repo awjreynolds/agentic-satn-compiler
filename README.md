@@ -862,6 +862,23 @@ timings and throughput remain in the logs because they are operational observati
 not reproducible governed output. Changing `compilation.criteria_version` invalidates
 whole-publication reuse.
 
+### Cross-Spine benchmark
+
+Cross-Spine traversal reports a versioned deterministic diagnostic object under
+`compilation_diagnostics.cross_spine`: candidate and authoritative connector counts,
+Route Refinement Findings, and logical graph/search work including peak queue and
+graph dimensions. It does not retain elapsed time or machine-specific observations.
+
+To establish or refresh the WECA-scale operational baseline without publishing a
+deployment, run the local deterministic-fake-runtime benchmark. It writes structured
+phase durations and peak logical work counts; normal tests do not run this regional
+compile.
+
+```shell
+.venv/bin/python scripts/benchmark_cross_spine.py deployments/weca/area.yaml \
+  --output build/benchmarks/weca-cross-spine-baseline.json
+```
+
 ## ATM quality comparison
 
 ATM is an optional B&NES quality reference, not a portable network rule or an
