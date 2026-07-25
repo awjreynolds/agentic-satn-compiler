@@ -20,7 +20,6 @@ import geopandas as gpd
 import numpy as np
 from PIL import Image, ImageFile
 from shapely.geometry import Point
-from shapely.ops import unary_union
 
 from satn.ea_elevation import (
     CONTRACT_SCHEMA_VERSION,
@@ -520,19 +519,17 @@ def validate_weca_samples(
     *,
     routing_buffer_m: float,
 ) -> dict[str, object]:
-    """Report actual WCS availability; survey-index coverage is only a preflight."""
+    """Report actual WCS availability; survey-index coverage is only a preflight.
+
+    The route extent and route-plus-buffer request are governed before
+    acquisition by :func:`validate_weca_route_extent`.  Authority boundaries
+    classify observations and transitions; they do not limit the retained
+    cross-boundary network.
+    """
     boundaries = gpd.read_file(authority_boundaries_path)
     boundary_identity = _authority_identity(boundaries, authority_boundaries_path)
     expected = {_normalise_authority(name): name for name in WECA_AUTHORITIES}
-    authorities = _authority_geometries(boundaries)
     assigned = _assigned_samples(samples, boundaries)
-    union = unary_union(list(authorities.values()))
-    for sample in assigned:
-        if (
-            sample["authority_key"] == "routing-buffer"
-            and sample["geometry"].distance(union) > routing_buffer_m
-        ):
-            raise ValueError("routing-buffer sample exceeds governed 15km authority limit")
     rows: list[dict[str, object]] = []
     cross_boundary_points = 0
     for normalised, authority in expected.items():

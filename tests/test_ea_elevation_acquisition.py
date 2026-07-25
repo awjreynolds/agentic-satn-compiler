@@ -450,6 +450,140 @@ def test_weca_acquisition_rejects_any_buffer_other_than_the_pinned_15km(
         acquisition.validate_weca_route_extent(routes, routing_buffer_m=14_999)
 
 
+def test_banes_cross_boundary_samples_beyond_authority_buffer_are_retained_and_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A retained B&NES spine may leave every council polygon beyond 15 km."""
+    routes = tmp_path / "routes.geojson"
+    boundaries = tmp_path / "authorities.geojson"
+    survey_index = tmp_path / "survey-index.geojson"
+    output = tmp_path / "elevation-evidence.geojson"
+    gpd.GeoDataFrame(
+        [
+            {
+                "feature_id": "banes-cross-boundary-spine",
+                "feature_type": "strategic-spine",
+                "topography_profile_id": "profile",
+                "geometry": LineString([(350050, 150000), (380050, 150000)]),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    ).to_file(routes, driver="GeoJSON")
+    gpd.GeoDataFrame(
+        [
+            {
+                "authority": name,
+                "authority_id": f"authority-{position}",
+                "source_query": "synthetic-banes-boundaries/v1",
+                "geometry": (
+                    box(350000, 149900, 350100, 150100)
+                    if position == 0
+                    else box(400000 + position * 100, 149900, 400050 + position * 100, 150100)
+                ),
+            }
+            for position, name in enumerate(acquisition.WECA_AUTHORITIES)
+        ],
+        geometry="geometry",
+        crs=27700,
+    ).to_file(boundaries, driver="GeoJSON")
+    gpd.GeoDataFrame(
+        [
+            {
+                "id": "survey-1",
+                "resolution": 1,
+                "ed_flown": "2022-01-02",
+                "geometry": box(340000, 140000, 390000, 160000),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    ).to_file(survey_index, driver="GeoJSON")
+    monkeypatch.setattr(
+        acquisition,
+        "validate_official_weca_survey_index",
+        lambda _path: {
+            "raw_sha256": "a" * 64,
+            "canonical_feature_sha256": "b" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        acquisition,
+        "acquire_tile",
+        lambda key, *_args, **_kwargs: (key, tmp_path / "tile.tif", "url", "a" * 64, 1, None),
+    )
+    monkeypatch.setattr(acquisition, "load_tile", lambda _path: object())
+    monkeypatch.setattr(
+        acquisition,
+        "sample_grid",
+        lambda _grid, point: 42.0 if point.x == 350050 else None,
+    )
+
+    manifest = acquisition.write_evidence(
+        routes,
+        output,
+        tmp_path / "cache",
+        spacing_m=15_000,
+        authority_boundaries_path=boundaries,
+        survey_index_path=survey_index,
+    )
+    ledger = read_sample_ledger(output.with_name("elevation-evidence.sample-ledger.jsonl"))
+    outside = next(
+        row
+        for row in manifest["sample_validation"]["authorities"]
+        if row["authority"] == "routing-buffer/outside-authority"
+    )
+
+    assert manifest["requested_point_count"] == 3
+    assert manifest["evidence_sample_count"] == 1
+    assert manifest["nodata_sample_count"] == 2
+    assert outside == {
+        "authority": "routing-buffer/outside-authority",
+        "status": "unavailable",
+        "route_sample_count": 2,
+        "requested_sample_count": 2,
+        "available_sample_count": 0,
+        "nodata_sample_count": 2,
+    }
+    assert [row["authority_id"] for row in ledger if row["bucket"] == "routing-buffer"] == [
+        "routing-buffer",
+        "routing-buffer",
+    ]
+    assert [row["availability"] for row in ledger if row["bucket"] == "routing-buffer"] == [
+        "nodata",
+        "nodata",
+    ]
+
+
+def test_weca_pinned_route_extent_fails_closed_when_eligible_route_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    routes = tmp_path / "routes.geojson"
+
+    def write_routes(endpoint: int) -> None:
+        gpd.GeoDataFrame(
+            [
+                {
+                    "feature_type": "strategic-spine",
+                    "topography_profile_id": "profile",
+                    "geometry": LineString([(100, 100), (endpoint, 100)]),
+                }
+            ],
+            geometry="geometry",
+            crs=27700,
+        ).to_file(routes, driver="GeoJSON")
+
+    monkeypatch.setattr(acquisition, "WECA_PINNED_ELIGIBLE_ROUTE_BBOX", (100, 100, 200, 100))
+    monkeypatch.setattr(acquisition, "WECA_SURVEY_REQUEST_BBOX", (-14900, -14900, 15200, 15100))
+    write_routes(200)
+
+    acquisition.validate_weca_route_extent(routes, routing_buffer_m=15_000)
+
+    write_routes(201)
+    with pytest.raises(ValueError, match="retained eligible-route extent differs"):
+        acquisition.validate_weca_route_extent(routes, routing_buffer_m=15_000)
+
+
 def _weca_preflight_inputs(tmp_path: Path, *, complete: bool) -> tuple[Path, Path, Path]:
     routes = tmp_path / "routes.geojson"
     boundaries = tmp_path / "authorities.geojson"
