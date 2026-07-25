@@ -581,6 +581,129 @@ def test_banes_cross_boundary_samples_beyond_authority_buffer_are_retained_repor
     assert len(ledger) == manifest["requested_point_count"]
 
 
+def test_banes_wcs_pixel_without_pinned_survey_is_nodata_before_immutable_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unattributed WCS value remains a ledger observation, never evidence."""
+    routes = tmp_path / "routes.geojson"
+    boundaries = tmp_path / "authorities.geojson"
+    survey_index = tmp_path / "survey-index.geojson"
+    output = tmp_path / "elevation-evidence.geojson"
+    gpd.GeoDataFrame(
+        [
+            {
+                "feature_id": "banes-unattributed-pixel",
+                "feature_type": "strategic-spine",
+                "topography_profile_id": "profile",
+                "geometry": LineString([(350050, 150000), (350070, 150000)]),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    ).to_file(routes, driver="GeoJSON")
+    gpd.GeoDataFrame(
+        [
+            {
+                "authority": name,
+                "authority_id": f"authority-{position}",
+                "source_query": "synthetic-banes-boundaries/v1",
+                "geometry": box(350000, 149900, 350100, 150100)
+                if position == 0
+                else box(400000 + position, 0, 400001 + position, 1),
+            }
+            for position, name in enumerate(acquisition.WECA_AUTHORITIES)
+        ],
+        geometry="geometry",
+        crs=27700,
+    ).to_file(boundaries, driver="GeoJSON")
+    gpd.GeoDataFrame(
+        [
+            {
+                "id": "survey-1",
+                "resolution": 1,
+                "ed_flown": "2022-01-02",
+                "geometry": box(350000, 149900, 350065, 150100),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    ).to_file(survey_index, driver="GeoJSON")
+    official_index = {
+        "raw_sha256": hashlib.sha256(survey_index.read_bytes()).hexdigest(),
+        "canonical_feature_sha256": "b" * 64,
+    }
+    monkeypatch.setattr(
+        acquisition, "validate_official_weca_survey_index", lambda _path: official_index
+    )
+    monkeypatch.setattr(
+        "satn.sources.validate_official_weca_survey_index", lambda _path: official_index
+    )
+    monkeypatch.setattr(
+        acquisition,
+        "acquire_tile",
+        lambda key, *_args, **_kwargs: (key, tmp_path / "tile.tif", "url", "a" * 64, 1, None),
+    )
+    monkeypatch.setattr(acquisition, "load_tile", lambda _path: object())
+    monkeypatch.setattr(acquisition, "sample_grid", lambda _grid, _point: 42.0)
+
+    manifest = acquisition.write_evidence(
+        routes,
+        output,
+        tmp_path / "cache",
+        spacing_m=10,
+        authority_boundaries_path=boundaries,
+        survey_index_path=survey_index,
+        governed_input_fingerprint="c" * 64,
+    )
+    ledger = read_sample_ledger(output.with_name("elevation-evidence.sample-ledger.jsonl"))
+    evidence = gpd.read_file(output)
+
+    assert manifest["requested_point_count"] == len(ledger) == 3
+    assert manifest["evidence_sample_count"] == len(evidence) == 2
+    assert manifest["nodata_sample_count"] == 1
+    assert manifest["sample_validation"]["status"] == "partial"
+    assert [row["availability"] for row in ledger] == ["available", "available", "nodata"]
+    assert {
+        field: ledger[-1][field]
+        for field in (
+            "availability",
+            "elevation_m",
+            "survey_feature_id",
+            "ed_flown",
+            "resolution_m",
+            "evidence_row_sha256",
+        )
+    } == {
+        "availability": "nodata",
+        "elevation_m": None,
+        "survey_feature_id": None,
+        "ed_flown": None,
+        "resolution_m": None,
+        "evidence_row_sha256": None,
+    }
+    assert all(
+        row["survey_feature_id"] is not None and row["ed_flown"] is not None
+        for row in ledger
+        if row["availability"] == "available"
+    )
+    assert sorted(evidence["sample_index"].tolist()) == [0, 1]
+
+    provenance = _ea_elevation_acquisition_provenance(
+        NationalElevationConfig(
+            provider="local-geojson",
+            path=output,
+            source_id="ea-lidar-composite-dtm-1m",
+            acquisition_contract="ea-lidar-weca-v1",
+            licence=acquisition.LICENCE,
+            attribution=acquisition.ATTRIBUTION,
+        )
+    )
+
+    assert provenance["coverage_status"] == "partial"
+    assert provenance["sample_ledger_sha256"] == manifest["sample_ledger_sha256"]
+    assert len(provenance["evidence_row_sha256s"]) == 2
+
+
 def test_weca_pinned_route_extent_fails_closed_when_eligible_route_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

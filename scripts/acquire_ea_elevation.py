@@ -685,12 +685,31 @@ def write_evidence(
         elevation = sample_grid(grid, point) if grid is not None else None
         elevations_by_coordinate[(round(point.x, 3), round(point.y, 3))] = elevation
     sampled: dict[tuple[str, int], float | None] = {}
+    survey_choices: dict[tuple[str, int], dict[str, object] | None] | None = None
     evidence_hashes: dict[tuple[str, int], str] = {}
     for sample in ordered_samples:
         point = sample["geometry"]
         elevation = elevations_by_coordinate[(round(point.x, 3), round(point.y, 3))]
         identity = _sample_identity(sample)
         sampled[identity] = elevation
+
+    if authority_boundaries_path is not None and survey_index_path is not None:
+        survey_index = _SurveyAttributionIndex(gpd.read_file(survey_index_path))
+        survey_choices = _survey_choices(
+            ordered_samples, survey_index, phase="attributing official EA surveys"
+        )
+        # A WCS pixel is not governed elevation evidence unless the pinned
+        # official survey index selects its source feature and flight date.
+        # Do this before deriving rows, hashes, ledger availability, counts or
+        # manifest values so every retained artifact has one availability fact.
+        for identity, chosen in survey_choices.items():
+            if chosen is None:
+                sampled[identity] = None
+
+    for sample in ordered_samples:
+        point = sample["geometry"]
+        identity = _sample_identity(sample)
+        elevation = sampled[identity]
         if elevation is None:
             continue
         east_mm, north_mm = round(point.x * 1000), round(point.y * 1000)
@@ -738,13 +757,10 @@ def write_evidence(
     # an output-specific sibling; snapshotting normalises the internal name.
     ledger_path = output_path.with_name(f"{output_path.stem}.sample-ledger.jsonl")
     ledger_rows: list[dict[str, object]] = []
-    survey_choices: dict[tuple[str, int], dict[str, object] | None] | None = None
     if authority_boundaries_path is not None and survey_index_path is not None:
         assigned = _assigned_samples(ordered_samples, gpd.read_file(authority_boundaries_path))
-        survey_index = _SurveyAttributionIndex(gpd.read_file(survey_index_path))
-        survey_choices = _survey_choices(
-            ordered_samples, survey_index, phase="attributing official EA surveys"
-        )
+        if survey_choices is None:
+            raise AssertionError("official survey attribution is required for the immutable ledger")
         by_route: dict[str, list[dict[str, object]]] = {}
         for sample in assigned:
             by_route.setdefault(str(sample["route_id"]), []).append(sample)
