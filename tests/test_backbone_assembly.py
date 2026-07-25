@@ -25,90 +25,43 @@ from satn.routing import RouteOption
 PROJECT = Path(__file__).parents[1]
 PARALLEL_SPINE_PRE_INSTRUMENTATION_SEMANTIC_SNAPSHOT = {
     "access": [
-        (
-            "spine-access-88acfd9a756c",
-            "access-obligation-c3fd462181b2",
-            "community",
-            "left-near",
-            "strategic-spine-358914d2994f",
-            "spine-access-branch-0307342d9c53",
-            None,
-            "strategic-spine",
-            None,
-            None,
-            "strategic-spine-358914d2994f",
-            1,
-            "spine-access-connection",
-            "validated",
-            '["left-feed", "strategic-spine-evidence-43b76ca0b781", "strategic-spine-sources-7023563c3d64"]',
-            '{"access_connection_id": "spine-access-88acfd9a756c", "branch_id": "spine-access-branch-0307342d9c53", "obligation_kind": "community", "parent_access_connection_id": null, "parent_branch_id": null, "parent_place_id": null, "parent_role": "strategic-spine", "parent_target_id": "strategic-spine-358914d2994f", "parent_target_name": "A1", "place_id": "left-near", "root_evidence_id": "strategic-spine-evidence-43b76ca0b781", "root_source_id": "strategic-spine-sources-7023563c3d64", "root_spine_id": "strategic-spine-358914d2994f", "source_ids": ["left-feed", "strategic-spine-evidence-43b76ca0b781", "strategic-spine-sources-7023563c3d64"]}',
-        ),
-        (
-            "spine-access-b3bb4a8f47cc",
-            "access-obligation-ea07bd160461",
-            "community",
-            "hinterland",
-            "strategic-spine-358914d2994f",
-            "spine-access-branch-0307342d9c53",
-            "spine-access-branch-0307342d9c53",
-            "spine-access-connection",
-            "left-near",
-            "spine-access-88acfd9a756c",
-            "spine-access-88acfd9a756c",
-            2,
-            "spine-access-connection",
-            "validated",
-            '["hinterland-feed", "strategic-spine-evidence-43b76ca0b781", "strategic-spine-sources-7023563c3d64"]',
-            '{"access_connection_id": "spine-access-b3bb4a8f47cc", "branch_id": "spine-access-branch-0307342d9c53", "obligation_kind": "community", "parent_access_connection_id": "spine-access-88acfd9a756c", "parent_branch_id": "spine-access-branch-0307342d9c53", "parent_place_id": "left-near", "parent_role": "spine-access-connection", "parent_target_id": "spine-access-88acfd9a756c", "parent_target_name": "Left Near", "place_id": "hinterland", "root_evidence_id": "strategic-spine-evidence-43b76ca0b781", "root_source_id": "strategic-spine-sources-7023563c3d64", "root_spine_id": "strategic-spine-358914d2994f", "source_ids": ["hinterland-feed", "strategic-spine-evidence-43b76ca0b781", "strategic-spine-sources-7023563c3d64"]}',
-        ),
-        (
-            "spine-access-c56547bf7abe",
-            "access-obligation-dbd66a5d950a",
-            "community",
-            "right-near",
-            "strategic-spine-2b3ce3ab0f72",
-            "spine-access-branch-9c944cfbd8cf",
-            None,
-            "strategic-spine",
-            None,
-            None,
-            "strategic-spine-2b3ce3ab0f72",
-            1,
-            "spine-access-connection",
-            "validated",
-            '["right-feed", "strategic-spine-evidence-cfdf45c2a36c", "strategic-spine-sources-e03825e2f853"]',
-            '{"access_connection_id": "spine-access-c56547bf7abe", "branch_id": "spine-access-branch-9c944cfbd8cf", "obligation_kind": "community", "parent_access_connection_id": null, "parent_branch_id": null, "parent_place_id": null, "parent_role": "strategic-spine", "parent_target_id": "strategic-spine-2b3ce3ab0f72", "parent_target_name": "A2", "place_id": "right-near", "root_evidence_id": "strategic-spine-evidence-cfdf45c2a36c", "root_source_id": "strategic-spine-sources-e03825e2f853", "root_spine_id": "strategic-spine-2b3ce3ab0f72", "source_ids": ["right-feed", "strategic-spine-evidence-cfdf45c2a36c", "strategic-spine-sources-e03825e2f853"]}',
-        ),
+        {
+            "obligation_id": "access-obligation-ea07bd160461", "obligation_kind": "community", "place_id": "hinterland", "place_name": "Hinterland", "root": "root:A1", "branch": "branch:A1",
+            "parent": {"role": "spine-access-connection", "place_id": "left-near", "branch": "branch:A1", "target": "access:left-near"},
+            "attachment_depth": 2, "network_role": "spine-access-connection", "status": "validated",
+            "source_ids": ["hinterland-feed", "strategic-spine-evidence-43b76ca0b781", "strategic-spine-sources-7023563c3d64"],
+            "provenance": {"access_connection_id": "access:hinterland", "branch_id": "branch:A1", "obligation_kind": "community", "parent_access_connection_id": "access:left-near", "parent_branch_id": "branch:A1", "parent_place_id": "left-near", "parent_role": "spine-access-connection", "parent_target_id": "access:left-near", "parent_target_name": "Left Near", "place_id": "hinterland", "root_evidence_id": "strategic-spine-evidence-43b76ca0b781", "root_source_id": "strategic-spine-sources-7023563c3d64", "root_spine_id": "root:A1", "source_ids": ["hinterland-feed", "strategic-spine-evidence-43b76ca0b781", "strategic-spine-sources-7023563c3d64"]},
+        },
+        {
+            "obligation_id": "access-obligation-c3fd462181b2", "obligation_kind": "community", "place_id": "left-near", "place_name": "Left Near", "root": "root:A1", "branch": "branch:A1",
+            "parent": {"role": "strategic-spine", "place_id": None, "branch": None, "target": "root:A1"},
+            "attachment_depth": 1, "network_role": "spine-access-connection", "status": "validated",
+            "source_ids": ["left-feed", "strategic-spine-evidence-43b76ca0b781", "strategic-spine-sources-7023563c3d64"],
+            "provenance": {"access_connection_id": "access:left-near", "branch_id": "branch:A1", "obligation_kind": "community", "parent_access_connection_id": None, "parent_branch_id": None, "parent_place_id": None, "parent_role": "strategic-spine", "parent_target_id": "root:A1", "parent_target_name": "A1", "place_id": "left-near", "root_evidence_id": "strategic-spine-evidence-43b76ca0b781", "root_source_id": "strategic-spine-sources-7023563c3d64", "root_spine_id": "root:A1", "source_ids": ["left-feed", "strategic-spine-evidence-43b76ca0b781", "strategic-spine-sources-7023563c3d64"]},
+        },
+        {
+            "obligation_id": "access-obligation-dbd66a5d950a", "obligation_kind": "community", "place_id": "right-near", "place_name": "Right Near", "root": "root:A2", "branch": "branch:A2",
+            "parent": {"role": "strategic-spine", "place_id": None, "branch": None, "target": "root:A2"},
+            "attachment_depth": 1, "network_role": "spine-access-connection", "status": "validated",
+            "source_ids": ["right-feed", "strategic-spine-evidence-cfdf45c2a36c", "strategic-spine-sources-e03825e2f853"],
+            "provenance": {"access_connection_id": "access:right-near", "branch_id": "branch:A2", "obligation_kind": "community", "parent_access_connection_id": None, "parent_branch_id": None, "parent_place_id": None, "parent_role": "strategic-spine", "parent_target_id": "root:A2", "parent_target_name": "A2", "place_id": "right-near", "root_evidence_id": "strategic-spine-evidence-cfdf45c2a36c", "root_source_id": "strategic-spine-sources-e03825e2f853", "root_spine_id": "root:A2", "source_ids": ["right-feed", "strategic-spine-evidence-cfdf45c2a36c", "strategic-spine-sources-e03825e2f853"]},
+        },
     ],
     "meetings": [
-        (
-            "branch-meeting-03f25aacfaf0",
-            "right-near",
-            "hinterland",
-            "spine-access-branch-9c944cfbd8cf",
-            "spine-access-branch-0307342d9c53",
-            "strategic-spine-2b3ce3ab0f72",
-            "strategic-spine-358914d2994f",
-            "branch-meeting-connection",
-            "validated",
-            '["middle-feed"]',
-            '{"from_branch_id": "spine-access-branch-9c944cfbd8cf", "from_place_id": "right-near", "from_root_spine_id": "strategic-spine-2b3ce3ab0f72", "meeting_connection_id": "branch-meeting-03f25aacfaf0", "source_ids": ["middle-feed"], "to_branch_id": "spine-access-branch-0307342d9c53", "to_place_id": "hinterland", "to_root_spine_id": "strategic-spine-358914d2994f"}',
-        )
+        {
+            "endpoints": [{"place": "hinterland", "place_name": "Hinterland", "branch": "branch:A1", "root": "root:A1"}, {"place": "right-near", "place_name": "Right Near", "branch": "branch:A2", "root": "root:A2"}],
+            "network_role": "branch-meeting-connection", "status": "validated", "source_ids": ["middle-feed"],
+            "provenance": {"meeting_connection_id": "meeting:A1|A2:hinterland|right-near", "source_ids": ["middle-feed"], "endpoints": [{"branch": "branch:A1", "place": "hinterland", "root": "root:A1"}, {"branch": "branch:A2", "place": "right-near", "root": "root:A2"}]},
+        }
     ],
     "connectors": [
-        (
-            "cross-spine-connector-fb341299de3c",
-            "branch-meeting-03f25aacfaf0",
-            "strategic-spine-2b3ce3ab0f72",
-            "strategic-spine-358914d2994f",
-            '["spine-access-branch-0307342d9c53", "spine-access-branch-9c944cfbd8cf"]',
-            '["branch-meeting-03f25aacfaf0", "spine-access-88acfd9a756c", "spine-access-b3bb4a8f47cc", "spine-access-c56547bf7abe"]',
-            '["hinterland", "left-near", "right-near"]',
-            "cross-spine-connector",
-            "validated",
-            '["hinterland-feed", "left-feed", "middle-feed", "right-feed", "strategic-spine-evidence-43b76ca0b781", "strategic-spine-evidence-cfdf45c2a36c", "strategic-spine-sources-7023563c3d64", "strategic-spine-sources-e03825e2f853"]',
-            '{"branch_ids": ["spine-access-branch-0307342d9c53", "spine-access-branch-9c944cfbd8cf"], "community_ids": ["hinterland", "left-near", "right-near"], "connection_ids": ["branch-meeting-03f25aacfaf0", "spine-access-88acfd9a756c", "spine-access-b3bb4a8f47cc", "spine-access-c56547bf7abe"], "cross_spine_connector_id": "cross-spine-connector-fb341299de3c", "meeting_connection_id": "branch-meeting-03f25aacfaf0", "named_root_traversal": {"from_root_distance_m": 0.0, "from_root_spine_id": "strategic-spine-2b3ce3ab0f72", "noded_segment_count": 1, "pruned_segment_count": 0, "selected_segment_count": 1, "to_root_distance_m": 0.0, "to_root_spine_id": "strategic-spine-358914d2994f"}, "source_ids": ["hinterland-feed", "left-feed", "middle-feed", "right-feed", "strategic-spine-evidence-43b76ca0b781", "strategic-spine-evidence-cfdf45c2a36c", "strategic-spine-sources-7023563c3d64", "strategic-spine-sources-e03825e2f853"]}',
-        )
+        {
+            "roots": ["root:A1", "root:A2"], "meeting": "meeting:A1|A2:hinterland|right-near", "branches": ["branch:A1", "branch:A2"],
+            "connections": ["access:hinterland", "access:left-near", "access:right-near", "meeting:A1|A2:hinterland|right-near"],
+            "communities": ["hinterland", "left-near", "right-near"], "network_role": "cross-spine-connector", "status": "validated",
+            "source_ids": ["hinterland-feed", "left-feed", "middle-feed", "right-feed", "strategic-spine-evidence-43b76ca0b781", "strategic-spine-evidence-cfdf45c2a36c", "strategic-spine-sources-7023563c3d64", "strategic-spine-sources-e03825e2f853"],
+            "provenance": {"branch_ids": ["branch:A1", "branch:A2"], "community_ids": ["hinterland", "left-near", "right-near"], "connection_ids": ["access:hinterland", "access:left-near", "access:right-near", "meeting:A1|A2:hinterland|right-near"], "cross_spine_connector_id": "connector:A1|A2", "meeting_connection_id": "meeting:A1|A2:hinterland|right-near", "named_root_traversal": {"noded_segment_count": 1, "pruned_segment_count": 0, "selected_segment_count": 1, "root_distances_m": [("root:A1", 0.0), ("root:A2", 0.0)]}, "source_ids": ["hinterland-feed", "left-feed", "middle-feed", "right-feed", "strategic-spine-evidence-43b76ca0b781", "strategic-spine-evidence-cfdf45c2a36c", "strategic-spine-sources-7023563c3d64", "strategic-spine-sources-e03825e2f853"]},
+        }
     ],
 }
 
@@ -318,72 +271,190 @@ def backbone_snapshot(compiled: object) -> dict[str, object]:
     }
 
 
-def governed_semantic_snapshot(compiled: object) -> dict[str, list[tuple[object, ...]]]:
-    """Capture the fixture's platform-neutral assembly contract.
+def _fixture_json(value: object) -> object:
+    """Decode fixture JSON columns while retaining scalar values unchanged."""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    return value
 
-    Geometry bytes and calculated coordinates stay out of this static golden:
-    those are owned by the same-runtime control comparison below.  This golden
-    instead pins the topology, stable IDs, meeting and parent relationships,
-    provenance, source evidence, roles, and publication status generated by
-    the pre-instrumentation fixture.
+
+def _fixture_optional(value: object) -> object:
+    return None if value != value else value
+
+
+def governed_semantic_snapshot(compiled: object) -> dict[str, list[dict[str, object]]]:
+    """Capture only the fixture contract that is stable across GEOS runtimes.
+
+    Generated IDs ultimately derive from geometry bytes, so a static golden
+    cannot use them as portable identity.  The strict same-runtime comparison
+    below still protects every emitted column, ID, provenance value and WKB
+    against observer-induced changes.  This fixture golden instead maps those
+    IDs to logical fixture identities and pins the source-stable semantics.
     """
+    access = compiled.spine_access_connections
+    meetings = compiled.branch_meeting_connections
+    connectors = compiled.cross_spine_connectors
+
+    provenance_by_access_id = {
+        row.access_connection_id: _fixture_json(row.provenance) for row in access.itertuples()
+    }
+    root_names = {
+        row.root_spine_id: provenance_by_access_id[row.access_connection_id]["parent_target_name"]
+        for row in access.itertuples()
+        if row.parent_role == "strategic-spine"
+    }
+    logical_ids: dict[object, str] = {}
+    for row in access.itertuples():
+        root_name = root_names[row.root_spine_id]
+        logical_ids[row.root_spine_id] = f"root:{root_name}"
+        logical_ids[row.branch_id] = f"branch:{root_name}"
+        logical_ids[row.access_connection_id] = f"access:{row.place_id}"
+    for row in meetings.itertuples():
+        root_names_for_meeting = sorted(
+            (root_names[row.from_root_spine_id], root_names[row.to_root_spine_id])
+        )
+        places_for_meeting = sorted((row.from_place_id, row.to_place_id))
+        logical_ids[row.meeting_connection_id] = (
+            f"meeting:{'|'.join(root_names_for_meeting)}:{'|'.join(places_for_meeting)}"
+        )
+    for row in connectors.itertuples():
+        root_names_for_connector = sorted(
+            (root_names[row.from_root_spine_id], root_names[row.to_root_spine_id])
+        )
+        logical_ids[row.cross_spine_connector_id] = (
+            f"connector:{'|'.join(root_names_for_connector)}"
+        )
+
+    def normalize(value: object) -> object:
+        value = _fixture_json(value)
+        if isinstance(value, dict):
+            return {key: normalize(item) for key, item in sorted(value.items())}
+        if isinstance(value, list):
+            return sorted((normalize(item) for item in value), key=lambda item: repr(item))
+        return logical_ids.get(value, value)
+
+    def normalized_sources(value: object) -> list[object]:
+        sources = normalize(value)
+        assert isinstance(sources, list)
+        return sources
+
+    def normalized_meeting_provenance(row: object) -> dict[str, object]:
+        provenance = normalize(row.provenance)
+        assert isinstance(provenance, dict)
+        endpoints = sorted(
+            (
+                {
+                    "branch": provenance.pop("from_branch_id"),
+                    "place": provenance.pop("from_place_id"),
+                    "root": provenance.pop("from_root_spine_id"),
+                },
+                {
+                    "branch": provenance.pop("to_branch_id"),
+                    "place": provenance.pop("to_place_id"),
+                    "root": provenance.pop("to_root_spine_id"),
+                },
+            ),
+            key=lambda endpoint: repr(endpoint),
+        )
+        provenance["endpoints"] = endpoints
+        return provenance
+
+    def normalized_connector_provenance(row: object) -> dict[str, object]:
+        provenance = normalize(row.provenance)
+        assert isinstance(provenance, dict)
+        traversal = provenance["named_root_traversal"]
+        assert isinstance(traversal, dict)
+        root_distances = sorted(
+            (
+                (
+                    traversal.pop("from_root_spine_id"),
+                    traversal.pop("from_root_distance_m"),
+                ),
+                (
+                    traversal.pop("to_root_spine_id"),
+                    traversal.pop("to_root_distance_m"),
+                ),
+            )
+        )
+        traversal["root_distances_m"] = root_distances
+        return provenance
+
     return {
         "access": sorted(
-            (
-                row.access_connection_id,
-                row.obligation_id,
-                row.obligation_kind,
-                row.place_id,
-                row.root_spine_id,
-                row.branch_id,
-                None if row.parent_branch_id != row.parent_branch_id else row.parent_branch_id,
-                row.parent_role,
-                None if row.parent_place_id != row.parent_place_id else row.parent_place_id,
-                (
-                    None
-                    if row.parent_access_connection_id != row.parent_access_connection_id
-                    else row.parent_access_connection_id
-                ),
-                row.parent_target_id,
-                row.attachment_depth,
-                row.network_role,
-                row.status,
-                row.source_ids,
-                row.provenance,
-            )
-            for row in compiled.spine_access_connections.itertuples()
+            [
+                {
+                    "obligation_id": row.obligation_id,
+                    "obligation_kind": row.obligation_kind,
+                    "place_id": row.place_id,
+                    "place_name": row.place_name,
+                    "root": logical_ids[row.root_spine_id],
+                    "branch": logical_ids[row.branch_id],
+                    "parent": {
+                        "role": row.parent_role,
+                        "place_id": _fixture_optional(row.parent_place_id),
+                        "branch": normalize(_fixture_optional(row.parent_branch_id)),
+                        "target": normalize(row.parent_target_id),
+                    },
+                    "attachment_depth": row.attachment_depth,
+                    "network_role": row.network_role,
+                    "status": row.status,
+                    "source_ids": normalized_sources(row.source_ids),
+                    "provenance": normalize(row.provenance),
+                }
+                for row in access.itertuples()
+            ],
+            key=lambda item: str(item["place_id"]),
         ),
         "meetings": sorted(
-            (
-                row.meeting_connection_id,
-                row.from_place_id,
-                row.to_place_id,
-                row.from_branch_id,
-                row.to_branch_id,
-                row.from_root_spine_id,
-                row.to_root_spine_id,
-                row.network_role,
-                row.status,
-                row.source_ids,
-                row.provenance,
-            )
-            for row in compiled.branch_meeting_connections.itertuples()
+            [
+                {
+                    "endpoints": sorted(
+                        (
+                            {
+                                "place": row.from_place_id,
+                                "place_name": row.from_place_name,
+                                "branch": logical_ids[row.from_branch_id],
+                                "root": logical_ids[row.from_root_spine_id],
+                            },
+                            {
+                                "place": row.to_place_id,
+                                "place_name": row.to_place_name,
+                                "branch": logical_ids[row.to_branch_id],
+                                "root": logical_ids[row.to_root_spine_id],
+                            },
+                        ),
+                        key=lambda endpoint: repr(endpoint),
+                    ),
+                    "network_role": row.network_role,
+                    "status": row.status,
+                    "source_ids": normalized_sources(row.source_ids),
+                    "provenance": normalized_meeting_provenance(row),
+                }
+                for row in meetings.itertuples()
+            ],
+            key=lambda item: repr(item),
         ),
         "connectors": sorted(
-            (
-                row.cross_spine_connector_id,
-                row.meeting_connection_id,
-                row.from_root_spine_id,
-                row.to_root_spine_id,
-                row.branch_ids,
-                row.connection_ids,
-                row.community_ids,
-                row.network_role,
-                row.status,
-                row.source_ids,
-                row.provenance,
-            )
-            for row in compiled.cross_spine_connectors.itertuples()
+            [
+                {
+                    "roots": sorted(
+                        (logical_ids[row.from_root_spine_id], logical_ids[row.to_root_spine_id])
+                    ),
+                    "meeting": logical_ids[row.meeting_connection_id],
+                    "branches": normalize(row.branch_ids),
+                    "connections": normalize(row.connection_ids),
+                    "communities": normalize(row.community_ids),
+                    "network_role": row.network_role,
+                    "status": row.status,
+                    "source_ids": normalized_sources(row.source_ids),
+                    "provenance": normalized_connector_provenance(row),
+                }
+                for row in connectors.itertuples()
+            ],
+            key=lambda item: repr(item),
         ),
     }
 
@@ -428,6 +499,155 @@ def test_same_runtime_governed_frame_comparison_rejects_topologically_equal_geom
     assert_geodataframe_equal(changed, expected, check_like=False, check_crs=True)
     with pytest.raises(AssertionError):
         assert_same_runtime_governed_frame_equal(changed, expected)
+
+
+def test_semantic_fixture_golden_normalizes_generated_ids_and_meeting_orientation() -> None:
+    """The portable golden rejects semantic drift but not GEOS-derived identities."""
+    compiled = compile_network(config(), parallel_spine_source(), FakeAgentRuntime())
+    rewritten = SimpleNamespace(
+        spine_access_connections=compiled.spine_access_connections.copy(deep=True),
+        branch_meeting_connections=compiled.branch_meeting_connections.copy(deep=True),
+        cross_spine_connectors=compiled.cross_spine_connectors.copy(deep=True),
+    )
+    ids: dict[str, str] = {}
+    for index, row in enumerate(compiled.spine_access_connections.itertuples()):
+        provenance = json.loads(row.provenance)
+        ids[row.access_connection_id] = f"generated-access-{index}"
+        ids[row.root_spine_id] = f"generated-root-{index}"
+        ids[row.branch_id] = f"generated-branch-{index}"
+    for index, row in enumerate(compiled.branch_meeting_connections.itertuples()):
+        ids[row.meeting_connection_id] = f"generated-meeting-{index}"
+    for index, row in enumerate(compiled.cross_spine_connectors.itertuples()):
+        ids[row.cross_spine_connector_id] = f"generated-connector-{index}"
+
+    def replace_generated_ids(value: object) -> object:
+        if isinstance(value, dict):
+            return {key: replace_generated_ids(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [replace_generated_ids(item) for item in value]
+        return ids.get(value, value)
+
+    def rewrite_cell(value: object) -> object:
+        if not isinstance(value, str):
+            return ids.get(value, value)
+        try:
+            return json.dumps(replace_generated_ids(json.loads(value)), sort_keys=True)
+        except json.JSONDecodeError:
+            return ids.get(value, value)
+
+    for frame in (
+        rewritten.spine_access_connections,
+        rewritten.branch_meeting_connections,
+        rewritten.cross_spine_connectors,
+    ):
+        for column in frame.columns:
+            if column != "geometry":
+                frame[column] = frame[column].map(rewrite_cell)
+
+    meetings = rewritten.branch_meeting_connections
+    for left, right in (
+        ("from_place_id", "to_place_id"),
+        ("from_place_name", "to_place_name"),
+        ("from_branch_id", "to_branch_id"),
+        ("from_root_spine_id", "to_root_spine_id"),
+    ):
+        meetings[[left, right]] = meetings[[right, left]]
+    meeting_provenance = json.loads(meetings.loc[0, "provenance"])
+    for left, right in (
+        ("from_place_id", "to_place_id"),
+        ("from_branch_id", "to_branch_id"),
+        ("from_root_spine_id", "to_root_spine_id"),
+    ):
+        meeting_provenance[left], meeting_provenance[right] = (
+            meeting_provenance[right],
+            meeting_provenance[left],
+        )
+    meetings.loc[0, "provenance"] = json.dumps(meeting_provenance, sort_keys=True)
+
+    connectors = rewritten.cross_spine_connectors
+    connectors[["from_root_spine_id", "to_root_spine_id"]] = connectors[
+        ["to_root_spine_id", "from_root_spine_id"]
+    ]
+    connector_provenance = json.loads(connectors.loc[0, "provenance"])
+    traversal = connector_provenance["named_root_traversal"]
+    for left, right in (
+        ("from_root_spine_id", "to_root_spine_id"),
+        ("from_root_distance_m", "to_root_distance_m"),
+    ):
+        traversal[left], traversal[right] = traversal[right], traversal[left]
+    connectors.loc[0, "provenance"] = json.dumps(connector_provenance, sort_keys=True)
+
+    baseline = governed_semantic_snapshot(compiled)
+    assert governed_semantic_snapshot(rewritten) == baseline
+
+    changed_source = SimpleNamespace(
+        spine_access_connections=rewritten.spine_access_connections.copy(deep=True),
+        branch_meeting_connections=rewritten.branch_meeting_connections.copy(deep=True),
+        cross_spine_connectors=rewritten.cross_spine_connectors.copy(deep=True),
+    )
+    changed_source.spine_access_connections.loc[0, "source_ids"] = json.dumps(["other-feed"])
+    assert governed_semantic_snapshot(changed_source) != baseline
+
+    changed_status = SimpleNamespace(
+        spine_access_connections=rewritten.spine_access_connections.copy(deep=True),
+        branch_meeting_connections=rewritten.branch_meeting_connections.copy(deep=True),
+        cross_spine_connectors=rewritten.cross_spine_connectors.copy(deep=True),
+    )
+    changed_status.spine_access_connections.loc[0, "status"] = "review-required"
+    assert governed_semantic_snapshot(changed_status) != baseline
+
+    changed_root_sources = SimpleNamespace(
+        spine_access_connections=rewritten.spine_access_connections.copy(deep=True),
+        branch_meeting_connections=rewritten.branch_meeting_connections.copy(deep=True),
+        cross_spine_connectors=rewritten.cross_spine_connectors.copy(deep=True),
+    )
+    stable_root_ids = {
+        "strategic-spine-evidence-43b76ca0b781": "changed-evidence-A1",
+        "strategic-spine-evidence-cfdf45c2a36c": "changed-evidence-A2",
+        "strategic-spine-sources-7023563c3d64": "changed-source-A1",
+        "strategic-spine-sources-e03825e2f853": "changed-source-A2",
+    }
+
+    def rewrite_stable_root_ids(value: object) -> object:
+        if isinstance(value, dict):
+            return {key: rewrite_stable_root_ids(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [rewrite_stable_root_ids(item) for item in value]
+        return stable_root_ids.get(value, value)
+
+    for frame in (
+        changed_root_sources.spine_access_connections,
+        changed_root_sources.branch_meeting_connections,
+        changed_root_sources.cross_spine_connectors,
+    ):
+        for column in frame.columns:
+            if column == "geometry":
+                continue
+            frame[column] = frame[column].map(
+                lambda value: json.dumps(rewrite_stable_root_ids(json.loads(value)), sort_keys=True)
+                if isinstance(value, str) and value[:1] in "[{"
+                else rewrite_stable_root_ids(value)
+            )
+    assert governed_semantic_snapshot(changed_root_sources) != baseline
+
+    changed_place_relationship = SimpleNamespace(
+        spine_access_connections=rewritten.spine_access_connections.copy(deep=True),
+        branch_meeting_connections=rewritten.branch_meeting_connections.copy(deep=True),
+        cross_spine_connectors=rewritten.cross_spine_connectors.copy(deep=True),
+    )
+    renamed_place_id = "left-near"
+    renamed_place_name = "Left Near Renamed"
+    access = changed_place_relationship.spine_access_connections
+    access.loc[access["place_id"] == renamed_place_id, "place_name"] = renamed_place_name
+    for index, row in access.iterrows():
+        provenance = json.loads(row["provenance"])
+        if provenance.get("parent_place_id") == renamed_place_id:
+            provenance["parent_target_name"] = renamed_place_name
+            access.loc[index, "provenance"] = json.dumps(provenance, sort_keys=True)
+    meetings = changed_place_relationship.branch_meeting_connections
+    meetings.loc[meetings["from_place_id"] == renamed_place_id, "from_place_name"] = renamed_place_name
+    meetings.loc[meetings["to_place_id"] == renamed_place_id, "to_place_name"] = renamed_place_name
+    assert governed_semantic_snapshot(changed_place_relationship) != baseline
 
 
 def with_source_costs_below_geometry(
