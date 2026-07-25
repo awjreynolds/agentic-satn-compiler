@@ -12,6 +12,7 @@ import pytest
 from shapely.geometry import LineString, Point
 
 from satn import compile
+from satn.compilation_dependencies import compilation_dependency_manifest
 from satn.ea_elevation import (
     DTM_ATTRIBUTION,
     SAMPLE_LEDGER_FILENAME,
@@ -19,8 +20,13 @@ from satn.ea_elevation import (
     evidence_row_sha256,
     write_sample_ledger,
 )
-from satn.models import CouncilConfig, NationalElevationConfig
-from satn.publisher import _validate_ea_elevation_fixed_point
+from satn.models import CouncilConfig, NationalElevationConfig, canonical_decision_ledger_payload
+from satn.pipeline import (
+    _reuse_validated_publication,
+    compilation_governed_input_fingerprint,
+    decision_ledger_input_fingerprint,
+)
+from satn.publisher import _validate_ea_elevation_fixed_point, validate_publication
 from satn.sources import (
     EA_LIDAR_COVERAGE_ID,
     EA_LIDAR_DATASET_ID,
@@ -609,6 +615,33 @@ def test_final_ea_fixed_point_rejects_missing_snapshot(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match=r"missing immutable snapshot\.json"):
         _validate_ea_elevation_fixed_point(config, network)
+
+
+def test_stale_ea_fixed_point_disables_whole_publication_reuse(tmp_path: Path) -> None:
+    """The current validation contract must reject a stale final EA publication."""
+    config = copied_config(tmp_path)
+    snapshot(config)
+    first = compile(config)
+    config = _final_ea_config(config, tmp_path)
+    _write_final_ea_snapshot(config, pre_elevation_network_sha256="0" * 64)
+    manifest = compilation_dependency_manifest()
+    governed_input = compilation_governed_input_fingerprint(
+        config, dependency_manifest=manifest
+    )
+    run_path = first.artifacts["run"]
+    run = json.loads(run_path.read_text(encoding="utf-8"))
+    input_ledger = canonical_decision_ledger_payload(run["decision_ledger_input"])
+    input_fingerprint = decision_ledger_input_fingerprint(governed_input, input_ledger)
+    run["governed_input_fingerprint"] = governed_input
+    run["compilation_input_fingerprint"] = input_fingerprint
+    run["compilation_dependency_manifest"] = manifest
+    run_path.write_text(json.dumps(run), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="two-pass fixed point failed"):
+        validate_publication(config.publication.output_dir, config)
+    assert (
+        _reuse_validated_publication(config, governed_input, input_fingerprint, manifest) is None
+    )
 
 
 @pytest.mark.parametrize(

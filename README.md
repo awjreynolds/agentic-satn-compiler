@@ -916,7 +916,13 @@ uv run satn compile config/banes.yaml --log-level DEBUG
 ```
 
 `run.json` retains deterministic compilation diagnostics: graph/search dimensions,
-candidate evaluations, frontier growth and typed optimisation findings. Wall-clock
+candidate evaluations, frontier growth and typed optimisation findings.  It also
+records the explicit, fail-closed compilation dependency manifest (schema, set
+version, installed compiler-runtime distributions and per-component SHA-256
+values).  Package components use stable `satn/...` labels and text component
+hashes ignore only LF/CRLF checkout differences. Pages, deployment, PDF and
+review-map code are not compiler semantics; their current publication validation
+still runs before a previous publication is reused. Wall-clock
 timings and throughput remain in the logs because they are operational observations,
 not reproducible governed output. Changing `compilation.criteria_version` invalidates
 whole-publication reuse.

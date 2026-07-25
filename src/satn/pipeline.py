@@ -17,6 +17,7 @@ from satn.agents import (
     runtime_for,
 )
 from satn.atm import compare_atm, load_atm
+from satn.compilation_dependencies import compilation_dependency_manifest
 from satn.compiler import compile_network
 from satn.constants import SCHEMA_VERSION
 from satn.heartbeat import StageHeartbeat
@@ -75,7 +76,11 @@ def _compile(
     started = time.perf_counter()
     council = config
     ledger = _load_decision_ledger(decision_ledger)
-    governed_input_fingerprint = compilation_governed_input_fingerprint(council)
+    dependency_manifest = compilation_dependency_manifest()
+    governed_input_fingerprint = compilation_governed_input_fingerprint(
+        council,
+        dependency_manifest=dependency_manifest,
+    )
     input_fingerprint = decision_ledger_input_fingerprint(
         governed_input_fingerprint,
         ledger,
@@ -91,6 +96,7 @@ def _compile(
         council,
         governed_input_fingerprint,
         input_fingerprint,
+        dependency_manifest,
     )
     if reused is not None:
         return reused
@@ -141,6 +147,7 @@ def _compile(
     compiled.governed_input_fingerprint = governed_input_fingerprint
     compiled.snapshot_manifest_sha256 = snapshot_manifest_sha256(council)
     compiled.area_definition_sha256 = area_definition_sha256(council)
+    compiled.compilation_dependency_manifest = dependency_manifest
     LOGGER.info(
         "Network compiled connections=%d gaps=%d status=%s",
         compiled.connection_count,
@@ -770,7 +777,11 @@ def decision_ledger_input_fingerprint(
     ).hexdigest()
 
 
-def compilation_governed_input_fingerprint(council: AreaConfig) -> str:
+def compilation_governed_input_fingerprint(
+    council: AreaConfig,
+    *,
+    dependency_manifest: dict[str, object] | None = None,
+) -> str:
     """Fingerprint every governed input required for safe whole-publication reuse."""
     config_payload = council.model_dump(mode="json")
     config_payload["compilation"].pop("full", None)
@@ -795,6 +806,7 @@ def compilation_governed_input_fingerprint(council: AreaConfig) -> str:
             else None
         ),
     ]
+    manifest = dependency_manifest or compilation_dependency_manifest()
     payload = {
         "schema_version": SCHEMA_VERSION,
         "configuration": config_payload,
@@ -804,7 +816,9 @@ def compilation_governed_input_fingerprint(council: AreaConfig) -> str:
             for path in governed_paths
             if path is not None and path.is_file()
         },
-        "compiler_sha256": _compiler_digest(),
+        "compiler_dependency_manifest": manifest,
+        # Retain the compact field for release contracts and benchmark evidence.
+        "compiler_sha256": manifest["sha256"],
     }
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
@@ -826,18 +840,18 @@ def _file_digest(path: Path) -> str:
 
 
 def _compiler_digest() -> str:
-    digest = hashlib.sha256()
-    source_root = Path(__file__).parent
-    for path in sorted(source_root.glob("*.py")):
-        digest.update(path.name.encode())
-        digest.update(path.read_bytes())
-    return digest.hexdigest()
+    """Return the explicit compilation dependency-set digest."""
+    digest = compilation_dependency_manifest()["sha256"]
+    if not isinstance(digest, str):  # Defensive: this is a governed reuse boundary.
+        raise ValueError("compilation dependency manifest has no SHA-256 digest")
+    return digest
 
 
 def _reuse_validated_publication(
     council: AreaConfig,
     governed_input_fingerprint: str,
     input_fingerprint: str,
+    dependency_manifest: dict[str, object],
 ) -> CompilationResult | None:
     if council.compilation.full:
         LOGGER.info("Validated publication reuse disabled by --full")
@@ -872,6 +886,9 @@ def _reuse_validated_publication(
         )
         if run.get("governed_input_fingerprint") != governed_input_fingerprint:
             LOGGER.info("Existing publication governed inputs differ; recompiling")
+            return None
+        if run.get("compilation_dependency_manifest") != dependency_manifest:
+            LOGGER.info("Existing publication compilation dependencies differ; recompiling")
             return None
         if run.get("compilation_input_fingerprint") != persisted_input_fingerprint:
             LOGGER.info("Existing publication persisted decision input differs; recompiling")
