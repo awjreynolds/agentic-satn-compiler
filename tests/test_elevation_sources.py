@@ -20,7 +20,12 @@ from satn.ea_elevation import (
     evidence_row_sha256,
     write_sample_ledger,
 )
-from satn.models import CouncilConfig, NationalElevationConfig, canonical_decision_ledger_payload
+from satn.models import (
+    CouncilConfig,
+    NationalElevationConfig,
+    RetainedCoreSourceConfig,
+    canonical_decision_ledger_payload,
+)
 from satn.pipeline import (
     _reuse_validated_publication,
     compilation_governed_input_fingerprint,
@@ -381,9 +386,13 @@ def test_generic_banes_ea_source_is_not_reinterpreted_as_the_weca_ledger_contrac
     )["evidence_sources"]["elevation"]
 
 
-def test_ea_acquisition_sidecar_binds_pre_elevation_network_to_snapshot(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def _write_synthetic_ea_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    pre_elevation_network_sha256: str = "a" * 64,
+) -> tuple[CouncilConfig, Path, str]:
+    """Build a writer-validated EA snapshot without any live WECA acquisition."""
     config = copied_config(tmp_path)
     terrain = tmp_path / "ea-samples.geojson"
     gpd.GeoDataFrame(
@@ -435,7 +444,7 @@ def test_ea_acquisition_sidecar_binds_pre_elevation_network_to_snapshot(
             }
         ],
     )
-    network_digest = "a" * 64
+    network_digest = pre_elevation_network_sha256
     index, official_index = _official_index(tmp_path)
     monkeypatch.setattr(
         "satn.sources.validate_official_weca_survey_index", lambda _path: official_index
@@ -532,11 +541,17 @@ def test_ea_acquisition_sidecar_binds_pre_elevation_network_to_snapshot(
         identifier_field="sample",
     )
 
-    path = snapshot(config)
+    return config, snapshot(config), terrain_digest
+
+
+def test_ea_acquisition_sidecar_binds_pre_elevation_network_to_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _config, path, terrain_digest = _write_synthetic_ea_snapshot(tmp_path, monkeypatch)
     manifest = json.loads((path / "snapshot.json").read_text())
 
     elevation = manifest["evidence_sources"]["elevation"]
-    assert elevation["pre_elevation_network_sha256"] == network_digest
+    assert elevation["pre_elevation_network_sha256"] == "a" * 64
     assert elevation["acquisition_output_sha256"] == terrain_digest
     assert elevation["acquisition_output_sha256"] != elevation["content_fingerprint"]
     assert elevation["acquisition_protocol"] == "two-pass-fixed-point/v1"
@@ -550,6 +565,50 @@ def test_ea_acquisition_sidecar_binds_pre_elevation_network_to_snapshot(
     copied_sidecar = json.loads((path / "elevation-evidence.manifest.json").read_text())
     assert copied_sidecar["authority_boundaries_path"] == "ea-authority-boundaries.geojson"
     assert copied_sidecar["survey_index_path"] == "ea-survey-index.geojson"
+
+
+def test_lineaged_ea_snapshot_writer_output_passes_fixed_point_and_rejects_self_reseal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    final_network = tmp_path / "final-network.geojson"
+    fingerprint = _final_eligible_network(final_network)
+    config, _initial, _terrain_digest = _write_synthetic_ea_snapshot(
+        tmp_path, monkeypatch, pre_elevation_network_sha256=fingerprint
+    )
+    national_elevation = config.source.national_elevation
+
+    config.source.national_elevation = None
+    config.source.snapshot_id = "historical-core"
+    historical = snapshot(config)
+    historical_manifest_sha256 = hashlib.sha256(
+        (historical / "snapshot.json").read_bytes()
+    ).hexdigest()
+
+    config.source.snapshot_id = "final-elevation"
+    config.source.retained_core_source = RetainedCoreSourceConfig(
+        snapshot_id="historical-core", manifest_sha256=historical_manifest_sha256
+    )
+    config.source.national_elevation = national_elevation
+    target = snapshot(config, retain_core=True)
+
+    _validate_ea_elevation_fixed_point(config, final_network)
+
+    evidence_path = target / ELEVATION_EVIDENCE_FILENAME
+    tampered_evidence = gpd.read_file(evidence_path)
+    tampered_evidence.loc[0, "elevation_m"] = 999.0
+    tampered_evidence.to_file(evidence_path, driver="GeoJSON")
+    resealed_digest = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+    manifest_path = target / "snapshot.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["file_sha256"][ELEVATION_EVIDENCE_FILENAME] = resealed_digest
+    manifest["provenance_file_sha256"][ELEVATION_EVIDENCE_FILENAME] = resealed_digest
+    manifest["evidence_sources"]["elevation"]["content_fingerprint"] = resealed_digest
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+
+    with pytest.raises(
+        ValueError, match="EA sample ledger observation differs from retained evidence"
+    ):
+        snapshot(config, retain_core=True)
 
 
 def test_retained_core_snapshot_augmentation_keeps_core_bytes_unchanged(tmp_path: Path) -> None:

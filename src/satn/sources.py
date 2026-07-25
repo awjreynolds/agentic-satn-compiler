@@ -306,6 +306,23 @@ def _validate_existing_lineaged_target(
     target_evidence = manifest.get("evidence_sources")
     if not isinstance(source_evidence, dict) or not isinstance(target_evidence, dict):
         raise ValueError("retained-core lineage target evidence identity is invalid")
+    national_elevation = config.source.national_elevation
+    if (
+        national_elevation is not None
+        and national_elevation.acquisition_contract == EA_LIDAR_WECA_ACQUISITION_CONTRACT
+    ):
+        # A target-local manifest can be self-resealed.  Recompute the retained
+        # EA acquisition proof from its ledger, official index and evidence so
+        # the elevation file is also bound outside those mutable manifest claims.
+        recomputed_ea_provenance = _ea_elevation_acquisition_provenance(
+            national_elevation, snapshot_dir=destination
+        )
+        target_elevation = target_evidence.get("elevation")
+        if not isinstance(target_elevation, dict) or any(
+            target_elevation.get(field) != value
+            for field, value in recomputed_ea_provenance.items()
+        ):
+            raise ValueError("retained-core lineage target elevation provenance mismatch")
     missing_evidence = object()
     for key, value in source_evidence.items():
         if key != "elevation" and target_evidence.get(key, missing_evidence) != value:
