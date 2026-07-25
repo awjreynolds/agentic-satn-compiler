@@ -44,6 +44,7 @@ from satn.ea_elevation import (
 from satn.ea_elevation import (
     SAMPLE_LEDGER_FILENAME,
     SAMPLE_LEDGER_SCHEMA_VERSION,
+    canonical_ea_elevation_evidence_bytes,
     eligible_route_samples,
     evidence_row_sha256,
     read_sample_ledger,
@@ -157,9 +158,7 @@ def _manifest_siblings(
         raise ValueError(f"{label} names must be a list of safe sibling basenames")
     if len(names) != len(set(names)):
         raise ValueError(f"{label} names must not contain duplicates")
-    return {
-        name: _regular_sibling(directory, name, label=f"{label} {name!r}") for name in names
-    }
+    return {name: _regular_sibling(directory, name, label=f"{label} {name!r}") for name in names}
 
 
 def _manifest_hashes(manifest: dict[str, object], field: str, *, label: str) -> dict[str, str]:
@@ -230,9 +229,7 @@ def _lineaged_retained_core_source(config: AreaConfig) -> tuple[Path, dict[str, 
         raise ValueError(
             "retained-core lineage source snapshot escapes snapshot directory"
         ) from error
-    manifest_path = _regular_sibling(
-        source, "snapshot.json", label="retained-core source manifest"
-    )
+    manifest_path = _regular_sibling(source, "snapshot.json", label="retained-core source manifest")
     manifest_bytes = manifest_path.read_bytes()
     actual_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
     if actual_sha256 != lineage.manifest_sha256:
@@ -776,13 +773,18 @@ def snapshot(
                 previous_hashes = retained_manifest.get("file_sha256", {})
                 if isinstance(previous_hashes, dict):
                     for filename, digest in previous_hashes.items():
-                        if filename in files and filename not in {
-                            ELEVATION_EVIDENCE_FILENAME,
-                            "ea-survey-index.geojson",
-                            "ea-authority-boundaries.geojson",
-                            SAMPLE_LEDGER_FILENAME,
-                            EA_RETAINED_ROUTE_FILENAME,
-                        } and manifest["file_sha256"].get(filename) != digest:
+                        if (
+                            filename in files
+                            and filename
+                            not in {
+                                ELEVATION_EVIDENCE_FILENAME,
+                                "ea-survey-index.geojson",
+                                "ea-authority-boundaries.geojson",
+                                SAMPLE_LEDGER_FILENAME,
+                                EA_RETAINED_ROUTE_FILENAME,
+                            }
+                            and manifest["file_sha256"].get(filename) != digest
+                        ):
                             raise ValueError("retained-core snapshot changed a governed core file")
                 previous_provenance_hashes = _manifest_hashes(
                     retained_manifest,
@@ -1345,10 +1347,7 @@ def _ea_elevation_acquisition_provenance(
     the actual retained elevation bytes before entering the snapshot.
     """
 
-    if (
-        governed.acquisition_contract != EA_LIDAR_WECA_ACQUISITION_CONTRACT
-        or governed.path is None
-    ):
+    if governed.acquisition_contract != EA_LIDAR_WECA_ACQUISITION_CONTRACT or governed.path is None:
         return {}
     sidecar = (
         snapshot_dir / "elevation-evidence.manifest.json"
@@ -1569,6 +1568,7 @@ def _snapshot_national_elevation(config: AreaConfig, temporary: Path) -> None:
     governed = config.source.national_elevation
     if governed is None:
         return
+    ea_metadata: dict[str, object] | None = None
     if governed.provider == "local-geojson":
         if governed.path is None or not governed.path.exists():
             raise ValueError("configured national Elevation Evidence path is missing")
@@ -1583,6 +1583,11 @@ def _snapshot_national_elevation(config: AreaConfig, temporary: Path) -> None:
             # Validate first; only an independently pinned official response is copied.
             _ea_elevation_acquisition_provenance(governed)
             acquisition = json.loads(sidecar.read_text(encoding="utf-8"))
+            ea_metadata = {
+                "effective_date": acquisition["effective_survey_date"],
+                "source_resolution_m": acquisition["source_resolution_m"],
+                "output_sample_spacing_m": acquisition["output_sample_spacing_m"],
+            }
             survey_index = _regular_sibling(
                 sidecar.parent, acquisition["survey_index_path"], label="EA survey index"
             )
@@ -1629,7 +1634,9 @@ def _snapshot_national_elevation(config: AreaConfig, temporary: Path) -> None:
     bounded = bounded[bounded.geometry.intersects(compilation_area)].to_crs(source.crs)
     rows: list[dict[str, object]] = []
     evidence_date = (
-        governed.effective_date.isoformat()
+        str(ea_metadata["effective_date"])
+        if ea_metadata is not None
+        else governed.effective_date.isoformat()
         if governed.effective_date is not None
         else datetime.now(UTC).date().isoformat()
     )
@@ -1651,6 +1658,14 @@ def _snapshot_national_elevation(config: AreaConfig, temporary: Path) -> None:
                 "effective_date": evidence_date,
                 "licence": governed.licence,
                 "elevation_m": elevation,
+                **(
+                    {
+                        "source_resolution_m": ea_metadata["source_resolution_m"],
+                        "output_sample_spacing_m": ea_metadata["output_sample_spacing_m"],
+                    }
+                    if ea_metadata is not None
+                    else {}
+                ),
                 "evidence_row_sha256": (
                     str(sample["evidence_row_sha256"])
                     if "evidence_row_sha256" in sample
@@ -1709,10 +1724,20 @@ def _snapshot_national_elevation(config: AreaConfig, temporary: Path) -> None:
         geometry="geometry",
         crs=source.crs,
     ).sort_values("evidence_id")
-    evidence.to_crs(4326).to_file(
-        temporary / ELEVATION_EVIDENCE_FILENAME,
-        driver="GeoJSON",
-    )
+    evidence_path = temporary / ELEVATION_EVIDENCE_FILENAME
+    if ea_metadata is not None:
+        evidence_path.write_bytes(
+            canonical_ea_elevation_evidence_bytes(
+                evidence,
+                source_id=governed.source_id,
+                licence=governed.licence,
+                effective_date=str(ea_metadata["effective_date"]),
+                source_resolution_m=float(ea_metadata["source_resolution_m"]),
+                output_sample_spacing_m=float(ea_metadata["output_sample_spacing_m"]),
+            )
+        )
+    else:
+        evidence.to_crs(4326).to_file(evidence_path, driver="GeoJSON")
 
 
 def _load_remote_elevation(
@@ -2216,9 +2241,7 @@ def _validate_snapshot(path: Path) -> None:
     )
     if set(file_hashes) != set(files):
         raise ValueError("invalid snapshot: file hashes must cover exactly snapshot files")
-    provenance = _manifest_siblings(
-        path, list(provenance_hashes), label="snapshot provenance file"
-    )
+    provenance = _manifest_siblings(path, list(provenance_hashes), label="snapshot provenance file")
     if ELEVATION_EVIDENCE_FILENAME in files:
         evidence_sources = manifest.get("evidence_sources")
         elevation = (

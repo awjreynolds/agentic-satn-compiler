@@ -16,7 +16,7 @@ from typing import Any
 
 import geopandas as gpd
 import pandas as pd
-from shapely.geometry import LineString, MultiLineString
+from shapely.geometry import LineString, MultiLineString, Point
 from shapely.ops import linemerge
 
 DTM_DATASET_ID = "13787b9a-26a4-4775-8523-806d13af58fc"
@@ -65,9 +65,7 @@ WECA_SURVEY_REQUEST = {
     "request": "GetFeature",
     "typeNames": SURVEY_LAYER,
     "srsName": "EPSG:27700",
-    "bbox": (
-        "306127,134191,397868,215091,EPSG:27700"
-    ),
+    "bbox": ("306127,134191,397868,215091,EPSG:27700"),
 }
 # Dataset-declared composite period.  It is intentionally distinct from the
 # feature-derived dates in any particular WFS subset.
@@ -96,6 +94,18 @@ ELIGIBLE_FEATURE_TYPES = frozenset(
 )
 SAMPLE_LEDGER_SCHEMA_VERSION = "ea-lidar-sample-ledger/v1"
 SAMPLE_LEDGER_FILENAME = "ea-elevation-sample-ledger.jsonl"
+EA_ELEVATION_EVIDENCE_FIELDS = (
+    "evidence_id",
+    "source_id",
+    "effective_date",
+    "licence",
+    "elevation_m",
+    "route_id",
+    "sample_index",
+    "evidence_row_sha256",
+    "source_resolution_m",
+    "output_sample_spacing_m",
+)
 
 
 def canonical_json_sha256(value: object) -> str:
@@ -103,6 +113,103 @@ def canonical_json_sha256(value: object) -> str:
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
     ).hexdigest()
+
+
+def canonical_ea_elevation_evidence_bytes(
+    evidence: gpd.GeoDataFrame,
+    *,
+    source_id: str,
+    licence: str,
+    effective_date: str,
+    source_resolution_m: float,
+    output_sample_spacing_m: float,
+) -> bytes:
+    """Return the sole retained GeoJSON form for governed EA observations.
+
+    This deliberately binds every evidence property that affects provenance or
+    interpretation as well as the Point geometry.  Hashes in a mutable
+    snapshot manifest are therefore corroborative, not the only witness of
+    the retained output.
+    """
+    if evidence.crs is None:
+        raise ValueError("EA Elevation Evidence has no CRS")
+    unexpected = set(evidence.columns) - {*EA_ELEVATION_EVIDENCE_FIELDS, "geometry"}
+    missing = set(EA_ELEVATION_EVIDENCE_FIELDS) - set(evidence.columns)
+    if missing or unexpected:
+        details = ", ".join(sorted(missing or unexpected))
+        raise ValueError(f"EA Elevation Evidence has non-governed schema fields: {details}")
+    if evidence.empty:
+        raise ValueError("EA Elevation Evidence must contain retained observations")
+    expected_metadata = {
+        "source_id": source_id,
+        "licence": licence,
+        "effective_date": effective_date,
+        "source_resolution_m": float(source_resolution_m),
+        "output_sample_spacing_m": float(output_sample_spacing_m),
+    }
+    features: list[dict[str, object]] = []
+    seen_ids: set[str] = set()
+    for _, row in evidence.to_crs(4326).iterrows():
+        evidence_id = str(row["evidence_id"])
+        if not evidence_id.strip() or evidence_id in seen_ids:
+            raise ValueError("EA Elevation Evidence has invalid or duplicate evidence_id")
+        seen_ids.add(evidence_id)
+        geometry = row.geometry
+        if not isinstance(geometry, Point) or geometry.is_empty:
+            raise ValueError("EA Elevation Evidence requires non-empty Point observations")
+        if not all(math.isfinite(value) for value in (geometry.x, geometry.y)):
+            raise ValueError("EA Elevation Evidence has non-finite Point coordinates")
+        try:
+            sample_index = int(row["sample_index"])
+            elevation_m = round(float(row["elevation_m"]), 3)
+        except (TypeError, ValueError) as error:
+            raise ValueError("EA Elevation Evidence has invalid numeric observations") from error
+        if sample_index < 0 or not math.isfinite(elevation_m):
+            raise ValueError("EA Elevation Evidence has invalid numeric observations")
+        properties = {
+            "evidence_id": evidence_id,
+            "source_id": str(row["source_id"]),
+            "effective_date": str(row["effective_date"]).split(" ", maxsplit=1)[0],
+            "licence": str(row["licence"]),
+            "elevation_m": elevation_m,
+            "route_id": str(row["route_id"]),
+            "sample_index": sample_index,
+            "evidence_row_sha256": str(row["evidence_row_sha256"]),
+            "source_resolution_m": float(row["source_resolution_m"]),
+            "output_sample_spacing_m": float(row["output_sample_spacing_m"]),
+        }
+        if (
+            not properties["route_id"].strip()
+            or len(properties["evidence_row_sha256"]) != 64
+            or any(
+                not math.isfinite(properties[field])
+                for field in ("source_resolution_m", "output_sample_spacing_m")
+            )
+        ):
+            raise ValueError("EA Elevation Evidence has invalid governed observation fields")
+        for field, expected in expected_metadata.items():
+            if properties[field] != expected:
+                raise ValueError(f"EA Elevation Evidence mismatches governed {field}")
+        features.append(
+            {
+                "type": "Feature",
+                "properties": properties,
+                "geometry": {
+                    "type": "Point",
+                    "coordinates": [float(geometry.x), float(geometry.y)],
+                },
+            }
+        )
+    payload = {
+        "type": "FeatureCollection",
+        "features": sorted(features, key=lambda item: str(item["properties"]["evidence_id"])),
+    }
+    return (
+        json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False
+        )
+        + "\n"
+    ).encode("utf-8")
 
 
 def evidence_row_sha256(

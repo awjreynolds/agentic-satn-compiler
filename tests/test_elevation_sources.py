@@ -16,6 +16,7 @@ from satn.compilation_dependencies import compilation_dependency_manifest
 from satn.ea_elevation import (
     DTM_ATTRIBUTION,
     SAMPLE_LEDGER_FILENAME,
+    canonical_ea_elevation_evidence_bytes,
     eligible_route_fingerprint,
     evidence_row_sha256,
     write_sample_ledger,
@@ -201,14 +202,38 @@ def _final_ea_config(config: CouncilConfig, tmp_path: Path) -> CouncilConfig:
     return config
 
 
-def _write_final_ea_snapshot(
-    config: CouncilConfig, *, pre_elevation_network_sha256: str
-) -> Path:
+def _write_final_ea_snapshot(config: CouncilConfig, *, pre_elevation_network_sha256: str) -> Path:
     """Create the minimal immutable retained evidence set accepted at publication."""
     snapshot_path = config.source.snapshot_dir / config.source.snapshot_id
     snapshot_path.mkdir(parents=True, exist_ok=True)
+    evidence = gpd.GeoDataFrame(
+        [
+            {
+                "evidence_id": "retained-elevation-1",
+                "source_id": "ea-lidar-composite-dtm-1m",
+                "effective_date": "2022-01-02",
+                "licence": "Open Government Licence v3.0",
+                "elevation_m": 10.0,
+                "route_id": "retained-route",
+                "sample_index": 0,
+                "evidence_row_sha256": "a" * 64,
+                "source_resolution_m": 1.0,
+                "output_sample_spacing_m": 10.0,
+                "geometry": Point(-2.5, 51.4),
+            }
+        ],
+        geometry="geometry",
+        crs=4326,
+    )
     retained = {
-        ELEVATION_EVIDENCE_FILENAME: b"retained-elevation-evidence",
+        ELEVATION_EVIDENCE_FILENAME: canonical_ea_elevation_evidence_bytes(
+            evidence,
+            source_id="ea-lidar-composite-dtm-1m",
+            licence="Open Government Licence v3.0",
+            effective_date="2022-01-02",
+            source_resolution_m=1,
+            output_sample_spacing_m=10,
+        ),
         SAMPLE_LEDGER_FILENAME: b"retained-elevation-sample-ledger",
         EA_RETAINED_ROUTE_FILENAME: b"retained-elevation-sampled-routes",
     }
@@ -220,6 +245,10 @@ def _write_final_ea_snapshot(
     acquisition_output_digest = hashlib.sha256(b"raw-elevation-acquisition-output").hexdigest()
     acquisition = {
         "source_id": "ea-lidar-composite-dtm-1m",
+        "licence": "Open Government Licence v3.0",
+        "effective_survey_date": "2022-01-02",
+        "source_resolution_m": 1,
+        "output_sample_spacing_m": 10,
         "acquisition_protocol": "two-pass-fixed-point/v1",
         "pre_elevation_network_sha256": pre_elevation_network_sha256,
         "output_sha256": acquisition_output_digest,
@@ -229,9 +258,7 @@ def _write_final_ea_snapshot(
         "sample_route_sha256": digests[EA_RETAINED_ROUTE_FILENAME],
     }
     acquisition_path = snapshot_path / "elevation-evidence.manifest.json"
-    acquisition_path.write_text(
-        json.dumps(acquisition, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    acquisition_path.write_text(json.dumps(acquisition, sort_keys=True) + "\n", encoding="utf-8")
     digests[acquisition_path.name] = hashlib.sha256(acquisition_path.read_bytes()).hexdigest()
     manifest = {
         "evidence_sources": {
@@ -241,9 +268,7 @@ def _write_final_ea_snapshot(
                 "content_fingerprint": digests[ELEVATION_EVIDENCE_FILENAME],
                 "acquisition_output_sha256": acquisition_output_digest,
                 "sample_ledger_sha256": digests[SAMPLE_LEDGER_FILENAME],
-                "ea_acquisition_manifest_sha256": digests[
-                    "elevation-evidence.manifest.json"
-                ],
+                "ea_acquisition_manifest_sha256": digests["elevation-evidence.manifest.json"],
             }
         },
         "provenance_file_sha256": digests,
@@ -252,25 +277,33 @@ def _write_final_ea_snapshot(
     return snapshot_path
 
 
-def _rewrite_retained_ea_acquisition(
-    snapshot_path: Path, mutate: object
-) -> None:
+def _rewrite_retained_ea_acquisition(snapshot_path: Path, mutate: object) -> None:
     """Change the retained statement while keeping its snapshot file proof current."""
     acquisition_path = snapshot_path / "elevation-evidence.manifest.json"
     acquisition = json.loads(acquisition_path.read_text(encoding="utf-8"))
     assert callable(mutate)
     mutate(acquisition)
-    acquisition_path.write_text(
-        json.dumps(acquisition, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    acquisition_path.write_text(json.dumps(acquisition, sort_keys=True) + "\n", encoding="utf-8")
     digest = hashlib.sha256(acquisition_path.read_bytes()).hexdigest()
     snapshot_manifest_path = snapshot_path / "snapshot.json"
     snapshot_manifest = json.loads(snapshot_manifest_path.read_text(encoding="utf-8"))
-    snapshot_manifest["evidence_sources"]["elevation"][
-        "ea_acquisition_manifest_sha256"
-    ] = digest
+    snapshot_manifest["evidence_sources"]["elevation"]["ea_acquisition_manifest_sha256"] = digest
     snapshot_manifest["provenance_file_sha256"][acquisition_path.name] = digest
     snapshot_manifest_path.write_text(json.dumps(snapshot_manifest), encoding="utf-8")
+
+
+def _reseal_retained_evidence_hashes(snapshot_path: Path) -> None:
+    """Model an attacker updating every mutable hash for retained evidence."""
+    evidence_path = snapshot_path / ELEVATION_EVIDENCE_FILENAME
+    digest = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+    snapshot_manifest_path = snapshot_path / "snapshot.json"
+    snapshot_manifest = json.loads(snapshot_manifest_path.read_text(encoding="utf-8"))
+    snapshot_manifest["file_sha256"][ELEVATION_EVIDENCE_FILENAME] = digest
+    snapshot_manifest["provenance_file_sha256"][ELEVATION_EVIDENCE_FILENAME] = digest
+    snapshot_manifest["evidence_sources"]["elevation"]["content_fingerprint"] = digest
+    snapshot_manifest_path.write_text(
+        json.dumps(snapshot_manifest, indent=2, sort_keys=True), encoding="utf-8"
+    )
 
 
 def _final_eligible_network(path: Path) -> str:
@@ -381,9 +414,12 @@ def test_generic_banes_ea_source_is_not_reinterpreted_as_the_weca_ledger_contrac
 
     path = snapshot(config)
 
-    assert "ea_acquisition_manifest_sha256" not in json.loads(
-        (path / "snapshot.json").read_text(encoding="utf-8")
-    )["evidence_sources"]["elevation"]
+    assert (
+        "ea_acquisition_manifest_sha256"
+        not in json.loads((path / "snapshot.json").read_text(encoding="utf-8"))["evidence_sources"][
+            "elevation"
+        ]
+    )
 
 
 def _write_synthetic_ea_snapshot(
@@ -511,9 +547,9 @@ def _write_synthetic_ea_snapshot(
                 "output_sha256": terrain_digest,
                 "sample_ledger_path": "ea-elevation-sample-ledger.jsonl",
                 "sample_ledger_sha256": ledger_digest,
-                    "sample_ledger_schema_version": "ea-lidar-sample-ledger/v1",
-                    "sample_route_path": terrain.name,
-                    "sample_route_sha256": terrain_digest,
+                "sample_ledger_schema_version": "ea-lidar-sample-ledger/v1",
+                "sample_route_path": terrain.name,
+                "sample_route_sha256": terrain_digest,
                 "pre_elevation_network_sha256": network_digest,
                 "requested_point_count": 1,
                 "governed_input_fingerprint": "a" * 64,
@@ -558,9 +594,10 @@ def test_ea_acquisition_sidecar_binds_pre_elevation_network_to_snapshot(
     assert len(elevation["ea_acquisition_manifest_sha256"]) == 64
     assert (path / "ea-authority-boundaries.geojson").exists()
     assert (path / "ea-elevation-sample-ledger.jsonl").exists()
-    assert manifest["provenance_file_sha256"][ELEVATION_EVIDENCE_FILENAME] == elevation[
-        "content_fingerprint"
-    ]
+    assert (
+        manifest["provenance_file_sha256"][ELEVATION_EVIDENCE_FILENAME]
+        == elevation["content_fingerprint"]
+    )
     assert "ea-elevation-sample-ledger.jsonl" in manifest["provenance_file_sha256"]
     copied_sidecar = json.loads((path / "elevation-evidence.manifest.json").read_text())
     assert copied_sidecar["authority_boundaries_path"] == "ea-authority-boundaries.geojson"
@@ -609,6 +646,68 @@ def test_lineaged_ea_snapshot_writer_output_passes_fixed_point_and_rejects_self_
         ValueError, match="EA sample ledger observation differs from retained evidence"
     ):
         snapshot(config, retain_core=True)
+
+
+def test_lineaged_ea_fixed_point_rejects_whitespace_after_full_hash_reseal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    final_network = tmp_path / "final-network.geojson"
+    fingerprint = _final_eligible_network(final_network)
+    config, _initial, _terrain_digest = _write_synthetic_ea_snapshot(
+        tmp_path, monkeypatch, pre_elevation_network_sha256=fingerprint
+    )
+    national_elevation = config.source.national_elevation
+    config.source.national_elevation = None
+    config.source.snapshot_id = "historical-core"
+    historical = snapshot(config)
+    config.source.snapshot_id = "final-elevation"
+    config.source.retained_core_source = RetainedCoreSourceConfig(
+        snapshot_id="historical-core",
+        manifest_sha256=hashlib.sha256((historical / "snapshot.json").read_bytes()).hexdigest(),
+    )
+    config.source.national_elevation = national_elevation
+    target = snapshot(config, retain_core=True)
+
+    evidence_path = target / ELEVATION_EVIDENCE_FILENAME
+    evidence_path.write_bytes(evidence_path.read_bytes() + b"\n")
+    _reseal_retained_evidence_hashes(target)
+
+    with pytest.raises(ValueError, match="retained evidence is not canonical GeoJSON"):
+        _validate_ea_elevation_fixed_point(config, final_network)
+
+
+def test_lineaged_ea_fixed_point_rejects_forged_metadata_after_full_hash_reseal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    final_network = tmp_path / "final-network.geojson"
+    fingerprint = _final_eligible_network(final_network)
+    config, _initial, _terrain_digest = _write_synthetic_ea_snapshot(
+        tmp_path, monkeypatch, pre_elevation_network_sha256=fingerprint
+    )
+    national_elevation = config.source.national_elevation
+    config.source.national_elevation = None
+    config.source.snapshot_id = "historical-core"
+    historical = snapshot(config)
+    config.source.snapshot_id = "final-elevation"
+    config.source.retained_core_source = RetainedCoreSourceConfig(
+        snapshot_id="historical-core",
+        manifest_sha256=hashlib.sha256((historical / "snapshot.json").read_bytes()).hexdigest(),
+    )
+    config.source.national_elevation = national_elevation
+    target = snapshot(config, retain_core=True)
+
+    evidence_path = target / ELEVATION_EVIDENCE_FILENAME
+    payload = json.loads(evidence_path.read_text(encoding="utf-8"))
+    for feature in payload["features"]:
+        feature["properties"]["source_id"] = "forged-source"
+        feature["properties"]["licence"] = "Forged licence"
+    evidence_path.write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8"
+    )
+    _reseal_retained_evidence_hashes(target)
+
+    with pytest.raises(ValueError, match="mismatches governed source_id"):
+        _validate_ea_elevation_fixed_point(config, final_network)
 
 
 def test_retained_core_snapshot_augmentation_keeps_core_bytes_unchanged(tmp_path: Path) -> None:
@@ -742,9 +841,7 @@ def test_stale_ea_fixed_point_disables_whole_publication_reuse(tmp_path: Path) -
     config = _final_ea_config(config, tmp_path)
     _write_final_ea_snapshot(config, pre_elevation_network_sha256="0" * 64)
     manifest = compilation_dependency_manifest()
-    governed_input = compilation_governed_input_fingerprint(
-        config, dependency_manifest=manifest
-    )
+    governed_input = compilation_governed_input_fingerprint(config, dependency_manifest=manifest)
     run_path = first.artifacts["run"]
     run = json.loads(run_path.read_text(encoding="utf-8"))
     input_ledger = canonical_decision_ledger_payload(run["decision_ledger_input"])
@@ -756,9 +853,7 @@ def test_stale_ea_fixed_point_disables_whole_publication_reuse(tmp_path: Path) -
 
     with pytest.raises(ValueError, match="two-pass fixed point failed"):
         validate_publication(config.publication.output_dir, config)
-    assert (
-        _reuse_validated_publication(config, governed_input, input_fingerprint, manifest) is None
-    )
+    assert _reuse_validated_publication(config, governed_input, input_fingerprint, manifest) is None
 
 
 @pytest.mark.parametrize(
@@ -789,9 +884,7 @@ def test_stale_ea_fixed_point_disables_whole_publication_reuse(tmp_path: Path) -
             "retained acquisition manifest mismatches pre-elevation route fingerprint",
         ),
         (
-            lambda manifest: manifest["evidence_sources"]["elevation"].pop(
-                "sample_ledger_sha256"
-            ),
+            lambda manifest: manifest["evidence_sources"]["elevation"].pop("sample_ledger_sha256"),
             "cannot read immutable snapshot provenance",
         ),
         (
@@ -803,9 +896,7 @@ def test_stale_ea_fixed_point_disables_whole_publication_reuse(tmp_path: Path) -
             "cannot read immutable snapshot provenance",
         ),
         (
-            lambda manifest: manifest["provenance_file_sha256"].pop(
-                ELEVATION_EVIDENCE_FILENAME
-            ),
+            lambda manifest: manifest["provenance_file_sha256"].pop(ELEVATION_EVIDENCE_FILENAME),
             "cannot read immutable snapshot provenance",
         ),
         (
