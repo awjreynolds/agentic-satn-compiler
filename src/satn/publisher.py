@@ -27,6 +27,7 @@ from shapely.geometry import MultiLineString, mapping, shape
 from satn.compiler import CompiledNetwork
 from satn.constants import DISCLAIMER, SCHEMA_VERSION
 from satn.cross_spine import validate_cross_spine_publication
+from satn.ea_elevation import SAMPLE_LEDGER_FILENAME, eligible_route_fingerprint
 from satn.models import (
     AgentDecisionLedger,
     AgentRecord,
@@ -39,7 +40,13 @@ from satn.models import (
     canonical_decision_ledger_payload,
 )
 from satn.runtime_governance import classify_runtime_governance, validate_runtime_governance
-from satn.sources import NCN_ATTRIBUTION, OSM_ATTRIBUTION
+from satn.sources import (
+    EA_LIDAR_WECA_ACQUISITION_CONTRACT,
+    EA_RETAINED_ROUTE_FILENAME,
+    ELEVATION_EVIDENCE_FILENAME,
+    NCN_ATTRIBUTION,
+    OSM_ATTRIBUTION,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -199,6 +206,7 @@ def publish(
     try:
         _write_geopackage(temporary / "network.gpkg", compiled)
         _write_geojson(temporary / "network.geojson", compiled)
+        _validate_ea_elevation_fixed_point(config, temporary / "network.geojson")
         _write_json_records(temporary, config, compiled, run_id)
         _write_backbone_comparison(
             temporary / "backbone-comparison.json",
@@ -231,6 +239,145 @@ def publish(
         if temporary.exists():
             shutil.rmtree(temporary)
     return publication_artifacts(output)
+
+
+def _validate_ea_elevation_fixed_point(config: AreaConfig, network_path: Path) -> None:
+    """Fail publication if retained EA snapshot provenance and final routes diverge."""
+    elevation = config.source.national_elevation
+    if elevation is None or elevation.acquisition_contract != EA_LIDAR_WECA_ACQUISITION_CONTRACT:
+        return
+    snapshot_manifest = config.source.snapshot_dir / config.source.snapshot_id / "snapshot.json"
+    if not snapshot_manifest.exists():
+        raise ValueError("EA elevation fixed-point validation is missing immutable snapshot.json")
+    try:
+        manifest = json.loads(snapshot_manifest.read_text(encoding="utf-8"))
+        if not isinstance(manifest, dict):
+            raise TypeError("snapshot manifest must be an object")
+        evidence_sources = manifest["evidence_sources"]
+        if not isinstance(evidence_sources, dict):
+            raise TypeError("snapshot evidence_sources must be an object")
+        elevation_provenance = evidence_sources["elevation"]
+        if not isinstance(elevation_provenance, dict):
+            raise TypeError("snapshot elevation provenance must be an object")
+        if elevation_provenance["acquisition_protocol"] != "two-pass-fixed-point/v1":
+            raise ValueError("EA elevation snapshot lacks the two-pass fixed-point protocol")
+
+        def required_digest(value: object, label: str) -> str:
+            if not isinstance(value, str) or len(value) != 64:
+                raise ValueError(f"EA elevation snapshot has invalid {label}")
+            try:
+                int(value, 16)
+            except ValueError as error:
+                raise ValueError(f"EA elevation snapshot has invalid {label}") from error
+            return value
+
+        expected = required_digest(
+            elevation_provenance["pre_elevation_network_sha256"],
+            "pre-elevation route fingerprint",
+        )
+        acquisition_output = required_digest(
+            elevation_provenance["acquisition_output_sha256"],
+            "acquisition elevation output provenance",
+        )
+        expected_files = {
+            ELEVATION_EVIDENCE_FILENAME: required_digest(
+                elevation_provenance["content_fingerprint"], "elevation evidence provenance"
+            ),
+            SAMPLE_LEDGER_FILENAME: required_digest(
+                elevation_provenance["sample_ledger_sha256"], "sample-ledger provenance"
+            ),
+            "elevation-evidence.manifest.json": required_digest(
+                elevation_provenance["ea_acquisition_manifest_sha256"],
+                "EA acquisition provenance",
+            ),
+            EA_RETAINED_ROUTE_FILENAME: None,
+        }
+        provenance_files = manifest["provenance_file_sha256"]
+        if not isinstance(provenance_files, dict):
+            raise TypeError("snapshot provenance_file_sha256 must be an object")
+        for filename, expected_digest in expected_files.items():
+            recorded_digest = required_digest(
+                provenance_files[filename], f"{filename} provenance"
+            )
+            if expected_digest is not None and recorded_digest != expected_digest:
+                raise ValueError(f"EA elevation snapshot has mismatched {filename} provenance")
+            retained = snapshot_manifest.parent / filename
+            if not retained.is_file() or retained.is_symlink():
+                raise ValueError(f"EA elevation snapshot is missing retained {filename}")
+            actual_digest = hashlib.sha256(retained.read_bytes()).hexdigest()
+            if actual_digest != recorded_digest:
+                raise ValueError(f"EA elevation snapshot has unreadable or tampered {filename}")
+
+        retained_acquisition = snapshot_manifest.parent / "elevation-evidence.manifest.json"
+        try:
+            acquisition = json.loads(retained_acquisition.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as error:
+            raise ValueError(
+                "EA elevation snapshot has invalid retained acquisition manifest"
+            ) from error
+        if not isinstance(acquisition, dict):
+            raise ValueError(
+                "EA elevation snapshot retained acquisition manifest must be an object"
+            )
+
+        def required_equal(
+            field: str, expected_value: object, label: str
+        ) -> None:
+            actual_value = acquisition.get(field)
+            if actual_value != expected_value:
+                raise ValueError(
+                    "EA elevation snapshot retained acquisition manifest "
+                    f"mismatches {label}"
+                )
+
+        # The snapshot is the publication authority, but the retained
+        # acquisition statement independently witnesses the exact two-pass
+        # input and each retained proof.  Do not let a self-consistent set of
+        # snapshot file hashes detach it from that statement.
+        required_equal(
+            "acquisition_protocol",
+            elevation_provenance["acquisition_protocol"],
+            "acquisition protocol",
+        )
+        required_equal(
+            "pre_elevation_network_sha256",
+            expected,
+            "pre-elevation route fingerprint",
+        )
+        required_equal(
+            "output_sha256",
+            acquisition_output,
+            "acquisition elevation output digest",
+        )
+        required_equal(
+            "sample_ledger_sha256",
+            provenance_files[SAMPLE_LEDGER_FILENAME],
+            "sample-ledger digest",
+        )
+        required_equal(
+            "sample_route_sha256",
+            provenance_files[EA_RETAINED_ROUTE_FILENAME],
+            "sampled-route digest",
+        )
+        required_equal(
+            "sample_ledger_path", SAMPLE_LEDGER_FILENAME, "sample-ledger path"
+        )
+        required_equal(
+            "sample_route_path", EA_RETAINED_ROUTE_FILENAME, "sampled-route path"
+        )
+    except (json.JSONDecodeError, KeyError, OSError, TypeError) as error:
+        raise ValueError(
+            "EA elevation fixed-point validation cannot read immutable snapshot provenance"
+        ) from error
+    try:
+        actual = eligible_route_fingerprint(gpd.read_file(network_path))
+    except (OSError, ValueError) as error:
+        raise ValueError("EA elevation fixed-point validation cannot read final routes") from error
+    if expected != actual:
+        raise ValueError(
+            "EA elevation two-pass fixed point failed: final eligible routes differ from "
+            "the routes sampled before elevation acquisition"
+        )
 
 
 def _metadata_frame(crs: object) -> gpd.GeoDataFrame:

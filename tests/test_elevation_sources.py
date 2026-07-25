@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -11,10 +12,158 @@ import pytest
 from shapely.geometry import LineString, Point
 
 from satn import compile
+from satn.ea_elevation import (
+    DTM_ATTRIBUTION,
+    SAMPLE_LEDGER_FILENAME,
+    eligible_route_fingerprint,
+    evidence_row_sha256,
+    write_sample_ledger,
+)
 from satn.models import CouncilConfig, NationalElevationConfig
-from satn.sources import _osm_elevation_corroboration, load_snapshot, snapshot
+from satn.publisher import _validate_ea_elevation_fixed_point
+from satn.sources import (
+    EA_LIDAR_COVERAGE_ID,
+    EA_LIDAR_DATASET_ID,
+    EA_LIDAR_ENDPOINT,
+    EA_RETAINED_ROUTE_FILENAME,
+    ELEVATION_EVIDENCE_FILENAME,
+    _osm_elevation_corroboration,
+    _replace_snapshot_directory,
+    _validate_snapshot,
+    load_snapshot,
+    snapshot,
+)
+
+
+def _official_index(tmp_path: Path) -> tuple[Path, dict[str, object]]:
+    path = tmp_path / "survey-index.geojson"
+    gpd.GeoDataFrame(
+        [
+            {
+                "id": "synthetic-survey-1",
+                "filename": "synthetic",
+                "tilename": "synthetic",
+                "polygon_id": "synthetic",
+                "resolution": 1,
+                "year": 2022,
+                "od_dtm_fn": "synthetic",
+                "sd_flown": "2022-01-01",
+                "ed_flown": "2022-01-02",
+                "geometry": Point(-2.5, 51.4).buffer(1),
+            }
+        ],
+        geometry="geometry",
+        crs=4326,
+    ).to_file(path, driver="GeoJSON")
+    gpd.GeoDataFrame(
+        [
+            {
+                "authority": "synthetic",
+                "authority_id": "synthetic",
+                "source_query": "synthetic",
+                "geometry": Point(-2.5, 51.4).buffer(1),
+            }
+        ],
+        geometry="geometry",
+        crs=4326,
+    ).to_file(tmp_path / "authorities.geojson", driver="GeoJSON")
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    return path, {
+        "official": "synthetic-contract",
+        "raw_sha256": digest,
+        "canonical_feature_sha256": "synthetic-feature-digest",
+    }
+
 
 PROJECT = Path(__file__).parents[1]
+
+
+@pytest.mark.parametrize("unsafe_name", ["../outside.geojson", "/tmp/outside.geojson"])
+def test_snapshot_rejects_traversal_and_absolute_retained_filenames(
+    tmp_path: Path, unsafe_name: str
+) -> None:
+    config = copied_config(tmp_path)
+    snapshot_path = snapshot(config)
+    manifest_path = snapshot_path / "snapshot.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"].append(unsafe_name)
+    manifest["file_sha256"][unsafe_name] = "0" * 64
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="safe sibling basename"):
+        _validate_snapshot(snapshot_path)
+
+
+def test_snapshot_rejects_duplicate_directory_special_and_symlink_retained_filenames(
+    tmp_path: Path,
+) -> None:
+    config = copied_config(tmp_path)
+    snapshot_path = snapshot(config)
+    manifest_path = snapshot_path / "snapshot.json"
+
+    def invalid(name: str, *, setup: object | None = None) -> None:
+        if callable(setup):
+            setup()
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["files"].append(name)
+        manifest["file_sha256"][name] = "0" * 64
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        with pytest.raises(ValueError, match=r"duplicates|regular non-symlink"):
+            _validate_snapshot(snapshot_path)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["files"].pop()
+        manifest["file_sha256"].pop(name)
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    duplicate = json.loads(manifest_path.read_text(encoding="utf-8"))["files"][0]
+    invalid(duplicate)
+    invalid("retained-directory", setup=lambda: (snapshot_path / "retained-directory").mkdir())
+    invalid("retained-special", setup=lambda: os.mkfifo(snapshot_path / "retained-special"))
+    invalid(
+        "retained-link.geojson",
+        setup=lambda: (snapshot_path / "retained-link.geojson").symlink_to("network.geojson"),
+    )
+
+
+def test_snapshot_rejects_unsafe_provenance_filename_before_reading_retained_files(
+    tmp_path: Path,
+) -> None:
+    config = copied_config(tmp_path)
+    snapshot_path = snapshot(config)
+    manifest_path = snapshot_path / "snapshot.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["provenance_file_sha256"]["../outside.json"] = "0" * 64
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="safe sibling basename"):
+        _validate_snapshot(snapshot_path)
+
+
+def test_snapshot_replacement_restores_a_stale_backup_after_failed_replacement(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "snapshot"
+    backup = tmp_path / ".snapshot.previous"
+    backup.mkdir()
+    (backup / "sentinel").write_text("retained", encoding="utf-8")
+    temporary = tmp_path / "temporary"
+    temporary.mkdir()
+
+    with pytest.raises(ValueError, match=r"missing.*snapshot.json"):
+        _replace_snapshot_directory(temporary, destination)
+
+    assert (destination / "sentinel").read_text(encoding="utf-8") == "retained"
+
+
+def test_weca_bootstrap_and_final_definitions_are_separate_parseable_workflow_stages() -> None:
+    bootstrap = CouncilConfig.from_yaml(PROJECT / "deployments/weca/area-bootstrap.yaml")
+    final = CouncilConfig.from_yaml(PROJECT / "deployments/weca/area.yaml")
+
+    assert bootstrap.source.national_elevation is None
+    assert bootstrap.source.snapshot_id == final.source.snapshot_id
+    assert bootstrap.publication.output_dir != final.publication.output_dir
+    assert final.source.national_elevation is not None
+    assert final.source.national_elevation.source_id == "ea-lidar-composite-dtm-1m"
 
 
 def copied_config(tmp_path: Path) -> CouncilConfig:
@@ -25,6 +174,107 @@ def copied_config(tmp_path: Path) -> CouncilConfig:
         ignore=shutil.ignore_patterns("work", ".satn-cache"),
     )
     return CouncilConfig.from_yaml(fixture / "council.yaml")
+
+
+def _final_ea_config(config: CouncilConfig, tmp_path: Path) -> CouncilConfig:
+    config.source.national_elevation = NationalElevationConfig(
+        provider="local-geojson",
+        path=tmp_path / "not-read-by-fixed-point.geojson",
+        source_id="ea-lidar-composite-dtm-1m",
+        acquisition_contract="ea-lidar-weca-v1",
+        licence="Open Government Licence v3.0",
+        attribution=DTM_ATTRIBUTION,
+    )
+    return config
+
+
+def _write_final_ea_snapshot(
+    config: CouncilConfig, *, pre_elevation_network_sha256: str
+) -> Path:
+    """Create the minimal immutable retained evidence set accepted at publication."""
+    snapshot_path = config.source.snapshot_dir / config.source.snapshot_id
+    snapshot_path.mkdir(parents=True, exist_ok=True)
+    retained = {
+        ELEVATION_EVIDENCE_FILENAME: b"retained-elevation-evidence",
+        SAMPLE_LEDGER_FILENAME: b"retained-elevation-sample-ledger",
+        EA_RETAINED_ROUTE_FILENAME: b"retained-elevation-sampled-routes",
+    }
+    for filename, contents in retained.items():
+        (snapshot_path / filename).write_bytes(contents)
+    digests = {
+        filename: hashlib.sha256(contents).hexdigest() for filename, contents in retained.items()
+    }
+    acquisition_output_digest = hashlib.sha256(b"raw-elevation-acquisition-output").hexdigest()
+    acquisition = {
+        "source_id": "ea-lidar-composite-dtm-1m",
+        "acquisition_protocol": "two-pass-fixed-point/v1",
+        "pre_elevation_network_sha256": pre_elevation_network_sha256,
+        "output_sha256": acquisition_output_digest,
+        "sample_ledger_path": SAMPLE_LEDGER_FILENAME,
+        "sample_ledger_sha256": digests[SAMPLE_LEDGER_FILENAME],
+        "sample_route_path": EA_RETAINED_ROUTE_FILENAME,
+        "sample_route_sha256": digests[EA_RETAINED_ROUTE_FILENAME],
+    }
+    acquisition_path = snapshot_path / "elevation-evidence.manifest.json"
+    acquisition_path.write_text(
+        json.dumps(acquisition, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    digests[acquisition_path.name] = hashlib.sha256(acquisition_path.read_bytes()).hexdigest()
+    manifest = {
+        "evidence_sources": {
+            "elevation": {
+                "acquisition_protocol": "two-pass-fixed-point/v1",
+                "pre_elevation_network_sha256": pre_elevation_network_sha256,
+                "content_fingerprint": digests[ELEVATION_EVIDENCE_FILENAME],
+                "acquisition_output_sha256": acquisition_output_digest,
+                "sample_ledger_sha256": digests[SAMPLE_LEDGER_FILENAME],
+                "ea_acquisition_manifest_sha256": digests[
+                    "elevation-evidence.manifest.json"
+                ],
+            }
+        },
+        "provenance_file_sha256": digests,
+    }
+    (snapshot_path / "snapshot.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return snapshot_path
+
+
+def _rewrite_retained_ea_acquisition(
+    snapshot_path: Path, mutate: object
+) -> None:
+    """Change the retained statement while keeping its snapshot file proof current."""
+    acquisition_path = snapshot_path / "elevation-evidence.manifest.json"
+    acquisition = json.loads(acquisition_path.read_text(encoding="utf-8"))
+    assert callable(mutate)
+    mutate(acquisition)
+    acquisition_path.write_text(
+        json.dumps(acquisition, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    digest = hashlib.sha256(acquisition_path.read_bytes()).hexdigest()
+    snapshot_manifest_path = snapshot_path / "snapshot.json"
+    snapshot_manifest = json.loads(snapshot_manifest_path.read_text(encoding="utf-8"))
+    snapshot_manifest["evidence_sources"]["elevation"][
+        "ea_acquisition_manifest_sha256"
+    ] = digest
+    snapshot_manifest["provenance_file_sha256"][acquisition_path.name] = digest
+    snapshot_manifest_path.write_text(json.dumps(snapshot_manifest), encoding="utf-8")
+
+
+def _final_eligible_network(path: Path) -> str:
+    routes = gpd.GeoDataFrame(
+        [
+            {
+                "feature_id": "final-route",
+                "feature_type": "strategic-spine",
+                "topography_profile_id": "profile",
+                "geometry": LineString([(350000, 150000), (350010, 150000)]),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    routes.to_file(path, driver="GeoJSON")
+    return eligible_route_fingerprint(routes)
 
 
 def test_local_national_elevation_is_clipped_and_snapshotted_with_provenance(
@@ -90,6 +340,474 @@ def test_local_national_elevation_is_clipped_and_snapshotted_with_provenance(
         "content_fingerprint": "ignored",
         "retrieved_at": "ignored",
     }
+
+
+def test_generic_banes_ea_source_is_not_reinterpreted_as_the_weca_ledger_contract(
+    tmp_path: Path,
+) -> None:
+    config = copied_config(tmp_path)
+    terrain = tmp_path / "banes-ea-samples.geojson"
+    gpd.GeoDataFrame(
+        [{"sample": "banes-1", "height": 12, "geometry": Point(-2.50, 51.40)}],
+        geometry="geometry",
+        crs=4326,
+    ).to_file(terrain, driver="GeoJSON")
+    config.source.national_elevation = NationalElevationConfig(
+        provider="local-geojson",
+        path=terrain,
+        source_id="ea-lidar-composite-dtm-1m",
+        licence="Open Government Licence v3.0",
+        attribution=DTM_ATTRIBUTION,
+        elevation_field="height",
+        identifier_field="sample",
+    )
+
+    path = snapshot(config)
+
+    assert "ea_acquisition_manifest_sha256" not in json.loads(
+        (path / "snapshot.json").read_text(encoding="utf-8")
+    )["evidence_sources"]["elevation"]
+
+
+def test_ea_acquisition_sidecar_binds_pre_elevation_network_to_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = copied_config(tmp_path)
+    terrain = tmp_path / "ea-samples.geojson"
+    gpd.GeoDataFrame(
+        [
+            {
+                "sample": "ea-1",
+                "route_id": "route-1",
+                "sample_index": 0,
+                "height": 10,
+                "evidence_row_sha256": "placeholder",
+                "geometry": Point(-2.50, 51.40),
+            }
+        ],
+        geometry="geometry",
+        crs=4326,
+    ).to_file(terrain, driver="GeoJSON")
+    point_27700 = gpd.read_file(terrain).to_crs(27700).geometry.iloc[0]
+    evidence_hash = evidence_row_sha256(
+        route_id="route-1",
+        sample_index=0,
+        east_mm=round(point_27700.x * 1000),
+        north_mm=round(point_27700.y * 1000),
+        elevation_m=10,
+    )
+    source = gpd.read_file(terrain)
+    source["evidence_row_sha256"] = evidence_hash
+    source.to_file(terrain, driver="GeoJSON")
+    terrain_digest = hashlib.sha256(terrain.read_bytes()).hexdigest()
+    ledger_digest = write_sample_ledger(
+        tmp_path / "ea-elevation-sample-ledger.jsonl",
+        [
+            {
+                "schema_version": "ea-lidar-sample-ledger/v1",
+                "route_id": "route-1",
+                "sample_index": 0,
+                "route_position": 0,
+                "previous_sample_index": None,
+                "next_sample_index": None,
+                "east_mm": round(point_27700.x * 1000),
+                "north_mm": round(point_27700.y * 1000),
+                "authority_id": "synthetic",
+                "bucket": "authority",
+                "availability": "available",
+                "elevation_m": 10.0,
+                "survey_feature_id": "synthetic-survey-1",
+                "ed_flown": "2022-01-02",
+                "resolution_m": 1.0,
+                "evidence_row_sha256": evidence_hash,
+            }
+        ],
+    )
+    network_digest = "a" * 64
+    index, official_index = _official_index(tmp_path)
+    monkeypatch.setattr(
+        "satn.sources.validate_official_weca_survey_index", lambda _path: official_index
+    )
+    # This fixture isolates snapshot sibling relinking; dedicated acquisition
+    # tests exercise route-linework regeneration.
+    monkeypatch.setattr("satn.sources._validate_ea_ledger_completeness", lambda **_kwargs: None)
+    preflight = {
+        "status": "available",
+        "official_survey_index": official_index,
+        "authority_boundaries": {
+            "raw_sha256": hashlib.sha256(
+                (tmp_path / "authorities.geojson").read_bytes()
+            ).hexdigest()
+        },
+        "sample_validation": {
+            "status": "available",
+            "authorities": [
+                {
+                    "requested_sample_count": 1,
+                    "available_sample_count": 1,
+                    "nodata_sample_count": 0,
+                },
+                {
+                    "requested_sample_count": 0,
+                    "available_sample_count": 0,
+                    "nodata_sample_count": 0,
+                },
+                {
+                    "requested_sample_count": 0,
+                    "available_sample_count": 0,
+                    "nodata_sample_count": 0,
+                },
+                {
+                    "requested_sample_count": 0,
+                    "available_sample_count": 0,
+                    "nodata_sample_count": 0,
+                },
+                {
+                    "requested_sample_count": 0,
+                    "available_sample_count": 0,
+                    "nodata_sample_count": 0,
+                },
+            ],
+            "cross_boundary_transitions": [],
+        },
+    }
+    terrain.with_suffix(".manifest.json").write_text(
+        json.dumps(
+            {
+                "source_id": "ea-lidar-composite-dtm-1m",
+                "acquisition_protocol": "two-pass-fixed-point/v1",
+                "contract_schema_version": "ea-lidar-composite-dtm-contract/v2",
+                "dataset_id": EA_LIDAR_DATASET_ID,
+                "coverage_id": EA_LIDAR_COVERAGE_ID,
+                "endpoint": EA_LIDAR_ENDPOINT,
+                "licence": "Open Government Licence v3.0",
+                "attribution": DTM_ATTRIBUTION,
+                "dataset_title": "LIDAR Composite Digital Terrain Model (DTM) - 1m",
+                "source_resolution_m": 1,
+                "output_sample_spacing_m": 10,
+                "vertical_accuracy": "+/-15cm RMSE",
+                "effective_survey_date": "2022-01-02",
+                "output_sha256": terrain_digest,
+                "sample_ledger_path": "ea-elevation-sample-ledger.jsonl",
+                "sample_ledger_sha256": ledger_digest,
+                    "sample_ledger_schema_version": "ea-lidar-sample-ledger/v1",
+                    "sample_route_path": terrain.name,
+                    "sample_route_sha256": terrain_digest,
+                "pre_elevation_network_sha256": network_digest,
+                "requested_point_count": 1,
+                "governed_input_fingerprint": "a" * 64,
+                "authority_boundaries_path": "authorities.geojson",
+                "evidence_sample_count": 1,
+                "nodata_sample_count": 0,
+                "survey_coverage_preflight": preflight,
+                "sample_validation": {"status": "available"},
+                "survey_index_path": index.name,
+                "survey_index_sha256": official_index["raw_sha256"],
+                "survey_index_feature_sha256": official_index["canonical_feature_sha256"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    config.source.national_elevation = NationalElevationConfig(
+        provider="local-geojson",
+        path=terrain,
+        source_id="ea-lidar-composite-dtm-1m",
+        acquisition_contract="ea-lidar-weca-v1",
+        effective_date="2023-02-08",
+        licence="Open Government Licence v3.0",
+        attribution=DTM_ATTRIBUTION,
+        elevation_field="height",
+        identifier_field="sample",
+    )
+
+    path = snapshot(config)
+    manifest = json.loads((path / "snapshot.json").read_text())
+
+    elevation = manifest["evidence_sources"]["elevation"]
+    assert elevation["pre_elevation_network_sha256"] == network_digest
+    assert elevation["acquisition_output_sha256"] == terrain_digest
+    assert elevation["acquisition_output_sha256"] != elevation["content_fingerprint"]
+    assert elevation["acquisition_protocol"] == "two-pass-fixed-point/v1"
+    assert len(elevation["ea_acquisition_manifest_sha256"]) == 64
+    assert (path / "ea-authority-boundaries.geojson").exists()
+    assert (path / "ea-elevation-sample-ledger.jsonl").exists()
+    assert "ea-elevation-sample-ledger.jsonl" in manifest["provenance_file_sha256"]
+    copied_sidecar = json.loads((path / "elevation-evidence.manifest.json").read_text())
+    assert copied_sidecar["authority_boundaries_path"] == "ea-authority-boundaries.geojson"
+    assert copied_sidecar["survey_index_path"] == "ea-survey-index.geojson"
+
+
+def test_retained_core_snapshot_augmentation_keeps_core_bytes_unchanged(tmp_path: Path) -> None:
+    config = copied_config(tmp_path)
+    first = snapshot(config)
+    core_hashes = {
+        name: hashlib.sha256((first / name).read_bytes()).hexdigest()
+        for name in ("boundary.geojson", "places.geojson", "network.geojson", "context.geojson")
+    }
+    terrain = tmp_path / "retained-core-elevation.geojson"
+    gpd.GeoDataFrame(
+        [{"sample": "elevation", "height": 10, "geometry": Point(-2.5, 51.4)}],
+        geometry="geometry",
+        crs=4326,
+    ).to_file(terrain, driver="GeoJSON")
+    config.source.national_elevation = NationalElevationConfig(
+        provider="local-geojson",
+        path=terrain,
+        source_id="retained-core-test-elevation",
+        licence="Synthetic fixture",
+        attribution="Synthetic fixture",
+        elevation_field="height",
+        identifier_field="sample",
+    )
+
+    augmented = snapshot(config, retain_core=True)
+
+    assert augmented == first
+    assert {
+        name: hashlib.sha256((augmented / name).read_bytes()).hexdigest() for name in core_hashes
+    } == core_hashes
+    assert (augmented / "elevation-evidence.geojson").exists()
+
+
+def test_fixed_point_uses_retained_snapshot_identity_even_when_config_changes(
+    tmp_path: Path,
+) -> None:
+    config = copied_config(tmp_path)
+    _final_ea_config(config, tmp_path)
+    network = tmp_path / "network.geojson"
+    _final_eligible_network(network)
+    _write_final_ea_snapshot(config, pre_elevation_network_sha256="0" * 64)
+
+    with pytest.raises(ValueError, match="two-pass fixed point failed"):
+        _validate_ea_elevation_fixed_point(config, network)
+
+
+def test_final_ea_fixed_point_allows_complete_immutable_snapshot(tmp_path: Path) -> None:
+    config = _final_ea_config(copied_config(tmp_path), tmp_path)
+    network = tmp_path / "network.geojson"
+    fingerprint = _final_eligible_network(network)
+    _write_final_ea_snapshot(config, pre_elevation_network_sha256=fingerprint)
+
+    _validate_ea_elevation_fixed_point(config, network)
+
+
+def test_final_ea_fixed_point_rejects_bootstrap_snapshot(tmp_path: Path) -> None:
+    config = copied_config(tmp_path)
+    snapshot(config)
+    _final_ea_config(config, tmp_path)
+    network = tmp_path / "network.geojson"
+    _final_eligible_network(network)
+
+    with pytest.raises(ValueError, match="cannot read immutable snapshot provenance"):
+        _validate_ea_elevation_fixed_point(config, network)
+
+
+def test_final_ea_fixed_point_rejects_missing_snapshot(tmp_path: Path) -> None:
+    config = _final_ea_config(copied_config(tmp_path), tmp_path)
+    network = tmp_path / "network.geojson"
+    _final_eligible_network(network)
+
+    with pytest.raises(ValueError, match=r"missing immutable snapshot\.json"):
+        _validate_ea_elevation_fixed_point(config, network)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (
+            lambda manifest: manifest.pop("evidence_sources"),
+            "cannot read immutable snapshot provenance",
+        ),
+        (
+            lambda manifest: manifest["evidence_sources"].pop("elevation"),
+            "cannot read immutable snapshot provenance",
+        ),
+        (
+            lambda manifest: manifest["evidence_sources"].__setitem__("elevation", []),
+            "cannot read immutable snapshot provenance",
+        ),
+        (
+            lambda manifest: manifest["evidence_sources"]["elevation"].__setitem__(
+                "acquisition_protocol", "one-pass/v1"
+            ),
+            "lacks the two-pass fixed-point protocol",
+        ),
+        (
+            lambda manifest: manifest["evidence_sources"]["elevation"].__setitem__(
+                "pre_elevation_network_sha256", "0" * 64
+            ),
+            "retained acquisition manifest mismatches pre-elevation route fingerprint",
+        ),
+        (
+            lambda manifest: manifest["evidence_sources"]["elevation"].pop(
+                "sample_ledger_sha256"
+            ),
+            "cannot read immutable snapshot provenance",
+        ),
+        (
+            lambda manifest: manifest["provenance_file_sha256"].pop(SAMPLE_LEDGER_FILENAME),
+            "cannot read immutable snapshot provenance",
+        ),
+        (
+            lambda manifest: manifest["provenance_file_sha256"].pop(EA_RETAINED_ROUTE_FILENAME),
+            "cannot read immutable snapshot provenance",
+        ),
+        (
+            lambda manifest: manifest["provenance_file_sha256"].pop(
+                ELEVATION_EVIDENCE_FILENAME
+            ),
+            "cannot read immutable snapshot provenance",
+        ),
+        (
+            lambda manifest: manifest["provenance_file_sha256"].__setitem__(
+                ELEVATION_EVIDENCE_FILENAME, []
+            ),
+            "invalid elevation-evidence.geojson provenance",
+        ),
+    ],
+)
+def test_final_ea_fixed_point_rejects_missing_or_malformed_provenance(
+    tmp_path: Path, mutate: object, message: str
+) -> None:
+    config = _final_ea_config(copied_config(tmp_path), tmp_path)
+    network = tmp_path / "network.geojson"
+    fingerprint = _final_eligible_network(network)
+    snapshot_path = _write_final_ea_snapshot(config, pre_elevation_network_sha256=fingerprint)
+    manifest_path = snapshot_path / "snapshot.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert callable(mutate)
+    mutate(manifest)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        _validate_ea_elevation_fixed_point(config, network)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (
+            lambda acquisition: acquisition.__setitem__("acquisition_protocol", "one-pass/v1"),
+            "mismatches acquisition protocol",
+        ),
+        (
+            lambda acquisition: acquisition.__setitem__("pre_elevation_network_sha256", "0" * 64),
+            "mismatches pre-elevation route fingerprint",
+        ),
+        (
+            lambda acquisition: acquisition.__setitem__("output_sha256", "0" * 64),
+            "mismatches acquisition elevation output digest",
+        ),
+        (
+            lambda acquisition: acquisition.__setitem__("sample_ledger_sha256", "0" * 64),
+            "mismatches sample-ledger digest",
+        ),
+        (
+            lambda acquisition: acquisition.__setitem__("sample_route_sha256", "0" * 64),
+            "mismatches sampled-route digest",
+        ),
+        (
+            lambda acquisition: acquisition.__setitem__("sample_ledger_path", "other-ledger.jsonl"),
+            "mismatches sample-ledger path",
+        ),
+        (
+            lambda acquisition: acquisition.__setitem__(
+                "sample_route_path", "other-routes.geojson"
+            ),
+            "mismatches sampled-route path",
+        ),
+    ],
+)
+def test_final_ea_fixed_point_rejects_retained_manifest_mismatch_with_valid_hashes(
+    tmp_path: Path, mutate: object, message: str
+) -> None:
+    config = _final_ea_config(copied_config(tmp_path), tmp_path)
+    network = tmp_path / "network.geojson"
+    fingerprint = _final_eligible_network(network)
+    snapshot_path = _write_final_ea_snapshot(config, pre_elevation_network_sha256=fingerprint)
+
+    _rewrite_retained_ea_acquisition(snapshot_path, mutate)
+
+    with pytest.raises(ValueError, match=message):
+        _validate_ea_elevation_fixed_point(config, network)
+
+
+def test_ea_acquisition_sidecar_tampering_fails_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = copied_config(tmp_path)
+    terrain = tmp_path / "ea-samples.geojson"
+    gpd.GeoDataFrame(
+        [{"sample": "ea-1", "height": 10, "geometry": Point(-2.50, 51.40)}],
+        geometry="geometry",
+        crs=4326,
+    ).to_file(terrain, driver="GeoJSON")
+    index, official_index = _official_index(tmp_path)
+    monkeypatch.setattr(
+        "satn.sources.validate_official_weca_survey_index", lambda _path: official_index
+    )
+    terrain.with_suffix(".manifest.json").write_text(
+        json.dumps(
+            {
+                "source_id": "ea-lidar-composite-dtm-1m",
+                "acquisition_protocol": "two-pass-fixed-point/v1",
+                "contract_schema_version": "ea-lidar-composite-dtm-contract/v2",
+                "dataset_id": EA_LIDAR_DATASET_ID,
+                "coverage_id": EA_LIDAR_COVERAGE_ID,
+                "endpoint": EA_LIDAR_ENDPOINT,
+                "licence": "Open Government Licence v3.0",
+                "attribution": DTM_ATTRIBUTION,
+                "dataset_title": "LIDAR Composite Digital Terrain Model (DTM) - 1m",
+                "source_resolution_m": 1,
+                "output_sample_spacing_m": 10,
+                "vertical_accuracy": "+/-15cm RMSE",
+                "effective_survey_date": "2022-01-02",
+                "output_sha256": "0" * 64,
+                "pre_elevation_network_sha256": "a" * 64,
+                "requested_point_count": 1,
+                "governed_input_fingerprint": "a" * 64,
+                "authority_boundaries_path": "authorities.geojson",
+                "evidence_sample_count": 1,
+                "survey_coverage_preflight": {
+                    "status": "available",
+                    "official_survey_index": official_index,
+                    "authority_boundaries": {
+                        "raw_sha256": hashlib.sha256(
+                            (tmp_path / "authorities.geojson").read_bytes()
+                        ).hexdigest()
+                    },
+                },
+                "sample_validation": {
+                    "status": "available",
+                    "authorities": [
+                        {"available_sample_count": 1, "nodata_sample_count": 0},
+                        {"available_sample_count": 0, "nodata_sample_count": 0},
+                        {"available_sample_count": 0, "nodata_sample_count": 0},
+                        {"available_sample_count": 0, "nodata_sample_count": 0},
+                        {"available_sample_count": 0, "nodata_sample_count": 0},
+                    ],
+                },
+                "survey_index_path": index.name,
+                "survey_index_sha256": official_index["raw_sha256"],
+                "survey_index_feature_sha256": official_index["canonical_feature_sha256"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    config.source.national_elevation = NationalElevationConfig(
+        provider="local-geojson",
+        path=terrain,
+        source_id="ea-lidar-composite-dtm-1m",
+        acquisition_contract="ea-lidar-weca-v1",
+        effective_date="2023-02-08",
+        licence="Open Government Licence v3.0",
+        attribution=DTM_ATTRIBUTION,
+        elevation_field="height",
+        identifier_field="sample",
+    )
+
+    with pytest.raises(ValueError, match="does not bind its output"):
+        snapshot(config)
 
 
 def test_remote_national_elevation_request_uses_governed_bbox(

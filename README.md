@@ -649,6 +649,65 @@ uv run python scripts/acquire_ea_elevation.py \
   --spacing-m 10
 ```
 
+For the WECA deployment, `deployments/weca/area-bootstrap.yaml` is the **bootstrap**
+Area Definition and `deployments/weca/area.yaml` is the elevation-enabled final
+deployment. The governed two-pass workflow is therefore non-circular: snapshot and
+compile the bootstrap definition; derive four named authority polygons from the retained
+official boundary source into `data/local/weca-authority-boundaries.geojson` (with
+stable authority IDs and source queries); fetch the exact official WFS response;
+then acquire the 10 m evidence and add the existing `national_elevation` local-GeoJSON
+block only for the final retained-core snapshot. The authority artifact must be
+derived from an official boundary download with its stable source IDs and exact
+source query retained; labels alone are not sufficient. Do not alter the provenance
+lock by hand: the release process regenerates it from that final snapshot.
+Only the final WECA definition sets `acquisition_contract: ea-lidar-weca-v1`.
+That opt-in is intentional: existing B&NES and other council EA GeoJSON sources
+remain ordinary national-elevation evidence rather than being forced through the
+WECA ledger/index protocol.
+
+```shell
+uv run satn snapshot deployments/weca/area-bootstrap.yaml
+uv run satn compile deployments/weca/area-bootstrap.yaml --full
+curl --fail --location --output data/local/ea-lidar-composite-dtm-1m-weca-survey-index.geojson \
+  'https://environment.data.gov.uk/spatialdata/survey-index-files/wfs?service=WFS&version=2.0.0&request=GetFeature&typeNames=dataset-9f0fa3fc-a860-4729-adc9-47fe53f658d0%3ALIDAR_Composite_1m_DTM_2022_extents&srsName=EPSG%3A27700&bbox=306127%2C134191%2C397868%2C215091%2CEPSG%3A27700'
+uv run python scripts/derive_weca_authority_boundaries.py \
+  data/local/official-boundaries.geojson data/local/weca-authority-boundaries.geojson \
+  --name-field NAME --id-field GSS_CODE \
+  --source-query 'official boundary dataset URL and exact query/version'
+```
+
+Require that pinned survey index and the four constituent-authority boundaries before
+downloading:
+
+```shell
+uv run python scripts/acquire_ea_elevation.py \
+  build/compiled/weca-bootstrap/review-map/network.geojson \
+  data/local/ea-lidar-dtm-1m-weca-samples.geojson \
+  --cache-dir data/local/ea-dtm-cache \
+  --spacing-m 10 \
+  --authority-boundaries data/local/weca-authority-boundaries.geojson \
+  --survey-index data/local/ea-lidar-composite-dtm-1m-weca-survey-index.geojson \
+  --weca-preflight \
+  --routing-buffer-m 15000 \
+  --governed-input-fingerprint "$(uv run python -c 'from satn.models import AreaDefinition; from satn.pipeline import compilation_governed_input_fingerprint; area = AreaDefinition.from_yaml("deployments/weca/area-bootstrap.yaml"); print(compilation_governed_input_fingerprint(area))')"
+uv run satn snapshot deployments/weca/area.yaml --retain-core
+uv run satn compile deployments/weca/area.yaml --full
+```
+
+The ignored survey index is itself a small governed contract: the current pinned
+contract is the exact governed eligible-route extent plus 15 km (not an over-broad
+council or response envelope), and every polygon must pin
+the official dataset UUID, coverage ID, WCS endpoint, OGL licence, EA attribution and
+effective survey date. The preflight reports `available`, `partial` or `unavailable`
+for B&NES, Bristol, North Somerset and South Gloucestershire. It is intentionally
+per `(route_id, sample_index)`, so coincident endpoints on different routes remain
+separate observations; missing samples and cross-boundary discontinuities stay
+explicit rather than being hidden by coordinate de-duplication. Both the resulting
+evidence manifest and the final snapshot preserve source and pre-elevation-network
+hashes. A snapshot copies and hashes the EA index and authority-boundary artifacts,
+then rewrites the sidecar to these immutable sibling paths; it does not depend on
+the mutable acquisition directory at publication time.
+
 The command downloads only intersecting 5 km tiles, scales the official 1 m DTM to
 the requested route-sampling interval, preserves request URLs and tile hashes in a
 manifest, and excludes aggregate Cross-Spine Connector geometry. Configure the
