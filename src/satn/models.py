@@ -129,6 +129,13 @@ class NationalElevationConfig(BaseModel):
     elevation_field: str = "elevation_m"
     identifier_field: str = "evidence_id"
     timeout_seconds: int = Field(default=90, ge=1, le=600)
+    # Optional: binds the extra immutable ledger/index protocol to a particular
+    # deployment contract.  A generic EA-derived GeoJSON remains a normal
+    # national-elevation source and is never silently reinterpreted as WECA.
+    acquisition_contract: Literal["ea-lidar-weca-v1"] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
     @model_validator(mode="after")
     def validate_provider_location(self) -> NationalElevationConfig:
@@ -136,6 +143,10 @@ class NationalElevationConfig(BaseModel):
             raise ValueError("local national Elevation Evidence requires path")
         if self.provider == "remote-geojson" and not self.url:
             raise ValueError("remote national Elevation Evidence requires url")
+        if self.acquisition_contract == "ea-lidar-weca-v1" and (
+            self.source_id != "ea-lidar-composite-dtm-1m" or self.provider != "local-geojson"
+        ):
+            raise ValueError("ea-lidar-weca-v1 requires the local EA Composite DTM source")
         return self
 
 

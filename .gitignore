@@ -10,6 +10,8 @@ examples/*/work/
 data/snapshots/
 data/local/*.geojson
 data/local/*.manifest.json
+data/local/*.sample-ledger.jsonl
+data/local/*.sampled-routes.geojson
 data/local/ea-dtm-cache/
 dist/
 build/

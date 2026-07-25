@@ -7,7 +7,18 @@ from pathlib import Path
 import geopandas as gpd
 import pytest
 from PIL import Image, TiffImagePlugin
-from shapely.geometry import LineString, Point
+from shapely.geometry import LineString, MultiLineString, MultiPolygon, Point, Polygon, box
+
+from satn.ea_elevation import (
+    WECA_SURVEY_BBOX,
+    WECA_SURVEY_INDEX_FEATURE_COUNT,
+    WECA_SURVEY_INDEX_FEATURE_SHA256,
+    WECA_SURVEY_REQUEST,
+    WECA_SURVEY_REQUEST_BBOX,
+    eligible_route_samples,
+    read_sample_ledger,
+)
+from satn.sources import _validate_ea_ledger_completeness
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "acquire_ea_elevation.py"
 SPEC = importlib.util.spec_from_file_location("acquire_ea_elevation", SCRIPT)
@@ -46,6 +57,126 @@ def test_route_sampling_is_generic_bounded_and_deduplicated(tmp_path: Path) -> N
     assert len(feature_ids) == 1
 
 
+def test_multipart_route_uses_one_canonical_sequence_for_tiles_evidence_and_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    routes = tmp_path / "routes.geojson"
+    boundaries = tmp_path / "authorities.geojson"
+    index = tmp_path / "survey-index.geojson"
+    output = tmp_path / "elevation-evidence.geojson"
+    gpd.GeoDataFrame(
+        [
+            {
+                "feature_id": "multipart",
+                "feature_type": "strategic-spine",
+                "topography_profile_id": "profile",
+                "geometry": MultiLineString(
+                    [
+                        [(0, 0), (10, 0)],
+                        [(10, 0), (20, 0)],
+                        [(100, 0), (110, 0)],
+                    ]
+                ),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    ).to_file(routes, driver="GeoJSON")
+    gpd.GeoDataFrame(
+        [
+            {
+                "authority": name,
+                "authority_id": f"authority-{position}",
+                "source_query": "synthetic-authority-boundaries/v1",
+                "geometry": box(-10, -10, 120, 10)
+                if position == 0
+                else box(1_000 + position, 0, 1_001 + position, 1),
+            }
+            for position, name in enumerate(acquisition.WECA_AUTHORITIES)
+        ],
+        geometry="geometry",
+        crs=27700,
+    ).to_file(boundaries, driver="GeoJSON")
+    gpd.GeoDataFrame(
+        [
+            {
+                "id": "survey-1",
+                "resolution": 1,
+                "ed_flown": "2022-01-02",
+                "geometry": box(-10, -10, 120, 10),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    ).to_file(index, driver="GeoJSON")
+    monkeypatch.setattr(
+        acquisition,
+        "validate_official_weca_survey_index",
+        lambda _path: {
+            "official": "fixture",
+            "raw_sha256": "a" * 64,
+            "canonical_feature_sha256": "b" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        acquisition,
+        "acquire_tile",
+        lambda key, *_args, **_kwargs: (
+            key,
+            tmp_path / f"{key[0]}-{key[1]}.tif",
+            "url",
+            "a" * 64,
+            1,
+            None,
+        ),
+    )
+    monkeypatch.setattr(acquisition, "load_tile", lambda _path: object())
+    monkeypatch.setattr(acquisition, "sample_grid", lambda _grid, _point: 42.0)
+
+    canonical, feature_ids = eligible_route_samples(gpd.read_file(routes), spacing_m=10)
+    assert [
+        (sample["sample_index"], sample["geometry"].x, sample["geometry"].y)
+        for sample in canonical
+    ] == [(0, 0, 0), (1, 10, 0), (2, 20, 0), (3, 100, 0), (4, 110, 0)]
+    points, sampled_feature_ids = acquisition.route_sample_points(routes, 10)
+    assert [(point.x, point.y) for point in points] == [
+        (0, 0),
+        (10, 0),
+        (20, 0),
+        (100, 0),
+        (110, 0),
+    ]
+    assert sampled_feature_ids == feature_ids == ["multipart"]
+
+    manifest = acquisition.write_evidence(
+        routes,
+        output,
+        tmp_path / "cache",
+        spacing_m=10,
+        authority_boundaries_path=boundaries,
+        survey_index_path=index,
+    )
+    ledger = read_sample_ledger(output.with_name("elevation-evidence.sample-ledger.jsonl"))
+    assert [
+        (row["route_id"], row["sample_index"], row["east_mm"], row["north_mm"])
+        for row in ledger
+    ] == [
+        (
+            sample["route_id"],
+            sample["sample_index"],
+            round(sample["geometry"].x * 1000),
+            round(sample["geometry"].y * 1000),
+        )
+        for sample in canonical
+    ]
+    assert manifest["requested_point_count"] == len(canonical)
+    assert manifest["evidence_sample_count"] == len(canonical)
+    _validate_ea_ledger_completeness(
+        rows=ledger,
+        route_path=output.with_name("elevation-evidence.sampled-routes.geojson"),
+    )
+
+
 def test_getcoverage_url_uses_verified_axes_coverage_and_scaling() -> None:
     url = acquisition.build_getcoverage_url(
         70,
@@ -59,6 +190,79 @@ def test_getcoverage_url_uses_verified_axes_coverage_and_scaling() -> None:
     assert query["subset"] == ["E(350000,355000)", "N(150000,155000)"]
     assert query["scaleFactor"] == ["0.10000000"]
     assert query["format"] == ["image/tiff"]
+
+
+def test_weca_wfs_pin_uses_governed_request_bbox_not_returned_feature_envelope() -> None:
+    request_bbox = [float(value) for value in WECA_SURVEY_REQUEST["bbox"].split(",")[:4]]
+
+    assert tuple(request_bbox) == WECA_SURVEY_REQUEST_BBOX
+    assert tuple(request_bbox) != WECA_SURVEY_BBOX
+    assert WECA_SURVEY_INDEX_FEATURE_COUNT == 1931
+    assert WECA_SURVEY_INDEX_FEATURE_SHA256 == (
+        "fa4b7b78d7adfb865166d7da161261b0134b98a9a909b5cc6fa5203b5d8ccd72"
+    )
+
+
+def test_exhausted_wcs_tile_is_bounded_and_retained_as_nodata_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attempts = 0
+
+    def unavailable(*_args: object, **_kwargs: object) -> object:
+        nonlocal attempts
+        attempts += 1
+        raise OSError("persistent 500")
+
+    monkeypatch.setattr(acquisition.urllib.request, "urlopen", unavailable)
+    monkeypatch.setattr(acquisition.time, "sleep", lambda _delay: None)
+
+    key, path, _url, digest, used, failure = acquisition.acquire_tile(
+        (64, 37), tmp_path, tile_size_m=5000, spacing_m=10, max_attempts=2
+    )
+
+    assert key == (64, 37)
+    assert path is None and digest is None
+    assert used == attempts == 2
+    assert failure == "OSError: persistent 500"
+
+
+def test_eligible_route_fingerprint_is_semantic_not_wkb_or_direction_sensitive() -> None:
+    from satn.ea_elevation import eligible_route_fingerprint
+
+    def routes(line: LineString) -> gpd.GeoDataFrame:
+        return gpd.GeoDataFrame(
+            [
+                {
+                    "feature_id": "route-1",
+                    "feature_type": "strategic-spine",
+                    "topography_profile_id": "p",
+                    "geometry": line,
+                }
+            ],
+            geometry="geometry",
+            crs=27700,
+        )
+
+    canonical = eligible_route_fingerprint(routes(LineString([(0.0, 0.0), (10.0, 0.0)])))
+    assert canonical == eligible_route_fingerprint(
+        routes(LineString([(10.0, -0.0), (0.0004, 0.0)]))
+    )
+    assert canonical != eligible_route_fingerprint(routes(LineString([(0.0, 0.0), (10.01, 0.0)])))
+
+
+def test_canonical_survey_polygon_ignores_ring_start_direction_and_multipart_order() -> None:
+    from satn.ea_elevation import canonical_polygon_geometry
+
+    first = Polygon([(0, 0), (10, 0), (10, 10), (0, 10)])
+    same_reversed = Polygon([(10, 10), (10, 0), (0, 0), (0, 10)])
+    second = Polygon([(20, 0), (30, 0), (30, 10), (20, 10)])
+    assert canonical_polygon_geometry(first) == canonical_polygon_geometry(same_reversed)
+    assert canonical_polygon_geometry(MultiPolygon([first, second])) == canonical_polygon_geometry(
+        MultiPolygon([second, same_reversed])
+    )
+    assert canonical_polygon_geometry(first) != canonical_polygon_geometry(
+        Polygon([(0, 0), (11, 0), (11, 10), (0, 10)])
+    )
 
 
 def test_float_geotiff_sampling_uses_embedded_model_transform(tmp_path: Path) -> None:
@@ -88,3 +292,129 @@ def test_float_geotiff_sampling_uses_embedded_model_transform(tmp_path: Path) ->
 
     assert acquisition.sample_tile(path, Point(350005, 150015)) == pytest.approx(10)
     assert acquisition.sample_tile(path, Point(350015, 150005)) == pytest.approx(40)
+
+
+def test_invalid_or_partial_tiff_never_becomes_a_sample(tmp_path: Path) -> None:
+    path = tmp_path / "truncated.tif"
+    path.write_bytes(b"II\x2a\x00partial")
+
+    with pytest.raises((OSError, ValueError)):
+        acquisition.load_tile(path)
+
+
+def test_weca_acquisition_rejects_any_buffer_other_than_the_pinned_15km(
+    tmp_path: Path,
+) -> None:
+    routes = tmp_path / "routes.geojson"
+    gpd.GeoDataFrame(
+        [
+            {
+                "feature_type": "strategic-spine",
+                "topography_profile_id": "profile",
+                "geometry": LineString([(350000, 150000), (350010, 150000)]),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    ).to_file(routes, driver="GeoJSON")
+
+    with pytest.raises(ValueError, match="exactly 15000m"):
+        acquisition.validate_weca_route_extent(routes, routing_buffer_m=14_999)
+
+
+def _weca_preflight_inputs(tmp_path: Path, *, complete: bool) -> tuple[Path, Path, Path]:
+    routes = tmp_path / "routes.geojson"
+    boundaries = tmp_path / "authorities.geojson"
+    index = tmp_path / "survey-index.geojson"
+    names = list(acquisition.WECA_AUTHORITIES)
+    geometries = [box(number * 100, 0, (number + 1) * 100, 100) for number in range(4)]
+    gpd.GeoDataFrame(
+        [
+            {
+                "feature_type": "strategic-spine",
+                "topography_profile_id": "profile",
+                "geometry": LineString([(number * 100 + 10, 50), (number * 100 + 90, 50)]),
+            }
+            for number in range(4)
+        ],
+        geometry="geometry",
+        crs=27700,
+    ).to_file(routes, driver="GeoJSON")
+    gpd.GeoDataFrame(
+        [
+            {
+                "authority": name,
+                "authority_id": f"test-authority-{number}",
+                "source_query": "synthetic-test-boundaries/v1",
+                "geometry": geometry,
+            }
+            for number, (name, geometry) in enumerate(zip(names, geometries, strict=True))
+        ],
+        geometry="geometry",
+        crs=27700,
+    ).to_file(boundaries, driver="GeoJSON")
+    covered = geometries if complete else geometries[:-1]
+    metadata = {
+        "schema_version": acquisition.CONTRACT_SCHEMA_VERSION,
+        "dataset_id": acquisition.DATASET_ID,
+        "dataset_title": acquisition.DATASET_TITLE,
+        "coverage_id": acquisition.COVERAGE_ID,
+        "endpoint": acquisition.ENDPOINT,
+        "licence": acquisition.LICENCE,
+        "attribution": acquisition.ATTRIBUTION,
+        "effective_date": "2023-02-08",
+    }
+    gpd.GeoDataFrame(
+        [{**metadata, "geometry": geometry} for geometry in covered],
+        geometry="geometry",
+        crs=27700,
+    ).to_file(index, driver="GeoJSON")
+    return routes, boundaries, index
+
+
+def test_weca_preflight_requires_pinned_contract_and_reports_each_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    routes, boundaries, index = _weca_preflight_inputs(tmp_path, complete=True)
+    monkeypatch.setattr(
+        acquisition,
+        "validate_official_weca_survey_index",
+        lambda _path: {"official": "test-fixture"},
+    )
+
+    first = acquisition.preflight_weca_coverage(routes, boundaries, index)
+    second = acquisition.preflight_weca_coverage(routes, boundaries, index)
+
+    assert first == second
+    assert first["status"] == "available"
+    assert first["official_survey_index"] == {"official": "test-fixture"}
+    assert [row["authority"] for row in first["authorities"]] == list(acquisition.WECA_AUTHORITIES)
+    assert all(row["route_sample_count"] > 0 for row in first["authorities"])
+    assert all(row["missing_sample_count"] == 0 for row in first["authorities"])
+
+
+def test_weca_preflight_makes_partial_cross_authority_coverage_explicit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    routes, boundaries, index = _weca_preflight_inputs(tmp_path, complete=False)
+    monkeypatch.setattr(
+        acquisition,
+        "validate_official_weca_survey_index",
+        lambda _path: {"official": "test-fixture"},
+    )
+
+    report = acquisition.preflight_weca_coverage(routes, boundaries, index)
+
+    assert report["status"] == "partial"
+    assert report["authorities"][-1]["authority"] == "South Gloucestershire"
+    assert report["authorities"][-1]["status"] == "unavailable"
+    assert report["authorities"][-1]["route_sample_count"] == 9
+    assert report["authorities"][-1]["missing_sample_count"] == 9
+    assert report["authorities"][-1]["available_sample_count"] == 0
+
+
+def test_weca_preflight_refuses_an_unpinned_external_contract(tmp_path: Path) -> None:
+    routes, boundaries, index = _weca_preflight_inputs(tmp_path, complete=True)
+    with pytest.raises(ValueError, match=r"missing official fields|pinned canonical"):
+        acquisition.preflight_weca_coverage(routes, boundaries, index)

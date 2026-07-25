@@ -12,6 +12,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from itertools import pairwise
 from pathlib import Path
 from typing import Protocol
 
@@ -22,6 +23,33 @@ from shapely.geometry import LineString, MultiLineString, MultiPoint, Point
 from shapely.ops import unary_union
 
 from satn.constants import DISCLAIMER, SCHEMA_VERSION
+from satn.ea_elevation import (
+    CONTRACT_SCHEMA_VERSION as EA_ELEVATION_CONTRACT_VERSION,
+)
+from satn.ea_elevation import (
+    DTM_ATTRIBUTION as EA_LIDAR_ATTRIBUTION,
+)
+from satn.ea_elevation import (
+    DTM_COVERAGE_ID as EA_LIDAR_COVERAGE_ID,
+)
+from satn.ea_elevation import (
+    DTM_DATASET_ID as EA_LIDAR_DATASET_ID,
+)
+from satn.ea_elevation import (
+    DTM_ENDPOINT as EA_LIDAR_ENDPOINT,
+)
+from satn.ea_elevation import (
+    DTM_LICENCE as EA_LIDAR_LICENCE,
+)
+from satn.ea_elevation import (
+    SAMPLE_LEDGER_FILENAME,
+    SAMPLE_LEDGER_SCHEMA_VERSION,
+    eligible_route_samples,
+    evidence_row_sha256,
+    read_sample_ledger,
+    sha256_file,
+    validate_official_weca_survey_index,
+)
 from satn.evidence import (
     derive_context_layers,
     empty_context,
@@ -31,6 +59,7 @@ from satn.heartbeat import StageHeartbeat
 from satn.models import (
     AreaConfig,
     GovernedSpatialSourceConfig,
+    NationalElevationConfig,
     OfficialRoadClassification,
 )
 from satn.settlement import assess_community_urban_eligibility
@@ -41,6 +70,9 @@ NCN_ATTRIBUTION = "Walk Wheel Cycle Trust National Cycle Network; Open Governmen
 ROAD_CLASSIFICATION_FILENAME = "official-road-classification.geojson"
 OBSERVED_THROUGH_TRAFFIC_FILENAME = "observed-through-traffic.geojson"
 ELEVATION_EVIDENCE_FILENAME = "elevation-evidence.geojson"
+EA_RETAINED_ROUTE_FILENAME = "ea-elevation-sampled-routes.geojson"
+EA_LIDAR_SOURCE_ID = "ea-lidar-composite-dtm-1m"
+EA_LIDAR_WECA_ACQUISITION_CONTRACT = "ea-lidar-weca-v1"
 ROAD_CLASSIFICATION_COLUMNS = [
     "official_feature_id",
     "official_classification",
@@ -51,6 +83,88 @@ ROAD_CLASSIFICATION_COLUMNS = [
     "geometry",
 ]
 LOGGER = logging.getLogger(__name__)
+
+
+def _regular_sibling(directory: Path, name: object, *, label: str) -> Path:
+    """Resolve a manifest sibling without permitting traversal or links."""
+    if not isinstance(name, str) or Path(name).name != name or not name:
+        raise ValueError(f"{label} must be a safe sibling basename")
+    path = directory / name
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"{label} must be a regular non-symlink file")
+    try:
+        path.resolve(strict=True).relative_to(directory.resolve(strict=True))
+    except ValueError as error:
+        raise ValueError(f"{label} must resolve inside its manifest directory") from error
+    return path
+
+
+def _manifest_siblings(
+    directory: Path,
+    names: object,
+    *,
+    label: str,
+) -> dict[str, Path]:
+    """Validate every retained manifest filename before consuming any of them.
+
+    A manifest is untrusted input, including when it was produced by an older
+    local run.  Keep this as a separate first pass so a manifest containing a
+    later traversal, link, directory, or duplicate cannot cause an earlier
+    entry to be read, copied, or hashed first.
+    """
+    if not isinstance(names, list) or any(not isinstance(name, str) for name in names):
+        raise ValueError(f"{label} names must be a list of safe sibling basenames")
+    if len(names) != len(set(names)):
+        raise ValueError(f"{label} names must not contain duplicates")
+    return {
+        name: _regular_sibling(directory, name, label=f"{label} {name!r}") for name in names
+    }
+
+
+def _manifest_hashes(manifest: dict[str, object], field: str, *, label: str) -> dict[str, str]:
+    """Return a typed, unique manifest hash map without trusting its paths."""
+    values = manifest.get(field, {})
+    if not isinstance(values, dict) or any(
+        not isinstance(name, str)
+        or not isinstance(digest, str)
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+        for name, digest in values.items()
+    ):
+        raise ValueError(f"{label} must map safe filenames to SHA-256 digests")
+    return dict(values)
+
+
+def _replace_snapshot_directory(temporary: Path, destination: Path) -> None:
+    """Swap a validated snapshot with recoverable rollback on replacement failure."""
+    backup = destination.with_name(f".{destination.name}.previous")
+    if backup.exists():
+        if backup.is_symlink() or not backup.is_dir():
+            raise ValueError("snapshot backup is not a regular directory")
+        if not destination.exists():
+            # A previous process crashed after moving the live snapshot aside.
+            # Restore it before doing anything else; it is the only verified copy.
+            backup.replace(destination)
+        else:
+            # The replacement may have succeeded just before a process crash.
+            # Do not discard the recoverable old copy until the live destination
+            # has independently passed the immutable snapshot checks.
+            _validate_snapshot(destination)
+            shutil.rmtree(backup)
+    if destination.exists():
+        destination.replace(backup)
+    try:
+        temporary.replace(destination)
+        _validate_snapshot(destination)
+    except Exception:
+        if backup.exists() and destination.exists():
+            destination.replace(temporary)
+        if backup.exists() and not destination.exists():
+            backup.replace(destination)
+        raise
+    else:
+        if backup.exists():
+            shutil.rmtree(backup)
 
 
 @dataclass
@@ -243,6 +357,7 @@ def snapshot(
     config: AreaConfig,
     *,
     replace: bool = False,
+    retain_core: bool = False,
     osm_adapter: OSMAdapter | None = None,
 ) -> Path:
     """Materialise an immutable, attributable source snapshot."""
@@ -262,18 +377,57 @@ def snapshot(
             "source_kind": config.source.kind,
         },
     ) as heartbeat:
-        if destination.exists() and not replace:
-            manifest = json.loads((destination / "snapshot.json").read_text(encoding="utf-8"))
-            if manifest.get("schema_version") == SCHEMA_VERSION:
+        retained_manifest: dict[str, object] | None = None
+        if destination.exists():
+            manifest = json.loads(
+                _regular_sibling(destination, "snapshot.json", label="snapshot manifest").read_text(
+                    encoding="utf-8"
+                )
+            )
+            if isinstance(manifest, dict) and manifest.get("schema_version") == SCHEMA_VERSION:
                 heartbeat.set_stage("existing-snapshot-validation")
                 _validate_snapshot(destination)
-                LOGGER.info("Existing snapshot validated path=%s", destination)
-                return destination
+                if not replace and not retain_core:
+                    LOGGER.info("Existing snapshot validated path=%s", destination)
+                    return destination
+                if retain_core:
+                    if config.source.national_elevation is None:
+                        raise ValueError(
+                            "retained-core snapshot augmentation requires national elevation"
+                        )
+                    retained_manifest = manifest
+            elif retain_core:
+                raise ValueError("retained-core snapshot augmentation requires a valid snapshot")
+        elif retain_core:
+            raise ValueError("retained-core snapshot augmentation requires an existing snapshot")
 
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = Path(tempfile.mkdtemp(prefix=f".{destination.name}-", dir=destination.parent))
         try:
-            if config.source.kind == "fixture":
+            if retained_manifest is not None:
+                excluded = {
+                    ELEVATION_EVIDENCE_FILENAME,
+                    "elevation-evidence.manifest.json",
+                    "ea-survey-index.geojson",
+                    "ea-authority-boundaries.geojson",
+                    SAMPLE_LEDGER_FILENAME,
+                    EA_RETAINED_ROUTE_FILENAME,
+                }
+                retained_files = _manifest_siblings(
+                    destination,
+                    retained_manifest.get("files"),
+                    label="retained snapshot file",
+                )
+                files = [filename for filename in retained_files if filename not in excluded]
+                if not files:
+                    raise ValueError("retained-core snapshot has missing source files")
+                for filename in files:
+                    shutil.copy2(retained_files[filename], temporary / filename)
+                _snapshot_national_elevation(config, temporary)
+                files.append(ELEVATION_EVIDENCE_FILENAME)
+                source_identifier = str(retained_manifest["source_identifier"])
+                attribution = str(retained_manifest["attribution"])
+            elif config.source.kind == "fixture":
                 source_identifier, files = _write_fixture_snapshot(config, temporary)
                 attribution = "Synthetic test fixture"
             else:
@@ -285,8 +439,31 @@ def snapshot(
                     if config.source.ncn_feature_service_url
                     else OSM_ATTRIBUTION
                 )
+            provenance_files = [
+                filename
+                for filename in (
+                    "elevation-evidence.manifest.json",
+                    "ea-survey-index.geojson",
+                    "ea-authority-boundaries.geojson",
+                    SAMPLE_LEDGER_FILENAME,
+                    EA_RETAINED_ROUTE_FILENAME,
+                )
+                if (temporary / filename).exists()
+            ]
+            for filename in (
+                "ea-survey-index.geojson",
+                "ea-authority-boundaries.geojson",
+                SAMPLE_LEDGER_FILENAME,
+                EA_RETAINED_ROUTE_FILENAME,
+            ):
+                if (temporary / filename).exists() and filename not in files:
+                    files.append(filename)
             heartbeat.set_stage("snapshot-validation")
             retrieved_at = datetime.now(UTC).isoformat()
+            file_paths = _manifest_siblings(temporary, files, label="snapshot file")
+            provenance_paths = _manifest_siblings(
+                temporary, provenance_files, label="snapshot provenance file"
+            )
             manifest = {
                 "schema_version": SCHEMA_VERSION,
                 "snapshot_id": config.source.snapshot_id,
@@ -313,18 +490,43 @@ def snapshot(
                 },
                 "files": files,
                 "file_sha256": {
-                    filename: hashlib.sha256((temporary / filename).read_bytes()).hexdigest()
+                    filename: hashlib.sha256(file_paths[filename].read_bytes()).hexdigest()
                     for filename in files
+                },
+                "provenance_file_sha256": {
+                    filename: hashlib.sha256(provenance_paths[filename].read_bytes()).hexdigest()
+                    for filename in provenance_files
                 },
                 "disclaimer": DISCLAIMER,
             }
+            if retained_manifest is not None:
+                # Retained-core augmentation is not a new OSM acquisition.  It
+                # carries the former core identity/provenance byte-for-byte and
+                # appends only independently validated elevation material.
+                for key in ("source_identifier", "retrieved_at", "attribution"):
+                    manifest[key] = retained_manifest[key]
+                previous_sources = retained_manifest.get("evidence_sources")
+                if isinstance(previous_sources, dict):
+                    manifest["evidence_sources"] = {
+                        **previous_sources,
+                        "elevation": manifest["evidence_sources"]["elevation"],
+                    }
+                previous_hashes = retained_manifest.get("file_sha256", {})
+                if isinstance(previous_hashes, dict):
+                    for filename, digest in previous_hashes.items():
+                        if filename in files and filename not in {
+                            ELEVATION_EVIDENCE_FILENAME,
+                            "ea-survey-index.geojson",
+                            "ea-authority-boundaries.geojson",
+                            SAMPLE_LEDGER_FILENAME,
+                            EA_RETAINED_ROUTE_FILENAME,
+                        } and manifest["file_sha256"].get(filename) != digest:
+                            raise ValueError("retained-core snapshot changed a governed core file")
             (temporary / "snapshot.json").write_text(
                 json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
             )
             _validate_snapshot(temporary)
-            if destination.exists():
-                shutil.rmtree(destination)
-            temporary.replace(destination)
+            _replace_snapshot_directory(temporary, destination)
             LOGGER.info(
                 "Snapshot validated and committed path=%s files=%d", destination, len(files)
             )
@@ -553,7 +755,7 @@ def _elevation_evidence_manifest(
     evidence = gpd.read_file(evidence_path)
     governed = config.source.national_elevation
     if governed is not None:
-        return {
+        manifest: dict[str, object] = {
             "provider": governed.provider,
             "source_id": governed.source_id,
             "effective_date": (
@@ -570,6 +772,13 @@ def _elevation_evidence_manifest(
             "content_fingerprint": hashlib.sha256(evidence_path.read_bytes()).hexdigest(),
             "retrieved_at": retrieved_at,
         }
+        ea_provenance = _ea_elevation_acquisition_provenance(governed, snapshot_dir=path)
+        manifest.update(ea_provenance)
+        if ea_provenance:
+            manifest["coverage_status"] = ea_provenance["coverage_status"]
+            manifest["effective_date"] = ea_provenance["effective_survey_date"]
+            manifest["date_kind"] = "official-sampled-ed_flown"
+        return manifest
     return {
         "source_ids": sorted({str(value) for value in evidence["source_id"]}),
         "effective_dates": sorted(
@@ -581,6 +790,503 @@ def _elevation_evidence_manifest(
     }
 
 
+def _recompute_ea_sample_ledger(
+    evidence_path: Path,
+    ledger_path: Path,
+    *,
+    authority_boundaries_path: Path,
+    survey_index_path: Path,
+    elevation_field: str = "elevation_m",
+) -> dict[str, object]:
+    """Derive EA coverage solely from retained evidence and ledger bytes.
+
+    The acquisition sidecar is deliberately not an authority for these values:
+    it is useful operational context, but it may have changed after acquisition.
+    """
+    rows = read_sample_ledger(ledger_path)
+    evidence = gpd.read_file(evidence_path).to_crs(27700)
+    boundaries = gpd.read_file(authority_boundaries_path).to_crs(27700)
+    authority_id_field = next(
+        (field for field in ("authority_id", "boundary_id", "id") if field in boundaries), None
+    )
+    if authority_id_field is None or boundaries.empty:
+        raise ValueError("EA authority boundaries lack stable retained identities")
+    survey_index = gpd.read_file(survey_index_path).to_crs(27700)
+    if "id" not in survey_index or survey_index["id"].astype(str).duplicated().any():
+        raise ValueError("EA survey index has duplicate or missing official feature identities")
+    observed: dict[tuple[str, int], tuple[str, float, int, int]] = {}
+    for _, sample in evidence.iterrows():
+        route_id, sample_index = str(sample.get("route_id")), int(sample.get("sample_index"))
+        point = sample.geometry
+        if point is None or point.is_empty:
+            raise ValueError("EA Elevation Evidence contains an empty sample geometry")
+        identity = (route_id, sample_index)
+        row_hash = sample.get("evidence_row_sha256")
+        if not isinstance(row_hash, str):
+            raise ValueError("EA Elevation Evidence lacks an immutable evidence row hash")
+        if identity in observed:
+            raise ValueError("EA Elevation Evidence has duplicate route/sample observations")
+        observed[identity] = (
+            row_hash,
+            float(sample[elevation_field]),
+            round(point.x * 1000),
+            round(point.y * 1000),
+        )
+    buckets: dict[str, dict[str, object]] = {}
+    transitions: list[dict[str, object]] = []
+    by_route: dict[str, list[dict[str, object]]] = {}
+    chosen_dates: list[str] = []
+    for row in rows:
+        required = {
+            "schema_version",
+            "route_id",
+            "sample_index",
+            "east_mm",
+            "north_mm",
+            "authority_id",
+            "bucket",
+            "availability",
+            "elevation_m",
+            "survey_feature_id",
+            "ed_flown",
+            "resolution_m",
+            "evidence_row_sha256",
+            "route_position",
+            "previous_sample_index",
+            "next_sample_index",
+        }
+        if not required <= set(row) or row["schema_version"] != SAMPLE_LEDGER_SCHEMA_VERSION:
+            raise ValueError("EA sample ledger lacks required immutable fields")
+        if row["bucket"] not in {"authority", "routing-buffer"} or row["availability"] not in {
+            "available",
+            "nodata",
+        }:
+            raise ValueError("EA sample ledger has invalid availability or authority bucket")
+        identity = (str(row["route_id"]), int(row["sample_index"]))
+        evidence_hash = row["evidence_row_sha256"]
+        point = Point(int(row["east_mm"]) / 1000, int(row["north_mm"]) / 1000)
+        matched_authorities = boundaries[boundaries.geometry.covers(point)]
+        expected_authority_id = (
+            str(sorted(matched_authorities[authority_id_field].astype(str))[0])
+            if not matched_authorities.empty
+            else "routing-buffer"
+        )
+        expected_bucket = (
+            "authority" if expected_authority_id != "routing-buffer" else "routing-buffer"
+        )
+        if row["authority_id"] != expected_authority_id or row["bucket"] != expected_bucket:
+            raise ValueError(
+                "EA sample ledger authority/buffer assignment differs from retained boundaries"
+            )
+        matches = survey_index[survey_index.geometry.covers(point)]
+        choices = []
+        for _, survey in matches.iterrows():
+            date = str(survey.get("ed_flown") or "")[:10]
+            try:
+                resolution = float(survey.get("resolution"))
+            except (TypeError, ValueError):
+                resolution = float("inf")
+            choices.append(
+                (
+                    -(int((date or "0000-00-00").replace("-", ""))),
+                    resolution,
+                    str(survey["id"]),
+                    date or None,
+                )
+            )
+        selected = sorted(choices)[0] if choices else None
+        if selected is None:
+            if any(
+                row[field] is not None
+                for field in ("survey_feature_id", "ed_flown", "resolution_m")
+            ):
+                raise ValueError(
+                    "EA sample ledger invents survey evidence outside retained coverage"
+                )
+        elif (
+            row["survey_feature_id"] != selected[2]
+            or row["ed_flown"] != selected[3]
+            or float(row.get("resolution_m")) != selected[1]
+        ):
+            raise ValueError("EA sample ledger survey selection differs from retained index")
+        # A NoData WCS response still has official survey coverage.  Effective
+        # survey date therefore comes from the same selected index row during
+        # acquisition and retained-ledger recomputation.
+        if isinstance(row.get("ed_flown"), str):
+            chosen_dates.append(str(row["ed_flown"]))
+        if row["availability"] == "available":
+            if not isinstance(evidence_hash, str) or identity not in observed:
+                raise ValueError(
+                    "EA sample ledger available observation does not bind retained evidence"
+                )
+            _hash, elevation, east_mm, north_mm = observed[identity]
+            expected_hash = evidence_row_sha256(
+                route_id=identity[0],
+                sample_index=identity[1],
+                east_mm=int(row["east_mm"]),
+                north_mm=int(row["north_mm"]),
+                elevation_m=elevation,
+            )
+            if (
+                row["elevation_m"] is None
+                or round(float(row["elevation_m"]), 3) != round(elevation, 3)
+                or abs(int(row["east_mm"]) - east_mm) > 10
+                or abs(int(row["north_mm"]) - north_mm) > 10
+                or evidence_hash != expected_hash
+                or _hash != expected_hash
+            ):
+                raise ValueError("EA sample ledger observation differs from retained evidence")
+            if not isinstance(row["survey_feature_id"], str) or not isinstance(
+                row["ed_flown"], str
+            ):
+                raise ValueError(
+                    "EA sample ledger available observation lacks official survey evidence"
+                )
+        elif evidence_hash is not None or identity in observed:
+            raise ValueError("EA sample ledger nodata observation conflicts with retained evidence")
+        key = str(row["authority_id"])
+        bucket = buckets.setdefault(
+            key,
+            {
+                "authority_id": key,
+                "requested_sample_count": 0,
+                "available_sample_count": 0,
+                "nodata_sample_count": 0,
+            },
+        )
+        bucket["requested_sample_count"] = int(bucket["requested_sample_count"]) + 1
+        if row["availability"] == "available":
+            bucket["available_sample_count"] = int(bucket["available_sample_count"]) + 1
+        else:
+            bucket["nodata_sample_count"] = int(bucket["nodata_sample_count"]) + 1
+        by_route.setdefault(identity[0], []).append(row)
+    if set(observed) != {
+        (str(row["route_id"]), int(row["sample_index"]))
+        for row in rows
+        if row["availability"] == "available"
+    }:
+        raise ValueError(
+            "EA Elevation Evidence has observations absent from immutable sample ledger"
+        )
+    summary = []
+    for item in buckets.values():
+        requested, available = (
+            int(item["requested_sample_count"]),
+            int(item["available_sample_count"]),
+        )
+        item["status"] = (
+            "available"
+            if requested and available == requested
+            else "partial"
+            if available
+            else "unavailable"
+        )
+        summary.append(item)
+    for route_id, route_rows in sorted(by_route.items()):
+        route_rows.sort(key=lambda row: int(row["sample_index"]))
+        for position, row in enumerate(route_rows):
+            if (
+                row.get("route_position") != position
+                or row.get("previous_sample_index")
+                != (route_rows[position - 1]["sample_index"] if position else None)
+                or row.get("next_sample_index")
+                != (
+                    route_rows[position + 1]["sample_index"]
+                    if position + 1 < len(route_rows)
+                    else None
+                )
+            ):
+                raise ValueError(
+                    "EA sample ledger route sequence is not contiguous retained provenance"
+                )
+        for before, after in pairwise(route_rows):
+            if before["authority_id"] == after["authority_id"]:
+                continue
+            transitions.append(
+                {
+                    "route_id": route_id,
+                    "before_sample_index": before["sample_index"],
+                    "after_sample_index": after["sample_index"],
+                    "from_authority_id": before["authority_id"],
+                    "to_authority_id": after["authority_id"],
+                    "status": "available"
+                    if before["availability"] == after["availability"] == "available"
+                    else "missing-elevation",
+                }
+            )
+    available_total = sum(int(item["available_sample_count"]) for item in summary)
+    requested_total = len(rows)
+    return {
+        "sample_ledger_sha256": sha256_file(ledger_path),
+        "requested_point_count": requested_total,
+        "evidence_sample_count": len(observed),
+        "nodata_sample_count": requested_total - len(observed),
+        "coverage_status": "available"
+        if requested_total and available_total == requested_total
+        else "partial"
+        if available_total
+        else "unavailable",
+        "effective_survey_date": max(chosen_dates) if chosen_dates else None,
+        "authority_coverage": sorted(summary, key=lambda item: str(item["authority_id"])),
+        "cross_boundary_transitions": transitions,
+        "cross_boundary_sample_count": sum(item["status"] == "available" for item in transitions),
+        "evidence_row_count": len(observed),
+        "evidence_row_sha256s": sorted(value[0] for value in observed.values()),
+    }
+
+
+def _validate_ea_ledger_completeness(*, rows: list[dict[str, object]], route_path: Path) -> None:
+    """Prove every ledger identity is exactly the governed 10m route sequence."""
+    routes = gpd.read_file(route_path)
+    expected = [
+        (
+            str(sample["route_id"]),
+            int(sample["sample_index"]),
+            round(float(sample["geometry"].x) * 1000),
+            round(float(sample["geometry"].y) * 1000),
+        )
+        for sample in eligible_route_samples(routes, spacing_m=10.0)[0]
+    ]
+    actual = [
+        (str(row["route_id"]), int(row["sample_index"]), int(row["east_mm"]), int(row["north_mm"]))
+        for row in rows
+    ]
+    if sorted(actual) != sorted(expected):
+        raise ValueError("EA sample ledger is not complete for the retained governed 10m routes")
+
+
+def _ea_elevation_acquisition_provenance(
+    governed: NationalElevationConfig,
+    *,
+    snapshot_dir: Path | None = None,
+) -> dict[str, object]:
+    """Carry a validated EA acquisition sidecar into the immutable snapshot manifest.
+
+    EA evidence is never trusted without this sidecar.  The sidecar itself is
+    only a statement; it is independently bound to the official WFS index and
+    the actual retained elevation bytes before entering the snapshot.
+    """
+
+    if (
+        governed.acquisition_contract != EA_LIDAR_WECA_ACQUISITION_CONTRACT
+        or governed.path is None
+    ):
+        return {}
+    sidecar = (
+        snapshot_dir / "elevation-evidence.manifest.json"
+        if snapshot_dir is not None
+        else governed.path.with_suffix(".manifest.json")
+    )
+    sidecar = _regular_sibling(
+        sidecar.parent, sidecar.name, label="EA Elevation Evidence acquisition manifest"
+    )
+    try:
+        acquisition = json.loads(sidecar.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise ValueError("EA Elevation Evidence acquisition manifest is invalid JSON") from error
+    required = {
+        "source_id": EA_LIDAR_SOURCE_ID,
+        "acquisition_protocol": "two-pass-fixed-point/v1",
+        "contract_schema_version": EA_ELEVATION_CONTRACT_VERSION,
+        "dataset_id": EA_LIDAR_DATASET_ID,
+        "coverage_id": EA_LIDAR_COVERAGE_ID,
+        "endpoint": EA_LIDAR_ENDPOINT,
+        "licence": EA_LIDAR_LICENCE,
+        "attribution": EA_LIDAR_ATTRIBUTION,
+        "dataset_title": "LIDAR Composite Digital Terrain Model (DTM) - 1m",
+        "source_resolution_m": 1,
+        "output_sample_spacing_m": 10,
+        "vertical_accuracy": "+/-15cm RMSE",
+    }
+    for field, expected in required.items():
+        if acquisition.get(field) != expected:
+            raise ValueError(f"EA Elevation Evidence acquisition manifest has invalid {field}")
+    output_digest = acquisition.get("output_sha256")
+    network_digest = acquisition.get("pre_elevation_network_sha256")
+    if not isinstance(output_digest, str) or len(output_digest) != 64:
+        raise ValueError("EA Elevation Evidence acquisition manifest is missing output_sha256")
+    if not isinstance(network_digest, str) or len(network_digest) != 64:
+        raise ValueError(
+            "EA Elevation Evidence acquisition manifest is missing pre_elevation_network_sha256"
+        )
+    actual_digest = sha256_file(governed.path)
+    if output_digest != actual_digest:
+        raise ValueError("EA Elevation Evidence acquisition manifest does not bind its output")
+    ledger_name = acquisition.get("sample_ledger_path")
+    ledger_digest = acquisition.get("sample_ledger_sha256")
+    if (
+        acquisition.get("sample_ledger_schema_version") != SAMPLE_LEDGER_SCHEMA_VERSION
+        or not isinstance(ledger_name, str)
+        or Path(ledger_name).name != ledger_name
+        or not isinstance(ledger_digest, str)
+        or len(ledger_digest) != 64
+    ):
+        raise ValueError("EA Elevation Evidence acquisition manifest lacks immutable sample ledger")
+    preflight = acquisition.get("survey_coverage_preflight")
+    if not isinstance(preflight, dict) or preflight.get("status") not in {
+        "available",
+        "partial",
+        "unavailable",
+    }:
+        raise ValueError("EA Elevation Evidence acquisition manifest lacks survey coverage")
+    survey_index_value = acquisition.get("survey_index_path")
+    authority_identity = preflight.get("authority_boundaries")
+    authority_path_value = acquisition.get("authority_boundaries_path")
+    if (
+        not isinstance(survey_index_value, str)
+        or Path(survey_index_value).name != survey_index_value
+        or not isinstance(authority_identity, dict)
+        or not isinstance(authority_path_value, str)
+        or Path(authority_path_value).name != authority_path_value
+    ):
+        raise ValueError("EA Elevation Evidence acquisition manifest lacks immutable scope proofs")
+    route_name = acquisition.get("sample_route_path")
+    route_digest = acquisition.get("sample_route_sha256")
+    if not isinstance(route_digest, str) or len(route_digest) != 64:
+        raise ValueError("EA Elevation Evidence lacks the retained sampled-route digest")
+    referenced_names = [ledger_name, survey_index_value, authority_path_value, route_name]
+    if len(set(referenced_names)) != len(referenced_names):
+        raise ValueError("EA Elevation Evidence manifest reuses immutable sibling filenames")
+    retained_paths = {
+        "ledger": _regular_sibling(sidecar.parent, ledger_name, label="EA sample ledger"),
+        "survey_index": _regular_sibling(
+            sidecar.parent, survey_index_value, label="EA survey index"
+        ),
+        "authority": _regular_sibling(
+            sidecar.parent, authority_path_value, label="EA authority boundaries"
+        ),
+        "routes": _regular_sibling(sidecar.parent, route_name, label="EA sampled routes"),
+    }
+    # Do not consume one sidecar reference before every retained reference has
+    # been shown to be a distinct regular sibling in the acquisition directory.
+    evidence_path = (
+        snapshot_dir / ELEVATION_EVIDENCE_FILENAME if snapshot_dir is not None else governed.path
+    )
+    ledger_path = retained_paths["ledger"]
+    survey_index = retained_paths["survey_index"]
+    authority_path = retained_paths["authority"]
+    route_path = retained_paths["routes"]
+    if sha256_file(ledger_path) != ledger_digest:
+        raise ValueError("EA Elevation Evidence immutable sample ledger is missing or tampered")
+    if authority_identity.get("raw_sha256") != sha256_file(authority_path):
+        raise ValueError("EA Elevation Evidence authority-boundary binding is invalid")
+    official_index = validate_official_weca_survey_index(survey_index)
+    if acquisition.get("survey_index_sha256") != official_index["raw_sha256"]:
+        raise ValueError(
+            "EA Elevation Evidence acquisition manifest does not bind official survey-index bytes"
+        )
+    if acquisition.get("survey_index_feature_sha256") != official_index["canonical_feature_sha256"]:
+        raise ValueError(
+            "EA Elevation Evidence acquisition manifest does not bind official "
+            "survey-index features"
+        )
+    if preflight.get("official_survey_index") != official_index:
+        raise ValueError(
+            "EA Elevation Evidence acquisition manifest has forged survey-index preflight"
+        )
+    recomputed = _recompute_ea_sample_ledger(
+        evidence_path,
+        ledger_path,
+        authority_boundaries_path=authority_path,
+        survey_index_path=survey_index,
+        elevation_field=("elevation_m" if snapshot_dir is not None else governed.elevation_field),
+    )
+    if sha256_file(route_path) != route_digest:
+        raise ValueError("EA Elevation Evidence sampled routes are missing or tampered")
+    _validate_ea_ledger_completeness(rows=read_sample_ledger(ledger_path), route_path=route_path)
+    for field in (
+        "requested_point_count",
+        "evidence_sample_count",
+        "nodata_sample_count",
+        "effective_survey_date",
+    ):
+        if acquisition.get(field) != recomputed[field]:
+            raise ValueError(f"EA Elevation Evidence acquisition sidecar forges {field}")
+    if acquisition.get("sample_validation", {}).get("status") != recomputed["coverage_status"]:
+        raise ValueError(
+            "EA Elevation Evidence acquisition sidecar forges sample validation status"
+        )
+    sample_validation = preflight.get("sample_validation")
+    if not isinstance(sample_validation, dict):
+        sample_validation = acquisition.get("sample_validation")
+    if not isinstance(sample_validation, dict) or sample_validation.get("status") not in {
+        "available",
+        "partial",
+        "unavailable",
+    }:
+        raise ValueError(
+            "EA Elevation Evidence acquisition manifest lacks actual complete sample validation"
+        )
+    authorities = sample_validation.get("authorities")
+    if not isinstance(authorities, list) or len(authorities) != 5:
+        raise ValueError(
+            "EA Elevation Evidence acquisition manifest lacks authority sample evidence"
+        )
+    try:
+        sample_totals = {
+            field: sum(int(row.get(field, 0)) for row in authorities)
+            for field in (
+                "requested_sample_count",
+                "available_sample_count",
+                "nodata_sample_count",
+            )
+        }
+    except (AttributeError, TypeError, ValueError) as error:
+        raise ValueError("EA Elevation Evidence authority sample evidence is invalid") from error
+    transitions = sample_validation.get("cross_boundary_transitions")
+    if not isinstance(transitions, list):
+        raise ValueError("EA Elevation Evidence sample transitions are missing")
+
+    def transition_identity(items: list[object]) -> list[tuple[str, int, int, str]]:
+        return sorted(
+            (
+                str(row.get("route_id")),
+                int(row.get("before_sample_index")),
+                int(row.get("after_sample_index")),
+                str(row.get("status")),
+            )
+            for row in items
+            if isinstance(row, dict)
+        )
+
+    if (
+        sample_validation.get("status") != recomputed["coverage_status"]
+        or sample_totals["requested_sample_count"] != recomputed["requested_point_count"]
+        or sample_totals["available_sample_count"] != recomputed["evidence_sample_count"]
+        or sample_totals["nodata_sample_count"] != recomputed["nodata_sample_count"]
+        or len(transitions) != len(transition_identity(transitions))
+        or transition_identity(transitions)
+        != transition_identity(recomputed["cross_boundary_transitions"])
+    ):
+        raise ValueError("EA Elevation Evidence sample totals or transitions are forged")
+    requested = acquisition.get("requested_point_count")
+    if not isinstance(requested, int) or requested <= 0:
+        raise ValueError(
+            "EA Elevation Evidence acquisition manifest has invalid requested point count"
+        )
+    governed_input_fingerprint = acquisition.get("governed_input_fingerprint")
+    if not isinstance(governed_input_fingerprint, str) or len(governed_input_fingerprint) != 64:
+        raise ValueError(
+            "EA Elevation Evidence acquisition manifest lacks governed input fingerprint"
+        )
+    return {
+        "ea_acquisition_manifest_sha256": hashlib.sha256(sidecar.read_bytes()).hexdigest(),
+        "acquisition_output_sha256": output_digest,
+        "pre_elevation_network_sha256": network_digest,
+        "acquisition_protocol": acquisition["acquisition_protocol"],
+        "survey_index_sha256": official_index["raw_sha256"],
+        "survey_index_feature_sha256": official_index["canonical_feature_sha256"],
+        "coverage_status": recomputed["coverage_status"],
+        "effective_survey_date": recomputed["effective_survey_date"],
+        "governed_input_fingerprint": governed_input_fingerprint,
+        "authority_boundary_sha256": authority_identity["raw_sha256"],
+        "authority_coverage": recomputed["authority_coverage"],
+        "sample_ledger_sha256": recomputed["sample_ledger_sha256"],
+        "cross_boundary_transitions": recomputed["cross_boundary_transitions"],
+        "evidence_row_sha256s": recomputed["evidence_row_sha256s"],
+    }
+
+
 def _snapshot_national_elevation(config: AreaConfig, temporary: Path) -> None:
     governed = config.source.national_elevation
     if governed is None:
@@ -589,6 +1295,43 @@ def _snapshot_national_elevation(config: AreaConfig, temporary: Path) -> None:
         if governed.path is None or not governed.path.exists():
             raise ValueError("configured national Elevation Evidence path is missing")
         source = gpd.read_file(governed.path)
+        if governed.acquisition_contract == EA_LIDAR_WECA_ACQUISITION_CONTRACT:
+            configured_sidecar = governed.path.with_suffix(".manifest.json")
+            sidecar = _regular_sibling(
+                configured_sidecar.parent,
+                configured_sidecar.name,
+                label="EA Elevation Evidence acquisition manifest",
+            )
+            # Validate first; only an independently pinned official response is copied.
+            _ea_elevation_acquisition_provenance(governed)
+            acquisition = json.loads(sidecar.read_text(encoding="utf-8"))
+            survey_index = _regular_sibling(
+                sidecar.parent, acquisition["survey_index_path"], label="EA survey index"
+            )
+            authority_boundaries = _regular_sibling(
+                sidecar.parent,
+                acquisition["authority_boundaries_path"],
+                label="EA authority boundaries",
+            )
+            ledger = _regular_sibling(
+                sidecar.parent, acquisition.get("sample_ledger_path"), label="EA sample ledger"
+            )
+            sampled_routes = _regular_sibling(
+                sidecar.parent, acquisition.get("sample_route_path"), label="EA sampled routes"
+            )
+            # The immutable sidecar points only at the immutable sibling proofs;
+            # never leave a release depending on a mutable acquisition directory.
+            acquisition["survey_index_path"] = "ea-survey-index.geojson"
+            acquisition["authority_boundaries_path"] = "ea-authority-boundaries.geojson"
+            acquisition["sample_ledger_path"] = SAMPLE_LEDGER_FILENAME
+            acquisition["sample_route_path"] = EA_RETAINED_ROUTE_FILENAME
+            (temporary / "elevation-evidence.manifest.json").write_text(
+                json.dumps(acquisition, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            shutil.copy2(survey_index, temporary / "ea-survey-index.geojson")
+            shutil.copy2(authority_boundaries, temporary / "ea-authority-boundaries.geojson")
+            shutil.copy2(ledger, temporary / SAMPLE_LEDGER_FILENAME)
+            shutil.copy2(sampled_routes, temporary / EA_RETAINED_ROUTE_FILENAME)
     else:
         source = _load_remote_elevation(config, temporary)
     if source.crs is None:
@@ -622,6 +1365,7 @@ def _snapshot_national_elevation(config: AreaConfig, temporary: Path) -> None:
         identifier = sample.get(governed.identifier_field)
         if pd.isna(identifier) or not str(identifier).strip():
             identifier = hashlib.sha256(sample.geometry.wkb).hexdigest()[:16]
+        metric_point = gpd.GeoSeries([sample.geometry], crs=source.crs).to_crs(27700).iloc[0]
         rows.append(
             {
                 "evidence_id": str(identifier),
@@ -629,9 +1373,26 @@ def _snapshot_national_elevation(config: AreaConfig, temporary: Path) -> None:
                 "effective_date": evidence_date,
                 "licence": governed.licence,
                 "elevation_m": elevation,
+                "evidence_row_sha256": (
+                    str(sample["evidence_row_sha256"])
+                    if "evidence_row_sha256" in sample
+                    and pd.notna(sample.get("evidence_row_sha256"))
+                    else evidence_row_sha256(
+                        route_id=str(sample.get("route_id")),
+                        sample_index=int(sample.get("sample_index")),
+                        east_mm=round(metric_point.x * 1000),
+                        north_mm=round(metric_point.y * 1000),
+                        elevation_m=elevation,
+                    )
+                    if "route_id" in sample and "sample_index" in sample
+                    else None
+                ),
                 **{
                     field: sample.get(field)
                     for field in (
+                        "route_id",
+                        "sample_index",
+                        "evidence_row_sha256",
                         "vertical_accuracy_m",
                         "source_resolution_m",
                         "output_sample_spacing_m",
@@ -653,6 +1414,9 @@ def _snapshot_national_elevation(config: AreaConfig, temporary: Path) -> None:
         *[
             field
             for field in (
+                "route_id",
+                "sample_index",
+                "evidence_row_sha256",
                 "vertical_accuracy_m",
                 "source_resolution_m",
                 "output_sample_spacing_m",
@@ -1154,25 +1918,40 @@ def _station_class(row: pd.Series) -> str:
 
 
 def _validate_snapshot(path: Path) -> None:
-    manifest_path = path / "snapshot.json"
-    if not manifest_path.exists():
-        raise ValueError(f"invalid snapshot: missing {manifest_path}")
+    manifest_candidate = path / "snapshot.json"
+    if not manifest_candidate.exists():
+        raise ValueError(f"invalid snapshot: missing {manifest_candidate}")
+    manifest_path = _regular_sibling(path, "snapshot.json", label="snapshot manifest")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(manifest, dict):
+        raise ValueError("invalid snapshot: manifest must be an object")
     if manifest.get("schema_version") != SCHEMA_VERSION:
         raise ValueError(
             f"invalid snapshot schema: expected {SCHEMA_VERSION}, "
             f"found {manifest.get('schema_version')}"
         )
-    for filename in manifest["files"]:
-        file_path = path / filename
-        if not file_path.exists():
-            raise ValueError(f"invalid snapshot: missing {file_path}")
-        frame = gpd.read_file(file_path)
-        if frame.crs is None:
-            raise ValueError(f"invalid snapshot: {filename} has no CRS")
-        expected_hash = manifest.get("file_sha256", {}).get(filename)
-        if expected_hash and hashlib.sha256(file_path.read_bytes()).hexdigest() != expected_hash:
+    files = _manifest_siblings(path, manifest.get("files"), label="snapshot file")
+    file_hashes = _manifest_hashes(manifest, "file_sha256", label="snapshot file hashes")
+    provenance_hashes = _manifest_hashes(
+        manifest, "provenance_file_sha256", label="snapshot provenance hashes"
+    )
+    if set(file_hashes) != set(files):
+        raise ValueError("invalid snapshot: file hashes must cover exactly snapshot files")
+    provenance = _manifest_siblings(
+        path, list(provenance_hashes), label="snapshot provenance file"
+    )
+    # All sibling paths have now passed containment, regular-file and duplicate
+    # checks.  Only after that first pass is a retained byte read or hashed.
+    for filename, file_path in files.items():
+        if hashlib.sha256(file_path.read_bytes()).hexdigest() != file_hashes[filename]:
             raise ValueError(f"invalid snapshot: {filename} content hash mismatch")
+        if file_path.suffix == ".geojson":
+            frame = gpd.read_file(file_path)
+            if frame.crs is None:
+                raise ValueError(f"invalid snapshot: {filename} has no CRS")
+    for filename, file_path in provenance.items():
+        if hashlib.sha256(file_path.read_bytes()).hexdigest() != provenance_hashes[filename]:
+            raise ValueError(f"invalid snapshot: {filename} provenance hash mismatch")
 
 
 def load_snapshot(config: AreaConfig) -> dict[str, gpd.GeoDataFrame]:

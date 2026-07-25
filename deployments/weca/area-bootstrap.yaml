@@ -1,8 +1,8 @@
-# A single Area Definition for the four constituent authorities. Its source
-# snapshots and generated publication stay local until a governed deployment is built.
+# First pass only: a self-contained source definition that can create the
+# retained OSM core before the final EA elevation artefacts exist.
 area_id: west-of-england
 area_name: West of England Combined Authority area
-deployment_id: weca
+deployment_id: weca-bootstrap
 source:
   kind: osm
   osm_place_queries:
@@ -22,15 +22,6 @@ source:
   community_place_types: [town, village, suburb, quarter, neighbourhood]
   urban_place_types: [city, town, suburb, quarter, neighbourhood]
   urban_scope_buffer_km: 2
-  national_elevation:
-    provider: local-geojson
-    path: ../../data/local/ea-lidar-dtm-1m-weca-samples.geojson
-    source_id: ea-lidar-composite-dtm-1m
-    acquisition_contract: ea-lidar-weca-v1
-    licence: Open Government Licence v3.0
-    attribution: "Contains Environment Agency information © Environment Agency and/or database right. All rights reserved."
-    elevation_field: elevation_m
-    identifier_field: evidence_id
 compilation:
   max_connection_km: 15
   criteria_version: "1"
@@ -44,7 +35,7 @@ atm:
   mode: blind
   redistribution_permitted: false
 publication:
-  output_dir: ../../build/compiled/weca
-  title: West of England Strategic Active Travel Network Review
+  output_dir: ../../build/compiled/weca-bootstrap
+  title: West of England Strategic Active Travel Network Bootstrap Review
   pdf_page_size: A2
-  audience: public
+  audience: local

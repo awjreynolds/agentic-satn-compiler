@@ -31,12 +31,15 @@ def _configure_logging(log_level: str) -> None:
 def snapshot(
     config: Path,
     replace: bool = typer.Option(False, "--replace"),
+    retain_core: bool = typer.Option(False, "--retain-core"),
     log_level: str = typer.Option("INFO", "--log-level"),
 ) -> None:
-    """Create or validate an immutable source snapshot."""
+    """Create, validate, or atomically augment an immutable source snapshot."""
     _configure_logging(log_level)
     try:
-        path = create_snapshot(AreaDefinition.from_yaml(config), replace=replace)
+        path = create_snapshot(
+            AreaDefinition.from_yaml(config), replace=replace, retain_core=retain_core
+        )
     except Exception:
         LOGGER.exception("Snapshot command failed config=%s", config)
         raise
