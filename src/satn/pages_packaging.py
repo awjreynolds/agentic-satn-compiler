@@ -536,6 +536,11 @@ def _provenance_lock(path: Path, deployment_id: str) -> dict[str, Any]:
         "compilation_input_fingerprint",
     ):
         _sha256(lock.get(field), f"provenance lock {field}")
+    if "runtime_governance_sha256" in lock:
+        _sha256(
+            lock.get("runtime_governance_sha256"),
+            "provenance lock runtime_governance_sha256",
+        )
     if lock.get("status") not in {"complete", "reviewable"}:
         raise ValueError("tracked deployment provenance lock is not publishable")
     if not isinstance(lock.get("artifacts"), dict):
@@ -702,6 +707,21 @@ def _validate_publication(
     for field in ("run_id", "status", "compilation_input_fingerprint"):
         if compiler_run.get(field) != publication.get(field):
             raise ValueError(f"compiler run {field} does not match deployment publication")
+    if "runtime_governance_sha256" in expected_lock:
+        runtime_governance = compiler_run.get("runtime_governance")
+        if not isinstance(runtime_governance, dict):
+            raise ValueError("compiler run runtime governance must be an object")
+        if publication.get("runtime_governance") != runtime_governance:
+            raise ValueError(
+                "deployment publication runtime governance does not match compiler run"
+            )
+        runtime_governance_digest = hashlib.sha256(
+            json.dumps(runtime_governance, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        if runtime_governance_digest != expected_lock["runtime_governance_sha256"]:
+            raise ValueError(
+                "compiler run runtime governance does not match tracked provenance lock"
+            )
     if publication.get("compilation_input_fingerprint") != expected_lock.get(
         "compilation_input_fingerprint"
     ):
@@ -768,6 +788,8 @@ def _validate_publication(
         "gap_count",
         "disclaimer",
     )
+    if "runtime_governance_sha256" in expected_lock:
+        public_data_fields += ("runtime_governance",)
     if any(data.get(field) != publication.get(field) for field in public_data_fields):
         raise ValueError("generated data.js does not match the validated publication contract")
     for field, expected in (
@@ -1065,6 +1087,7 @@ def package_pages(
     release_artifact: str | Path,
     *,
     maximum_bytes: int = DEFAULT_MAXIMUM_BYTES,
+    promote_production: bool = False,
 ) -> PagesPackage:
     """Assemble a Pages tree and its standalone release archive from local bundles.
 
@@ -1100,6 +1123,39 @@ def package_pages(
         pages = temporary_root / "pages"
         pages.mkdir()
         _copy_deployments(catalogue, bundles, pages, Path(catalogue_path).resolve().parent)
+        if promote_production:
+            from satn.runtime_governance import assert_promotable_runtime_governance
+
+            for entry in catalogue.deployments:
+                publication = _json_object(
+                    pages / _deployment_destination(entry.deployment_id) / "publication.json",
+                    "deployment publication",
+                )
+                runtime_governance = publication.get("runtime_governance")
+                if not isinstance(runtime_governance, dict):
+                    raise ValueError(
+                        "production promotion denied: deployment has no runtime governance contract"
+                    )
+                compiler_run = _json_object(
+                    pages
+                    / _deployment_destination(entry.deployment_id)
+                    / _relative_file_path(publication.get("compiler_run"), "compiler_run"),
+                    "compiler run",
+                )
+                decision_ledger_input = compiler_run.get("decision_ledger_input")
+                accepted_decisions = compiler_run.get("accepted_decisions")
+                if not isinstance(decision_ledger_input, dict) or not isinstance(
+                    accepted_decisions, list
+                ):
+                    raise ValueError(
+                        "production promotion denied: compiler run decision provenance is invalid"
+                    )
+                assert_promotable_runtime_governance(
+                    runtime_governance,
+                    decision_contract=compiler_run.get("decision_contract"),
+                    decision_ledger_input=decision_ledger_input,
+                    accepted_decisions=accepted_decisions,
+                )
         from satn.deployment_catalogue import build_deployment_catalogue
 
         build_deployment_catalogue(catalogue_path, pages)

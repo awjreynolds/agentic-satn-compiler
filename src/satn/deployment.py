@@ -543,6 +543,21 @@ def build_area_deployment(
             "evidence_provenance": _evidence_provenance(definition, run),
             "run_id": run["run_id"],
             "status": run["status"],
+            # A governed compiler run always supplies this contract.  Keep a
+            # legacy build explicitly unclassified rather than implying that
+            # its older, incomplete audit was production agent review.
+            "runtime_governance": run.get(
+                "runtime_governance",
+                {
+                    "schema_version": "satn-runtime-governance/v1",
+                    "status": "reviewable",
+                    "reason": "legacy-runtime-governance-unavailable",
+                    "promotion": {
+                        "allowed": False,
+                        "reason": "legacy-runtime-governance-unavailable",
+                    },
+                },
+            ),
             "compilation_input_fingerprint": run["compilation_input_fingerprint"],
             "compiler_run": "compiler-run.json",
             "network_model": run["network_model"],
@@ -572,6 +587,7 @@ def build_area_deployment(
             "evidence_provenance",
             "run_id",
             "status",
+            "runtime_governance",
             "area_definition_sha256",
             "compilation_input_fingerprint",
             "criteria",
