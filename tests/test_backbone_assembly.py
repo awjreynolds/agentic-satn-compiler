@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 from pathlib import Path
@@ -16,11 +17,11 @@ from shapely.geometry import LineString, Point, Polygon
 import satn.backbone as backbone_module
 import satn.compiler as compiler_module
 from satn.agents import AgentRole, FakeAgentRuntime
-from satn.compiler import compile_network
+from satn.compiler import CompiledNetwork, compile_network
 from satn.heartbeat import StageHeartbeat
 from satn.models import CouncilConfig, TrafficLight
 from satn.publisher import _write_json_records, publish
-from satn.routing import RouteOption
+from satn.routing import RoadGraph, RouteOption
 
 PROJECT = Path(__file__).parents[1]
 PARALLEL_SPINE_PRE_INSTRUMENTATION_SEMANTIC_SNAPSHOT = {
@@ -218,6 +219,63 @@ def three_spine_source() -> dict[str, gpd.GeoDataFrame]:
             },
         ]
     )
+    return source
+
+
+def four_spine_source(*, reverse: bool = False) -> dict[str, gpd.GeoDataFrame]:
+    """Four roots create a real cycle-selection case beyond the simple triangle."""
+    source = three_spine_source()
+    source["places"] = frame(
+        [
+            *source["places"].to_dict("records"),
+            {
+                "place_id": "fourth-near",
+                "name": "Fourth Near",
+                "kind": "community",
+                "place_class": "village",
+                "geometry": Point(0.28, 0),
+            },
+        ]
+    )
+    source["network"] = frame(
+        [
+            *source["network"].to_dict("records"),
+            {
+                "osmid": "third-to-fourth",
+                "highway": "unclassified",
+                "geometry": LineString([(0.2, 0), (0.28, 0)]),
+            },
+            {
+                "osmid": "fourth-feed",
+                "highway": "unclassified",
+                "geometry": LineString([(0.28, 0), (0.3, 0)]),
+            },
+            {
+                "osmid": "fourth-spine-edge",
+                "highway": "primary",
+                "ref": "A4",
+                "geometry": LineString([(0.3, 0), (0.3, 0.01)]),
+            },
+        ]
+    )
+    source["context"] = frame(
+        [
+            *source["context"].to_dict("records"),
+            {
+                "evidence_id": "fourth-a4",
+                "feature_type": "a-road-spine",
+                "name": "A4",
+                "category": "A-road strategic spine",
+                "source_id": "fourth-spine-edge",
+                "feature_count": 1,
+                "network_scope": "rural",
+                "geometry": LineString([(0.3, 0), (0.3, 0.01)]),
+            },
+        ]
+    )
+    if reverse:
+        for name in ("places", "network", "context"):
+            source[name] = frame(list(reversed(source[name].to_dict("records"))))
     return source
 
 
@@ -475,6 +533,66 @@ def assert_same_runtime_governed_frame_equal(
     assert [geometry.wkb_hex for geometry in actual.geometry] == [
         geometry.wkb_hex for geometry in expected.geometry
     ]
+
+
+def compile_eager_reference(
+    monkeypatch: pytest.MonkeyPatch,
+    council: CouncilConfig,
+    source: dict[str, gpd.GeoDataFrame],
+    runtime: FakeAgentRuntime,
+) -> object:
+    """Compile through the retained private eager schedule for parity tests."""
+    original = backbone_module._cross_spine_meetings
+
+    def eager_reference(*args: object, **kwargs: object) -> object:
+        return original(*args, lazy_bounds=False, **kwargs)
+
+    monkeypatch.setattr(backbone_module, "_cross_spine_meetings", eager_reference)
+    return compile_network(council, source, runtime)
+
+
+def assert_lazy_matches_eager_governed_contract(lazy: object, eager: object) -> None:
+    """Prove optimisation-only differences cannot leak into governed output."""
+    for field in dataclasses.fields(CompiledNetwork):
+        field_name = field.name
+        lazy_value = getattr(lazy, field_name)
+        eager_value = getattr(eager, field_name)
+        if isinstance(lazy_value, gpd.GeoDataFrame):
+            assert isinstance(eager_value, gpd.GeoDataFrame)
+            assert_same_runtime_governed_frame_equal(lazy_value, eager_value)
+            continue
+        if field_name == "agent_records":
+            assert [record.model_dump(mode="json", exclude={"created_at"}) for record in lazy_value] == [
+                record.model_dump(mode="json", exclude={"created_at"}) for record in eager_value
+            ]
+            continue
+        if field_name == "compilation_diagnostics":
+            assert {
+                key: value for key, value in lazy_value.items() if key != "cross_spine"
+            } == {
+                key: value for key, value in eager_value.items() if key != "cross_spine"
+            }
+            lazy_diagnostics = lazy_value["cross_spine"]
+            eager_diagnostics = eager_value["cross_spine"]
+            assert isinstance(lazy_diagnostics, dict)
+            assert isinstance(eager_diagnostics, dict)
+            optimisation_keys = {
+                "root_pair_route_searches",
+                "root_pair_route_searches_avoided",
+                "root_pair_candidate_bounds_enqueued",
+                "root_pair_candidate_bounds_skipped_as_connected",
+                "root_pair_candidate_bounds_skipped_as_unroutable",
+                "root_group_distance_planning_searches",
+                "root_group_distance_planning_nodes_settled",
+                "root_pair_exact_distance_bounds",
+            }
+            assert {
+                key: value for key, value in lazy_diagnostics.items() if key not in optimisation_keys
+            } == {
+                key: value for key, value in eager_diagnostics.items() if key not in optimisation_keys
+            }
+            continue
+        assert lazy_value == eager_value
 
 
 @pytest.mark.parametrize(
@@ -995,6 +1113,357 @@ def test_first_meetings_connect_three_roots_without_forming_a_mesh() -> None:
     }
     assert diagnostics["candidate_connectors"] == 2
     assert diagnostics["connector_traversal_attempts"] == 2
+
+
+def test_lazy_cross_spine_bounds_preserve_eager_governed_output_and_avoid_route_searches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cycle suppression must happen before unnecessary exact root-pair routing.
+
+    The private eager mode is a reference implementation for this regression.
+    It proves that the performance optimisation leaves every same-runtime
+    governed frame, exact geometry, provenance-bearing agent record and legacy
+    logical diagnostic unchanged while avoiding the discarded cycle's route
+    search.
+    """
+    source = three_spine_source()
+    lazy = compile_network(config(), source, FakeAgentRuntime())
+
+    original = backbone_module._cross_spine_meetings
+
+    def eager_reference(*args: object, **kwargs: object) -> object:
+        return original(*args, lazy_bounds=False, **kwargs)
+
+    monkeypatch.setattr(backbone_module, "_cross_spine_meetings", eager_reference)
+    eager = compile_network(config(), source, FakeAgentRuntime())
+
+    assert backbone_snapshot(lazy) == backbone_snapshot(eager)
+    for frame_name in (
+        "spine_access_connections",
+        "access_obligations",
+        "branch_meeting_connections",
+        "cross_spine_connectors",
+        "gaps",
+    ):
+        assert_same_runtime_governed_frame_equal(
+            getattr(lazy, frame_name),
+            getattr(eager, frame_name),
+        )
+
+    lazy_diagnostics = lazy.compilation_diagnostics["cross_spine"]
+    eager_diagnostics = eager.compilation_diagnostics["cross_spine"]
+    for key in (
+        "root_pairs_considered",
+        "root_pair_candidate_searches",
+        "meeting_agent_evaluations",
+        "meeting_agent_evaluation_initial_outcomes",
+        "meeting_agent_evaluation_final_dispositions",
+    ):
+        assert lazy_diagnostics[key] == eager_diagnostics[key]
+    assert lazy_diagnostics["root_pair_route_searches"] == 2
+    assert eager_diagnostics["root_pair_route_searches"] == 3
+    assert lazy_diagnostics["root_pair_route_searches_avoided"] == 1
+    assert eager_diagnostics["root_pair_route_searches_avoided"] == 0
+    assert lazy_diagnostics["root_pair_candidate_bounds_enqueued"] == 3
+    assert lazy_diagnostics["root_pair_candidate_bounds_skipped_as_connected"] == 1
+    assert lazy_diagnostics["root_pair_candidate_bounds_skipped_as_unroutable"] == 0
+    assert lazy_diagnostics["root_group_distance_planning_searches"] == 2
+    assert lazy_diagnostics["root_pair_exact_distance_bounds"] == 3
+
+
+def test_discarded_unmaterializable_cross_spine_path_does_not_change_governed_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Eager-only cyclic work cannot leak into legacy graph-quality evidence.
+
+    The injected route cannot be materialised only for the A1--A3 root pair.
+    A1 and A3 become connected through accepted A1--A2 and A2--A3 meetings,
+    so this direct candidate is redundant.  The eager reference still reaches
+    it while the lazy schedule correctly avoids it; both must publish the
+    same final Backbone-and-Access diagnostics and authoritative output.
+    """
+    original_option_from_nodes = RoadGraph._option_from_nodes
+    forced_attempts = {"count": 0}
+
+    def reject_redundant_a1_a3_path(
+        graph: RoadGraph,
+        nodes: list[str],
+        role: str,
+    ) -> RouteOption | None:
+        longitudes = [round(graph.node_points[node].x, 3) for node in nodes]
+        if role == "direct" and min(longitudes) <= 0.04 and max(longitudes) >= 0.18:
+            forced_attempts["count"] += 1
+            return None
+        return original_option_from_nodes(graph, nodes, role)
+
+    monkeypatch.setattr(RoadGraph, "_option_from_nodes", reject_redundant_a1_a3_path)
+    source = three_spine_source()
+    lazy = compile_network(config(), source, FakeAgentRuntime())
+    assert forced_attempts["count"] == 0
+
+    eager = compile_eager_reference(monkeypatch, config(), source, FakeAgentRuntime())
+    assert forced_attempts["count"] == 1
+
+    assert_lazy_matches_eager_governed_contract(lazy, eager)
+    for compiled in (lazy, eager):
+        diagnostics = compiled.compilation_diagnostics
+        assert diagnostics["unmaterializable_attachment_paths"] == 0
+        assert not any(
+            finding["finding_id"] == "unmaterializable-osm-attachment-paths"
+            for finding in diagnostics["optimization_findings"]
+        )
+    assert (
+        lazy.compilation_diagnostics["cross_spine"]["root_pair_route_searches"]
+        < eager.compilation_diagnostics["cross_spine"]["root_pair_route_searches"]
+    )
+
+
+def test_finally_disconnected_unmaterializable_cross_spine_path_remains_visible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed pair that remains disconnected is governed source-quality evidence."""
+    original_option_from_nodes = RoadGraph._option_from_nodes
+
+    def reject_only_a1_a2_path(
+        graph: RoadGraph,
+        nodes: list[str],
+        role: str,
+    ) -> RouteOption | None:
+        longitudes = [round(graph.node_points[node].x, 3) for node in nodes]
+        if role == "direct" and min(longitudes) <= 0.04 and max(longitudes) >= 0.08:
+            return None
+        return original_option_from_nodes(graph, nodes, role)
+
+    monkeypatch.setattr(RoadGraph, "_option_from_nodes", reject_only_a1_a2_path)
+    source = parallel_spine_source()
+    lazy = compile_network(config(), source, FakeAgentRuntime())
+    eager = compile_eager_reference(monkeypatch, config(), source, FakeAgentRuntime())
+
+    assert_lazy_matches_eager_governed_contract(lazy, eager)
+    for compiled in (lazy, eager):
+        diagnostics = compiled.compilation_diagnostics
+        assert diagnostics["unmaterializable_attachment_paths"] == 1
+        assert diagnostics["optimization_findings"][-1]["finding_id"] == (
+            "unmaterializable-osm-attachment-paths"
+        )
+        assert diagnostics["optimization_findings"][-1]["evidence"] == {"path_count": 1}
+
+
+@pytest.mark.parametrize(
+    ("source_factory", "lower_bound_factor"),
+    [
+        pytest.param(three_spine_source, 0.0, id="zero-bound-fallback"),
+        pytest.param(three_spine_source, 0.5, id="discounted-positive-bound"),
+        pytest.param(lambda: four_spine_source(reverse=True), 1.0, id="four-root-cycle-row-order"),
+    ],
+)
+def test_lazy_bounds_match_eager_for_fallback_discount_and_order_adversaries(
+    monkeypatch: pytest.MonkeyPatch,
+    source_factory: object,
+    lower_bound_factor: float,
+) -> None:
+    """Bounds must never alter equal-cost/tie or root-order selection semantics."""
+    assert callable(source_factory)
+    source = source_factory()
+    monkeypatch.setattr(
+        RoadGraph,
+        "attachment_lower_bound_cost_factor",
+        property(lambda _graph: lower_bound_factor),
+    )
+    # Exercise the conservative projected-bound fallback separately from the
+    # default exact numeric root-group schedule.
+    monkeypatch.setattr(
+        RoadGraph,
+        "attachment_group_distance_bounds",
+        lambda _graph, _groups: (
+            {},
+            set(),
+            {
+                "root_group_distance_planning_searches": 0,
+                "root_group_distance_planning_nodes_settled": 0,
+            },
+        ),
+    )
+    lazy = compile_network(config(), source, FakeAgentRuntime())
+    eager = compile_eager_reference(monkeypatch, config(), source, FakeAgentRuntime())
+
+    assert_lazy_matches_eager_governed_contract(lazy, eager)
+    lazy_diagnostics = lazy.compilation_diagnostics["cross_spine"]
+    eager_diagnostics = eager.compilation_diagnostics["cross_spine"]
+    assert lazy_diagnostics["root_pair_route_searches"] <= eager_diagnostics[
+        "root_pair_route_searches"
+    ]
+    if lower_bound_factor == 0.0:
+        # A disabled metric bound is conservative: no pair is silently omitted.
+        assert lazy_diagnostics["root_pair_candidate_searches"] == eager_diagnostics[
+            "root_pair_candidate_searches"
+        ]
+
+
+def test_lazy_bounds_match_eager_after_rejection_retry_and_supersession(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rejected pair may retry, then be superseded when a later tree edge connects it."""
+    original_evaluate = backbone_module._evaluate_meeting
+    decisions = iter(("reject", "accept", "accept"))
+
+    def reject_then_accept(*args: object, **kwargs: object) -> object:
+        record = original_evaluate(*args, **kwargs)
+        record.decision = next(decisions)
+        record.outcome_reason = f"adversarial-{record.decision}"
+        return record
+
+    monkeypatch.setattr(backbone_module, "_evaluate_meeting", reject_then_accept)
+    source = three_spine_source()
+    lazy = compile_network(config(), source, FakeAgentRuntime())
+    # Restore the deterministic forced sequence for the independent eager run.
+    decisions = iter(("reject", "accept", "accept"))
+    eager = compile_eager_reference(monkeypatch, config(), source, FakeAgentRuntime())
+
+    assert_lazy_matches_eager_governed_contract(lazy, eager)
+    lazy_records = [
+        record for record in lazy.agent_records if record.connection_id.startswith("branch-meeting-")
+    ]
+    assert [record.decision for record in lazy_records].count("superseded") == 1
+    lazy_diagnostics = lazy.compilation_diagnostics["cross_spine"]
+    eager_diagnostics = eager.compilation_diagnostics["cross_spine"]
+    assert lazy_diagnostics["root_pair_route_searches"] < eager_diagnostics[
+        "root_pair_route_searches"
+    ]
+    assert lazy_diagnostics["root_pair_candidate_bounds_skipped_as_connected"] == 1
+
+
+def test_missing_attachment_group_has_a_strictly_prior_safe_bound() -> None:
+    """A disconnected/missing root attachment is handled as absent work, not a false shortcut."""
+    source = three_spine_source()
+    graph = RoadGraph(source["network"])
+    compiled = compile_network(config(), source, FakeAgentRuntime())
+    existing = compiled.spine_access_connections.iloc[0].copy()
+    missing = existing.copy()
+    missing["root_spine_id"] = "missing-root"
+    missing["community_attachment_node"] = "missing-node"
+    missing["place_id"] = "missing-place"
+    group = gpd.GeoDataFrame([missing], geometry="geometry", crs=compiled.spine_access_connections.crs)
+
+    assert backbone_module._meeting_group_attachment_geometry(group, graph) is None
+    assert backbone_module._meeting_candidate_bound_rank(
+        "missing-root", "other-root", None, None, graph
+    ) == (-1e-9, "missing-root", "other-root", "", "")
+
+
+def test_lazy_and_eager_schedulers_preserve_output_with_a_missing_attachment_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An absent attachment gets an eager-safe zero bound in the real scheduler."""
+    original_attachment = backbone_module._meeting_group_attachment_geometry
+
+    def missing_one_group(group: gpd.GeoDataFrame, graph: RoadGraph) -> object | None:
+        if group["root_spine_id"].iloc[0] == "root:A3":
+            return None
+        return original_attachment(group, graph)
+
+    monkeypatch.setattr(
+        backbone_module,
+        "_meeting_group_attachment_geometry",
+        missing_one_group,
+    )
+    source = three_spine_source()
+    lazy = compile_network(config(), source, FakeAgentRuntime())
+    eager = compile_eager_reference(monkeypatch, config(), source, FakeAgentRuntime())
+    assert_lazy_matches_eager_governed_contract(lazy, eager)
+    assert lazy.compilation_diagnostics["cross_spine"]["root_pair_route_searches"] <= eager.compilation_diagnostics["cross_spine"]["root_pair_route_searches"]
+
+
+def test_lazy_scheduler_skips_component_proven_unroutable_root_pairs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An isolated root must retain logical coverage without futile route searches."""
+    source = three_spine_source()
+    source["places"] = frame(
+        [
+            *source["places"].to_dict("records"),
+            {
+                "place_id": "isolated-near",
+                "name": "Isolated Near",
+                "kind": "community",
+                "place_class": "village",
+                "geometry": Point(1.02, 0),
+            },
+        ]
+    )
+    source["network"] = frame(
+        [
+            *source["network"].to_dict("records"),
+            {
+                "osmid": "isolated-feed",
+                "highway": "unclassified",
+                "geometry": LineString([(1, 0), (1.02, 0)]),
+            },
+            {
+                "osmid": "isolated-spine-edge",
+                "highway": "primary",
+                "ref": "A4",
+                "geometry": LineString([(1, 0), (1, 0.01)]),
+            },
+        ]
+    )
+    source["context"] = frame(
+        [
+            *source["context"].to_dict("records"),
+            {
+                "evidence_id": "isolated-a4",
+                "feature_type": "a-road-spine",
+                "name": "A4",
+                "category": "A-road strategic spine",
+                "source_id": "isolated-spine-edge",
+                "feature_count": 1,
+                "network_scope": "rural",
+                "geometry": LineString([(1, 0), (1, 0.01)]),
+            },
+        ]
+    )
+
+    lazy = compile_network(config(), source, FakeAgentRuntime())
+    eager = compile_eager_reference(monkeypatch, config(), source, FakeAgentRuntime())
+
+    assert_lazy_matches_eager_governed_contract(lazy, eager)
+    lazy_diagnostics = lazy.compilation_diagnostics["cross_spine"]
+    eager_diagnostics = eager.compilation_diagnostics["cross_spine"]
+    assert lazy_diagnostics["root_pairs_considered"] == 6
+    assert lazy_diagnostics["root_pair_candidate_searches"] == 6
+    assert eager_diagnostics["root_pair_route_searches"] == 6
+    assert lazy_diagnostics["root_pair_route_searches"] == 2
+    assert lazy_diagnostics["root_pair_candidate_bounds_skipped_as_connected"] == 1
+    assert lazy_diagnostics["root_pair_candidate_bounds_skipped_as_unroutable"] == 3
+    assert lazy_diagnostics["root_pair_route_searches_avoided"] == 4
+
+
+def test_four_root_source_order_is_equal_in_lazy_and_eager_schedulers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both schedules must be insensitive to the normal/reversed source rows."""
+    lazy_normal = compile_network(config(), four_spine_source(reverse=False), FakeAgentRuntime())
+    lazy_reversed = compile_network(config(), four_spine_source(reverse=True), FakeAgentRuntime())
+    assert backbone_snapshot(lazy_normal) == backbone_snapshot(lazy_reversed)
+    with monkeypatch.context() as eager_patch:
+        eager_normal = compile_eager_reference(
+            eager_patch,
+            config(),
+            four_spine_source(reverse=False),
+            FakeAgentRuntime(),
+        )
+    with monkeypatch.context() as eager_patch:
+        eager_reversed = compile_eager_reference(
+            eager_patch,
+            config(),
+            four_spine_source(reverse=True),
+            FakeAgentRuntime(),
+        )
+    # This is a full governed-contract matrix, not only the historical
+    # backbone projection: both schedules must preserve every published field
+    # for normal and reversed source ordering.
+    assert_lazy_matches_eager_governed_contract(lazy_normal, eager_normal)
+    assert_lazy_matches_eager_governed_contract(lazy_reversed, eager_reversed)
 
 
 def test_rejected_first_meeting_falls_through_to_next_adjacency() -> None:

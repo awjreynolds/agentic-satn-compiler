@@ -6,7 +6,7 @@ import heapq
 import json
 import logging
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from itertools import pairwise
 
@@ -103,6 +103,8 @@ class RoadGraph:
         self._unmaterializable_attachment_paths = 0
         self._lower_bound_cost_factor = 0.0
         self._lower_bound_disabled_reason: str | None = "no-routable-edges"
+        self._attachment_lower_bound_cost_factor = 0.0
+        self._attachment_lower_bound_disabled_reason: str | None = "no-reciprocal-routable-edges"
         for index, row in sorted(edges.iterrows(), key=_edge_row_sort_key):
             geometry = row.geometry
             if not isinstance(geometry, LineString) or len(geometry.coords) < 2:
@@ -143,6 +145,7 @@ class RoadGraph:
         for u, v, attrs in self.graph.edges(data=True):
             if self.graph.has_edge(v, u):
                 self._attachment_graph.add_edge(u, v, **attrs)
+        self._set_attachment_lower_bound_cost_factor()
         self._node_ids = list(self._attachment_graph.nodes)
         strong_components = sorted(
             nx.strongly_connected_components(self._attachment_graph),
@@ -187,6 +190,24 @@ class RoadGraph:
         """Explain why metric lower bounds fall back to zero."""
         return self._lower_bound_disabled_reason
 
+    @property
+    def attachment_lower_bound_cost_factor(self) -> float:
+        """Return the safe metric factor for reciprocal attachment routes.
+
+        Cross-Spine meetings route only through ``_attachment_graph``.  A
+        one-way or otherwise non-reciprocal edge in the wider road graph can
+        make the broader factor unnecessarily weak even though it can never
+        participate in a meeting route.  Keeping this factor scoped to the
+        actual attachment graph gives the scheduler a tighter *safe* bound;
+        it never estimates a route or changes its selected geometry.
+        """
+        return self._attachment_lower_bound_cost_factor
+
+    @property
+    def attachment_lower_bound_disabled_reason(self) -> str | None:
+        """Explain why reciprocal attachment bounds fall back to zero."""
+        return self._attachment_lower_bound_disabled_reason
+
     def lower_bound_to_geometry_m(self, point: Point, projected_geometry: object) -> float:
         """Return a conservative route-cost bound, or zero when graph geometry is unsafe."""
         if self._lower_bound_cost_factor <= 0 or projected_geometry is None:
@@ -229,6 +250,42 @@ class RoadGraph:
         self._lower_bound_cost_factor = min(1.0, min(ratios))
         self._lower_bound_disabled_reason = None
 
+    def _set_attachment_lower_bound_cost_factor(self) -> None:
+        """Derive the metric lower bound from exactly the meeting route graph.
+
+        The same endpoint and finite-cost checks as the whole-graph factor
+        apply.  A failure is conservative: the caller receives zero rather
+        than an unsound geometric shortcut.
+        """
+        if self._attachment_graph.number_of_edges() == 0:
+            return
+        ratios: list[float] = []
+        for u, v, attrs in self._attachment_graph.edges(data=True):
+            geometry = attrs["geometry"]
+            if (
+                not isinstance(geometry, LineString)
+                or len(geometry.coords) < 2
+                or self.node_points.get(u) != Point(geometry.coords[0])
+                or self.node_points.get(v) != Point(geometry.coords[-1])
+            ):
+                self._attachment_lower_bound_disabled_reason = "non-canonical-edge-endpoints"
+                return
+            cost_m = float(attrs["length_m"])
+            geometry_m = float(attrs["projected_length_m"])
+            if not math.isfinite(cost_m) or cost_m <= 0:
+                self._attachment_lower_bound_disabled_reason = (
+                    "non-positive-or-non-finite-edge-cost"
+                )
+                return
+            if not math.isfinite(geometry_m) or geometry_m <= 0:
+                self._attachment_lower_bound_disabled_reason = (
+                    "non-positive-or-non-finite-projected-geometry"
+                )
+                return
+            ratios.append(cost_m / geometry_m)
+        self._attachment_lower_bound_cost_factor = min(1.0, min(ratios))
+        self._attachment_lower_bound_disabled_reason = None
+
     def compilation_diagnostics(self) -> dict[str, object]:
         """Return deterministic graph-search dimensions for run diagnostics."""
         return {
@@ -241,6 +298,8 @@ class RoadGraph:
             "unmaterializable_attachment_paths": self._unmaterializable_attachment_paths,
             "lower_bound_cost_factor": self._lower_bound_cost_factor,
             "lower_bound_disabled_reason": self._lower_bound_disabled_reason,
+            "attachment_lower_bound_cost_factor": self._attachment_lower_bound_cost_factor,
+            "attachment_lower_bound_disabled_reason": self._attachment_lower_bound_disabled_reason,
         }
 
     def nearest_node(self, point: Point) -> tuple[str, float]:
@@ -497,6 +556,91 @@ class RoadGraph:
                 if end in lengths:
                     best = min(best, float(lengths[end]) + start_snap + end_snap)
         return best
+
+    def attachment_group_distance_bounds(
+        self,
+        groups: Mapping[str, Sequence[str]],
+    ) -> tuple[dict[tuple[str, str], float], set[tuple[str, str]], dict[str, int]]:
+        """Return route-cost bounds and component-proven no-route group pairs.
+
+        Cross-Spine assembly already has fixed attachment *nodes* for every
+        served root group.  For each origin group, a multi-source Dijkstra over
+        exactly the reciprocal attachment graph yields a lower bound for every
+        later group: the minimum cost from any origin attachment node to any
+        destination attachment node.  With zero snap costs this is an exact
+        numeric lower bound on the cost that ``best_attachment`` may rank
+        before it materialises route geometry.
+
+        The second result contains pairs whose attachment nodes share no
+        reciprocal strong component.  This is the same eligibility condition
+        checked at the start of ``best_attachment``, so such a pair cannot
+        produce a route and need not be materialised merely to rediscover that
+        fact.  The method deliberately returns no chosen path, endpoint or
+        ``RouteOption``.  Callers must still invoke
+        ``best_attachment`` before an edge can reach a gate or publication.
+        That separation makes this a scheduling optimisation rather than a
+        second routing implementation.  Missing paths are omitted instead of
+        being asserted as an absence; callers retain their conservative
+        fallback schedule for those pairs.
+        """
+        root_ids = sorted(str(root_id) for root_id in groups)
+        nodes_by_root = {
+            root_id: tuple(
+                sorted(
+                    {
+                        str(node_id)
+                        for node_id in groups[root_id]
+                        if str(node_id) in self._attachment_graph
+                    }
+                )
+            )
+            for root_id in root_ids
+        }
+        components_by_root = {
+            root_id: frozenset(
+                self._strong_component_by_node[node_id]
+                for node_id in nodes_by_root[root_id]
+                if node_id in self._strong_component_by_node
+            )
+            for root_id in root_ids
+        }
+        bounds: dict[tuple[str, str], float] = {}
+        unroutable_pairs: set[tuple[str, str]] = set()
+        searches = 0
+        nodes_settled = 0
+        # The final root has no later partner in this deterministic ordering,
+        # so planning from it cannot produce a bound used by the caller.
+        for left_index, left_root in enumerate(root_ids[:-1]):
+            starts = nodes_by_root[left_root]
+            routable_right_roots = []
+            for right_root in root_ids[left_index + 1 :]:
+                if components_by_root[left_root].intersection(
+                    components_by_root[right_root]
+                ):
+                    routable_right_roots.append(right_root)
+                else:
+                    unroutable_pairs.add((left_root, right_root))
+            if not starts or not routable_right_roots:
+                continue
+            lengths = nx.multi_source_dijkstra_path_length(
+                self._attachment_graph,
+                starts,
+                weight="length_m",
+            )
+            searches += 1
+            nodes_settled += len(lengths)
+            for right_root in routable_right_roots:
+                distances = [
+                    float(lengths[node_id])
+                    for node_id in nodes_by_root[right_root]
+                    if node_id in lengths
+                ]
+                if distances:
+                    bounds[(left_root, right_root)] = min(distances)
+        return bounds, unroutable_pairs, {
+            "root_group_distance_planning_searches": searches,
+            "root_group_distance_planning_nodes_settled": nodes_settled,
+        }
 
     def best_attachment(
         self,
