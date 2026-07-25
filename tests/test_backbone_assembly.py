@@ -382,6 +382,59 @@ def test_cross_spine_roles_publish_consistently_to_spatial_and_review_artifacts(
     assert 'id="legend-cross-spine-connectors"' in html
 
 
+def test_direct_compile_publish_persists_the_canonical_empty_decision_contract(
+    tmp_path: Path,
+) -> None:
+    council = config()
+    council.compilation.agent.review_statuses = ()
+    council.publication.output_dir = tmp_path / "output"
+    source = parallel_spine_source()
+    source["boundary"] = gpd.GeoDataFrame(
+        [{"geometry": Polygon([(-0.01, -0.01), (0.11, -0.01), (0.11, 0.02), (-0.01, 0.02)])}],
+        geometry="geometry",
+        crs=4326,
+    )
+    compiled = compile_network(council, source, FakeAgentRuntime())
+
+    assert compiled.decision_ledger_input == {
+        "decision_contract": "agent-decision-menu/v1",
+        "responses": [],
+    }
+    assert compiled.accepted_decisions == []
+    artifacts = publish(council, compiled, "run-direct-empty-ledger")
+    run = json.loads(artifacts["run"].read_text())
+    assert run["decision_ledger_input"] == compiled.decision_ledger_input
+    assert run["accepted_decisions"] == []
+
+
+def test_direct_compile_publish_persists_its_bounded_runtime_audit(tmp_path: Path) -> None:
+    council = config()
+    council.compilation.agent.review_statuses = (TrafficLight.GREEN,)
+    council.compilation.agent.max_requests = 100
+    council.compilation.agent.max_tokens = 10_000
+    council.compilation.agent.deadline_seconds = 5
+    council.publication.output_dir = tmp_path / "output"
+    source = parallel_spine_source()
+    source["boundary"] = gpd.GeoDataFrame(
+        [{"geometry": Polygon([(-0.01, -0.01), (0.11, -0.01), (0.11, 0.02), (-0.01, 0.02)])}],
+        geometry="geometry",
+        crs=4326,
+    )
+    compiled = compile_network(council, source, FakeAgentRuntime())
+
+    assert len(compiled.accepted_decisions) > 1
+    assert [response["request_id"] for response in compiled.accepted_decisions] == sorted(
+        response["request_id"] for response in compiled.accepted_decisions
+    )
+    artifacts = publish(council, compiled, "run-direct-runtime-audit")
+    run = json.loads(artifacts["run"].read_text())
+    assert run["decision_ledger_input"] == {
+        "decision_contract": "agent-decision-menu/v1",
+        "responses": [],
+    }
+    assert run["accepted_decisions"] == compiled.accepted_decisions
+
+
 def test_first_meetings_connect_three_roots_without_forming_a_mesh() -> None:
     source = three_spine_source()
     reordered = {name: value.iloc[::-1].reset_index(drop=True) for name, value in source.items()}

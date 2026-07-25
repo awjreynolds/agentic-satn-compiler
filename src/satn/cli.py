@@ -6,7 +6,7 @@ from typing import Annotated
 
 import typer
 
-from satn.models import CouncilConfig
+from satn.models import AreaDefinition
 from satn.pipeline import compile as compile_satn
 from satn.sources import snapshot as create_snapshot
 
@@ -36,7 +36,7 @@ def snapshot(
     """Create or validate an immutable source snapshot."""
     _configure_logging(log_level)
     try:
-        path = create_snapshot(CouncilConfig.from_yaml(config), replace=replace)
+        path = create_snapshot(AreaDefinition.from_yaml(config), replace=replace)
     except Exception:
         LOGGER.exception("Snapshot command failed config=%s", config)
         raise
@@ -65,7 +65,7 @@ def compile_command(
 ) -> None:
     """Compile and atomically publish the current network."""
     _configure_logging(log_level)
-    council = CouncilConfig.from_yaml(config)
+    council = AreaDefinition.from_yaml(config)
     council.compilation.full = full
     try:
         result = compile_satn(council, decision_ledger=decision_ledger)

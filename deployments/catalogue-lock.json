@@ -1,0 +1,17 @@
+{
+  "deployment_roots": [
+    "deployments/banes",
+    "deployments/weca"
+  ],
+  "root_files": {
+    "catalogue.json": {
+      "sha256": "e2d27162d34ccb17aa30debb1ea57e2e81e893c0900ae7bd80a4becf293225c7",
+      "size_bytes": 2669
+    },
+    "index.html": {
+      "sha256": "79dc59c1a98da0b59ddbe565c9b2e5c76c60b118aadb33d4df1c88296d71300c",
+      "size_bytes": 1076
+    }
+  },
+  "schema_version": "satn-pages-root-lock/v1"
+}

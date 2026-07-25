@@ -22,6 +22,13 @@
         <p id="deployment-status" class="rail-status" role="status" aria-live="polite">Preparing the review map…</p>
       </section>
 
+      <section id="complete-region-controls" aria-labelledby="complete-region-heading">
+        <h2 id="complete-region-heading">Complete-region evidence</h2>
+        <p>Optional evidence normally loads only for the current map view. Select optional layers below, then deliberately load their complete regional coverage. This can transfer a large amount of data.</p>
+        <button id="load-complete-region" type="button">Load selected optional layers for the whole region</button>
+        <p id="complete-region-status" class="rail-status" role="status" aria-live="polite">Whole-region loading is off; the fast viewport mode is active.</p>
+      </section>
+
       <fieldset id="layer-controls">
         <legend>Map layers</legend>
         <div class="layer-row"><label><input id="layer-authority-boundaries" type="checkbox" checked aria-describedby="legend-authority-boundaries"> Authority boundaries</label><button class="info-button" type="button" aria-expanded="false" aria-controls="legend-authority-boundaries" aria-label="About authority boundaries">i</button><div id="legend-authority-boundaries" class="layer-popover" role="note" hidden>Published authority boundaries frame the Area Deployment. They are context, not a claim that every route is an authority responsibility.</div></div>

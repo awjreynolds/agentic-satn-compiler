@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
 
 import yaml
 from pydantic import (
@@ -322,7 +322,89 @@ class ATMConfig(BaseModel):
     match_buffer_m: float = 100.0
 
 
+class AreaDefinition(BaseModel):
+    """The canonical, reproducible input for one Area Deployment.
+
+    An area can be a council, a set of councils, or another coherent region.  It
+    deliberately has no council-specific fields: source boundary queries express
+    whether a definition is single- or multi-authority.  ``CouncilConfig`` below
+    remains the compatibility facade for historic one-council YAML.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
+
+    config_path: Path
+    area_id: str
+    area_name: str
+    deployment_id: str | None = None
+    source: SourceConfig
+    compilation: CompilationConfig = Field(default_factory=CompilationConfig)
+    atm: ATMConfig = Field(default_factory=ATMConfig)
+    publication: PublicationConfig
+
+    @model_validator(mode="after")
+    def resolve_paths(self) -> Self:
+        _resolve_definition_paths(self)
+        return self
+
+    @classmethod
+    def from_yaml(cls, path: str | Path) -> AreaDefinition | CouncilConfig:
+        config_path = Path(path).resolve()
+        raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError("Area Definition YAML must contain a mapping")
+        # Public entry points may accept old fixture and council definitions while
+        # emitting the canonical model for new regional definitions.
+        if cls is AreaDefinition and ({"council_id", "council_name"} & raw.keys()):
+            return CouncilConfig(config_path=config_path, **raw)
+        return cls(config_path=config_path, **raw)
+
+    @property
+    def deployment_slug(self) -> str:
+        return self.deployment_id or self.area_id
+
+
+def _resolve_definition_paths(definition: Any) -> None:
+    """Resolve paths shared by canonical and legacy configuration models."""
+    root = definition.config_path.parent
+    if (
+        definition.source.fixture_dir is not None
+        and not definition.source.fixture_dir.is_absolute()
+    ):
+        definition.source.fixture_dir = (root / definition.source.fixture_dir).resolve()
+    if not definition.source.snapshot_dir.is_absolute():
+        definition.source.snapshot_dir = (root / definition.source.snapshot_dir).resolve()
+    classification = definition.source.official_road_classification
+    if classification is not None and not classification.path.is_absolute():
+        classification.path = (root / classification.path).resolve()
+    observed_traffic = definition.source.observed_through_traffic
+    if observed_traffic is not None and not observed_traffic.path.is_absolute():
+        observed_traffic.path = (root / observed_traffic.path).resolve()
+    national_elevation = definition.source.national_elevation
+    if (
+        national_elevation is not None
+        and national_elevation.path is not None
+        and not national_elevation.path.is_absolute()
+    ):
+        national_elevation.path = (root / national_elevation.path).resolve()
+    if not definition.publication.output_dir.is_absolute():
+        definition.publication.output_dir = (root / definition.publication.output_dir).resolve()
+    if (
+        definition.publication.comparison_reference is not None
+        and not definition.publication.comparison_reference.is_absolute()
+    ):
+        definition.publication.comparison_reference = (
+            root / definition.publication.comparison_reference
+        ).resolve()
+    if definition.atm.path is not None and not definition.atm.path.is_absolute():
+        definition.atm.path = (root / definition.atm.path).resolve()
+
+
 class CouncilConfig(BaseModel):
+    # Pydantic-compatible legacy single-council configuration model. This
+    # intentionally remains separate so its historical schema and serialized
+    # output stay stable; do not add a class docstring, which alters its schema.
+    # Keep the historical BaseModel defaults, notably ``extra=ignore``.
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     config_path: Path
@@ -351,42 +433,16 @@ class CouncilConfig(BaseModel):
         return migrated
 
     @model_validator(mode="after")
-    def resolve_paths(self) -> CouncilConfig:
-        root = self.config_path.parent
-        if self.source.fixture_dir is not None and not self.source.fixture_dir.is_absolute():
-            self.source.fixture_dir = (root / self.source.fixture_dir).resolve()
-        if not self.source.snapshot_dir.is_absolute():
-            self.source.snapshot_dir = (root / self.source.snapshot_dir).resolve()
-        classification = self.source.official_road_classification
-        if classification is not None and not classification.path.is_absolute():
-            classification.path = (root / classification.path).resolve()
-        observed_traffic = self.source.observed_through_traffic
-        if observed_traffic is not None and not observed_traffic.path.is_absolute():
-            observed_traffic.path = (root / observed_traffic.path).resolve()
-        national_elevation = self.source.national_elevation
-        if (
-            national_elevation is not None
-            and national_elevation.path is not None
-            and not national_elevation.path.is_absolute()
-        ):
-            national_elevation.path = (root / national_elevation.path).resolve()
-        if not self.publication.output_dir.is_absolute():
-            self.publication.output_dir = (root / self.publication.output_dir).resolve()
-        if (
-            self.publication.comparison_reference is not None
-            and not self.publication.comparison_reference.is_absolute()
-        ):
-            self.publication.comparison_reference = (
-                root / self.publication.comparison_reference
-            ).resolve()
-        if self.atm.path is not None and not self.atm.path.is_absolute():
-            self.atm.path = (root / self.atm.path).resolve()
+    def resolve_paths(self) -> Self:
+        _resolve_definition_paths(self)
         return self
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> CouncilConfig:
+    def from_yaml(cls, path: str | Path) -> Self:
         config_path = Path(path).resolve()
         raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError("Council configuration YAML must contain a mapping")
         return cls(config_path=config_path, **raw)
 
     @property
@@ -402,7 +458,7 @@ class CouncilConfig(BaseModel):
         return self.deployment_id or self.council_id
 
 
-AreaDefinition = CouncilConfig
+AreaConfig = AreaDefinition | CouncilConfig
 
 
 class PublishedFeatureReference(BaseModel):
@@ -565,6 +621,21 @@ class AgentDecisionLedger(BaseModel):
         if len(request_ids) != len(set(request_ids)):
             raise ValueError("a decision ledger can answer each request only once")
         return self
+
+
+def canonical_decision_ledger_payload(value: object) -> AgentDecisionLedger:
+    """Parse a persisted ledger only when its raw representation is canonical.
+
+    ``AgentDecisionLedger`` sorts responses by request id.  That is useful for
+    callers constructing a ledger, but it must not silently normalise a stored
+    input or audit record at a trust boundary: doing so would make a reordered
+    record appear to be the exact input that was fingerprinted.  Callers that
+    read JSON must therefore use this helper rather than ``model_validate``.
+    """
+    ledger = AgentDecisionLedger.model_validate(value)
+    if value != ledger.model_dump(mode="json"):
+        raise ValueError("decision ledger payload is not canonical")
+    return ledger
 
 
 class AgentRecord(AgentReviewAudit):

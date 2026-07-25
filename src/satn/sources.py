@@ -29,7 +29,7 @@ from satn.evidence import (
 )
 from satn.heartbeat import StageHeartbeat
 from satn.models import (
-    CouncilConfig,
+    AreaConfig,
     GovernedSpatialSourceConfig,
     OfficialRoadClassification,
 )
@@ -66,13 +66,13 @@ class OSMData:
 
 
 class OSMAdapter(Protocol):
-    def acquire(self, config: CouncilConfig) -> OSMData: ...
+    def acquire(self, config: AreaConfig) -> OSMData: ...
 
 
 class OSMnxAdapter:
     """Thin adapter around OSMnx so acquisition can be replaced in offline tests."""
 
-    def acquire(self, config: CouncilConfig) -> OSMData:
+    def acquire(self, config: AreaConfig) -> OSMData:
         import osmnx as ox
 
         ox.settings.overpass_url = config.source.overpass_url
@@ -240,7 +240,7 @@ def _features_from_tag_groups(
 
 
 def snapshot(
-    config: CouncilConfig,
+    config: AreaConfig,
     *,
     replace: bool = False,
     osm_adapter: OSMAdapter | None = None,
@@ -290,7 +290,9 @@ def snapshot(
             manifest = {
                 "schema_version": SCHEMA_VERSION,
                 "snapshot_id": config.source.snapshot_id,
-                "council_id": config.council_id,
+                # Keep the manifest key stable for existing snapshots while an
+                # Area Definition supplies the canonical identity.
+                "council_id": config.area_id,
                 "area_id": config.area_id,
                 "area_name": config.area_name,
                 "source_kind": config.source.kind,
@@ -332,7 +334,7 @@ def snapshot(
     return destination
 
 
-def _write_fixture_snapshot(config: CouncilConfig, temporary: Path) -> tuple[str, list[str]]:
+def _write_fixture_snapshot(config: AreaConfig, temporary: Path) -> tuple[str, list[str]]:
     if config.source.fixture_dir is None:
         raise ValueError("fixture sources require source.fixture_dir")
     for filename in CORE_SOURCE_FILES:
@@ -360,7 +362,7 @@ def _write_fixture_snapshot(config: CouncilConfig, temporary: Path) -> tuple[str
 
 
 def _write_osm_snapshot(
-    config: CouncilConfig,
+    config: AreaConfig,
     temporary: Path,
     adapter: OSMAdapter,
 ) -> tuple[str, list[str]]:
@@ -438,7 +440,7 @@ def _write_osm_snapshot(
 
 
 def _snapshot_official_road_classification(
-    config: CouncilConfig,
+    config: AreaConfig,
     temporary: Path,
 ) -> bool:
     governed = config.source.official_road_classification
@@ -485,7 +487,7 @@ def _snapshot_official_road_classification(
 
 
 def _snapshot_observed_through_traffic(
-    config: CouncilConfig,
+    config: AreaConfig,
     temporary: Path,
 ) -> bool:
     governed = config.source.observed_through_traffic
@@ -541,7 +543,7 @@ def _validate_fixture_elevation_evidence(path: Path) -> None:
 
 
 def _elevation_evidence_manifest(
-    config: CouncilConfig,
+    config: AreaConfig,
     path: Path,
     retrieved_at: str,
 ) -> dict[str, object] | None:
@@ -579,7 +581,7 @@ def _elevation_evidence_manifest(
     }
 
 
-def _snapshot_national_elevation(config: CouncilConfig, temporary: Path) -> None:
+def _snapshot_national_elevation(config: AreaConfig, temporary: Path) -> None:
     governed = config.source.national_elevation
     if governed is None:
         return
@@ -672,7 +674,7 @@ def _snapshot_national_elevation(config: CouncilConfig, temporary: Path) -> None
 
 
 def _load_remote_elevation(
-    config: CouncilConfig,
+    config: AreaConfig,
     temporary: Path,
 ) -> gpd.GeoDataFrame:
     governed = config.source.national_elevation
@@ -746,7 +748,7 @@ def _official_road_identifier(feature: pd.Series, classification: str) -> str:
 
 
 def _road_classification_manifest(
-    config: CouncilConfig,
+    config: AreaConfig,
     snapshot_path: Path,
 ) -> dict[str, object] | None:
     governed = config.source.official_road_classification
@@ -757,7 +759,7 @@ def _road_classification_manifest(
 
 
 def _observed_through_traffic_manifest(
-    config: CouncilConfig,
+    config: AreaConfig,
     snapshot_path: Path,
 ) -> dict[str, object] | None:
     governed = config.source.observed_through_traffic
@@ -881,7 +883,7 @@ def derive_network_places(
     place_features: gpd.GeoDataFrame,
     stations: gpd.GeoDataFrame,
     network: gpd.GeoDataFrame,
-    config: CouncilConfig,
+    config: AreaConfig,
 ) -> gpd.GeoDataFrame:
     """Derive Communities, portals, station access points and outward gateways."""
     crs = boundary.crs
@@ -1173,7 +1175,7 @@ def _validate_snapshot(path: Path) -> None:
             raise ValueError(f"invalid snapshot: {filename} content hash mismatch")
 
 
-def load_snapshot(config: CouncilConfig) -> dict[str, gpd.GeoDataFrame]:
+def load_snapshot(config: AreaConfig) -> dict[str, gpd.GeoDataFrame]:
     path = config.source.snapshot_dir / config.source.snapshot_id
     _validate_snapshot(path)
     network = gpd.read_file(path / "network.geojson")

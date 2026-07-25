@@ -31,9 +31,10 @@ from satn.identifiers import stable_id as _stable_id
 from satn.models import (
     AccessPointStatus,
     AccessServiceStatus,
+    AgentDecisionLedger,
     AgentFinding,
     AgentRecord,
-    CouncilConfig,
+    AreaConfig,
     DivergenceRecord,
     HumanInterventionRequest,
     NetworkScope,
@@ -98,7 +99,14 @@ class CompiledNetwork:
     human_intervention_requests: list[HumanInterventionRequest]
     compilation_diagnostics: dict[str, object]
     compilation_input_fingerprint: str = ""
+    governed_input_fingerprint: str = ""
+    snapshot_manifest_sha256: str = ""
+    area_definition_sha256: str = ""
     decision_contract: str = "agent-decision-menu/v1"
+    # This is the caller-supplied replay ledger, not the decisions produced by
+    # direct runtime during this compilation.  Keeping the two separate makes
+    # the input fingerprint independently reproducible.
+    decision_ledger_input: dict[str, object] = field(default_factory=dict)
     accepted_decisions: list[dict[str, str]] = field(default_factory=list)
 
     @property
@@ -134,7 +142,7 @@ class CrossSpineConnectorTraversalError(ValueError):
 
 
 def compile_network(
-    config: CouncilConfig,
+    config: AreaConfig,
     source: dict[str, gpd.GeoDataFrame],
     runtime: AgentRuntimeSource,
     *,
@@ -496,7 +504,7 @@ def compile_network(
         },
         "atm_comparison": {"compared": TrafficLight.GREY},
     }
-    return CompiledNetwork(
+    compiled = CompiledNetwork(
         boundary=source["boundary"].copy(),
         road_context=source["network"].copy(),
         label_places=source.get("label_places", places).copy(),
@@ -561,6 +569,23 @@ def compile_network(
             "urban_a_road_spine_coverage": urban_a_road_coverage,
         },
     )
+    # ``compile_network`` is also a supported public entry point.  Its output
+    # must therefore carry the same exact decision wire contract as the
+    # pipeline path, rather than relying on dataclass defaults which would
+    # erase a direct-runtime audit before ``publish`` sees it.
+    ledger = gate.decision_resolver.ledger
+    compiled.decision_contract = ledger.decision_contract
+    compiled.decision_ledger_input = ledger.model_dump(mode="json")
+    compiled.accepted_decisions = AgentDecisionLedger.model_validate(
+        {
+            "decision_contract": ledger.decision_contract,
+            "responses": [
+                response.model_dump(mode="json")
+                for response in gate.decision_resolver.accepted_responses
+            ],
+        }
+    ).model_dump(mode="json")["responses"]
+    return compiled
 
 
 def _urban_school_gaps(
