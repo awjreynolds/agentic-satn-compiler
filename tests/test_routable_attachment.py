@@ -36,9 +36,76 @@ def test_metric_lower_bound_uses_the_smallest_source_cost_to_geometry_ratio() ->
 
     assert graph.lower_bound_cost_factor == pytest.approx(0.5)
     assert graph.lower_bound_disabled_reason is None
+    assert graph.attachment_lower_bound_cost_factor == pytest.approx(0.5)
+    assert graph.attachment_lower_bound_disabled_reason is None
     assert graph.lower_bound_to_geometry_m(Point(0, 0), LineString([(1000, 0), (1000, 1)])) == (
         pytest.approx(500)
     )
+
+
+def test_attachment_group_distance_bounds_are_exact_zero_snap_costs() -> None:
+    graph = RoadGraph(
+        gpd.GeoDataFrame(
+            [
+                {
+                    "osmid": "forward",
+                    "u": "a",
+                    "v": "b",
+                    "length": 500,
+                    "highway": "unclassified",
+                    "geometry": LineString([(0, 0), (1000, 0)]),
+                },
+                {
+                    "osmid": "reverse",
+                    "u": "b",
+                    "v": "a",
+                    "length": 500,
+                    "highway": "unclassified",
+                    "geometry": LineString([(1000, 0), (0, 0)]),
+                },
+                {
+                    "osmid": "tail-forward",
+                    "u": "b",
+                    "v": "c",
+                    "length": 700,
+                    "highway": "unclassified",
+                    "geometry": LineString([(1000, 0), (2000, 0)]),
+                },
+                {
+                    "osmid": "tail-reverse",
+                    "u": "c",
+                    "v": "b",
+                    "length": 700,
+                    "highway": "unclassified",
+                    "geometry": LineString([(2000, 0), (1000, 0)]),
+                },
+            ],
+            geometry="geometry",
+            crs=27700,
+        )
+    )
+
+    bounds, unroutable_pairs, diagnostics = graph.attachment_group_distance_bounds(
+        {"left": ("a",), "middle": ("b",), "right": ("c",), "missing": ("x",)}
+    )
+
+    assert bounds == {
+        ("left", "middle"): 500.0,
+        ("left", "right"): 1200.0,
+        ("middle", "right"): 700.0,
+    }
+    assert unroutable_pairs == {
+        ("left", "missing"),
+        ("middle", "missing"),
+        ("missing", "right"),
+    }
+    assert graph.best_attachment(
+        [("a", 0.0)], [("x", 0.0)], allow_stationary=False
+    ) is None
+    assert diagnostics == {
+        "root_group_distance_planning_searches": 2,
+        "root_group_distance_planning_nodes_settled": 6,
+    }
 
 
 def test_metric_lower_bound_falls_back_to_zero_for_noncanonical_endpoints() -> None:
@@ -61,6 +128,14 @@ def test_metric_lower_bound_falls_back_to_zero_for_noncanonical_endpoints() -> N
                     "highway": "unclassified",
                     "geometry": LineString([(10, 0), (0, 1000)]),
                 },
+                {
+                    "osmid": "canonical-reverse",
+                    "u": "b",
+                    "v": "a",
+                    "length": 1000,
+                    "highway": "unclassified",
+                    "geometry": LineString([(1000, 0), (0, 0)]),
+                },
             ],
             geometry="geometry",
             crs=27700,
@@ -69,6 +144,11 @@ def test_metric_lower_bound_falls_back_to_zero_for_noncanonical_endpoints() -> N
 
     assert graph.lower_bound_cost_factor == 0.0
     assert graph.lower_bound_disabled_reason == "non-canonical-edge-endpoints"
+    # The mismatched edge is not reciprocal and therefore cannot participate
+    # in an attachment/meeting route.  The scoped bound remains sound and
+    # stronger for that route graph.
+    assert graph.attachment_lower_bound_cost_factor == pytest.approx(1.0)
+    assert graph.attachment_lower_bound_disabled_reason is None
     assert graph.lower_bound_to_geometry_m(Point(0, 0), Point(1000, 0)) == 0.0
 
 

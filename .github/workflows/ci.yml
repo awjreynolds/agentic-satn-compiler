@@ -18,8 +18,9 @@ jobs:
       - run: uv python install 3.12
       - run: uv sync --frozen --all-groups
       - run: uv run ruff check .
+      # Routine regression is fixture-only; the explicit WECA compiler benchmark
+      # is a manual governed release gate and must never run in CI.
       - run: uv run pytest
       - run: uv run playwright install --with-deps chromium
       - run: uv run pytest --browser -m browser tests/test_review_map_browser.py
       - run: uv build
-

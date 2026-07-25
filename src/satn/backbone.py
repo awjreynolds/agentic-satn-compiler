@@ -5,6 +5,7 @@ from __future__ import annotations
 import heapq
 import json
 import logging
+import math
 import time
 from collections import Counter
 from dataclasses import dataclass, field, replace
@@ -292,6 +293,22 @@ class _MeetingCandidate:
     end_node: str
     options: tuple[RouteOption, ...] = ()
     topography: TopographyComparison | None = None
+    excluded_pairs: frozenset[tuple[str, str]] = frozenset()
+
+
+@dataclass(frozen=True)
+class _MeetingCandidateBound:
+    """A conservative route-cost bound for one unordered pair of root groups.
+
+    The bound is only used to defer an exact graph search.  It is deliberately
+    kept separate from ``_MeetingCandidate``: every item submitted to the
+    meeting gate remains the exact, governed route returned by ``RoadGraph``.
+    """
+
+    rank: tuple[object, ...]
+    left_root: str
+    right_root: str
+    excluded_pairs: frozenset[tuple[str, str]]
 
 
 @dataclass
@@ -310,21 +327,136 @@ class _CrossSpineMeetingWork:
 
     root_pairs: set[tuple[str, str]] = field(default_factory=set)
     root_pair_candidate_searches: int = 0
+    root_pair_route_searches: int = 0
+    root_pair_candidate_bounds_enqueued: int = 0
+    root_pair_candidate_bounds_skipped_as_connected: int = 0
+    root_pair_candidate_bounds_skipped_as_unroutable: int = 0
+    root_group_distance_planning_searches: int = 0
+    root_group_distance_planning_nodes_settled: int = 0
+    root_pair_exact_distance_bounds: int = 0
     initial_outcomes: Counter[str] = field(default_factory=Counter)
+    unmaterializable_attachment_paths_by_root_pair: Counter[tuple[str, str]] = field(
+        default_factory=Counter
+    )
 
     def record_candidate_search(self, left_root: str, right_root: str) -> None:
         self.root_pairs.add(tuple(sorted((left_root, right_root))))
         self.root_pair_candidate_searches += 1
 
+    def record_route_search(self) -> None:
+        """Record an exact bounded route search, distinct from logical work."""
+        self.root_pair_route_searches += 1
+
+    def record_bound(self) -> None:
+        self.root_pair_candidate_bounds_enqueued += 1
+
+    def record_bound_skipped_as_connected(self) -> None:
+        self.root_pair_candidate_bounds_skipped_as_connected += 1
+
+    def record_bound_skipped_as_unroutable(self) -> None:
+        self.root_pair_candidate_bounds_skipped_as_unroutable += 1
+
+    def record_distance_planning(self, diagnostics: dict[str, int]) -> None:
+        self.root_group_distance_planning_searches += diagnostics[
+            "root_group_distance_planning_searches"
+        ]
+        self.root_group_distance_planning_nodes_settled += diagnostics[
+            "root_group_distance_planning_nodes_settled"
+        ]
+
+    def record_exact_distance_bound(self) -> None:
+        self.root_pair_exact_distance_bounds += 1
+
     def record_evaluation(self, record: AgentRecord) -> None:
         self.initial_outcomes[str(record.decision)] += 1
 
-    def diagnostics(self, records: list[AgentRecord]) -> dict[str, object]:
+    def record_unmaterializable_attachment_paths(
+        self,
+        left_root: str,
+        right_root: str,
+        count: int,
+    ) -> None:
+        """Retain materialisation failures until the completed root tree is known.
+
+        The eager reference materialises every root-pair candidate before the
+        tree can reject cyclic ones.  The lazy scheduler intentionally avoids
+        that operational work.  A failure for a pair whose roots are later
+        connected elsewhere cannot affect the authoritative network, so it
+        must not change the legacy graph-quality diagnostic merely because it
+        happened to be observed by the eager schedule.
+        """
+        if count < 0:
+            raise RuntimeError("Cross-Spine materialisation failure count cannot decrease")
+        if count:
+            self.unmaterializable_attachment_paths_by_root_pair[
+                tuple(sorted((left_root, right_root)))
+            ] += count
+
+    def discarded_unmaterializable_attachment_paths(self, root_graph: nx.Graph) -> int:
+        """Return failures belonging only to finally redundant root-pair work.
+
+        A pair left disconnected in the completed root tree remains a
+        governed absence and its failed materialisation remains visible.  A
+        pair joined by another accepted tree edge is operationally redundant:
+        suppressing only those failures makes the published legacy diagnostic
+        a property of the final Backbone-and-Access Network rather than of
+        eager versus lazy scheduling.
+        """
+        return sum(
+            count
+            for (left_root, right_root), count in (
+                self.unmaterializable_attachment_paths_by_root_pair.items()
+            )
+            if nx.has_path(root_graph, left_root, right_root)
+        )
+
+    def diagnostics(
+        self, records: list[AgentRecord], *, lazy_bounds: bool
+    ) -> dict[str, object]:
         """Return only deterministic assembly counters for a compiler run."""
+        avoided = self.root_pair_candidate_searches - self.root_pair_route_searches
+        skipped_bounds = (
+            self.root_pair_candidate_bounds_skipped_as_connected
+            + self.root_pair_candidate_bounds_skipped_as_unroutable
+        )
+        if self.root_pair_route_searches > self.root_pair_candidate_searches:
+            raise RuntimeError("Cross-Spine route searches cannot exceed candidate searches")
+        if lazy_bounds:
+            if self.root_pair_candidate_bounds_enqueued != len(self.root_pairs):
+                raise RuntimeError("Cross-Spine lazy bounds must cover every distinct root pair")
+            if (
+                skipped_bounds
+                > self.root_pair_candidate_bounds_enqueued
+            ):
+                raise RuntimeError("Cross-Spine skipped bounds cannot exceed enqueued bounds")
+            if avoided != skipped_bounds:
+                raise RuntimeError("Cross-Spine avoided routes must equal skipped bounds")
+        elif (
+            self.root_pair_candidate_bounds_enqueued
+            or self.root_pair_candidate_bounds_skipped_as_connected
+            or self.root_pair_candidate_bounds_skipped_as_unroutable
+            or avoided
+            or self.root_pair_route_searches != self.root_pair_candidate_searches
+        ):
+            raise RuntimeError("Cross-Spine eager reference must materialise every candidate")
         final_outcomes = Counter(str(record.decision) for record in records)
         return {
             "root_pairs_considered": len(self.root_pairs),
             "root_pair_candidate_searches": self.root_pair_candidate_searches,
+            "root_pair_route_searches": self.root_pair_route_searches,
+            "root_pair_route_searches_avoided": avoided,
+            "root_pair_candidate_bounds_enqueued": self.root_pair_candidate_bounds_enqueued,
+            "root_pair_candidate_bounds_skipped_as_connected": (
+                self.root_pair_candidate_bounds_skipped_as_connected
+            ),
+            "root_pair_candidate_bounds_skipped_as_unroutable": (
+                self.root_pair_candidate_bounds_skipped_as_unroutable
+            ),
+            "root_group_distance_planning_searches": self.root_group_distance_planning_searches,
+            "root_group_distance_planning_nodes_settled": (
+                self.root_group_distance_planning_nodes_settled
+            ),
+            "root_pair_exact_distance_bounds": self.root_pair_exact_distance_bounds,
             "meeting_agent_evaluations": len(records),
             "meeting_agent_evaluation_initial_outcomes": _meeting_outcome_counts(
                 self.initial_outcomes,
@@ -511,6 +643,7 @@ def assemble_backbone_outward(
         cross_spine_connectors,
         meeting_records,
         cross_spine_assembly_diagnostics,
+        discarded_cross_spine_unmaterializable_attachment_paths,
     ) = _cross_spine_meetings(
         community_connections,
         strategic_spines,
@@ -669,6 +802,20 @@ def assemble_backbone_outward(
     obligations = _obligations(communities, schools, connections, gaps)
     branches = _branches(connections, strategic_spines, crs)
     graph_diagnostics = graph.compilation_diagnostics()
+    observed_unmaterializable_attachment_paths = int(
+        graph_diagnostics["unmaterializable_attachment_paths"]
+    )
+    if (
+        discarded_cross_spine_unmaterializable_attachment_paths
+        > observed_unmaterializable_attachment_paths
+    ):
+        raise RuntimeError(
+            "Discarded Cross-Spine materialisation failures cannot exceed graph diagnostics"
+        )
+    graph_diagnostics["unmaterializable_attachment_paths"] = (
+        observed_unmaterializable_attachment_paths
+        - discarded_cross_spine_unmaterializable_attachment_paths
+    )
     optimization_findings: list[dict[str, object]] = []
     if candidate_evaluations >= 1_000:
         optimization_findings.append(
@@ -1701,7 +1848,34 @@ def _cross_spine_meetings(
     max_connection_km: float,
     elevation_evidence: gpd.GeoDataFrame | None = None,
     topography_config: TopographyConfig | None = None,
-) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame, list[AgentRecord], dict[str, object]]:
+    lazy_bounds: bool = True,
+) -> tuple[
+    gpd.GeoDataFrame,
+    gpd.GeoDataFrame,
+    list[AgentRecord],
+    dict[str, object],
+    int,
+]:
+    """Find the same deterministic root tree without eagerly routing every pair.
+
+    An exact root-pair candidate is comparatively expensive: it asks the road
+    graph to find and materialise a route.  The old implementation did that for
+    every pair before Kruskal-style tree selection could discard cycle edges.
+    Here, a non-materialising reciprocal-graph distance plan supplies an exact
+    numeric bound for each fixed root group, with the conservative projected
+    bound retained when a group distance cannot be established.  A pair with
+    no shared reciprocal strong component is discarded by the same eligibility
+    proof that makes ``RoadGraph.best_attachment`` return ``None``.  Every
+    other bound is expanded to the existing exact candidate only when it could
+    still be selected.  Once accepted tree edges connect its roots it is
+    discarded without a route search.  The queue is bounded by the same finite
+    root-pair set as the former eager candidate heap, and no route or geometry
+    result is cached.
+
+    ``lazy_bounds=False`` is an internal reference mode used only by the
+    equivalence regression: it retains the previous eager schedule so tests can
+    prove the governed frames, provenance and agent records are unchanged.
+    """
     crs = connections.crs or strategic_spines.crs or graph.crs
     root_ids = sorted(
         str(root_id)
@@ -1715,22 +1889,46 @@ def _cross_spine_meetings(
         tuple[
             tuple[object, ...],
             int,
-            str,
-            str,
-            frozenset[tuple[str, str]],
-            _MeetingCandidate,
+            _MeetingCandidate | _MeetingCandidateBound,
         ]
     ] = []
     sequence = 0
     work = _CrossSpineMeetingWork()
+    root_group_bounds = {
+        root_id: _meeting_group_attachment_geometry(root_groups[root_id], graph)
+        for root_id in root_ids
+    }
+    root_pair_distance_bounds: dict[tuple[str, str], float] = {}
+    root_pair_unroutable: set[tuple[str, str]] = set()
+    if lazy_bounds:
+        (
+            root_pair_distance_bounds,
+            root_pair_unroutable,
+            distance_planning,
+        ) = graph.attachment_group_distance_bounds(
+            {
+                root_id: tuple(
+                    root_groups[root_id]["community_attachment_node"].astype(str)
+                )
+                for root_id in root_ids
+            }
+        )
+        work.record_distance_planning(distance_planning)
 
-    def add_candidate(
+    def add_exact_candidate(
         left_root: str,
         right_root: str,
         excluded_pairs: frozenset[tuple[str, str]],
+        *,
+        count_logical_search: bool,
     ) -> None:
         nonlocal sequence
-        work.record_candidate_search(left_root, right_root)
+        if count_logical_search:
+            work.record_candidate_search(left_root, right_root)
+        work.record_route_search()
+        unmaterializable_before = int(
+            graph.compilation_diagnostics()["unmaterializable_attachment_paths"]
+        )
         candidate = _meeting_candidate(
             root_groups[left_root],
             root_groups[right_root],
@@ -1739,6 +1937,14 @@ def _cross_spine_meetings(
             elevation_evidence=elevation_evidence,
             topography_config=topography_config,
         )
+        unmaterializable_after = int(
+            graph.compilation_diagnostics()["unmaterializable_attachment_paths"]
+        )
+        work.record_unmaterializable_attachment_paths(
+            left_root,
+            right_root,
+            unmaterializable_after - unmaterializable_before,
+        )
         if candidate is None:
             return
         heapq.heappush(
@@ -1746,17 +1952,48 @@ def _cross_spine_meetings(
             (
                 candidate.rank,
                 sequence,
-                left_root,
-                right_root,
-                excluded_pairs,
                 candidate,
             ),
         )
         sequence += 1
 
+    def add_bound(left_root: str, right_root: str) -> None:
+        nonlocal sequence
+        work.record_candidate_search(left_root, right_root)
+        work.record_bound()
+        if (left_root, right_root) in root_pair_unroutable:
+            work.record_bound_skipped_as_unroutable()
+            return
+        exact_distance_m = root_pair_distance_bounds.get((left_root, right_root))
+        if exact_distance_m is not None:
+            work.record_exact_distance_bound()
+        bound = _MeetingCandidateBound(
+            rank=_meeting_candidate_bound_rank(
+                left_root,
+                right_root,
+                root_group_bounds[left_root],
+                root_group_bounds[right_root],
+                graph,
+                exact_distance_m=exact_distance_m,
+            ),
+            left_root=left_root,
+            right_root=right_root,
+            excluded_pairs=frozenset(),
+        )
+        heapq.heappush(candidate_heap, (bound.rank, sequence, bound))
+        sequence += 1
+
     for left_index, left_root in enumerate(root_ids):
         for right_root in root_ids[left_index + 1 :]:
-            add_candidate(str(left_root), str(right_root), frozenset())
+            if lazy_bounds:
+                add_bound(str(left_root), str(right_root))
+            else:
+                add_exact_candidate(
+                    str(left_root),
+                    str(right_root),
+                    frozenset(),
+                    count_logical_search=True,
+                )
 
     root_graph = nx.Graph()
     root_graph.add_nodes_from(root_ids)
@@ -1764,7 +2001,22 @@ def _cross_spine_meetings(
     records: list[AgentRecord] = []
     rejected_by_roots: dict[tuple[str, str], list[AgentRecord]] = {}
     while candidate_heap:
-        _, _, left_root, right_root, excluded_pairs, candidate = heapq.heappop(candidate_heap)
+        _, _, work_item = heapq.heappop(candidate_heap)
+        if isinstance(work_item, _MeetingCandidateBound):
+            if nx.has_path(root_graph, work_item.left_root, work_item.right_root):
+                work.record_bound_skipped_as_connected()
+                continue
+            add_exact_candidate(
+                work_item.left_root,
+                work_item.right_root,
+                work_item.excluded_pairs,
+                count_logical_search=False,
+            )
+            continue
+        candidate = work_item
+        left_root = str(candidate.left["root_spine_id"])
+        right_root = str(candidate.right["root_spine_id"])
+        excluded_pairs = candidate.excluded_pairs
         if nx.has_path(root_graph, left_root, right_root):
             _supersede_rejected_meetings(
                 rejected_by_roots.pop((left_root, right_root), []),
@@ -1778,7 +2030,7 @@ def _cross_spine_meetings(
         if record.decision != "accept":
             root_pair = (left_root, right_root)
             rejected_by_roots.setdefault(root_pair, []).append(record)
-            add_candidate(
+            add_exact_candidate(
                 left_root,
                 right_root,
                 frozenset(
@@ -1787,6 +2039,7 @@ def _cross_spine_meetings(
                         (candidate.start_node, candidate.end_node),
                     }
                 ),
+                count_logical_search=True,
             )
             continue
         _record_meeting_acceptance(row, record)
@@ -1817,7 +2070,67 @@ def _cross_spine_meetings(
                     network_role=str(connector.network_role),
                 )
             ]
-    return meetings, connectors, records, work.diagnostics(records)
+    return (
+        meetings,
+        connectors,
+        records,
+        work.diagnostics(records, lazy_bounds=lazy_bounds),
+        work.discarded_unmaterializable_attachment_paths(root_graph),
+    )
+
+
+def _meeting_group_attachment_geometry(
+    group: gpd.GeoDataFrame,
+    graph: RoadGraph,
+) -> object | None:
+    """Return the projected attachment-node geometry for one fixed root group."""
+    points = [
+        graph.node_points[node_id]
+        for node_id in sorted(set(group["community_attachment_node"].astype(str)))
+        if node_id in graph.node_points
+    ]
+    if not points:
+        return None
+    return gpd.GeoSeries([MultiPoint(points)], crs=graph.crs).to_crs(27700).iloc[0]
+
+
+def _meeting_candidate_bound_rank(
+    left_root: str,
+    right_root: str,
+    left_geometry: object | None,
+    right_geometry: object | None,
+    graph: RoadGraph,
+    *,
+    exact_distance_m: float | None = None,
+) -> tuple[object, ...]:
+    """Safely order a root pair before an exact route could outrank it.
+
+    A group-distance plan is an exact numeric lower bound for the zero-snap
+    attachment route; it intentionally sits immediately before its rounded
+    exact-candidate rank.  This expands all candidates that could share that
+    rank before any of them reach the gate, preserving the eager tie order.
+
+    If a group plan cannot establish a route, the existing projected metric
+    bound remains the fail-safe schedule.  It may expand extra candidates, but
+    it can never defer a candidate behind one that it could outrank.
+    """
+    if exact_distance_m is not None:
+        exact_rank_km = round(exact_distance_m / 1000, 9)
+        scheduled_bound_km = math.nextafter(exact_rank_km, -math.inf)
+    elif left_geometry is None or right_geometry is None:
+        scheduled_bound_km = -1e-9
+    else:
+        lower_bound_km = (
+            graph.attachment_lower_bound_cost_factor
+            * float(left_geometry.distance(right_geometry))
+            / 1000
+        )
+        # Exact candidates round to nine decimals.  Scheduling one complete
+        # precision unit before the rounded metric bound is conservative even
+        # when ordinary binary rounding would otherwise round the lower bound
+        # upward across an exact candidate's rank.
+        scheduled_bound_km = math.nextafter(round(lower_bound_km, 9) - 1e-9, -math.inf)
+    return (scheduled_bound_km, left_root, right_root, "", "")
 
 
 def _supersede_rejected_meetings(
@@ -1871,6 +2184,7 @@ def _meeting_candidate(
         topography=comparison,
         start_node=choice.start_node,
         end_node=choice.end_node,
+        excluded_pairs=frozenset(excluded_pairs),
     )
 
 

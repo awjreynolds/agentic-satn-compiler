@@ -1,0 +1,41 @@
+# A single Area Definition for the four constituent authorities. Its source
+# snapshots and generated publication stay local until a governed deployment is built.
+area_id: west-of-england
+area_name: West of England Combined Authority area
+deployment_id: weca
+source:
+  kind: osm
+  osm_place_queries:
+    - Bath and North East Somerset, England, United Kingdom
+    - Bristol, England, United Kingdom
+    - North Somerset, England, United Kingdom
+    - South Gloucestershire, England, United Kingdom
+  ncn_feature_service_url: https://services5.arcgis.com/1ZHcUS1lwPTg4ms0/arcgis/rest/services/National_Cycle_Network_Public/FeatureServer
+  reclassified_ncn_feature_service_url: https://services5.arcgis.com/1ZHcUS1lwPTg4ms0/arcgis/rest/services/Reclassified_Routes_Public/FeatureServer
+  snapshot_dir: ../../data/snapshots
+  snapshot_id: weca-osm-current
+  network_type: bike
+  overpass_url: https://overpass-api.de/api
+  osm_timeout_seconds: 600
+  external_buffer_km: 15
+  internal_portal_threshold_km: 1
+  community_place_types: [town, village, suburb, quarter, neighbourhood]
+  urban_place_types: [city, town, suburb, quarter, neighbourhood]
+  urban_scope_buffer_km: 2
+compilation:
+  max_connection_km: 15
+  criteria_version: "1"
+  agent:
+    provider: fake
+    response_mode: direct-runtime
+    review_statuses: [amber, red]
+    max_requests: 1000
+atm:
+  enabled: false
+  mode: blind
+  redistribution_permitted: false
+publication:
+  output_dir: ../../build/compiled/weca
+  title: West of England Strategic Active Travel Network Review
+  pdf_page_size: A2
+  audience: public

@@ -928,15 +928,41 @@ Cross-Spine traversal reports a versioned deterministic diagnostic object under
 Route Refinement Findings, and logical graph/search work including peak queue and
 graph dimensions. It does not retain elapsed time or machine-specific observations.
 
-To establish or refresh the WECA-scale operational baseline without publishing a
-deployment, run the local deterministic-fake-runtime benchmark. It writes structured
-phase durations and peak logical work counts; normal tests do not run this regional
-compile.
+To validate the WECA-scale Cross-Spine release gate without publishing a deployment,
+run the local deterministic-fake-runtime paired benchmark. It runs the retained eager
+reference and the lazy schedule in separate deterministic-seed subprocesses, compares
+the complete same-runtime governed contract (including ordered WKB, provenance and
+typed findings), and records independent wall/CPU/RSS evidence. Normal tests do not
+run this regional compile: routine regression and CI use B&NES or smaller synthetic
+fixtures only. The script requires an explicit Area Definition, so the WECA gate can
+only be invoked deliberately.
 
 ```shell
-.venv/bin/python scripts/benchmark_cross_spine.py deployments/weca/area.yaml \
-  --output build/benchmarks/weca-cross-spine-baseline.json
+.venv/bin/python scripts/benchmark_cross_spine.py deployments/weca/area-125-benchmark.yaml \
+  --output build/benchmarks/weca-cross-spine-paired.json
 ```
+
+The canonical WECA command uses the tracked, byte-for-byte #125 Area Definition
+fixture (`deployments/weca/area-125-benchmark.yaml`), rather than the evolving
+deployable WECA definition. It requires the retained local historical snapshot
+`data/snapshots/weca-osm-current/snapshot.json` with its recorded digest; if that
+snapshot is absent or differs, it fails closed without running either worker.
+It also fails closed unless both workers retain the #125 Area Definition and
+snapshot-manifest digests, the 2,211 logical root pairs, exact
+same-current-compiler identity, and #125's separately recorded source-inclusive
+baseline fingerprint. The compiler source digest is deliberately not pinned to its
+historical value: this optimisation changes compiler source, and substituting the old
+digest would falsify provenance. The gate also requires no more than 100 materialised
+root-pair routes, `network_compile` wall/CPU at or below 1,200 seconds, lower lazy CPU
+than eager, lazy RSS below 4 GiB and no more than 10% above eager. The evidence JSON
+is ignored process output, not a tracked deployment artifact. The lazy worker records
+root-group distance-planning searches and settled nodes separately: the 100-route
+limit applies only to governed route materialisation, not hidden precomputation. If
+two root groups have no shared reciprocal routing component, the lazy worker records
+that component-eligibility proof separately and avoids only the route call that would
+deterministically return no candidate. If the two governed signatures differ, the
+paired evidence records the first differing
+governed field and its two SHA-256 values; the mismatch remains a hard failure.
 
 ## ATM quality comparison
 
