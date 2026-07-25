@@ -673,7 +673,7 @@ def test_lineaged_ea_fixed_point_rejects_whitespace_after_full_hash_reseal(
     _reseal_retained_evidence_hashes(target)
 
     with pytest.raises(ValueError, match="retained evidence is not canonical GeoJSON"):
-        _validate_ea_elevation_fixed_point(config, final_network)
+        snapshot(config, retain_core=True)
 
 
 def test_lineaged_ea_fixed_point_rejects_forged_metadata_after_full_hash_reseal(
@@ -707,7 +707,7 @@ def test_lineaged_ea_fixed_point_rejects_forged_metadata_after_full_hash_reseal(
     _reseal_retained_evidence_hashes(target)
 
     with pytest.raises(ValueError, match="mismatches governed source_id"):
-        _validate_ea_elevation_fixed_point(config, final_network)
+        snapshot(config, retain_core=True)
 
 
 def test_retained_core_snapshot_augmentation_keeps_core_bytes_unchanged(tmp_path: Path) -> None:

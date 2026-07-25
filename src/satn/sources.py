@@ -320,6 +320,21 @@ def _validate_existing_lineaged_target(
             for field, value in recomputed_ea_provenance.items()
         ):
             raise ValueError("retained-core lineage target elevation provenance mismatch")
+        _validate_canonical_retained_ea_evidence(
+            _regular_sibling(
+                destination,
+                ELEVATION_EVIDENCE_FILENAME,
+                label="retained EA Elevation Evidence",
+            ),
+            national_elevation,
+            json.loads(
+                _regular_sibling(
+                    destination,
+                    "elevation-evidence.manifest.json",
+                    label="retained EA Elevation Evidence acquisition manifest",
+                ).read_text(encoding="utf-8")
+            ),
+        )
     missing_evidence = object()
     for key, value in source_evidence.items():
         if key != "elevation" and target_evidence.get(key, missing_evidence) != value:
@@ -1562,6 +1577,35 @@ def _ea_elevation_acquisition_provenance(
         "cross_boundary_transitions": recomputed["cross_boundary_transitions"],
         "evidence_row_sha256s": recomputed["evidence_row_sha256s"],
     }
+
+
+def _validate_canonical_retained_ea_evidence(
+    evidence_path: Path,
+    governed: NationalElevationConfig,
+    acquisition: object,
+) -> None:
+    """Bind retained EA evidence bytes to governed and validated acquisition metadata."""
+    if not isinstance(acquisition, dict):
+        raise ValueError("EA elevation snapshot retained acquisition manifest must be an object")
+
+    def required_equal(field: str, expected: object, label: str) -> None:
+        if acquisition.get(field) != expected:
+            raise ValueError(
+                f"EA elevation snapshot retained acquisition manifest mismatches {label}"
+            )
+
+    required_equal("source_id", governed.source_id, "configured source identifier")
+    required_equal("licence", governed.licence, "configured licence")
+    canonical_evidence = canonical_ea_elevation_evidence_bytes(
+        gpd.read_file(evidence_path),
+        source_id=governed.source_id,
+        licence=governed.licence,
+        effective_date=str(acquisition["effective_survey_date"]),
+        source_resolution_m=float(acquisition["source_resolution_m"]),
+        output_sample_spacing_m=float(acquisition["output_sample_spacing_m"]),
+    )
+    if evidence_path.read_bytes() != canonical_evidence:
+        raise ValueError("EA elevation snapshot retained evidence is not canonical GeoJSON")
 
 
 def _snapshot_national_elevation(config: AreaConfig, temporary: Path) -> None:

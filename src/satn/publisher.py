@@ -29,7 +29,6 @@ from satn.constants import DISCLAIMER, SCHEMA_VERSION
 from satn.cross_spine import validate_cross_spine_publication
 from satn.ea_elevation import (
     SAMPLE_LEDGER_FILENAME,
-    canonical_ea_elevation_evidence_bytes,
     eligible_route_fingerprint,
 )
 from satn.models import (
@@ -50,6 +49,7 @@ from satn.sources import (
     ELEVATION_EVIDENCE_FILENAME,
     NCN_ATTRIBUTION,
     OSM_ATTRIBUTION,
+    _validate_canonical_retained_ea_evidence,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -367,19 +367,11 @@ def _validate_ea_elevation_fixed_point(config: AreaConfig, network_path: Path) -
         # self-resealed manifest.  Reconstruct the one governed GeoJSON form
         # and bind its provenance-bearing metadata to both the configuration
         # and independently retained acquisition statement.
-        required_equal("source_id", elevation.source_id, "configured source identifier")
-        required_equal("licence", elevation.licence, "configured licence")
-        evidence_path = snapshot_manifest.parent / ELEVATION_EVIDENCE_FILENAME
-        canonical_evidence = canonical_ea_elevation_evidence_bytes(
-            gpd.read_file(evidence_path),
-            source_id=elevation.source_id,
-            licence=elevation.licence,
-            effective_date=str(acquisition["effective_survey_date"]),
-            source_resolution_m=float(acquisition["source_resolution_m"]),
-            output_sample_spacing_m=float(acquisition["output_sample_spacing_m"]),
+        _validate_canonical_retained_ea_evidence(
+            snapshot_manifest.parent / ELEVATION_EVIDENCE_FILENAME,
+            elevation,
+            acquisition,
         )
-        if evidence_path.read_bytes() != canonical_evidence:
-            raise ValueError("EA elevation snapshot retained evidence is not canonical GeoJSON")
     except (json.JSONDecodeError, KeyError, OSError, TypeError) as error:
         raise ValueError(
             "EA elevation fixed-point validation cannot read immutable snapshot provenance"
