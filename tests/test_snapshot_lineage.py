@@ -270,6 +270,15 @@ def test_lineaged_retained_core_seeds_distinct_target_and_is_idempotent(tmp_path
         name: hashlib.sha256((result / name).read_bytes()).hexdigest() for name in core_names
     } == core_sha256
     assert ELEVATION_EVIDENCE_FILENAME in final_manifest["files"]
+    elevation_digest = hashlib.sha256(
+        (result / ELEVATION_EVIDENCE_FILENAME).read_bytes()
+    ).hexdigest()
+    assert final_manifest["file_sha256"][ELEVATION_EVIDENCE_FILENAME] == elevation_digest
+    assert final_manifest["provenance_file_sha256"][ELEVATION_EVIDENCE_FILENAME] == elevation_digest
+    assert (
+        final_manifest["evidence_sources"]["elevation"]["content_fingerprint"]
+        == elevation_digest
+    )
     assert final_manifest["retained_core_lineage"] == {
         "source_snapshot_id": "historical-core",
         "source_manifest_sha256": historical_manifest_sha256,

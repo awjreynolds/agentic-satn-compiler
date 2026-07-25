@@ -332,6 +332,10 @@ def test_local_national_elevation_is_clipped_and_snapshotted_with_provenance(
     assert list(loaded["elevation_m"]) == [10.0, 20.0]
     assert list(loaded["source_resolution_m"]) == [1, 1]
     assert list(loaded["output_sample_spacing_m"]) == [10, 10]
+    elevation_digest = hashlib.sha256((path / ELEVATION_EVIDENCE_FILENAME).read_bytes()).hexdigest()
+    assert manifest["file_sha256"][ELEVATION_EVIDENCE_FILENAME] == elevation_digest
+    assert manifest["provenance_file_sha256"][ELEVATION_EVIDENCE_FILENAME] == elevation_digest
+    assert manifest["evidence_sources"]["elevation"]["content_fingerprint"] == elevation_digest
     assert manifest["evidence_sources"]["elevation"] | {
         "content_fingerprint": "ignored",
         "retrieved_at": "ignored",
@@ -539,6 +543,9 @@ def test_ea_acquisition_sidecar_binds_pre_elevation_network_to_snapshot(
     assert len(elevation["ea_acquisition_manifest_sha256"]) == 64
     assert (path / "ea-authority-boundaries.geojson").exists()
     assert (path / "ea-elevation-sample-ledger.jsonl").exists()
+    assert manifest["provenance_file_sha256"][ELEVATION_EVIDENCE_FILENAME] == elevation[
+        "content_fingerprint"
+    ]
     assert "ea-elevation-sample-ledger.jsonl" in manifest["provenance_file_sha256"]
     copied_sidecar = json.loads((path / "elevation-evidence.manifest.json").read_text())
     assert copied_sidecar["authority_boundaries_path"] == "ea-authority-boundaries.geojson"
@@ -575,6 +582,55 @@ def test_retained_core_snapshot_augmentation_keeps_core_bytes_unchanged(tmp_path
         name: hashlib.sha256((augmented / name).read_bytes()).hexdigest() for name in core_hashes
     } == core_hashes
     assert (augmented / "elevation-evidence.geojson").exists()
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (
+            lambda manifest, _path: manifest["provenance_file_sha256"].pop(
+                ELEVATION_EVIDENCE_FILENAME
+            ),
+            "elevation evidence provenance mismatch",
+        ),
+        (
+            lambda manifest, _path: manifest["provenance_file_sha256"].__setitem__(
+                ELEVATION_EVIDENCE_FILENAME, "0" * 64
+            ),
+            "elevation evidence provenance mismatch",
+        ),
+        (
+            lambda manifest, path: _tamper_elevation_evidence_provenance(manifest, path),
+            "elevation evidence provenance mismatch",
+        ),
+    ],
+)
+def test_snapshot_rejects_missing_mismatched_or_tampered_elevation_evidence_provenance(
+    tmp_path: Path, mutate: object, message: str
+) -> None:
+    config = copied_config(tmp_path)
+    snapshot_path = snapshot(config)
+    manifest_path = snapshot_path / "snapshot.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert callable(mutate)
+    mutate(manifest, snapshot_path)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        _validate_snapshot(snapshot_path)
+
+
+def _tamper_elevation_evidence_provenance(manifest: dict[str, object], snapshot_path: Path) -> None:
+    """Self-reseal ordinary hashes while retaining the immutable content claim."""
+    evidence_path = snapshot_path / ELEVATION_EVIDENCE_FILENAME
+    evidence_path.write_bytes(evidence_path.read_bytes() + b"\n")
+    digest = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+    file_hashes = manifest["file_sha256"]
+    provenance_hashes = manifest["provenance_file_sha256"]
+    assert isinstance(file_hashes, dict)
+    assert isinstance(provenance_hashes, dict)
+    file_hashes[ELEVATION_EVIDENCE_FILENAME] = digest
+    provenance_hashes[ELEVATION_EVIDENCE_FILENAME] = digest
 
 
 def test_fixed_point_uses_retained_snapshot_identity_even_when_config_changes(

@@ -680,6 +680,7 @@ def snapshot(
             generated_provenance_files = [
                 filename
                 for filename in (
+                    ELEVATION_EVIDENCE_FILENAME,
                     "elevation-evidence.manifest.json",
                     "ea-survey-index.geojson",
                     "ea-authority-boundaries.geojson",
@@ -2201,6 +2202,25 @@ def _validate_snapshot(path: Path) -> None:
     provenance = _manifest_siblings(
         path, list(provenance_hashes), label="snapshot provenance file"
     )
+    if ELEVATION_EVIDENCE_FILENAME in files:
+        evidence_sources = manifest.get("evidence_sources")
+        elevation = (
+            evidence_sources.get("elevation") if isinstance(evidence_sources, dict) else None
+        )
+        content_fingerprint = (
+            elevation.get("content_fingerprint") if isinstance(elevation, dict) else None
+        )
+        if (
+            not isinstance(content_fingerprint, str)
+            or len(content_fingerprint) != 64
+            or any(character not in "0123456789abcdef" for character in content_fingerprint)
+        ):
+            raise ValueError("invalid snapshot: elevation evidence has no content fingerprint")
+        if (
+            file_hashes[ELEVATION_EVIDENCE_FILENAME] != content_fingerprint
+            or provenance_hashes.get(ELEVATION_EVIDENCE_FILENAME) != content_fingerprint
+        ):
+            raise ValueError("invalid snapshot: elevation evidence provenance mismatch")
     # All sibling paths have now passed containment, regular-file and duplicate
     # checks.  Only after that first pass is a retained byte read or hashed.
     for filename, file_path in files.items():
