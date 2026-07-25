@@ -122,6 +122,7 @@ def _compile(
             runtime,
             governed_input_fingerprint=governed_input_fingerprint,
             decision_resolver=decision_resolver,
+            heartbeat=heartbeat,
         )
     except AgentDecisionRequired as required:
         return _decision_required_result(

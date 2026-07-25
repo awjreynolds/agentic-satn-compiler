@@ -6,7 +6,8 @@ import heapq
 import json
 import logging
 import time
-from dataclasses import dataclass, replace
+from collections import Counter
+from dataclasses import dataclass, field, replace
 
 import geopandas as gpd
 import networkx as nx
@@ -229,6 +230,10 @@ class BackboneAssembly:
     connected_gateway_count: int
     agent_records: list[AgentRecord]
     compilation_diagnostics: dict[str, object]
+    # These counters are collected where root-pair candidates are generated
+    # and submitted to the meeting agent.  Traversal has a later, separate
+    # accounting boundary in ``satn.cross_spine``.
+    cross_spine_assembly_diagnostics: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -287,6 +292,63 @@ class _MeetingCandidate:
     end_node: str
     options: tuple[RouteOption, ...] = ()
     topography: TopographyComparison | None = None
+
+
+@dataclass
+class _CrossSpineMeetingWork:
+    """Account for candidate formation and agent work at the assembly seam.
+
+    A *root pair* is considered whenever this assembly asks the routing graph
+    for its next candidate between the two differently rooted fronts.  A pair
+    may be searched again after an agent rejection, hence the separate total
+    candidate-search counter.  An evaluation is counted exactly when
+    ``_evaluate_meeting`` returns an Agent Record.  Its initial decision is
+    preserved separately from its final disposition: rejected records can be
+    marked ``superseded`` after a later accepted tree edge makes them
+    unnecessary, but that does not erase the agent work already performed.
+    """
+
+    root_pairs: set[tuple[str, str]] = field(default_factory=set)
+    root_pair_candidate_searches: int = 0
+    initial_outcomes: Counter[str] = field(default_factory=Counter)
+
+    def record_candidate_search(self, left_root: str, right_root: str) -> None:
+        self.root_pairs.add(tuple(sorted((left_root, right_root))))
+        self.root_pair_candidate_searches += 1
+
+    def record_evaluation(self, record: AgentRecord) -> None:
+        self.initial_outcomes[str(record.decision)] += 1
+
+    def diagnostics(self, records: list[AgentRecord]) -> dict[str, object]:
+        """Return only deterministic assembly counters for a compiler run."""
+        final_outcomes = Counter(str(record.decision) for record in records)
+        return {
+            "root_pairs_considered": len(self.root_pairs),
+            "root_pair_candidate_searches": self.root_pair_candidate_searches,
+            "meeting_agent_evaluations": len(records),
+            "meeting_agent_evaluation_initial_outcomes": _meeting_outcome_counts(
+                self.initial_outcomes,
+                ("accept", "reject", "gap"),
+            ),
+            "meeting_agent_evaluation_final_dispositions": _meeting_outcome_counts(
+                final_outcomes,
+                ("accept", "reject", "gap", "superseded"),
+            ),
+        }
+
+
+def _meeting_outcome_counts(
+    counts: Counter[str],
+    known_outcomes: tuple[str, ...],
+) -> dict[str, int]:
+    """Give all defined outcomes an explicit zero while retaining future values."""
+    return {
+        **{outcome: counts[outcome] for outcome in known_outcomes},
+        **{
+            outcome: counts[outcome]
+            for outcome in sorted(set(counts) - set(known_outcomes))
+        },
+    }
 
 
 def assemble_backbone_outward(
@@ -444,7 +506,12 @@ def assemble_backbone_outward(
     community_connections = gpd.GeoDataFrame(
         rows, columns=ACCESS_COLUMNS, geometry="geometry", crs=crs
     )
-    meeting_connections, cross_spine_connectors, meeting_records = _cross_spine_meetings(
+    (
+        meeting_connections,
+        cross_spine_connectors,
+        meeting_records,
+        cross_spine_assembly_diagnostics,
+    ) = _cross_spine_meetings(
         community_connections,
         strategic_spines,
         graph,
@@ -681,6 +748,7 @@ def assemble_backbone_outward(
         connected_gateway_count=connected_gateways,
         agent_records=agent_records,
         compilation_diagnostics=compilation_diagnostics,
+        cross_spine_assembly_diagnostics=cross_spine_assembly_diagnostics,
     )
 
 
@@ -1633,7 +1701,7 @@ def _cross_spine_meetings(
     max_connection_km: float,
     elevation_evidence: gpd.GeoDataFrame | None = None,
     topography_config: TopographyConfig | None = None,
-) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame, list[AgentRecord]]:
+) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame, list[AgentRecord], dict[str, object]]:
     crs = connections.crs or strategic_spines.crs or graph.crs
     root_ids = sorted(
         str(root_id)
@@ -1654,6 +1722,7 @@ def _cross_spine_meetings(
         ]
     ] = []
     sequence = 0
+    work = _CrossSpineMeetingWork()
 
     def add_candidate(
         left_root: str,
@@ -1661,6 +1730,7 @@ def _cross_spine_meetings(
         excluded_pairs: frozenset[tuple[str, str]],
     ) -> None:
         nonlocal sequence
+        work.record_candidate_search(left_root, right_root)
         candidate = _meeting_candidate(
             root_groups[left_root],
             root_groups[right_root],
@@ -1703,6 +1773,7 @@ def _cross_spine_meetings(
             continue
         row = _meeting_row(candidate, max_connection_km=max_connection_km)
         record = _evaluate_meeting(row, gate)
+        work.record_evaluation(record)
         records.append(record)
         if record.decision != "accept":
             root_pair = (left_root, right_root)
@@ -1746,7 +1817,7 @@ def _cross_spine_meetings(
                     network_role=str(connector.network_role),
                 )
             ]
-    return meetings, connectors, records
+    return meetings, connectors, records, work.diagnostics(records)
 
 
 def _supersede_rejected_meetings(

@@ -155,3 +155,7 @@ def test_cli_full_directive_forces_recompilation(tmp_path: Path) -> None:
     assert diagnostics["assembly_strategy"] == "backbone-outward"
     assert diagnostics["candidate_evaluations"] > 0
     assert diagnostics["road_graph_edges"] >= diagnostics["reciprocal_routing_edges"]
+    cross_spine = diagnostics["cross_spine"]
+    assert cross_spine["schema_version"] == "cross-spine-diagnostics/v2"
+    assert cross_spine["candidate_connectors"] >= cross_spine["authoritative_connectors"]
+    assert not any("second" in key or "throughput" in key for key in cross_spine)

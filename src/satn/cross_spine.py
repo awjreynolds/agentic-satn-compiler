@@ -11,7 +11,8 @@ from __future__ import annotations
 import heapq
 import json
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from itertools import pairwise
 from numbers import Number
@@ -29,6 +30,113 @@ from satn.identifiers import stable_id
 from satn.models import AgentRecord, TrafficLight, WithheldDerivedFeatureReference
 
 PUBLIC_ROUTE_TERMINUS_CLOSURE_MAX_M = 100.0
+CROSS_SPINE_DIAGNOSTICS_SCHEMA_VERSION = "cross-spine-diagnostics/v2"
+
+CrossSpineProgress = Callable[[int, int, Mapping[str, object]], None]
+
+
+@dataclass
+class _CrossSpineWork:
+    """Deterministic accounting for traversal work at this module boundary.
+
+    The counters describe only logical operations.  In particular, they never
+    include elapsed time, machine capacity or cache state: those are useful
+    operational observations but cannot be reproduced as compiler output.
+    """
+
+    connector_traversal_attempts: int = 0
+    noded_graphs_built: int = 0
+    noded_graph_nodes_total: int = 0
+    noded_graph_edges_total: int = 0
+    peak_noded_graph_nodes: int = 0
+    peak_noded_graph_edges: int = 0
+    root_candidate_nodes_examined: int = 0
+    eligible_root_endpoint_candidates: int = 0
+    endpoint_pairs_considered: int = 0
+    weighted_shortest_path_searches: int = 0
+    weighted_shortest_path_nodes_settled: int = 0
+    weighted_shortest_path_edge_relaxations: int = 0
+    peak_shortest_path_frontier: int = 0
+    deterministic_path_nodes_selected: int = 0
+
+    def record_graph(self, graph: nx.Graph) -> None:
+        """Record the graph exposed to one connector traversal."""
+        nodes = graph.number_of_nodes()
+        edges = graph.number_of_edges()
+        self.noded_graphs_built += 1
+        self.noded_graph_nodes_total += nodes
+        self.noded_graph_edges_total += edges
+        self.peak_noded_graph_nodes = max(self.peak_noded_graph_nodes, nodes)
+        self.peak_noded_graph_edges = max(self.peak_noded_graph_edges, edges)
+
+    def as_dict(
+        self,
+        *,
+        candidate_connectors: int,
+        authoritative_connectors: int,
+        route_refinement_findings: int,
+        assembly_diagnostics: Mapping[str, object] | None,
+    ) -> dict[str, object]:
+        """Return the versioned public diagnostic contract for compiler runs."""
+        return {
+            "schema_version": CROSS_SPINE_DIAGNOSTICS_SCHEMA_VERSION,
+            **_assembly_diagnostics(assembly_diagnostics),
+            "candidate_connectors": candidate_connectors,
+            "authoritative_connectors": authoritative_connectors,
+            "route_refinement_findings": route_refinement_findings,
+            "typed_refinement_findings": {
+                "route-refinement-required": route_refinement_findings,
+            },
+            "noded_graphs_built": self.noded_graphs_built,
+            "noded_graph_nodes_total": self.noded_graph_nodes_total,
+            "noded_graph_edges_total": self.noded_graph_edges_total,
+            "peak_noded_graph_nodes": self.peak_noded_graph_nodes,
+            "peak_noded_graph_edges": self.peak_noded_graph_edges,
+            "root_candidate_nodes_examined": self.root_candidate_nodes_examined,
+            "eligible_root_endpoint_candidates": self.eligible_root_endpoint_candidates,
+            "endpoint_pairs_considered": self.endpoint_pairs_considered,
+            "weighted_shortest_path_searches": self.weighted_shortest_path_searches,
+            "weighted_shortest_path_nodes_settled": self.weighted_shortest_path_nodes_settled,
+            "weighted_shortest_path_edge_relaxations": self.weighted_shortest_path_edge_relaxations,
+            "peak_shortest_path_frontier": self.peak_shortest_path_frontier,
+            "deterministic_path_nodes_selected": self.deterministic_path_nodes_selected,
+            # This is one noded named-root traversal attempted for each
+            # assembled candidate connector.  It is deliberately not labelled
+            # as a meeting or agent evaluation, which occurs upstream.
+            "connector_traversal_attempts": self.connector_traversal_attempts,
+        }
+
+
+def _assembly_diagnostics(value: Mapping[str, object] | None) -> dict[str, object]:
+    """Normalise the upstream assembly seam's deterministic counters.
+
+    Direct traversal callers do not have an upstream backbone assembly.  They
+    receive explicit zeros rather than misleading inferences from connector
+    linework.  Compiler callers pass the accounting collected at the only seam
+    that knows whether a root-pair search or meeting-agent evaluation occurred.
+    """
+    defaults: dict[str, object] = {
+        "root_pairs_considered": 0,
+        "root_pair_candidate_searches": 0,
+        "meeting_agent_evaluations": 0,
+        "meeting_agent_evaluation_initial_outcomes": {
+            "accept": 0,
+            "reject": 0,
+            "gap": 0,
+        },
+        "meeting_agent_evaluation_final_dispositions": {
+            "accept": 0,
+            "reject": 0,
+            "gap": 0,
+            "superseded": 0,
+        },
+    }
+    if value is None:
+        return defaults
+    return {
+        **defaults,
+        **deepcopy(dict(value)),
+    }
 
 
 @dataclass(frozen=True)
@@ -44,6 +152,7 @@ class CrossSpineAssembly:
     valid_connectors: gpd.GeoDataFrame
     route_refinement_findings: gpd.GeoDataFrame
     agent_records: tuple[AgentRecord, ...]
+    diagnostics: dict[str, object]
 
 
 class CrossSpineRouteRefinementRequired(ValueError):
@@ -54,6 +163,9 @@ def resolve_cross_spine_assembly(
     assembled_connectors: gpd.GeoDataFrame,
     strategic_spines: gpd.GeoDataFrame,
     agent_records: Sequence[AgentRecord] | None = None,
+    *,
+    progress: CrossSpineProgress | None = None,
+    assembly_diagnostics: Mapping[str, object] | None = None,
 ) -> CrossSpineAssembly:
     """Resolve assembled Cross-Spine connectors into authoritative outcomes.
 
@@ -67,12 +179,32 @@ def resolve_cross_spine_assembly(
     interface tests and tooling where no assembly audit exists.
     """
     connectors = assembled_connectors.copy()
+    candidate_connectors = len(connectors)
+    work = _CrossSpineWork()
     copied_records = tuple(record.model_copy(deep=True) for record in agent_records or ())
+    _report_progress(
+        progress,
+        0,
+        candidate_connectors,
+        work.as_dict(
+            candidate_connectors=candidate_connectors,
+            authoritative_connectors=0,
+            route_refinement_findings=0,
+            assembly_diagnostics=assembly_diagnostics,
+        ),
+    )
     if connectors.empty:
         findings = _finding_frame([], connectors.crs)
         if agent_records is not None:
             _reconcile_agent_records(copied_records, connectors, connectors, findings)
-        return CrossSpineAssembly(connectors, findings, copied_records)
+        diagnostics = work.as_dict(
+            candidate_connectors=candidate_connectors,
+            authoritative_connectors=len(connectors),
+            route_refinement_findings=len(findings),
+            assembly_diagnostics=assembly_diagnostics,
+        )
+        _report_progress(progress, 0, candidate_connectors, diagnostics)
+        return CrossSpineAssembly(connectors, findings, copied_records, diagnostics)
     roots = _named_strategic_spines(strategic_spines.to_crs(27700))
     _validate_assembled_connectors(connectors)
     crs = connectors.crs
@@ -80,10 +212,22 @@ def resolve_cross_spine_assembly(
     valid_rows: list[gpd.GeoDataFrame] = []
     finding_rows: list[dict[str, object]] = []
     for _row_index, connector in projected.sort_values("cross_spine_connector_id").iterrows():
+        work.connector_traversal_attempts += 1
         try:
-            valid_rows.append(_resolve_connector(connector, roots).to_frame().T)
+            valid_rows.append(_resolve_connector(connector, roots, work).to_frame().T)
         except CrossSpineRouteRefinementRequired as error:
             finding_rows.append(_route_refinement_finding(connector, str(error)))
+        _report_progress(
+            progress,
+            work.connector_traversal_attempts,
+            candidate_connectors,
+            work.as_dict(
+                candidate_connectors=candidate_connectors,
+                authoritative_connectors=0,
+                route_refinement_findings=0,
+                assembly_diagnostics=assembly_diagnostics,
+            ),
+        )
     valid_connectors = _connector_frame(valid_rows, connectors)
     if not valid_connectors.empty:
         valid_connectors = valid_connectors.set_crs(27700, allow_override=True).to_crs(crs)
@@ -95,7 +239,29 @@ def resolve_cross_spine_assembly(
             valid_connectors,
             findings,
         )
-    return CrossSpineAssembly(valid_connectors, findings, copied_records)
+    diagnostics = work.as_dict(
+        candidate_connectors=candidate_connectors,
+        authoritative_connectors=len(valid_connectors),
+        route_refinement_findings=len(findings),
+        assembly_diagnostics=assembly_diagnostics,
+    )
+    _report_progress(progress, candidate_connectors, candidate_connectors, diagnostics)
+    return CrossSpineAssembly(valid_connectors, findings, copied_records, diagnostics)
+
+
+def _report_progress(
+    progress: CrossSpineProgress | None,
+    assessed: int,
+    total: int,
+    diagnostics: Mapping[str, object],
+) -> None:
+    """Expose only deterministic progress state to an optional operational observer."""
+    if progress is None:
+        return
+    # Observers are operational integrations outside the compiler contract.
+    # Give each event a deep snapshot so accidental or malicious mutation cannot
+    # change later events, returned diagnostics, or the published run record.
+    progress(assessed, total, deepcopy(dict(diagnostics)))
 
 
 def validate_cross_spine_publication(
@@ -167,15 +333,20 @@ def _validate_assembled_connectors(connectors: gpd.GeoDataFrame) -> None:
         _source_ids(connector, connector_id, provenance)
 
 
-def _resolve_connector(connector: pd.Series, roots: dict[str, object]) -> pd.Series:
+def _resolve_connector(
+    connector: pd.Series,
+    roots: dict[str, object],
+    work: _CrossSpineWork,
+) -> pd.Series:
     connector_id = str(connector["cross_spine_connector_id"])
     provenance = _connector_provenance(connector, connector_id)
     _source_ids(connector, connector_id, provenance)
     from_root_id, from_root = _named_root(connector, connector_id, "from_root_spine_id", roots)
     to_root_id, to_root = _named_root(connector, connector_id, "to_root_spine_id", roots)
     graph = _noded_graph(connector.geometry, connector_id, (from_root, to_root))
+    work.record_graph(graph)
     from_node, to_node, path = _named_root_path(
-        graph, connector_id, from_root_id, from_root, to_root_id, to_root
+        graph, connector_id, from_root_id, from_root, to_root_id, to_root, work
     )
     from_point, to_point = Point(from_node), Point(to_node)
     _, from_target = nearest_points(from_point, from_root)
@@ -647,15 +818,16 @@ def _named_root_path(
     from_root: object,
     to_root_id: str,
     to_root: object,
+    work: _CrossSpineWork,
 ) -> tuple[tuple[float, float], tuple[float, float], list[tuple[float, float]]]:
     try:
-        from_candidates, from_exact = _root_candidates(graph, from_root)
+        from_candidates, from_exact = _root_candidates(graph, from_root, work)
     except CrossSpineRouteRefinementRequired as error:
         raise CrossSpineRouteRefinementRequired(
             f"cross-spine connector {connector_id} named Strategic Spine {from_root_id}: {error}"
         ) from error
     try:
-        to_candidates, to_exact = _root_candidates(graph, to_root)
+        to_candidates, to_exact = _root_candidates(graph, to_root, work)
     except CrossSpineRouteRefinementRequired as error:
         raise CrossSpineRouteRefinementRequired(
             f"cross-spine connector {connector_id} named Strategic Spine {to_root_id}: {error}"
@@ -670,12 +842,15 @@ def _named_root_path(
         for distance, node in to_candidates
         if distance <= 0.01 or graph.degree[node] == 1
     ]
+    work.eligible_root_endpoint_candidates += len(from_candidates) + len(to_candidates)
     selected: tuple[float, tuple[float, float], tuple[float, float]] | None = None
     distances_by_start: dict[tuple[float, float], dict[tuple[float, float], float]] = {}
     for from_distance, from_node in from_candidates:
-        distances = _weighted_distances(graph, from_node)
+        work.weighted_shortest_path_searches += 1
+        distances = _weighted_distances(graph, from_node, work)
         distances_by_start[from_node] = distances
         for to_distance, to_node in to_candidates:
+            work.endpoint_pairs_considered += 1
             if from_node == to_node or to_node not in distances:
                 continue
             candidate = (from_distance + distances[to_node] + to_distance, from_node, to_node)
@@ -695,13 +870,16 @@ def _named_root_path(
     return (
         from_node,
         to_node,
-        _deterministic_path(graph, from_node, to_node, distances_by_start[from_node]),
+        _deterministic_path(graph, from_node, to_node, distances_by_start[from_node], work),
     )
 
 
 def _root_candidates(
-    graph: nx.Graph, root: object
+    graph: nx.Graph,
+    root: object,
+    work: _CrossSpineWork,
 ) -> tuple[list[tuple[float, tuple[float, float]]], bool]:
+    work.root_candidate_nodes_examined += graph.number_of_nodes()
     candidates = sorted((float(Point(node).distance(root)), node) for node in graph.nodes)
     exact = [candidate for candidate in candidates if candidate[0] <= 0.01]
     if exact:
@@ -723,6 +901,7 @@ def _deterministic_path(
     start: tuple[float, float],
     end: tuple[float, float],
     distances: Mapping[tuple[float, float], float],
+    work: _CrossSpineWork,
 ) -> list[tuple[float, float]]:
     _validate_weights(graph)
     if end not in distances:
@@ -755,6 +934,7 @@ def _deterministic_path(
             raise nx.NetworkXNoPath(f"No path between {start!r} and {end!r}")
         node = min(next_nodes)
         path.append(node)
+    work.deterministic_path_nodes_selected += len(path)
     return path
 
 
@@ -773,16 +953,21 @@ def _validate_weights(graph: nx.Graph) -> None:
 
 
 def _weighted_distances(
-    graph: nx.Graph, start: tuple[float, float]
+    graph: nx.Graph,
+    start: tuple[float, float],
+    work: _CrossSpineWork,
 ) -> dict[tuple[float, float], float]:
     _validate_weights(graph)
     queue: list[tuple[float, tuple[float, float]]] = [(0.0, start)]
     distances = {start: 0.0}
     while queue:
+        work.peak_shortest_path_frontier = max(work.peak_shortest_path_frontier, len(queue))
         distance, node = heapq.heappop(queue)
         if distance != distances[node]:
             continue
+        work.weighted_shortest_path_nodes_settled += 1
         for neighbour in sorted(graph.neighbors(node)):
+            work.weighted_shortest_path_edge_relaxations += 1
             candidate = distance + float(graph.edges[node, neighbour]["weight"])
             if candidate >= distances.get(neighbour, float("inf")):
                 continue

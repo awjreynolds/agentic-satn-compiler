@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from itertools import combinations
 from numbers import Number
@@ -15,7 +17,7 @@ from shapely.geometry import MultiPoint
 
 from satn.agents import AgentDecisionResolver, AgentRuntimeSource, CompilationGate
 from satn.backbone import GAP_COLUMNS, assemble_backbone_outward
-from satn.cross_spine import resolve_cross_spine_assembly
+from satn.cross_spine import CrossSpineProgress, resolve_cross_spine_assembly
 from satn.evidence import (
     PUBLIC_CYCLE_ROUTE_TYPES,
     STRATEGIC_CYCLE_ROUTE_TYPES,
@@ -24,6 +26,7 @@ from satn.evidence import (
     govern_network_scope_for_urban_communities,
     mark_ncn_edges,
 )
+from satn.heartbeat import StageHeartbeat
 from satn.identifiers import stable_id as _stable_id
 from satn.models import (
     AccessPointStatus,
@@ -126,6 +129,8 @@ def compile_network(
     *,
     governed_input_fingerprint: str = "",
     decision_resolver: AgentDecisionResolver | None = None,
+    heartbeat: StageHeartbeat | None = None,
+    cross_spine_progress: CrossSpineProgress | None = None,
 ) -> CompiledNetwork:
     places = source["places"].copy().sort_values("place_id").reset_index(drop=True)
     context = source.get("context", empty_context(source["network"].crs)).copy()
@@ -200,11 +205,17 @@ def compile_network(
     urban_classification_unknowns = urban.classification_unknowns
     low_traffic_areas = urban.low_traffic_areas
     low_traffic_area_portals = urban.low_traffic_area_portals
+    if heartbeat is not None:
+        heartbeat.set_stage("cross-spine-assembly")
     cross_spine_assembly = resolve_cross_spine_assembly(
         cross_spine_connectors,
         strategic_spines,
         agent_records,
+        progress=_cross_spine_progress_observer(heartbeat, cross_spine_progress),
+        assembly_diagnostics=backbone.cross_spine_assembly_diagnostics,
     )
+    if heartbeat is not None:
+        heartbeat.set_stage("network-compilation")
     cross_spine_connectors = cross_spine_assembly.valid_connectors
     agent_records = list(cross_spine_assembly.agent_records)
     if not cross_spine_assembly.route_refinement_findings.empty:
@@ -539,6 +550,7 @@ def compile_network(
         ),
         compilation_diagnostics={
             **backbone.compilation_diagnostics,
+            "cross_spine": cross_spine_assembly.diagnostics,
             "community_coverage": community_coverage,
             "urban_settlement_form_profiles": urban_settlement_form_profiles(communities),
             "urban_a_road_spine_coverage": urban_a_road_coverage,
@@ -561,6 +573,50 @@ def compile_network(
         }
     ).model_dump(mode="json")["responses"]
     return compiled
+
+
+def _cross_spine_progress_observer(
+    heartbeat: StageHeartbeat | None,
+    benchmark_progress: CrossSpineProgress | None,
+) -> CrossSpineProgress | None:
+    """Return a wall-clock-only progress observer for Cross-Spine traversal.
+
+    The Cross-Spine module emits deterministic completed-work counts.  This
+    adapter deliberately adds elapsed time, throughput and an ETA only to the
+    operational heartbeat context, never to ``CompiledNetwork`` diagnostics or
+    any spatial/provenance artifact.
+    """
+    if heartbeat is None:
+        return benchmark_progress
+    started = time.perf_counter()
+
+    def report(assessed: int, total: int, diagnostics: Mapping[str, object]) -> None:
+        elapsed = max(time.perf_counter() - started, 0.0)
+        throughput = assessed / elapsed if assessed and elapsed else 0.0
+        remaining = max(total - assessed, 0)
+        estimated_remaining = remaining / throughput if throughput else None
+        update_context = getattr(heartbeat, "update_context", None)
+        if callable(update_context):
+            update_context(
+                {
+                    "cross_spine_connectors_assessed": assessed,
+                    "cross_spine_connectors_total": total,
+                    "cross_spine_elapsed_seconds": round(elapsed, 3),
+                    "cross_spine_throughput_connectors_per_second": round(throughput, 3),
+                    "cross_spine_estimated_remaining_seconds": (
+                        round(estimated_remaining, 3)
+                        if estimated_remaining is not None
+                        else None
+                    ),
+                    "cross_spine_peak_noded_graph_edges": (
+                        diagnostics.get("peak_noded_graph_edges", 0)
+                    ),
+                }
+            )
+        if benchmark_progress is not None:
+            benchmark_progress(assessed, total, diagnostics)
+
+    return report
 
 
 def _urban_school_gaps(

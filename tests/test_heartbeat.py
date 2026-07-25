@@ -89,6 +89,31 @@ def test_heartbeat_logs_current_stage_context_and_elapsed_time(
     assert not heartbeat.running
 
 
+def test_heartbeat_merges_operational_progress_context(caplog: pytest.LogCaptureFixture) -> None:
+    logger = logging.getLogger("tests.heartbeat.progress")
+    caplog.set_level(logging.INFO, logger=logger.name)
+
+    with StageHeartbeat(
+        logger,
+        "cross-spine-assembly",
+        {"area_id": "west-of-england"},
+        interval_seconds=0.01,
+    ) as heartbeat:
+        heartbeat.update_context(
+            {
+                "cross_spine_connectors_assessed": 4,
+                "cross_spine_connectors_total": 10,
+                "cross_spine_throughput_connectors_per_second": 2.5,
+                "cross_spine_estimated_remaining_seconds": 2.4,
+            }
+        )
+        _wait_for_heartbeats(caplog, 1)
+
+    message = caplog.records[0].getMessage()
+    assert '"cross_spine_connectors_assessed": 4' in message
+    assert '"cross_spine_estimated_remaining_seconds": 2.4' in message
+
+
 def test_heartbeat_stops_when_guarded_work_fails(caplog: pytest.LogCaptureFixture) -> None:
     logger = logging.getLogger("tests.heartbeat.failure")
     caplog.set_level(logging.INFO, logger=logger.name)
@@ -170,6 +195,8 @@ def test_public_compile_heartbeats_seeded_atm_and_publication_preparation(
         "publication-reuse-check",
         "snapshot-load",
         "atm-seeded-load-reprojection",
+        "network-compilation",
+        "cross-spine-assembly",
         "network-compilation",
         "atm-comparison",
         "post-compilation-artifact-preparation",
