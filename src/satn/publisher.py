@@ -27,7 +27,10 @@ from shapely.geometry import MultiLineString, mapping, shape
 from satn.compiler import CompiledNetwork
 from satn.constants import DISCLAIMER, SCHEMA_VERSION
 from satn.cross_spine import validate_cross_spine_publication
-from satn.ea_elevation import SAMPLE_LEDGER_FILENAME, eligible_route_fingerprint
+from satn.ea_elevation import (
+    SAMPLE_LEDGER_FILENAME,
+    eligible_route_fingerprint,
+)
 from satn.models import (
     AgentDecisionLedger,
     AgentRecord,
@@ -46,6 +49,7 @@ from satn.sources import (
     ELEVATION_EVIDENCE_FILENAME,
     NCN_ATTRIBUTION,
     OSM_ATTRIBUTION,
+    _validate_canonical_retained_ea_evidence,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -299,9 +303,7 @@ def _validate_ea_elevation_fixed_point(config: AreaConfig, network_path: Path) -
         if not isinstance(provenance_files, dict):
             raise TypeError("snapshot provenance_file_sha256 must be an object")
         for filename, expected_digest in expected_files.items():
-            recorded_digest = required_digest(
-                provenance_files[filename], f"{filename} provenance"
-            )
+            recorded_digest = required_digest(provenance_files[filename], f"{filename} provenance")
             if expected_digest is not None and recorded_digest != expected_digest:
                 raise ValueError(f"EA elevation snapshot has mismatched {filename} provenance")
             retained = snapshot_manifest.parent / filename
@@ -323,14 +325,11 @@ def _validate_ea_elevation_fixed_point(config: AreaConfig, network_path: Path) -
                 "EA elevation snapshot retained acquisition manifest must be an object"
             )
 
-        def required_equal(
-            field: str, expected_value: object, label: str
-        ) -> None:
+        def required_equal(field: str, expected_value: object, label: str) -> None:
             actual_value = acquisition.get(field)
             if actual_value != expected_value:
                 raise ValueError(
-                    "EA elevation snapshot retained acquisition manifest "
-                    f"mismatches {label}"
+                    f"EA elevation snapshot retained acquisition manifest mismatches {label}"
                 )
 
         # The snapshot is the publication authority, but the retained
@@ -362,11 +361,16 @@ def _validate_ea_elevation_fixed_point(config: AreaConfig, network_path: Path) -
             provenance_files[EA_RETAINED_ROUTE_FILENAME],
             "sampled-route digest",
         )
-        required_equal(
-            "sample_ledger_path", SAMPLE_LEDGER_FILENAME, "sample-ledger path"
-        )
-        required_equal(
-            "sample_route_path", EA_RETAINED_ROUTE_FILENAME, "sampled-route path"
+        required_equal("sample_ledger_path", SAMPLE_LEDGER_FILENAME, "sample-ledger path")
+        required_equal("sample_route_path", EA_RETAINED_ROUTE_FILENAME, "sampled-route path")
+        # Hashes prove transport integrity but cannot by themselves prevent a
+        # self-resealed manifest.  Reconstruct the one governed GeoJSON form
+        # and bind its provenance-bearing metadata to both the configuration
+        # and independently retained acquisition statement.
+        _validate_canonical_retained_ea_evidence(
+            snapshot_manifest.parent / ELEVATION_EVIDENCE_FILENAME,
+            elevation,
+            acquisition,
         )
     except (json.JSONDecodeError, KeyError, OSError, TypeError) as error:
         raise ValueError(
@@ -1753,8 +1757,7 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
     except (KeyError, TypeError, ValueError) as error:
         raise ValueError("run manifest has an invalid decision provenance contract") from error
     if input_ledger.decision_contract != run["decision_contract"] or (
-        accepted_ledger.model_dump(mode="json")["responses"]
-        != run["accepted_decisions"]
+        accepted_ledger.model_dump(mode="json")["responses"] != run["accepted_decisions"]
     ):
         raise ValueError("run manifest has a non-canonical decision provenance contract")
     authoritative_count = sum(
@@ -1873,13 +1876,13 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
         {
             "decision_contract": run["decision_contract"],
             "responses": [
-        {
-            "request_id": record.decision_request.request_id,
-            "dependency_fingerprint": record.decision_request.dependency_fingerprint,
-            "choice_id": record.selected_choice_id,
-        }
-        for record in bounded_choice_records
-        if record.decision_request is not None
+                {
+                    "request_id": record.decision_request.request_id,
+                    "dependency_fingerprint": record.decision_request.dependency_fingerprint,
+                    "choice_id": record.selected_choice_id,
+                }
+                for record in bounded_choice_records
+                if record.decision_request is not None
             ],
         }
     ).model_dump(mode="json")["responses"]
