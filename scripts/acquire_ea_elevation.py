@@ -557,10 +557,7 @@ def validate_weca_samples(
         sequence = [row for row in assigned if row["route_id"] == route_id]
         sequence.sort(key=lambda row: int(row["sample_index"]))
         for before, after in pairwise(sequence):
-            if before["authority_key"] == after["authority_key"] or "routing-buffer" in {
-                before["authority_key"],
-                after["authority_key"],
-            }:
+            if before["authority_key"] == after["authority_key"]:
                 continue
             before_available = sampled[_sample_identity(before)] is not None
             after_available = sampled[_sample_identity(after)] is not None

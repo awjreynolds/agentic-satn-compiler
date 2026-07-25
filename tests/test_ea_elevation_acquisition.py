@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import urllib.parse
@@ -19,7 +20,8 @@ from satn.ea_elevation import (
     eligible_route_samples,
     read_sample_ledger,
 )
-from satn.sources import _validate_ea_ledger_completeness
+from satn.models import NationalElevationConfig
+from satn.sources import _ea_elevation_acquisition_provenance, _validate_ea_ledger_completeness
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "acquire_ea_elevation.py"
 SPEC = importlib.util.spec_from_file_location("acquire_ea_elevation", SCRIPT)
@@ -450,10 +452,10 @@ def test_weca_acquisition_rejects_any_buffer_other_than_the_pinned_15km(
         acquisition.validate_weca_route_extent(routes, routing_buffer_m=14_999)
 
 
-def test_banes_cross_boundary_samples_beyond_authority_buffer_are_retained_and_reported(
+def test_banes_cross_boundary_samples_beyond_authority_buffer_are_retained_reported_and_immutable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A retained B&NES spine may leave every council polygon beyond 15 km."""
+    """The 10 m ledger reports authority/outside transitions exactly as it is verified."""
     routes = tmp_path / "routes.geojson"
     boundaries = tmp_path / "authorities.geojson"
     survey_index = tmp_path / "survey-index.geojson"
@@ -476,10 +478,11 @@ def test_banes_cross_boundary_samples_beyond_authority_buffer_are_retained_and_r
                 "authority": name,
                 "authority_id": f"authority-{position}",
                 "source_query": "synthetic-banes-boundaries/v1",
-                "geometry": (
-                    box(350000, 149900, 350100, 150100)
-                    if position == 0
-                    else box(400000 + position * 100, 149900, 400050 + position * 100, 150100)
+                "geometry": box(
+                    350000 + position * 110,
+                    149900,
+                    350100 + position * 110,
+                    150100,
                 ),
             }
             for position, name in enumerate(acquisition.WECA_AUTHORITIES)
@@ -499,13 +502,17 @@ def test_banes_cross_boundary_samples_beyond_authority_buffer_are_retained_and_r
         geometry="geometry",
         crs=27700,
     ).to_file(survey_index, driver="GeoJSON")
+    official_index = {
+        "raw_sha256": hashlib.sha256(survey_index.read_bytes()).hexdigest(),
+        "canonical_feature_sha256": "b" * 64,
+    }
     monkeypatch.setattr(
         acquisition,
         "validate_official_weca_survey_index",
-        lambda _path: {
-            "raw_sha256": "a" * 64,
-            "canonical_feature_sha256": "b" * 64,
-        },
+        lambda _path: official_index,
+    )
+    monkeypatch.setattr(
+        "satn.sources.validate_official_weca_survey_index", lambda _path: official_index
     )
     monkeypatch.setattr(
         acquisition,
@@ -513,19 +520,16 @@ def test_banes_cross_boundary_samples_beyond_authority_buffer_are_retained_and_r
         lambda key, *_args, **_kwargs: (key, tmp_path / "tile.tif", "url", "a" * 64, 1, None),
     )
     monkeypatch.setattr(acquisition, "load_tile", lambda _path: object())
-    monkeypatch.setattr(
-        acquisition,
-        "sample_grid",
-        lambda _grid, point: 42.0 if point.x == 350050 else None,
-    )
+    monkeypatch.setattr(acquisition, "sample_grid", lambda _grid, _point: 42.0)
 
     manifest = acquisition.write_evidence(
         routes,
         output,
         tmp_path / "cache",
-        spacing_m=15_000,
+        spacing_m=10,
         authority_boundaries_path=boundaries,
         survey_index_path=survey_index,
+        governed_input_fingerprint="c" * 64,
     )
     ledger = read_sample_ledger(output.with_name("elevation-evidence.sample-ledger.jsonl"))
     outside = next(
@@ -534,25 +538,47 @@ def test_banes_cross_boundary_samples_beyond_authority_buffer_are_retained_and_r
         if row["authority"] == "routing-buffer/outside-authority"
     )
 
-    assert manifest["requested_point_count"] == 3
-    assert manifest["evidence_sample_count"] == 1
-    assert manifest["nodata_sample_count"] == 2
+    assert manifest["requested_point_count"] == 3001
+    assert manifest["evidence_sample_count"] == 3001
+    assert manifest["nodata_sample_count"] == 0
     assert outside == {
         "authority": "routing-buffer/outside-authority",
-        "status": "unavailable",
-        "route_sample_count": 2,
-        "requested_sample_count": 2,
-        "available_sample_count": 0,
-        "nodata_sample_count": 2,
+        "status": "available",
+        "route_sample_count": 2962,
+        "requested_sample_count": 2962,
+        "available_sample_count": 2962,
+        "nodata_sample_count": 0,
     }
-    assert [row["authority_id"] for row in ledger if row["bucket"] == "routing-buffer"] == [
-        "routing-buffer",
-        "routing-buffer",
-    ]
-    assert [row["availability"] for row in ledger if row["bucket"] == "routing-buffer"] == [
-        "nodata",
-        "nodata",
-    ]
+    assert manifest["survey_coverage_preflight"]["official_survey_index"] == official_index
+    assert manifest["sample_validation"]["cross_boundary_transitions"][-1] == {
+        "route_id": "banes-cross-boundary-spine",
+        "before_sample_index": 38,
+        "after_sample_index": 39,
+        "from_authority": acquisition._normalise_authority(acquisition.WECA_AUTHORITIES[3]),
+        "to_authority": "routing-buffer",
+        "status": "available",
+    }
+
+    provenance = _ea_elevation_acquisition_provenance(
+        NationalElevationConfig(
+            provider="local-geojson",
+            path=output,
+            source_id="ea-lidar-composite-dtm-1m",
+            acquisition_contract="ea-lidar-weca-v1",
+            licence=acquisition.LICENCE,
+            attribution=acquisition.ATTRIBUTION,
+        )
+    )
+
+    assert provenance["cross_boundary_transitions"][-1] == {
+        "route_id": "banes-cross-boundary-spine",
+        "before_sample_index": 38,
+        "after_sample_index": 39,
+        "from_authority_id": "authority-3",
+        "to_authority_id": "routing-buffer",
+        "status": "available",
+    }
+    assert len(ledger) == manifest["requested_point_count"]
 
 
 def test_weca_pinned_route_extent_fails_closed_when_eligible_route_changes(
