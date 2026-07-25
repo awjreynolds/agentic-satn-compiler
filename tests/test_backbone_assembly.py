@@ -22,7 +22,7 @@ from satn.routing import RouteOption
 
 PROJECT = Path(__file__).parents[1]
 PARALLEL_SPINE_PRE_INSTRUMENTATION_STRUCTURAL_DIGEST = (
-    "61b428342dcb599b68a4f5842883c29440b8a8b1761744a184ec503401f36abe"
+    "5a87fa733fbd8933bf7f6622a4ae019e022469e80c0bcf31331f12edd6617f51"
 )
 
 
@@ -237,21 +237,34 @@ def governed_structural_digest(compiled: object) -> str:
     This intentionally excludes diagnostics and every wall-clock observation:
     instrumentation may evolve operational reporting, but it must not alter the
     governed network generated from this fixed pre-instrumentation fixture.
+
+    WKB is deliberately not used here.  Its binary encoding can vary with the
+    GEOS/Shapely build even when the governed geometry is identical.  The
+    canonical signature keeps this as a strict geometry invariant, using
+    rounded coordinates and a direction-independent LineString representation.
     """
     payload = {
         "access": sorted(
-            (row.access_connection_id, row.geometry.wkb_hex, str(row.provenance))
+            (
+                row.access_connection_id,
+                canonical_linestring_signature(row.geometry),
+                str(row.provenance),
+            )
             for row in compiled.spine_access_connections.itertuples()
         ),
         "meetings": sorted(
-            (row.meeting_connection_id, row.geometry.wkb_hex, str(row.provenance))
+            (
+                row.meeting_connection_id,
+                canonical_linestring_signature(row.geometry),
+                str(row.provenance),
+            )
             for row in compiled.branch_meeting_connections.itertuples()
         ),
         "connectors": sorted(
             (
                 row.cross_spine_connector_id,
                 row.meeting_connection_id,
-                row.geometry.wkb_hex,
+                canonical_linestring_signature(row.geometry),
                 str(row.provenance),
             )
             for row in compiled.cross_spine_connectors.itertuples()
@@ -260,6 +273,29 @@ def governed_structural_digest(compiled: object) -> str:
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+
+
+def canonical_linestring_signature(geometry: LineString) -> tuple[tuple[float, ...], ...]:
+    """Return a platform-neutral, direction-independent LineString signature."""
+    if geometry.geom_type != "LineString":
+        raise TypeError(f"Expected LineString, got {geometry.geom_type}")
+
+    coordinates = tuple(
+        tuple(0.0 if (rounded := round(value, 9)) == 0 else rounded for value in point)
+        for point in geometry.coords
+    )
+    return min(coordinates, tuple(reversed(coordinates)))
+
+
+def test_canonical_linestring_signature_is_direction_independent_and_rounded() -> None:
+    forward = LineString([(0.0, 1.2345678914), (2.0, 3.0)])
+    reverse = LineString([(2.0, 3.0), (0.0, 1.2345678914)])
+
+    assert canonical_linestring_signature(forward) == (
+        (0.0, 1.234567891),
+        (2.0, 3.0),
+    )
+    assert canonical_linestring_signature(forward) == canonical_linestring_signature(reverse)
 
 
 def with_source_costs_below_geometry(
