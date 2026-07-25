@@ -22,8 +22,10 @@ from satn.routing import RouteOption
 
 PROJECT = Path(__file__).parents[1]
 PARALLEL_SPINE_PRE_INSTRUMENTATION_STRUCTURAL_DIGEST = (
-    "5a87fa733fbd8933bf7f6622a4ae019e022469e80c0bcf31331f12edd6617f51"
+    "f5661337121e4f3f1a77e2da4de90a0229a20a72cc0b3c420d946ca081dc097a"
 )
+CANONICAL_GEOMETRY_DECIMAL_PLACES = 3
+CANONICAL_GEOMETRY_CRS = "EPSG:27700"
 
 
 def config() -> CouncilConfig:
@@ -241,8 +243,14 @@ def governed_structural_digest(compiled: object) -> str:
     WKB is deliberately not used here.  Its binary encoding can vary with the
     GEOS/Shapely build even when the governed geometry is identical.  The
     canonical signature keeps this as a strict geometry invariant, using
-    rounded coordinates and a direction-independent LineString representation.
+    millimetre precision in the projected metre coordinate space and a
+    direction-independent LineString representation.  This admits only
+    sub-millimetre GEOS numerical noise; it does not discard topology, vertex
+    order, stable identifiers, meeting identifiers, or provenance.
     """
+    access = canonical_metric_frame(compiled.spine_access_connections)
+    meetings = canonical_metric_frame(compiled.branch_meeting_connections)
+    connectors = canonical_metric_frame(compiled.cross_spine_connectors)
     payload = {
         "access": sorted(
             (
@@ -250,7 +258,7 @@ def governed_structural_digest(compiled: object) -> str:
                 canonical_linestring_signature(row.geometry),
                 str(row.provenance),
             )
-            for row in compiled.spine_access_connections.itertuples()
+            for row in access.itertuples()
         ),
         "meetings": sorted(
             (
@@ -258,7 +266,7 @@ def governed_structural_digest(compiled: object) -> str:
                 canonical_linestring_signature(row.geometry),
                 str(row.provenance),
             )
-            for row in compiled.branch_meeting_connections.itertuples()
+            for row in meetings.itertuples()
         ),
         "connectors": sorted(
             (
@@ -267,7 +275,7 @@ def governed_structural_digest(compiled: object) -> str:
                 canonical_linestring_signature(row.geometry),
                 str(row.provenance),
             )
-            for row in compiled.cross_spine_connectors.itertuples()
+            for row in connectors.itertuples()
         ),
     }
     return hashlib.sha256(
@@ -275,27 +283,82 @@ def governed_structural_digest(compiled: object) -> str:
     ).hexdigest()
 
 
+def canonical_metric_frame(frame: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Transform a governed geometry frame into its canonical metric CRS.
+
+    A digest must never silently interpret degrees as metres: every governed
+    frame therefore needs a declared source CRS before it is transformed to
+    British National Grid.  Transforming the complete frame once also keeps
+    the coordinate interpretation uniform across its rows.
+    """
+    if frame.crs is None:
+        raise ValueError("Governed geometry frame must declare a source CRS")
+    return frame.to_crs(CANONICAL_GEOMETRY_CRS)
+
+
 def canonical_linestring_signature(geometry: LineString) -> tuple[tuple[float, ...], ...]:
-    """Return a platform-neutral, direction-independent LineString signature."""
+    """Return a millimetre-stable, direction-independent LineString signature.
+
+    The governed fixture is assembled in a projected coordinate reference
+    system measured in metres.  Rounding to three decimal places masks only
+    sub-millimetre cross-platform GEOS noise while preserving every vertex and
+    any material change in route geometry.
+    """
     if geometry.geom_type != "LineString":
         raise TypeError(f"Expected LineString, got {geometry.geom_type}")
 
     coordinates = tuple(
-        tuple(0.0 if (rounded := round(value, 9)) == 0 else rounded for value in point)
+        tuple(
+            0.0
+            if (rounded := round(value, CANONICAL_GEOMETRY_DECIMAL_PLACES)) == 0
+            else rounded
+            for value in point
+        )
         for point in geometry.coords
     )
     return min(coordinates, tuple(reversed(coordinates)))
 
 
-def test_canonical_linestring_signature_is_direction_independent_and_rounded() -> None:
-    forward = LineString([(0.0, 1.2345678914), (2.0, 3.0)])
-    reverse = LineString([(2.0, 3.0), (0.0, 1.2345678914)])
+def test_canonical_linestring_signature_is_direction_independent_and_millimetre_stable() -> None:
+    forward = LineString([(530000.0, 180000.0), (530002.0, 180003.0)])
+    reverse = LineString([(530002.0, 180003.0), (530000.0, 180000.0)])
+    sub_millimetre_noise = LineString([(530000.0004, 180000.0), (530002.0, 180003.0)])
+    millimetre_movement = LineString([(530000.001, 180000.0), (530002.0, 180003.0)])
 
     assert canonical_linestring_signature(forward) == (
-        (0.0, 1.234567891),
-        (2.0, 3.0),
+        (530000.0, 180000.0),
+        (530002.0, 180003.0),
     )
     assert canonical_linestring_signature(forward) == canonical_linestring_signature(reverse)
+    assert canonical_linestring_signature(forward) == canonical_linestring_signature(
+        sub_millimetre_noise
+    )
+    assert canonical_linestring_signature(forward) != canonical_linestring_signature(
+        millimetre_movement
+    )
+
+
+def test_canonical_metric_frame_requires_a_crs_and_projects_degrees_to_metres() -> None:
+    geographic = gpd.GeoDataFrame(
+        {"geometry": [LineString([(-2.4, 51.4), (-2.399, 51.401)])]},
+        crs="EPSG:4326",
+    )
+
+    projected = canonical_metric_frame(geographic)
+
+    assert projected.crs.to_string() == CANONICAL_GEOMETRY_CRS
+    assert canonical_linestring_signature(projected.geometry.iloc[0]) != (
+        (-2.4, 51.4),
+        (-2.399, 51.401),
+    )
+
+    with pytest.raises(ValueError, match="source CRS"):
+        canonical_metric_frame(gpd.GeoDataFrame({"geometry": [LineString([(0, 0), (1, 1)])]}))
+
+
+def test_canonical_linestring_signature_rejects_unexpected_geometry() -> None:
+    with pytest.raises(TypeError, match="Expected LineString"):
+        canonical_linestring_signature(Point(0, 0))
 
 
 def with_source_costs_below_geometry(
