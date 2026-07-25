@@ -660,6 +660,13 @@ block only for the final retained-core snapshot. The authority artifact must be
 derived from an official boundary download with its stable source IDs and exact
 source query retained; labels alone are not sufficient. Do not alter the provenance
 lock by hand: the release process regenerates it from that final snapshot.
+The final Area Definition uses a different immutable snapshot ID and declares the
+historical bootstrap `snapshot_id` plus its exact `snapshot.json` SHA-256 under
+`source.retained_core_source`. `satn snapshot ... --retain-core` verifies that source,
+copies only its manifest-validated regular core siblings into a missing final target,
+then adds elevation atomically. Do not manually copy a snapshot directory. A repeated
+command validates and reuses the completed final target only when its recorded lineage
+still matches; it never rewrites the historical benchmark snapshot.
 Only the final WECA definition sets `acquisition_contract: ea-lidar-weca-v1`.
 That opt-in is intentional: existing B&NES and other council EA GeoJSON sources
 remain ordinary national-elevation evidence rather than being forced through the
@@ -711,7 +718,8 @@ the mutable acquisition directory at publication time.
 The command downloads only intersecting 5 km tiles, scales the official 1 m DTM to
 the requested route-sampling interval, preserves request URLs and tile hashes in a
 manifest, and excludes aggregate Cross-Spine Connector geometry. Configure the
-result through the existing `local-geojson` contract, then replace the immutable
+result through the existing `local-geojson` contract, then create the separate final
+retained-core snapshot with `--retain-core`; do not replace the immutable historical
 source snapshot. The 3D terrain layer is contextual and is never sampled for analysis.
 
 Configure a council-governed classification dataset as follows. The source must be

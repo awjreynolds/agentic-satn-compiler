@@ -166,7 +166,9 @@ def test_weca_bootstrap_and_final_definitions_are_separate_parseable_workflow_st
     final = CouncilConfig.from_yaml(PROJECT / "deployments/weca/area.yaml")
 
     assert bootstrap.source.national_elevation is None
-    assert bootstrap.source.snapshot_id == final.source.snapshot_id
+    assert bootstrap.source.snapshot_id != final.source.snapshot_id
+    assert final.source.retained_core_source is not None
+    assert final.source.retained_core_source.snapshot_id == bootstrap.source.snapshot_id
     assert bootstrap.publication.output_dir != final.publication.output_dir
     assert final.source.national_elevation is not None
     assert final.source.national_elevation.source_id == "ea-lidar-composite-dtm-1m"

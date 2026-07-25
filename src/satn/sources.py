@@ -61,6 +61,7 @@ from satn.models import (
     GovernedSpatialSourceConfig,
     NationalElevationConfig,
     OfficialRoadClassification,
+    safe_snapshot_id,
 )
 from satn.settlement import assess_community_urban_eligibility
 
@@ -73,6 +74,16 @@ ELEVATION_EVIDENCE_FILENAME = "elevation-evidence.geojson"
 EA_RETAINED_ROUTE_FILENAME = "ea-elevation-sampled-routes.geojson"
 EA_LIDAR_SOURCE_ID = "ea-lidar-composite-dtm-1m"
 EA_LIDAR_WECA_ACQUISITION_CONTRACT = "ea-lidar-weca-v1"
+ELEVATION_ARTIFACT_FILENAMES = frozenset(
+    {
+        ELEVATION_EVIDENCE_FILENAME,
+        "elevation-evidence.manifest.json",
+        "ea-survey-index.geojson",
+        "ea-authority-boundaries.geojson",
+        SAMPLE_LEDGER_FILENAME,
+        EA_RETAINED_ROUTE_FILENAME,
+    }
+)
 ROAD_CLASSIFICATION_COLUMNS = [
     "official_feature_id",
     "official_classification",
@@ -83,6 +94,36 @@ ROAD_CLASSIFICATION_COLUMNS = [
     "geometry",
 ]
 LOGGER = logging.getLogger(__name__)
+
+
+def _snapshot_destination(config: AreaConfig) -> Path:
+    """Validate the snapshot root and target before any source input is consumed.
+
+    The root is allowed to be absent for a first snapshot, but it is created and
+    re-checked before a temporary directory or acquisition can be started.  An
+    existing root/target link is never followed, and the resolved target must
+    remain the root's direct child.
+    """
+    snapshot_id = safe_snapshot_id(config.source.snapshot_id)
+    root = config.source.snapshot_dir
+    if not isinstance(root, Path) or root.is_symlink():
+        raise ValueError("snapshot root is missing or unsafe")
+    if root.exists():
+        if not root.is_dir():
+            raise ValueError("snapshot root is missing or unsafe")
+        resolved_root = root.resolve(strict=True)
+    else:
+        root.mkdir(parents=True, exist_ok=True)
+        if root.is_symlink() or not root.is_dir():
+            raise ValueError("snapshot root is missing or unsafe")
+        resolved_root = root.resolve(strict=True)
+    destination = root / snapshot_id
+    if destination.is_symlink() or (destination.exists() and not destination.is_dir()):
+        raise ValueError("snapshot target is missing or unsafe")
+    resolved_destination = destination.resolve(strict=destination.exists())
+    if resolved_destination.parent != resolved_root:
+        raise ValueError("snapshot target escapes snapshot root")
+    return destination
 
 
 def _regular_sibling(directory: Path, name: object, *, label: str) -> Path:
@@ -133,6 +174,163 @@ def _manifest_hashes(manifest: dict[str, object], field: str, *, label: str) -> 
     ):
         raise ValueError(f"{label} must map safe filenames to SHA-256 digests")
     return dict(values)
+
+
+def _retained_core_lineage(manifest: dict[str, object]) -> dict[str, str] | None:
+    """Validate the optional immutable source identity carried by a final snapshot."""
+    value = manifest.get("retained_core_lineage")
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {
+        "source_snapshot_id",
+        "source_manifest_sha256",
+    }:
+        raise ValueError("invalid snapshot: retained-core lineage is malformed")
+    try:
+        target_snapshot_id = safe_snapshot_id(
+            manifest.get("snapshot_id"), field_name="retained-core target snapshot identifier"
+        )
+        snapshot_id = safe_snapshot_id(
+            value.get("source_snapshot_id"), field_name="retained-core source snapshot identifier"
+        )
+    except ValueError as error:
+        raise ValueError("invalid snapshot: retained-core lineage is malformed") from error
+    manifest_sha256 = value.get("source_manifest_sha256")
+    if (
+        not isinstance(manifest_sha256, str)
+        or len(manifest_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in manifest_sha256)
+    ):
+        raise ValueError("invalid snapshot: retained-core lineage is malformed")
+    if target_snapshot_id == snapshot_id:
+        raise ValueError("invalid snapshot: retained-core source equals target snapshot")
+    return {
+        "source_snapshot_id": snapshot_id,
+        "source_manifest_sha256": manifest_sha256,
+    }
+
+
+def _lineaged_retained_core_source(config: AreaConfig) -> tuple[Path, dict[str, object]] | None:
+    """Load one separately identified immutable snapshot before copying any bytes."""
+    lineage = config.source.retained_core_source
+    if lineage is None:
+        return None
+    source_snapshot_id = safe_snapshot_id(
+        lineage.snapshot_id, field_name="retained-core lineage source snapshot identifier"
+    )
+    target_snapshot_id = safe_snapshot_id(config.source.snapshot_id)
+    if source_snapshot_id == target_snapshot_id:
+        raise ValueError("retained-core source snapshot must differ from target snapshot")
+    source = config.source.snapshot_dir / source_snapshot_id
+    if source.is_symlink() or not source.is_dir():
+        raise ValueError("retained-core lineage source snapshot is missing or unsafe")
+    try:
+        source.resolve(strict=True).relative_to(config.source.snapshot_dir.resolve(strict=True))
+    except ValueError as error:
+        raise ValueError(
+            "retained-core lineage source snapshot escapes snapshot directory"
+        ) from error
+    manifest_path = _regular_sibling(
+        source, "snapshot.json", label="retained-core source manifest"
+    )
+    manifest_bytes = manifest_path.read_bytes()
+    actual_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+    if actual_sha256 != lineage.manifest_sha256:
+        raise ValueError("retained-core lineage source manifest SHA-256 mismatch")
+    _validate_snapshot(source)
+    manifest = json.loads(manifest_bytes)
+    if not isinstance(manifest, dict) or manifest.get("snapshot_id") != lineage.snapshot_id:
+        raise ValueError("retained-core lineage source snapshot identity mismatch")
+    return source, manifest
+
+
+def _validate_existing_lineaged_target(
+    destination: Path,
+    config: AreaConfig,
+    source_manifest: dict[str, object],
+) -> None:
+    """Make repeated final retained-core snapshots a read-only idempotent operation.
+
+    Both snapshots have already passed their own complete hash validation.  This
+    second comparison binds the completed target to the separately verified
+    historical manifest, so a target cannot be modified and self-resealed.
+    """
+    manifest_path = _regular_sibling(destination, "snapshot.json", label="snapshot manifest")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(manifest, dict):
+        raise ValueError("retained-core lineage target manifest is invalid")
+    expected = config.source.retained_core_source
+    if expected is None:  # pragma: no cover - caller establishes this invariant.
+        raise ValueError("retained-core lineage target has no configured source")
+    if _retained_core_lineage(manifest) != {
+        "source_snapshot_id": expected.snapshot_id,
+        "source_manifest_sha256": expected.manifest_sha256,
+    }:
+        raise ValueError("retained-core lineage target does not match configured source")
+    if manifest.get("snapshot_id") != config.source.snapshot_id:
+        raise ValueError("retained-core lineage target snapshot identity does not match config")
+
+    target_file_hashes = _manifest_hashes(
+        manifest, "file_sha256", label="retained-core lineage target file hashes"
+    )
+    source_file_hashes = _manifest_hashes(
+        source_manifest, "file_sha256", label="retained-core lineage source file hashes"
+    )
+    target_provenance_hashes = _manifest_hashes(
+        manifest,
+        "provenance_file_sha256",
+        label="retained-core lineage target provenance hashes",
+    )
+    source_provenance_hashes = _manifest_hashes(
+        source_manifest,
+        "provenance_file_sha256",
+        label="retained-core lineage source provenance hashes",
+    )
+
+    def compare_retained_hashes(
+        target: dict[str, str], source: dict[str, str], *, kind: str
+    ) -> None:
+        for filename, digest in source.items():
+            if filename in ELEVATION_ARTIFACT_FILENAMES:
+                continue
+            if target.get(filename) != digest:
+                raise ValueError(f"retained-core lineage target changed retained {kind}")
+        for filename in target:
+            if filename not in source and filename not in ELEVATION_ARTIFACT_FILENAMES:
+                raise ValueError(f"retained-core lineage target added non-elevation {kind}")
+
+    compare_retained_hashes(target_file_hashes, source_file_hashes, kind="file")
+    compare_retained_hashes(target_provenance_hashes, source_provenance_hashes, kind="provenance")
+
+    source_evidence = source_manifest.get("evidence_sources")
+    target_evidence = manifest.get("evidence_sources")
+    if not isinstance(source_evidence, dict) or not isinstance(target_evidence, dict):
+        raise ValueError("retained-core lineage target evidence identity is invalid")
+    missing_evidence = object()
+    for key, value in source_evidence.items():
+        if key != "elevation" and target_evidence.get(key, missing_evidence) != value:
+            raise ValueError("retained-core lineage target changed retained evidence identity")
+    if any(key not in source_evidence and key != "elevation" for key in target_evidence):
+        raise ValueError("retained-core lineage target added non-elevation evidence identity")
+
+    allowed_differences = {
+        "snapshot_id",
+        "files",
+        "file_sha256",
+        "provenance_file_sha256",
+        "evidence_sources",
+        "retained_core_lineage",
+    }
+    missing = object()
+    for key in set(source_manifest) | set(manifest):
+        if key not in allowed_differences and manifest.get(key, missing) != source_manifest.get(
+            key, missing
+        ):
+            raise ValueError("retained-core lineage target changed retained manifest identity")
+
+    files = manifest.get("files")
+    if not isinstance(files, list) or ELEVATION_EVIDENCE_FILENAME not in files:
+        raise ValueError("retained-core lineage target has no completed elevation evidence")
 
 
 def _replace_snapshot_directory(temporary: Path, destination: Path) -> None:
@@ -361,7 +559,7 @@ def snapshot(
     osm_adapter: OSMAdapter | None = None,
 ) -> Path:
     """Materialise an immutable, attributable source snapshot."""
-    destination = config.source.snapshot_dir / config.source.snapshot_id
+    destination = _snapshot_destination(config)
     LOGGER.info(
         "Snapshot acquisition started source_kind=%s snapshot=%s replace=%s",
         config.source.kind,
@@ -378,6 +576,15 @@ def snapshot(
         },
     ) as heartbeat:
         retained_manifest: dict[str, object] | None = None
+        retained_source: Path | None = None
+        retained_provenance_files: list[str] = []
+        lineaged_source = config.source.retained_core_source
+        if lineaged_source is not None and not retain_core:
+            raise ValueError("retained-core source lineage requires --retain-core")
+        if retain_core and config.source.national_elevation is None:
+            raise ValueError("retained-core snapshot augmentation requires national elevation")
+
+        source_lineage = _lineaged_retained_core_source(config)
         if destination.exists():
             manifest = json.loads(
                 _regular_sibling(destination, "snapshot.json", label="snapshot manifest").read_text(
@@ -387,24 +594,38 @@ def snapshot(
             if isinstance(manifest, dict) and manifest.get("schema_version") == SCHEMA_VERSION:
                 heartbeat.set_stage("existing-snapshot-validation")
                 _validate_snapshot(destination)
+                if lineaged_source is not None:
+                    if replace:
+                        raise ValueError(
+                            "lineaged retained-core snapshots cannot replace a final target"
+                        )
+                    if source_lineage is None:  # pragma: no cover - source validation raises first.
+                        raise ValueError("retained-core lineage source is unavailable")
+                    _validate_existing_lineaged_target(
+                        destination,
+                        config,
+                        source_lineage[1],
+                    )
+                    LOGGER.info("Existing lineaged snapshot validated path=%s", destination)
+                    return destination
                 if not replace and not retain_core:
                     LOGGER.info("Existing snapshot validated path=%s", destination)
                     return destination
                 if retain_core:
-                    if config.source.national_elevation is None:
-                        raise ValueError(
-                            "retained-core snapshot augmentation requires national elevation"
-                        )
                     retained_manifest = manifest
+                    retained_source = destination
             elif retain_core:
                 raise ValueError("retained-core snapshot augmentation requires a valid snapshot")
         elif retain_core:
-            raise ValueError("retained-core snapshot augmentation requires an existing snapshot")
+            if source_lineage is None:
+                raise ValueError(
+                    "retained-core snapshot augmentation requires an existing snapshot"
+                )
+            retained_source, retained_manifest = source_lineage
 
-        destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = Path(tempfile.mkdtemp(prefix=f".{destination.name}-", dir=destination.parent))
         try:
-            if retained_manifest is not None:
+            if retained_manifest is not None and retained_source is not None:
                 excluded = {
                     ELEVATION_EVIDENCE_FILENAME,
                     "elevation-evidence.manifest.json",
@@ -414,7 +635,7 @@ def snapshot(
                     EA_RETAINED_ROUTE_FILENAME,
                 }
                 retained_files = _manifest_siblings(
-                    destination,
+                    retained_source,
                     retained_manifest.get("files"),
                     label="retained snapshot file",
                 )
@@ -423,6 +644,23 @@ def snapshot(
                     raise ValueError("retained-core snapshot has missing source files")
                 for filename in files:
                     shutil.copy2(retained_files[filename], temporary / filename)
+                retained_provenance = _manifest_siblings(
+                    retained_source,
+                    list(
+                        _manifest_hashes(
+                            retained_manifest,
+                            "provenance_file_sha256",
+                            label="retained snapshot provenance hashes",
+                        )
+                    ),
+                    label="retained snapshot provenance file",
+                )
+                for filename, source_file in retained_provenance.items():
+                    if filename in excluded:
+                        continue
+                    if filename not in files:
+                        shutil.copy2(source_file, temporary / filename)
+                    retained_provenance_files.append(filename)
                 _snapshot_national_elevation(config, temporary)
                 files.append(ELEVATION_EVIDENCE_FILENAME)
                 source_identifier = str(retained_manifest["source_identifier"])
@@ -439,7 +677,7 @@ def snapshot(
                     if config.source.ncn_feature_service_url
                     else OSM_ATTRIBUTION
                 )
-            provenance_files = [
+            generated_provenance_files = [
                 filename
                 for filename in (
                     "elevation-evidence.manifest.json",
@@ -450,6 +688,12 @@ def snapshot(
                 )
                 if (temporary / filename).exists()
             ]
+            provenance_files = [*retained_provenance_files]
+            provenance_files.extend(
+                filename
+                for filename in generated_provenance_files
+                if filename not in provenance_files
+            )
             for filename in (
                 "ea-survey-index.geojson",
                 "ea-authority-boundaries.geojson",
@@ -522,6 +766,22 @@ def snapshot(
                             EA_RETAINED_ROUTE_FILENAME,
                         } and manifest["file_sha256"].get(filename) != digest:
                             raise ValueError("retained-core snapshot changed a governed core file")
+                previous_provenance_hashes = _manifest_hashes(
+                    retained_manifest,
+                    "provenance_file_sha256",
+                    label="retained snapshot provenance hashes",
+                )
+                for filename in retained_provenance_files:
+                    if (
+                        manifest["provenance_file_sha256"].get(filename)
+                        != previous_provenance_hashes[filename]
+                    ):
+                        raise ValueError("retained-core snapshot changed governed provenance")
+                if lineaged_source is not None:
+                    manifest["retained_core_lineage"] = {
+                        "source_snapshot_id": lineaged_source.snapshot_id,
+                        "source_manifest_sha256": lineaged_source.manifest_sha256,
+                    }
             (temporary / "snapshot.json").write_text(
                 json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
             )
@@ -1930,6 +2190,7 @@ def _validate_snapshot(path: Path) -> None:
             f"invalid snapshot schema: expected {SCHEMA_VERSION}, "
             f"found {manifest.get('schema_version')}"
         )
+    _retained_core_lineage(manifest)
     files = _manifest_siblings(path, manifest.get("files"), label="snapshot file")
     file_hashes = _manifest_hashes(manifest, "file_sha256", label="snapshot file hashes")
     provenance_hashes = _manifest_hashes(
