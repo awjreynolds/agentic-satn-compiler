@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import urllib.parse
 from pathlib import Path
 
@@ -132,6 +133,15 @@ def test_multipart_route_uses_one_canonical_sequence_for_tiles_evidence_and_ledg
     )
     monkeypatch.setattr(acquisition, "load_tile", lambda _path: object())
     monkeypatch.setattr(acquisition, "sample_grid", lambda _grid, _point: 42.0)
+    original_survey_choice = acquisition._survey_choice
+    survey_choice_calls = 0
+
+    def counting_survey_choice(point: Point, index: object) -> dict[str, object] | None:
+        nonlocal survey_choice_calls
+        survey_choice_calls += 1
+        return original_survey_choice(point, index)
+
+    monkeypatch.setattr(acquisition, "_survey_choice", counting_survey_choice)
 
     canonical, feature_ids = eligible_route_samples(gpd.read_file(routes), spacing_m=10)
     assert [
@@ -171,6 +181,10 @@ def test_multipart_route_uses_one_canonical_sequence_for_tiles_evidence_and_ledg
     ]
     assert manifest["requested_point_count"] == len(canonical)
     assert manifest["evidence_sample_count"] == len(canonical)
+    assert manifest["effective_survey_date"] == "2022-01-02"
+    # Preflight and final attribution each inspect every requested sample.  The
+    # effective date must reuse final choices rather than starting a third pass.
+    assert survey_choice_calls == len(canonical) * 2
     _validate_ea_ledger_completeness(
         rows=ledger,
         route_path=output.with_name("elevation-evidence.sampled-routes.geojson"),
@@ -263,6 +277,120 @@ def test_canonical_survey_polygon_ignores_ring_start_direction_and_multipart_ord
     assert canonical_polygon_geometry(first) != canonical_polygon_geometry(
         Polygon([(0, 0), (11, 0), (11, 10), (0, 10)])
     )
+
+
+def _unindexed_survey_choice(
+    point: Point, index: gpd.GeoDataFrame
+) -> dict[str, object] | None:
+    """The previous full-scan selection rule, retained here as an equivalence oracle."""
+    matches: list[dict[str, object]] = []
+    for position, row in index.to_crs(27700).iterrows():
+        if not row.geometry.covers(point):
+            continue
+        feature_id = str(row.get("id") or row.get("polygon_id") or position)
+        date = str(row.get("ed_flown") or "")[:10]
+        try:
+            resolution = float(row.get("resolution"))
+        except (TypeError, ValueError):
+            resolution = float("inf")
+        matches.append(
+            {"feature_id": feature_id, "ed_flown": date or None, "resolution_m": resolution}
+        )
+    if not matches:
+        return None
+    return sorted(
+        matches,
+        key=lambda row: (
+            -(int(str(row["ed_flown"] or "0000-00-00").replace("-", ""))),
+            float(row["resolution_m"]),
+            str(row["feature_id"]),
+        ),
+    )[0]
+
+
+def test_spatial_survey_attribution_is_equivalent_for_overlaps_and_missing_coverage() -> None:
+    index = gpd.GeoDataFrame(
+        [
+            {
+                "id": "old-fine",
+                "ed_flown": "2020-01-01",
+                "resolution": 0.5,
+                "geometry": box(-10, -10, 10, 10),
+            },
+            {
+                "id": "new-coarse",
+                "ed_flown": "2024-01-01",
+                "resolution": 2,
+                "geometry": box(-10, -10, 10, 10),
+            },
+            {
+                "id": "z-new-fine",
+                "ed_flown": "2024-01-01",
+                "resolution": 1,
+                "geometry": box(-10, -10, 10, 10),
+            },
+            {
+                "id": "a-new-fine",
+                "ed_flown": "2024-01-01",
+                "resolution": 1,
+                "geometry": box(-10, -10, 10, 10),
+            },
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    spatial = acquisition._SurveyAttributionIndex(index)
+
+    for point in (Point(0, 0), Point(10, 0), Point(20, 0)):
+        expected = _unindexed_survey_choice(point, index)
+        actual = acquisition._survey_choice(point, spatial)
+        assert actual == expected
+        assert json.dumps(actual, sort_keys=True, separators=(",", ":")) == json.dumps(
+            expected, sort_keys=True, separators=(",", ":")
+        )
+
+    assert acquisition._survey_choice(Point(0, 0), spatial) == {
+        "feature_id": "a-new-fine",
+        "ed_flown": "2024-01-01",
+        "resolution_m": 1.0,
+    }
+
+
+def test_spatial_survey_attribution_scales_without_scanning_every_polygon(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    feature_count = 100
+    index = gpd.GeoDataFrame(
+        [
+            {
+                "id": f"survey-{feature_index}",
+                "ed_flown": "2024-01-01",
+                "resolution": 1,
+                "geometry": box(feature_index * 20, 0, feature_index * 20 + 10, 10),
+            }
+            for feature_index in range(feature_count)
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    samples = [
+        {
+            "route_id": "synthetic-route",
+            "sample_index": sample_index,
+            "geometry": Point((sample_index % feature_count) * 20 + 5, 5),
+        }
+        for sample_index in range(90_000)
+    ]
+    spatial = acquisition._SurveyAttributionIndex(index)
+
+    choices = acquisition._survey_choices(samples, spatial, phase="synthetic attribution")
+
+    assert len(choices) == len(samples)
+    assert spatial.candidate_checks == len(samples)
+    assert spatial.candidate_checks < len(samples) * feature_count // 50
+    heartbeats = capsys.readouterr().out.splitlines()
+    assert 1 <= len(heartbeats) <= acquisition.MAX_PROGRESS_HEARTBEATS
+    assert heartbeats[-1].endswith("90000/90000")
 
 
 def test_float_geotiff_sampling_uses_embedded_model_transform(tmp_path: Path) -> None:
