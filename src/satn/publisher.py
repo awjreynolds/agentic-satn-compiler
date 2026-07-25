@@ -192,6 +192,9 @@ def _validate_published_geojson_geometry(feature: dict[object, object], feature_
 def validate_publication(output: Path, config: AreaConfig) -> None:
     """Validate an existing publication before any whole-run reuse."""
     _validate_artifacts(output, config)
+    # Reuse must apply the current EA two-pass proof, not merely trust the
+    # validation that ran when the artefacts were first published.
+    _validate_ea_elevation_fixed_point(config, output / "network.geojson")
 
 
 def publish(
@@ -704,6 +707,7 @@ def _write_json_records(
         "governed_input_fingerprint": compiled.governed_input_fingerprint,
         "snapshot_manifest_sha256": compiled.snapshot_manifest_sha256,
         "area_definition_sha256": compiled.area_definition_sha256,
+        "compilation_dependency_manifest": compiled.compilation_dependency_manifest,
         "compilation_diagnostics": compiled.compilation_diagnostics,
         "connection_count": compiled.connection_count,
         "gap_count": len(compiled.gaps),

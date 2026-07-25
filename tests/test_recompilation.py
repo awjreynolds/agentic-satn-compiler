@@ -7,7 +7,9 @@ from pathlib import Path
 
 import geopandas as gpd
 
+import satn.compilation_dependencies as dependencies
 from satn import compile
+from satn.compilation_dependencies import compilation_dependency_manifest
 from satn.models import CouncilConfig, TrafficLight
 from satn.sources import snapshot
 
@@ -26,6 +28,13 @@ def prepared_config(tmp_path: Path) -> CouncilConfig:
     return config
 
 
+def copied_compiler_tree(tmp_path: Path) -> Path:
+    """Exercise provenance through an installed-wheel-shaped package copy."""
+    root = tmp_path / "compiler-tree"
+    shutil.copytree(PROJECT / "src" / "satn", root / "satn")
+    return root / "satn"
+
+
 def test_backbone_recompilation_is_deterministic_without_legacy_pairwise_cache(
     tmp_path: Path,
 ) -> None:
@@ -40,6 +49,54 @@ def test_backbone_recompilation_is_deterministic_without_legacy_pairwise_cache(
     assert second.metadata["publication_reused"] is True
     assert first.run_id == second.run_id
     assert "connections" not in set(gpd.list_layers(second.artifacts["geopackage"])["name"])
+
+
+def test_compiler_run_records_current_dependency_manifest_and_reuses_it(tmp_path: Path) -> None:
+    config = prepared_config(tmp_path)
+
+    first = compile(config)
+    run = json.loads(first.artifacts["run"].read_text())
+    second = compile(config)
+
+    assert run["compilation_dependency_manifest"] == compilation_dependency_manifest()
+    assert second.metadata["publication_reused"] is True
+
+
+def test_compiler_dependency_change_invalidates_fixture_publication_reuse(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = prepared_config(tmp_path)
+    first = compile(config)
+    root = copied_compiler_tree(tmp_path)
+    compiler_path = root / "compiler.py"
+    compiler_path.write_bytes(
+        compiler_path.read_bytes() + b"\n# dependency-manifest regression probe\n"
+    )
+    monkeypatch.setattr(dependencies, "_package_root", lambda: root)
+
+    changed = compile(config)
+
+    assert "publication_reused" not in changed.metadata
+    assert changed.run_id != first.run_id
+
+
+def test_review_map_change_does_not_invalidate_fixture_publication_reuse(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = prepared_config(tmp_path)
+    compile(config)
+    root = copied_compiler_tree(tmp_path)
+    review_map = root / "assets" / "review-map.js"
+    review_map.write_bytes(
+        review_map.read_bytes() + b"\n/* dependency-manifest regression probe */\n"
+    )
+    monkeypatch.setattr(dependencies, "_package_root", lambda: root)
+
+    unchanged = compile(config)
+
+    assert unchanged.metadata["publication_reused"] is True
 
 
 def test_full_directive_ignores_reusable_connections(tmp_path: Path) -> None:

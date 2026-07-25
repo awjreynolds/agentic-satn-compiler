@@ -100,6 +100,7 @@ class CompiledNetwork:
     governed_input_fingerprint: str = ""
     snapshot_manifest_sha256: str = ""
     area_definition_sha256: str = ""
+    compilation_dependency_manifest: dict[str, object] = field(default_factory=dict)
     decision_contract: str = "agent-decision-menu/v1"
     # This is the caller-supplied replay ledger, not the decisions produced by
     # direct runtime during this compilation.  Keeping the two separate makes
