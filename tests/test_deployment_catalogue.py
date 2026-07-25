@@ -84,7 +84,7 @@ def test_catalogue_builds_a_small_root_selector_with_stable_area_links(tmp_path:
                         "South Gloucestershire, England, United Kingdom",
                     ],
                 },
-                "snapshot": {"snapshot_id": "weca-osm-current"},
+                "snapshot": {"snapshot_id": "weca-elevation-2026-07-25"},
                 "agent_runtime": {
                     "response_mode": "direct-runtime",
                     "provider": "fake",

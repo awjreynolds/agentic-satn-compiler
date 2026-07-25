@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, date, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -19,6 +20,40 @@ from pydantic import (
 )
 
 PublicationContractText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+_SNAPSHOT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_WINDOWS_RESERVED_DEVICE_BASENAMES = frozenset(
+    {
+        "con",
+        "prn",
+        "aux",
+        "nul",
+        *(f"com{number}" for number in range(1, 10)),
+        *(f"lpt{number}" for number in range(1, 10)),
+    }
+)
+
+
+def safe_snapshot_id(value: object, *, field_name: str = "snapshot_id") -> str:
+    """Accept only a portable direct-child snapshot identifier.
+
+    Snapshot IDs become directory names before an acquisition begins, so this
+    validation intentionally rejects both POSIX and Windows separator forms,
+    dot-directory names, trailing dots, and Windows device basenames (also
+    when an extension is supplied).  ``Path.name`` alone is not enough on
+    every host because a backslash is an ordinary POSIX character.
+    """
+    device_stem = value.split(".", 1)[0].casefold() if isinstance(value, str) else ""
+    if (
+        not isinstance(value, str)
+        or value in {".", ".."}
+        or Path(value).name != value
+        or _SNAPSHOT_ID_PATTERN.fullmatch(value) is None
+        or value.endswith(".")
+        or device_stem in _WINDOWS_RESERVED_DEVICE_BASENAMES
+    ):
+        raise ValueError(f"{field_name} must be a safe snapshot basename")
+    return value
 
 
 class TrafficLight(StrEnum):
@@ -150,6 +185,18 @@ class NationalElevationConfig(BaseModel):
         return self
 
 
+class RetainedCoreSourceConfig(BaseModel):
+    """Immutable historical snapshot accepted as a retained-core source."""
+
+    snapshot_id: str
+    manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("snapshot_id")
+    @classmethod
+    def validate_snapshot_id(cls, value: str) -> str:
+        return safe_snapshot_id(value)
+
+
 class UrbanSettlementFormConfig(BaseModel):
     """Council-governed evidence thresholds for village circulation planning."""
 
@@ -190,6 +237,15 @@ class SourceConfig(BaseModel):
     official_road_classification: OfficialRoadClassificationConfig | None = None
     observed_through_traffic: ObservedThroughTrafficConfig | None = None
     national_elevation: NationalElevationConfig | None = None
+    retained_core_source: RetainedCoreSourceConfig | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+
+    @field_validator("snapshot_id")
+    @classmethod
+    def validate_snapshot_id(cls, value: str) -> str:
+        return safe_snapshot_id(value)
 
     @model_validator(mode="after")
     def validate_boundary_queries(self) -> SourceConfig:
@@ -199,6 +255,11 @@ class SourceConfig(BaseModel):
             raise ValueError("osm_place_queries cannot contain blank queries")
         if self.kind == "osm" and not self.boundary_queries:
             raise ValueError("OSM sources require at least one boundary query")
+        if (
+            self.retained_core_source is not None
+            and self.retained_core_source.snapshot_id == self.snapshot_id
+        ):
+            raise ValueError("retained-core source snapshot must differ from target snapshot")
         return self
 
     @property

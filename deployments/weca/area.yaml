@@ -13,7 +13,13 @@ source:
   ncn_feature_service_url: https://services5.arcgis.com/1ZHcUS1lwPTg4ms0/arcgis/rest/services/National_Cycle_Network_Public/FeatureServer
   reclassified_ncn_feature_service_url: https://services5.arcgis.com/1ZHcUS1lwPTg4ms0/arcgis/rest/services/Reclassified_Routes_Public/FeatureServer
   snapshot_dir: ../../data/snapshots
-  snapshot_id: weca-osm-current
+  # The final elevation snapshot never mutates the historical #125/#126
+  # benchmark core.  ``satn snapshot ... --retain-core`` verifies this exact
+  # source manifest before atomically seeding the final target.
+  snapshot_id: weca-elevation-2026-07-25
+  retained_core_source:
+    snapshot_id: weca-osm-current
+    manifest_sha256: d4d8cbe37c13a6b9ae5d027693d64e89eab2edccf7b69afcdbec519883b1a988
   network_type: bike
   overpass_url: https://overpass-api.de/api
   osm_timeout_seconds: 600
