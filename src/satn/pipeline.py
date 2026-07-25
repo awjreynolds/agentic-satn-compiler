@@ -24,10 +24,13 @@ from satn.models import (
     AgentDecisionLedger,
     AgentDecisionRequest,
     AgentRecord,
+    AreaConfig,
+    AreaDefinition,
     CompilationResult,
     CouncilConfig,
     DivergenceRecord,
     TrafficLight,
+    canonical_decision_ledger_payload,
 )
 from satn.publisher import (
     publication_artifacts,
@@ -40,12 +43,16 @@ LOGGER = logging.getLogger(__name__)
 
 
 def compile(
-    config: CouncilConfig | str | Path,
+    config: AreaConfig | str | Path,
     *,
     decision_ledger: AgentDecisionLedger | str | Path | None = None,
 ) -> CompilationResult:
     """Compile into a complete publication or a non-publishing decision request."""
-    council = config if isinstance(config, CouncilConfig) else CouncilConfig.from_yaml(config)
+    council = (
+        config
+        if isinstance(config, (AreaDefinition, CouncilConfig))
+        else AreaDefinition.from_yaml(config)
+    )
     with StageHeartbeat(
         LOGGER,
         "publication-reuse-check",
@@ -58,7 +65,7 @@ def compile(
 
 
 def _compile(
-    config: CouncilConfig,
+    config: AreaConfig,
     *,
     decision_ledger: AgentDecisionLedger | str | Path | None = None,
     heartbeat: StageHeartbeat | None = None,
@@ -67,19 +74,23 @@ def _compile(
     started = time.perf_counter()
     council = config
     ledger = _load_decision_ledger(decision_ledger)
-    governed_input_fingerprint = _compilation_input_fingerprint(council)
-    input_fingerprint = _decision_ledger_input_fingerprint(
+    governed_input_fingerprint = compilation_governed_input_fingerprint(council)
+    input_fingerprint = decision_ledger_input_fingerprint(
         governed_input_fingerprint,
         ledger,
     )
     decision_resolver = AgentDecisionResolver(ledger, governed_input_fingerprint)
     LOGGER.info(
         "Compilation started council=%s snapshot=%s schema=%s",
-        council.council_id,
+        council.area_id,
         council.source.snapshot_id,
         SCHEMA_VERSION,
     )
-    reused = _reuse_validated_publication(council, input_fingerprint)
+    reused = _reuse_validated_publication(
+        council,
+        governed_input_fingerprint,
+        input_fingerprint,
+    )
     if reused is not None:
         return reused
     if heartbeat is not None:
@@ -124,6 +135,9 @@ def _compile(
     except AgentCompilationTerminated as terminated:
         return _terminated_result(council, input_fingerprint, terminated)
     compiled.compilation_input_fingerprint = input_fingerprint
+    compiled.governed_input_fingerprint = governed_input_fingerprint
+    compiled.snapshot_manifest_sha256 = snapshot_manifest_sha256(council)
+    compiled.area_definition_sha256 = area_definition_sha256(council)
     LOGGER.info(
         "Network compiled connections=%d gaps=%d status=%s",
         compiled.connection_count,
@@ -174,15 +188,24 @@ def _compile(
             + ", ".join(sorted(unconsumed))
         )
     compiled.decision_contract = ledger.decision_contract
-    compiled.accepted_decisions = [
-        response.model_dump(mode="json")
-        for response in decision_resolver.accepted_responses
-    ]
+    compiled.decision_ledger_input = ledger.model_dump(mode="json")
+    # Execution order is not a durable audit order.  Persist the same canonical
+    # response order used by the ledger contract, so downstream equality checks
+    # cannot mistake a traversal-order difference for a different decision set.
+    compiled.accepted_decisions = AgentDecisionLedger.model_validate(
+        {
+            "decision_contract": ledger.decision_contract,
+            "responses": [
+                response.model_dump(mode="json")
+                for response in decision_resolver.accepted_responses
+            ],
+        }
+    ).model_dump(mode="json")["responses"]
     if heartbeat is not None:
         heartbeat.set_stage("publication-fingerprint")
     run_fingerprint = json.dumps(
         {
-            "council": council.council_id,
+            "council": council.area_id,
             "snapshot": council.source.snapshot_id,
             "schema_version": SCHEMA_VERSION,
             "criteria_version": council.compilation.criteria_version,
@@ -646,7 +669,7 @@ def _compile(
 
 
 def _decision_required_result(
-    council: CouncilConfig,
+    council: AreaConfig,
     input_fingerprint: str,
     request: AgentDecisionRequest,
     agent_records: list[AgentRecord] | None = None,
@@ -673,7 +696,7 @@ def _decision_required_result(
 
 
 def _terminated_result(
-    council: CouncilConfig,
+    council: AreaConfig,
     input_fingerprint: str,
     terminated: AgentCompilationTerminated,
 ) -> CompilationResult:
@@ -712,12 +735,14 @@ def _load_decision_ledger(
         return AgentDecisionLedger()
     if isinstance(value, AgentDecisionLedger):
         return value
-    return AgentDecisionLedger.model_validate_json(
-        Path(value).read_text(encoding="utf-8")
-    )
+    try:
+        payload = json.loads(Path(value).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError("decision ledger file is not valid JSON") from error
+    return canonical_decision_ledger_payload(payload)
 
 
-def _decision_ledger_input_fingerprint(
+def decision_ledger_input_fingerprint(
     governed_input_fingerprint: str,
     ledger: AgentDecisionLedger,
 ) -> str:
@@ -733,11 +758,10 @@ def _decision_ledger_input_fingerprint(
     ).hexdigest()
 
 
-def _compilation_input_fingerprint(council: CouncilConfig) -> str:
+def compilation_governed_input_fingerprint(council: AreaConfig) -> str:
     """Fingerprint every governed input required for safe whole-publication reuse."""
     config_payload = council.model_dump(mode="json")
     config_payload["compilation"].pop("full", None)
-    snapshot_manifest = council.source.snapshot_dir / council.source.snapshot_id / "snapshot.json"
     # The superseded comparison is explanatory, never a correctness input. Its path is
     # governed by configuration, but promoting this run to that path must not invalidate
     # reuse of the authoritative network it just produced.
@@ -762,7 +786,7 @@ def _compilation_input_fingerprint(council: CouncilConfig) -> str:
     payload = {
         "schema_version": SCHEMA_VERSION,
         "configuration": config_payload,
-        "snapshot_manifest_sha256": _file_digest(snapshot_manifest),
+        "snapshot_manifest_sha256": snapshot_manifest_sha256(council),
         "governed_file_sha256": {
             str(path): _file_digest(path)
             for path in governed_paths
@@ -773,6 +797,16 @@ def _compilation_input_fingerprint(council: CouncilConfig) -> str:
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+
+
+def snapshot_manifest_sha256(council: AreaConfig) -> str:
+    """Return the immutable digest for the snapshot consumed by a compilation."""
+    return _file_digest(council.source.snapshot_dir / council.source.snapshot_id / "snapshot.json")
+
+
+def area_definition_sha256(council: AreaConfig) -> str:
+    """Return the exact bytes digest of the Area Definition, never a re-serialisation."""
+    return _file_digest(council.config_path)
 
 
 def _file_digest(path: Path) -> str:
@@ -789,7 +823,8 @@ def _compiler_digest() -> str:
 
 
 def _reuse_validated_publication(
-    council: CouncilConfig,
+    council: AreaConfig,
+    governed_input_fingerprint: str,
     input_fingerprint: str,
 ) -> CompilationResult | None:
     if council.compilation.full:
@@ -801,7 +836,35 @@ def _reuse_validated_publication(
         return None
     try:
         run = json.loads(run_path.read_text(encoding="utf-8"))
-        if run.get("compilation_input_fingerprint") != input_fingerprint:
+        # Reuse is a trust boundary: a legacy/stripped or reordered record must
+        # be recompiled rather than silently normalised by Pydantic.
+        input_ledger = canonical_decision_ledger_payload(run["decision_ledger_input"])
+        accepted_ledger = canonical_decision_ledger_payload(
+            {
+                "decision_contract": run["decision_contract"],
+                "responses": run["accepted_decisions"],
+            }
+        )
+        if input_ledger.decision_contract != run["decision_contract"] or (
+            accepted_ledger.model_dump(mode="json")["responses"]
+            != run["accepted_decisions"]
+        ):
+            return None
+        # The stored wire input is a separate trust boundary.  Recompute its
+        # fingerprint before comparing it to the current caller's ledger, so a
+        # canonical-looking but altered persisted input cannot borrow the old
+        # run fingerprint and be reused.
+        persisted_input_fingerprint = decision_ledger_input_fingerprint(
+            governed_input_fingerprint,
+            input_ledger,
+        )
+        if run.get("governed_input_fingerprint") != governed_input_fingerprint:
+            LOGGER.info("Existing publication governed inputs differ; recompiling")
+            return None
+        if run.get("compilation_input_fingerprint") != persisted_input_fingerprint:
+            LOGGER.info("Existing publication persisted decision input differs; recompiling")
+            return None
+        if persisted_input_fingerprint != input_fingerprint:
             LOGGER.info("Existing publication input fingerprint differs; recompiling")
             return None
         validate_publication(output, council)
@@ -830,8 +893,7 @@ def _reuse_validated_publication(
                 AgentRecord.model_validate(record) for record in agents_payload["records"]
             ],
             divergence_records=[
-                DivergenceRecord.model_validate(record)
-                for record in divergences_payload["records"]
+                DivergenceRecord.model_validate(record) for record in divergences_payload["records"]
             ],
             metadata=run | {"publication_reused": True},
         )

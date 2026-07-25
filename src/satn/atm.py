@@ -23,7 +23,7 @@ from satn.models import (
     AgentDecisionAction,
     AgentDecisionChoice,
     AgentFinding,
-    CouncilConfig,
+    AreaConfig,
     DivergenceRecord,
     TrafficLight,
 )
@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     from satn.compiler import CompiledNetwork
 
 
-def load_atm(config: CouncilConfig) -> gpd.GeoDataFrame:
+def load_atm(config: AreaConfig) -> gpd.GeoDataFrame:
     if not config.atm.enabled:
         raise ValueError("ATM comparison is not enabled")
     if config.atm.path is None or not config.atm.path.exists():
@@ -82,7 +82,7 @@ def compare_atm(
     compiled: CompiledNetwork,
     atm: gpd.GeoDataFrame,
     runtime: AgentRuntimeSource,
-    config: CouncilConfig,
+    config: AreaConfig,
     decision_resolver: AgentDecisionResolver | None = None,
 ) -> list[DivergenceRecord]:
     resolver = decision_resolver or AgentDecisionResolver(

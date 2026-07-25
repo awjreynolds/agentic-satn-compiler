@@ -15,6 +15,8 @@ import yaml
 from satn.models import AreaDefinition
 
 SCHEMA_VERSION = "satn-deployment-catalogue/v1"
+ROOT_LOCK_NAME = "catalogue-lock.json"
+ROOT_LOCK_SCHEMA_VERSION = "satn-pages-root-lock/v1"
 _AREA_ID = re.compile(r"^[a-z][a-z0-9-]*$")
 _ARTIFACTS = ("review_map", "network_map_pdf", "review_map_zip")
 
@@ -35,6 +37,9 @@ class DeploymentEntry:
     area_definition_sha256: str
     deployment_path: str
     artifacts: dict[str, str]
+    title: str
+    scope: dict[str, str]
+    evidence_provenance: dict[str, object]
 
     def publication_links(self) -> dict[str, str]:
         return {
@@ -61,6 +66,9 @@ class DeploymentCatalogue:
                     "area_definition_sha256": entry.area_definition_sha256,
                     "deployment_path": entry.deployment_path,
                     "artifacts": entry.publication_links(),
+                    "title": entry.title,
+                    "scope": entry.scope,
+                    "evidence_provenance": entry.evidence_provenance,
                 }
                 for entry in self.deployments
             ],
@@ -174,6 +182,24 @@ def load_deployment_catalogue(path: str | Path) -> DeploymentCatalogue:
                 area_definition_sha256=area_definition_sha256,
                 deployment_path=deployment_path,
                 artifacts=artifacts,
+                title=definition.publication.title,
+                scope={
+                    "area_id": definition.area_id,
+                    "area_name": definition.area_name,
+                    "audience": definition.publication.audience,
+                },
+                evidence_provenance={
+                    "source": {
+                        "kind": definition.source.kind,
+                        "authority_boundary_queries": list(definition.source.boundary_queries),
+                    },
+                    "snapshot": {"snapshot_id": definition.source.snapshot_id},
+                    "agent_runtime": {
+                        "response_mode": definition.compilation.agent.response_mode,
+                        "provider": definition.compilation.agent.provider,
+                        "model": definition.compilation.agent.model,
+                    },
+                },
             )
         )
         seen_ids.add(deployment_id)
@@ -218,14 +244,47 @@ def _html(catalogue: DeploymentCatalogue) -> str:
 """
 
 
+def catalogue_runtime_files(catalogue: DeploymentCatalogue) -> dict[str, bytes]:
+    """Return the complete, deterministic Pages root produced from a catalogue."""
+
+    return {
+        "catalogue.json": (json.dumps(catalogue.as_publication(), indent=2) + "\n").encode(),
+        "index.html": _html(catalogue).encode(),
+    }
+
+
+def catalogue_lock_payload(catalogue: DeploymentCatalogue) -> dict[str, object]:
+    """Create the tag-tracked trust root for Pages' executable root files."""
+
+    files = catalogue_runtime_files(catalogue)
+    return {
+        "schema_version": ROOT_LOCK_SCHEMA_VERSION,
+        "root_files": {
+            name: {"sha256": hashlib.sha256(content).hexdigest(), "size_bytes": len(content)}
+            for name, content in files.items()
+        },
+        "deployment_roots": [
+            f"deployments/{entry.deployment_id}" for entry in catalogue.deployments
+        ],
+    }
+
+
+def generate_catalogue_lock(catalogue_path: str | Path, path: str | Path | None = None) -> Path:
+    """Write the small tracked lock that binds the root catalogue page to its tag."""
+
+    source = Path(catalogue_path)
+    target = Path(path) if path is not None else source.parent / ROOT_LOCK_NAME
+    payload = catalogue_lock_payload(load_deployment_catalogue(source))
+    target.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return target
+
+
 def build_deployment_catalogue(catalogue_path: str | Path, destination: str | Path) -> Path:
     """Write only the small Pages root index; deployments are assembled separately."""
 
     catalogue = load_deployment_catalogue(catalogue_path)
     output = Path(destination)
     output.mkdir(parents=True, exist_ok=True)
-    (output / "catalogue.json").write_text(
-        json.dumps(catalogue.as_publication(), indent=2) + "\n", encoding="utf-8"
-    )
-    (output / "index.html").write_text(_html(catalogue), encoding="utf-8")
+    for name, content in catalogue_runtime_files(catalogue).items():
+        (output / name).write_bytes(content)
     return output

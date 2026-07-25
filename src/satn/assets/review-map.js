@@ -78,6 +78,19 @@
     schools: ["layer-schools", "layer-school-streets"],
     amenities: ["layer-retail-centres", "layer-healthcare"]
   };
+  // Manifest groups are only an organisational detail.  Controls select one
+  // logical evidence type, and loading that control must not transfer a
+  // sibling type from the same group.
+  const deferredLayerTypes = {
+    "layer-urban-spines": "urban-spine",
+    "layer-urban-classification-unknowns": "urban-classification-unknown",
+    "layer-low-traffic-areas": "low-traffic-area",
+    "layer-low-traffic-area-portals": "low-traffic-area-portal",
+    "layer-schools": "school",
+    "layer-school-streets": "school-street-assessment",
+    "layer-retail-centres": "retail-centre",
+    "layer-healthcare": "healthcare"
+  };
   const schoolCoreLayers = [
     "school-access-obligations",
     "school-access-connections",
@@ -178,10 +191,16 @@
       Object.entries(deferredControls).forEach(([group, controlIds]) => {
         const metadata = layerManifest.groups[group];
         if (!metadata) return;
-        controlIds.forEach((controlId) => layerStatus(
-          controlId,
-          `${metadata.feature_count} features · ${formatBytes(metadata.size_bytes)} · on demand`
-        ));
+        controlIds.forEach((controlId) => {
+          const type = deferredLayerTypes[controlId];
+          const typeMetadata = metadata.types?.[type];
+          layerStatus(
+            controlId,
+            typeMetadata
+              ? `${typeMetadata.feature_count} features · ${formatBytes(typeMetadata.size_bytes)} · on demand`
+              : "type-specific evidence unavailable; rebuild this deployment"
+          );
+        });
       });
     }
     return layerManifest;
@@ -197,21 +216,36 @@
   }
 
   async function ensureEvidenceGroupLoaded(group, controlId) {
+    return ensureEvidenceGroupLoadedForScope(group, controlId, "viewport");
+  }
+
+  function evidenceEntriesForTypes(metadata, featureTypes) {
+    const entries = featureTypes.flatMap((featureType) =>
+      metadata.types?.[featureType]?.shards || []
+    );
+    return [...new Map(entries.map((entry) => [entry.path, entry])).values()];
+  }
+
+  async function ensureEvidenceGroupLoadedForScope(group, controlId, scope) {
     const manifest = await ensureLayerManifest();
     const metadata = manifest?.groups?.[group];
     if (!metadata) throw new Error(`No ${group} evidence is listed for this deployment.`);
-    const candidates = metadata.shards.filter(shardIntersectsView);
+    const featureType = deferredLayerTypes[controlId];
+    const selectedEntries = evidenceEntriesForTypes(metadata, [featureType]);
+    const candidates = scope === "whole-region"
+      ? selectedEntries
+      : selectedEntries.filter(shardIntersectsView);
     if (!candidates.length) {
-      layerStatus(controlId, "no evidence in this view");
-      return;
+      layerStatus(controlId, scope === "whole-region" ? "no regional evidence" : "no evidence in this view");
+      return { featureCount: 0, sizeBytes: 0, shardCount: 0 };
     }
     const pendingBytes = candidates
       .filter((entry) => !loadedEvidenceShards.has(entry.path))
       .reduce((sum, entry) => sum + Number(entry.size_bytes), 0);
     if (pendingBytes) {
-      deferredControls[group].forEach((id) => layerStatus(id, `loading ${formatBytes(pendingBytes)}…`));
+      layerStatus(controlId, `loading ${formatBytes(pendingBytes)}…`);
     }
-    await Promise.all(candidates.map((entry) => {
+    const attempts = await Promise.allSettled(candidates.map((entry) => {
       if (loadedEvidenceShards.has(entry.path)) return Promise.resolve(null);
       if (loadingEvidenceShards.has(entry.path)) return loadingEvidenceShards.get(entry.path);
       const request = fetchJson(entry.path, `${group} evidence shard`).then((collection) => {
@@ -224,13 +258,23 @@
       loadingEvidenceShards.set(entry.path, request);
       return request;
     }));
-    const loadedBytes = candidates
-      .filter((entry) => loadedEvidenceShards.has(entry.path))
-      .reduce((sum, entry) => sum + Number(entry.size_bytes), 0);
-    deferredControls[group].forEach((id) => layerStatus(
-      id,
-      `loaded ${candidates.length} viewport shard${candidates.length === 1 ? "" : "s"} · ${formatBytes(loadedBytes)}`
-    ));
+    const loaded = candidates
+      .filter((entry) => loadedEvidenceShards.has(entry.path));
+    const loadedBytes = loaded.reduce((sum, entry) => sum + Number(entry.size_bytes), 0);
+    const loadedFeatures = loaded.reduce((sum, entry) => sum + Number(entry.feature_count), 0);
+    const failedShardCount = attempts.filter((result) => result.status === "rejected").length;
+    layerStatus(
+      controlId,
+      failedShardCount
+        ? `partially loaded ${loadedFeatures} features · ${formatBytes(loadedBytes)} · ${failedShardCount} shard${failedShardCount === 1 ? "" : "s"} failed; retry to load missing evidence`
+        : `loaded ${loadedFeatures} features · ${formatBytes(loadedBytes)} · ${scope === "whole-region" ? "whole region" : `${candidates.length} viewport shard${candidates.length === 1 ? "" : "s"}`}`
+    );
+    return {
+      featureCount: loadedFeatures,
+      sizeBytes: loadedBytes,
+      shardCount: loaded.length,
+      failedShardCount
+    };
   }
 
   function shardIntersectsView(entry) {
@@ -262,21 +306,7 @@
     });
   }
 
-  async function ensureTopographyLoaded() {
-    if (!data.topography_manifest_url) {
-      if (legacyTopographyLoaded || !data.topography_url) return;
-      layerStatus("layer-gradient-sections", "loading topography…");
-      const collection = await fetchJson(data.topography_url, "Topography evidence");
-      map.getSource("topography")?.setData(topographyCollection(collection.features));
-      network.features.push(...collection.features.filter((feature) =>
-        feature.properties.feature_type === "gradient-section" &&
-        !network.features.some((candidate) => candidate.id === feature.id)
-      ));
-      legacyTopographyLoaded = true;
-      layerStatus("layer-gradient-sections", "loaded");
-      renderCards();
-      return;
-    }
+  async function ensureTopographyManifest() {
     if (!topographyManifestPromise) {
       topographyManifestPromise = fetchJson(
         data.topography_manifest_url,
@@ -290,6 +320,25 @@
       });
     }
     await topographyManifestPromise;
+    return topographyManifest;
+  }
+
+  async function ensureTopographyLoaded(scope = "viewport") {
+    if (!data.topography_manifest_url) {
+      if (legacyTopographyLoaded || !data.topography_url) return;
+      layerStatus("layer-gradient-sections", "loading topography…");
+      const collection = await fetchJson(data.topography_url, "Topography evidence");
+      map.getSource("topography")?.setData(topographyCollection(collection.features));
+      network.features.push(...collection.features.filter((feature) =>
+        feature.properties.feature_type === "gradient-section" &&
+        !network.features.some((candidate) => candidate.id === feature.id)
+      ));
+      legacyTopographyLoaded = true;
+      layerStatus("layer-gradient-sections", "loaded");
+      renderCards();
+      return { featureCount: collection.features.length, sizeBytes: 0, shardCount: 1 };
+    }
+    await ensureTopographyManifest();
     if (topographyManifest) {
       const total = Number(topographyManifest.overview_size_bytes || 0) +
         Number(topographyManifest.detail_size_bytes || 0);
@@ -299,13 +348,15 @@
       );
     }
     const detailed = map.getZoom() >= Number(topographyManifest.detail_min_zoom || 10);
-    const candidates = (detailed ? topographyManifest.detail : topographyManifest.overview)
-      .filter((entry) => !detailed || shardIntersectsView(entry));
+    const candidates = scope === "whole-region"
+      ? [...topographyManifest.overview, ...topographyManifest.detail]
+      : (detailed ? topographyManifest.detail : topographyManifest.overview)
+        .filter((entry) => !detailed || shardIntersectsView(entry));
     const pendingBytes = candidates
       .filter((entry) => !loadedTopographyShards.has(entry.path))
       .reduce((sum, entry) => sum + Number(entry.size_bytes), 0);
     if (pendingBytes) layerStatus("layer-gradient-sections", `loading ${formatBytes(pendingBytes)}…`);
-    await Promise.all(candidates.map((entry) => {
+    const attempts = await Promise.allSettled(candidates.map((entry) => {
       if (loadedTopographyShards.has(entry.path)) return Promise.resolve();
       if (loadingTopographyShards.has(entry.path)) return loadingTopographyShards.get(entry.path);
       const request = fetchJson(entry.path, "Topography evidence shard").then((collection) => {
@@ -321,11 +372,85 @@
     const currentCandidates = (currentDetailed ? topographyManifest.detail : topographyManifest.overview)
       .filter((entry) => !currentDetailed || shardIntersectsView(entry));
     refreshTopographyForCurrentView();
+    const loaded = candidates.filter((entry) => loadedTopographyShards.has(entry.path));
+    const loadedBytes = loaded.reduce((sum, entry) => sum + Number(entry.size_bytes), 0);
+    const loadedFeatures = loaded.reduce((sum, entry) => sum + Number(entry.feature_count), 0);
+    const failedShardCount = attempts.filter((result) => result.status === "rejected").length;
     layerStatus(
       "layer-gradient-sections",
-      `loaded ${currentCandidates.length} ${currentDetailed ? "viewport detail" : "overview"} shard${currentCandidates.length === 1 ? "" : "s"}`
+      failedShardCount
+        ? `partially loaded ${loadedFeatures} features · ${formatBytes(loadedBytes)} · ${failedShardCount} shard${failedShardCount === 1 ? "" : "s"} failed; retry to load missing evidence`
+        : scope === "whole-region"
+        ? `loaded ${loadedFeatures} features · ${formatBytes(loadedBytes)} · whole region`
+        : `loaded ${currentCandidates.length} ${currentDetailed ? "viewport detail" : "overview"} shard${currentCandidates.length === 1 ? "" : "s"}`
     );
     void renderLinearEvidence();
+    return { featureCount: loadedFeatures, sizeBytes: loadedBytes, shardCount: loaded.length, failedShardCount };
+  }
+
+  function selectedOptionalEvidenceLayers() {
+    const layers = Object.entries(deferredControls).flatMap(([group, controlIds]) =>
+      controlIds
+        .filter((controlId) => document.getElementById(controlId)?.checked)
+        .map((controlId) => ({ group, controlId }))
+    );
+    return {
+      layers,
+      topography: Boolean(document.getElementById("layer-gradient-sections")?.checked)
+    };
+  }
+
+  async function loadSelectedEvidenceForWholeRegion() {
+    if (!isProgressiveDeployment) return;
+    const status = document.querySelector("#complete-region-status");
+    const button = document.querySelector("#load-complete-region");
+    const selection = selectedOptionalEvidenceLayers();
+    if (!selection.layers.length && !selection.topography) {
+      status.textContent = "Select an optional evidence layer first; nothing has been downloaded.";
+      return;
+    }
+    const manifest = await ensureLayerManifest();
+    const selectedEntries = selection.layers.flatMap(({ group, controlId }) =>
+      evidenceEntriesForTypes(manifest.groups[group] || {}, [deferredLayerTypes[controlId]])
+    );
+    let pendingBytes = selectedEntries
+      .filter((entry) => !loadedEvidenceShards.has(entry.path))
+      .reduce((sum, entry) => sum + Number(entry.size_bytes), 0);
+    let pendingFeatures = selectedEntries
+      .filter((entry) => !loadedEvidenceShards.has(entry.path))
+      .reduce((sum, entry) => sum + Number(entry.feature_count), 0);
+    if (selection.topography) {
+      await ensureTopographyManifest();
+      const topographyEntries = [...topographyManifest.overview, ...topographyManifest.detail];
+      pendingBytes += topographyEntries
+        .filter((entry) => !loadedTopographyShards.has(entry.path))
+        .reduce((sum, entry) => sum + Number(entry.size_bytes), 0);
+      pendingFeatures += topographyEntries
+        .filter((entry) => !loadedTopographyShards.has(entry.path))
+        .reduce((sum, entry) => sum + Number(entry.feature_count), 0);
+    }
+    button.disabled = true;
+    status.textContent = `Loading ${pendingFeatures} features from the whole region · ${formatBytes(pendingBytes)} to transfer…`;
+    const requests = [
+      ...selection.layers.map(({ group, controlId }) =>
+        ensureEvidenceGroupLoadedForScope(group, controlId, "whole-region")
+      ),
+      ...(selection.topography ? [ensureTopographyLoaded("whole-region")] : [])
+    ];
+    const results = await Promise.allSettled(requests);
+    button.disabled = false;
+    const successful = results
+      .filter((result) => result.status === "fulfilled")
+      .map((result) => result.value);
+    const loadedFeatures = successful.reduce((sum, result) => sum + result.featureCount, 0);
+    const loadedBytes = successful.reduce((sum, result) => sum + result.sizeBytes, 0);
+    const failed = results.filter((result) => result.status === "rejected");
+    const failedShards = successful.reduce(
+      (sum, result) => sum + Number(result.failedShardCount || 0), 0
+    );
+    status.textContent = failed.length || failedShards
+      ? `Loaded available whole-region evidence: ${loadedFeatures} features · ${formatBytes(loadedBytes)}. ${failedShards || failed.length} shard${(failedShards || failed.length) === 1 ? "" : "s"} could not finish; select this control again to retry only missing shards.`
+      : `Whole-region evidence loaded: ${loadedFeatures} features · ${formatBytes(loadedBytes)}. Cached shards will not be downloaded again.`;
   }
 
   async function ensureProfilesLoaded(profileIds) {
@@ -1182,6 +1307,21 @@
       );
     });
     document.querySelector("#gradient-path-reset").addEventListener("click", () => setInspectionPath([]));
+    const completeRegionButton = document.querySelector("#load-complete-region");
+    if (completeRegionButton) {
+      completeRegionButton.addEventListener("click", () => {
+        loadSelectedEvidenceForWholeRegion().catch((error) => {
+          completeRegionButton.disabled = false;
+          document.querySelector("#complete-region-status").textContent =
+            `Whole-region evidence could not start. ${error.message}`;
+        });
+      });
+      if (!isProgressiveDeployment) {
+        completeRegionButton.disabled = true;
+        document.querySelector("#complete-region-status").textContent =
+          "This legacy review map already bundles its available evidence.";
+      }
+    }
     document.querySelector("#criteria-download").addEventListener("click", () => {
       const url = URL.createObjectURL(new Blob(
         [JSON.stringify(data.criteria, null, 2)],
@@ -1383,18 +1523,19 @@
       }
       if (data.layer_manifest_url) {
         Object.entries(deferredControls).forEach(([group, controlIds]) => {
-          if (!controlIds.some((id) => document.getElementById(id)?.checked)) return;
-          ensureEvidenceGroupLoaded(group, controlIds[0]).catch((error) => {
-            if (group === "schools" && document.getElementById("layer-schools")?.checked) {
-              setSchoolCoreVisibility(true);
-              map.setLayoutProperty("schools", "visibility", "none");
-              layerStatus(
-                "layer-schools",
-                "contextual education evidence unavailable; core school access remains visible"
-              );
-              return;
-            }
-            layerStatus(controlIds[0], `could not load · ${error.message}`);
+          controlIds.filter((controlId) => document.getElementById(controlId)?.checked).forEach((controlId) => {
+            ensureEvidenceGroupLoaded(group, controlId).catch((error) => {
+              if (group === "schools" && controlId === "layer-schools") {
+                setSchoolCoreVisibility(true);
+                map.setLayoutProperty("schools", "visibility", "none");
+                layerStatus(
+                  "layer-schools",
+                  "contextual education evidence unavailable; core school access remains visible"
+                );
+                return;
+              }
+              layerStatus(controlId, `could not load · ${error.message}`);
+            });
           });
         });
       }

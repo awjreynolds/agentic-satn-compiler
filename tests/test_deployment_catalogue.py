@@ -35,6 +35,26 @@ def test_catalogue_builds_a_small_root_selector_with_stable_area_links(tmp_path:
                 "network_map_pdf": "deployments/banes/network-map.pdf",
                 "review_map_zip": "deployments/banes/review-map.zip",
             },
+            "title": "B&NES Strategic Active Travel Network Review",
+            "scope": {
+                "area_id": "bath-and-north-east-somerset",
+                "area_name": "Bath and North East Somerset",
+                "audience": "public",
+            },
+            "evidence_provenance": {
+                "source": {
+                    "kind": "osm",
+                    "authority_boundary_queries": [
+                        "Bath and North East Somerset, England, United Kingdom"
+                    ],
+                },
+                "snapshot": {"snapshot_id": "banes-osm-current"},
+                "agent_runtime": {
+                    "response_mode": "direct-runtime",
+                    "provider": "fake",
+                    "model": None,
+                },
+            },
         },
         {
             "deployment_id": "weca",
@@ -47,6 +67,29 @@ def test_catalogue_builds_a_small_root_selector_with_stable_area_links(tmp_path:
                 "review_map": "deployments/weca/index.html",
                 "network_map_pdf": "deployments/weca/network-map.pdf",
                 "review_map_zip": "deployments/weca/review-map.zip",
+            },
+            "title": "West of England Strategic Active Travel Network Review",
+            "scope": {
+                "area_id": "west-of-england",
+                "area_name": "West of England Combined Authority area",
+                "audience": "public",
+            },
+            "evidence_provenance": {
+                "source": {
+                    "kind": "osm",
+                    "authority_boundary_queries": [
+                        "Bath and North East Somerset, England, United Kingdom",
+                        "Bristol, England, United Kingdom",
+                        "North Somerset, England, United Kingdom",
+                        "South Gloucestershire, England, United Kingdom",
+                    ],
+                },
+                "snapshot": {"snapshot_id": "weca-osm-current"},
+                "agent_runtime": {
+                    "response_mode": "direct-runtime",
+                    "provider": "fake",
+                    "model": None,
+                },
             },
         },
     ]

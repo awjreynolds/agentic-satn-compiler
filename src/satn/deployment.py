@@ -12,7 +12,14 @@ from collections import defaultdict
 from pathlib import Path
 
 from satn.constants import DISCLAIMER
-from satn.models import AreaDefinition
+from satn.deployment_provenance import LOCK_NAME, SCHEMA_VERSION, verify_lock
+from satn.models import AreaConfig, AreaDefinition, canonical_decision_ledger_payload
+from satn.pipeline import (
+    area_definition_sha256,
+    compilation_governed_input_fingerprint,
+    decision_ledger_input_fingerprint,
+    snapshot_manifest_sha256,
+)
 
 PROJECT = Path(__file__).parents[2]
 DEFERRED_GROUPS = {
@@ -27,6 +34,7 @@ def _arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("area_definition", type=Path)
     parser.add_argument("--destination", type=Path)
+    parser.add_argument("--bootstrap", action="store_true")
     return parser.parse_args()
 
 
@@ -91,9 +99,9 @@ def _spatial_chunks(
             continue
         centre_x = (min(item[0] for item in coordinates) + max(item[0] for item in coordinates)) / 2
         centre_y = (min(item[1] for item in coordinates) + max(item[1] for item in coordinates)) / 2
-        cells[
-            (math.floor(centre_x / cell_degrees), math.floor(centre_y / cell_degrees))
-        ].append(feature)
+        cells[(math.floor(centre_x / cell_degrees), math.floor(centre_y / cell_degrees))].append(
+            feature
+        )
     chunks: list[list[dict[str, object]]] = []
     for key in sorted(cells):
         cell = cells[key]
@@ -153,9 +161,7 @@ def _gradient_band(properties: dict[str, object]) -> str:
     return "severe"
 
 
-def _service_worker(
-    deployment_id: str, run_id: str, shell_assets: list[str]
-) -> str:
+def _service_worker(deployment_id: str, run_id: str, shell_assets: list[str]) -> str:
     cache_name = f"satn-{deployment_id}-{run_id}"
     shell = ["./", "index.html", "data.js", "publication.json", *sorted(shell_assets)]
     return f"""const CACHE = {json.dumps(cache_name)};
@@ -198,9 +204,89 @@ self.addEventListener("fetch", event => {{
 """
 
 
+def _exact_sha256(value: object, field: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise SystemExit(f"compiled run has invalid {field}")
+    return value
+
+
+def _validated_run_provenance(definition: AreaConfig, run: dict[str, object]) -> None:
+    """Reject output that was compiled from a different definition or snapshot.
+
+    The full fingerprint includes the persisted caller decision ledger. Runtime
+    decisions are audited separately and must never be substituted for inputs.
+    """
+    try:
+        ledger = canonical_decision_ledger_payload(run["decision_ledger_input"])
+        accepted = canonical_decision_ledger_payload(
+            {"decision_contract": run["decision_contract"], "responses": run["accepted_decisions"]}
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise SystemExit("compiled run has an invalid decision provenance contract") from error
+    if ledger.decision_contract != run["decision_contract"] or accepted.model_dump(mode="json")[
+        "responses"
+    ] != run["accepted_decisions"]:
+        raise SystemExit("compiled run has a non-canonical accepted-decision contract")
+    governed = compilation_governed_input_fingerprint(definition)
+    snapshot_digest = snapshot_manifest_sha256(definition)
+    definition_digest = area_definition_sha256(definition)
+    if (
+        _exact_sha256(run.get("snapshot_manifest_sha256"), "snapshot_manifest_sha256")
+        != snapshot_digest
+    ):
+        raise SystemExit("compiled output was produced from a stale snapshot manifest")
+    if (
+        _exact_sha256(run.get("governed_input_fingerprint"), "governed_input_fingerprint")
+        != governed
+    ):
+        raise SystemExit(
+            "compiled output was produced from a stale Area Definition or governed input"
+        )
+    if (
+        _exact_sha256(run.get("area_definition_sha256"), "area_definition_sha256")
+        != definition_digest
+    ):
+        raise SystemExit("compiled output was produced from a stale Area Definition")
+    expected = decision_ledger_input_fingerprint(governed, ledger)
+    if (
+        _exact_sha256(run.get("compilation_input_fingerprint"), "compilation_input_fingerprint")
+        != expected
+    ):
+        raise SystemExit("compiled output compilation_input_fingerprint is not bound to its inputs")
+
+
+def _evidence_provenance(definition: AreaConfig, run: dict[str, object]) -> dict[str, object]:
+    """Expose the actual configured inputs without claiming an unrun agent."""
+    return {
+        "source": {
+            "kind": definition.source.kind,
+            "authority_boundary_queries": list(definition.source.boundary_queries),
+        },
+        "snapshot": {
+            "snapshot_id": definition.source.snapshot_id,
+            "manifest_sha256": run["snapshot_manifest_sha256"],
+        },
+        "run": {
+            "run_id": run["run_id"],
+            "status": run["status"],
+        },
+        "agent_runtime": {
+            "response_mode": definition.compilation.agent.response_mode,
+            "provider": definition.compilation.agent.provider,
+            "model": definition.compilation.agent.model,
+        },
+    }
+
+
 def build_area_deployment(
-    definition: AreaDefinition,
+    definition: AreaConfig,
     destination: Path,
+    *,
+    bootstrap: bool = False,
 ) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
     output = definition.publication.output_dir
@@ -209,6 +295,15 @@ def build_area_deployment(
     pdf_map = output / "network-map.pdf"
     if not run_path.exists() or not (review_map / "index.html").exists() or not pdf_map.exists():
         raise SystemExit(f"compile {definition.config_path} before building its Area Deployment")
+    lock: dict[str, object] | None = None
+    if not bootstrap:
+        try:
+            # This validates the compiler source, current Area Definition,
+            # snapshot and accepted decision ledger. The recreated runtime is
+            # checked against the lock immediately before publication.
+            lock = verify_lock(definition)
+        except ValueError as error:
+            raise SystemExit(f"compiled provenance lock verification failed: {error}") from error
     run = json.loads(run_path.read_text(encoding="utf-8"))
     if run["council_id"] != definition.area_id:
         raise SystemExit("compiled artifacts do not match the requested Area Definition")
@@ -216,6 +311,7 @@ def build_area_deployment(
         raise SystemExit("the current run is not publishable")
     if run["atm_geometry_included"]:
         raise SystemExit("a public Area Deployment must not contain governed ATM geometry")
+    _validated_run_provenance(definition, run)
 
     interventions = json.loads(
         (review_map / "human-intervention-requests.json").read_text(encoding="utf-8")
@@ -227,6 +323,9 @@ def build_area_deployment(
     try:
         shutil.copytree(review_map, temporary / "content", dirs_exist_ok=True)
         content = temporary / "content"
+        shutil.copy2(run_path, content / "compiler-run.json")
+        if lock is not None:
+            shutil.copy2(definition.config_path.parent / LOCK_NAME, content / LOCK_NAME)
         network_path = content / "network.geojson"
         network = json.loads(network_path.read_text(encoding="utf-8"))
         gradients: list[dict[str, object]] = []
@@ -275,12 +374,60 @@ def build_area_deployment(
         layer_directory = content / "layers"
         groups: dict[str, dict[str, object]] = {}
         for group in sorted(DEFERRED_GROUPS):
-            entries = _write_shards(layer_directory, group, deferred[group])
+            # Keep physical shards homogeneous.  The UI exposes these feature
+            # types as separate logical layers (for example, schools and School
+            # Street assessments) and must never have to download a sibling type
+            # just because both happen to share a manifest group.
+            types: dict[str, dict[str, object]] = {}
+            entries: list[dict[str, object]] = []
+            for feature_type in sorted(DEFERRED_GROUPS[group]):
+                typed_features = [
+                    feature
+                    for feature in deferred[group]
+                    if feature["properties"].get("feature_type") == feature_type
+                ]
+                typed_entries = _write_shards(
+                    layer_directory,
+                    f"{group}-{feature_type}",
+                    typed_features,
+                )
+                entries.extend(typed_entries)
+                types[feature_type] = {
+                    "feature_count": len(typed_features),
+                    "size_bytes": sum(int(entry["size_bytes"]) for entry in typed_entries),
+                    "shards": typed_entries,
+                }
+            expected_entries = [
+                entry
+                for feature_type in sorted(types)
+                for entry in types[feature_type]["shards"]
+            ]
+            if entries != expected_entries:
+                raise AssertionError("typed layer shards must preserve the group shard order")
+            if sorted(types) != sorted(DEFERRED_GROUPS[group]):
+                raise AssertionError(
+                    "typed layer manifest must include every declared feature type"
+                )
+            if any(
+                feature["properties"].get("feature_type") not in types
+                for feature in deferred[group]
+            ):
+                raise AssertionError(
+                    "typed layer shards must contain only their declared feature type"
+                )
+            if (
+                sum(int(metadata["feature_count"]) for metadata in types.values())
+                != len(deferred[group])
+                or sum(int(metadata["size_bytes"]) for metadata in types.values())
+                != sum(int(entry["size_bytes"]) for entry in entries)
+            ):
+                raise AssertionError("typed layer manifest totals must match the group totals")
             groups[group] = {
                 "feature_types": sorted(DEFERRED_GROUPS[group]),
                 "feature_count": len(deferred[group]),
                 "size_bytes": sum(int(entry["size_bytes"]) for entry in entries),
                 "shards": entries,
+                "types": types,
             }
         layer_manifest = {
             "schema_version": run["schema_version"],
@@ -336,12 +483,12 @@ def build_area_deployment(
             evidence_chunks.append(
                 {
                     "path": f"evidence/{filename}",
-                    "profile_ids": [
-                        feature["properties"].get("profile_id") for feature in chunk
-                    ],
+                    "profile_ids": [feature["properties"].get("profile_id") for feature in chunk],
                     "profile_count": len(chunk),
                     "size_bytes": len(encoded),
                     "sha256": digest,
+                    "feature_count": len(chunk),
+                    "bbox": _bbox(chunk),
                 }
             )
         profile_index = {
@@ -367,11 +514,6 @@ def build_area_deployment(
         data["layer_manifest_url"] = "layer-manifest.json"
         data["topography_manifest_url"] = "topography-manifest.json"
         data["profile_evidence_index_url"] = "topography-profile-evidence.json"
-        data_path.write_text(
-            f"{prefix}{json.dumps(data, separators=(',', ':')).replace('</', '<\\/')};\n",
-            encoding="utf-8",
-        )
-
         shutil.copy2(pdf_map, content / "network-map.pdf")
         (content / ".nojekyll").write_text("", encoding="utf-8")
         shell_assets = [
@@ -385,15 +527,24 @@ def build_area_deployment(
         )
         publication = {
             "schema_version": run["schema_version"],
+            "title": definition.publication.title,
             "area_id": definition.area_id,
             "area_name": definition.area_name,
             "deployment_id": definition.deployment_slug,
+            "scope": {
+                "area_id": definition.area_id,
+                "area_name": definition.area_name,
+                "audience": definition.publication.audience,
+            },
             "area_definition_sha256": hashlib.sha256(
                 definition.config_path.read_bytes()
             ).hexdigest(),
             "boundary_queries": list(definition.source.boundary_queries),
+            "evidence_provenance": _evidence_provenance(definition, run),
             "run_id": run["run_id"],
             "status": run["status"],
+            "compilation_input_fingerprint": run["compilation_input_fingerprint"],
+            "compiler_run": "compiler-run.json",
             "network_model": run["network_model"],
             "connection_count": run["connection_count"],
             "gap_count": run["gap_count"],
@@ -411,6 +562,45 @@ def build_area_deployment(
         (content / "publication.json").write_text(
             json.dumps(publication, indent=2), encoding="utf-8"
         )
+        # data.js is a first-class public contract, not an unbound convenience
+        # payload.  Keep every user-facing provenance and scope field identical.
+        for field in (
+            "title",
+            "area_id",
+            "area_name",
+            "scope",
+            "evidence_provenance",
+            "run_id",
+            "status",
+            "area_definition_sha256",
+            "compilation_input_fingerprint",
+            "criteria",
+            "layer_counts",
+            "connection_count",
+            "gap_count",
+            "disclaimer",
+        ):
+            data[field] = publication[field]
+        data["provenance_lock"] = {
+            "schema_version": SCHEMA_VERSION,
+            "deployment_id": definition.deployment_slug,
+            "run_id": run["run_id"],
+            "status": run["status"],
+            "area_definition_sha256": run["area_definition_sha256"],
+            "snapshot_manifest_sha256": run["snapshot_manifest_sha256"],
+            "compilation_input_fingerprint": run["compilation_input_fingerprint"],
+        }
+        data_path.write_text(
+            f"{prefix}{json.dumps(data, separators=(',', ':')).replace('</', '<\\/')};\n",
+            encoding="utf-8",
+        )
+        if lock is not None:
+            try:
+                verify_lock(definition, deployment=content)
+            except ValueError as error:
+                raise SystemExit(
+                    f"Area Deployment does not match provenance lock: {error}"
+                ) from error
         if destination.exists():
             shutil.rmtree(destination)
         content.replace(destination)
@@ -429,7 +619,7 @@ def main() -> None:
         else PROJECT / "build" / "deployments" / definition.deployment_slug
     )
     destination.parent.mkdir(parents=True, exist_ok=True)
-    print(build_area_deployment(definition, destination))
+    print(build_area_deployment(definition, destination, bootstrap=args.bootstrap))
 
 
 if __name__ == "__main__":

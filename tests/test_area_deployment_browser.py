@@ -5,7 +5,7 @@ import json
 import shutil
 import threading
 import time
-from collections import Counter
+from collections import Counter, defaultdict
 from contextlib import contextmanager
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -17,7 +17,10 @@ from playwright.sync_api import Page, sync_playwright
 
 from satn.constants import DISCLAIMER
 from satn.deployment import build_area_deployment
+from satn.deployment_provenance import generate_lock
 from satn.models import CouncilConfig
+from satn.pipeline import compile
+from satn.sources import snapshot
 
 PROJECT = Path(__file__).parents[1]
 BROWSER_TIMEOUT_MS = 10_000
@@ -27,6 +30,7 @@ class _DeploymentHandler(SimpleHTTPRequestHandler):
     def do_GET(self) -> None:
         path = urlsplit(self.path).path
         self.server.request_counts[path] += 1  # type: ignore[attr-defined]
+        self.server.request_started[path].append(time.monotonic())  # type: ignore[attr-defined]
         delay = self.server.delays.pop(path, 0)  # type: ignore[attr-defined]
         if delay:
             time.sleep(delay)
@@ -42,12 +46,11 @@ class _DeploymentHandler(SimpleHTTPRequestHandler):
 
 @contextmanager
 def _serve_deployment(root: Path):
-    server = ThreadingHTTPServer(
-        ("127.0.0.1", 0), partial(_DeploymentHandler, directory=str(root))
-    )
+    server = ThreadingHTTPServer(("127.0.0.1", 0), partial(_DeploymentHandler, directory=str(root)))
     server.failures = Counter()  # type: ignore[attr-defined]
     server.delays = {}  # type: ignore[attr-defined]
     server.request_counts = Counter()  # type: ignore[attr-defined]
+    server.request_started = defaultdict(list)  # type: ignore[attr-defined]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -71,34 +74,64 @@ def _write_collection(path: Path, features: list[dict[str, object]]) -> dict[str
     }
 
 
-def _split_school_shards(deployment: Path) -> tuple[str, str, str, str]:
+def _format_bytes(bytes_: int) -> str:
+    if bytes_ < 1024:
+        return f"{bytes_} B"
+    if bytes_ < 1024**2:
+        return f"{bytes_ / 1024:.0f} KB"
+    return f"{bytes_ / 1024**2:.1f} MB"
+
+
+def _split_school_shards(deployment: Path) -> tuple[str, str, str, str, str, str]:
     manifest_path = deployment / "layer-manifest.json"
     manifest = json.loads(manifest_path.read_text())
     group = manifest["groups"]["schools"]
+    school_type = group["types"]["school"]
     features = [
         feature
-        for entry in group["shards"]
+        for entry in school_type["shards"]
         for feature in json.loads((deployment / entry["path"]).read_text())["features"]
     ]
     assert features
-    if len(features) == 1:
-        duplicate = copy.deepcopy(features[0])
-        duplicate["id"] = "browser-school-contextual-second-shard"
+    seed = features[0]
+    while len(features) < 3:
+        duplicate = copy.deepcopy(seed)
+        duplicate["id"] = f"browser-school-contextual-shard-{len(features) + 1}"
         duplicate["properties"]["name"] = "Browser test school context"
         features.append(duplicate)
-    first, second = features[0:1], features[1:]
+    first, second, third = features[0:1], features[1:2], features[2:3]
     layers = deployment / "layers"
     first_entry = _write_collection(layers / "schools-browser-first.geojson", first)
     second_entry = _write_collection(layers / "schools-browser-second.geojson", second)
-    group["shards"] = [first_entry, second_entry]
-    group["feature_count"] = len(features)
-    group["size_bytes"] = first_entry["size_bytes"] + second_entry["size_bytes"]
+    third_entry = _write_collection(layers / "schools-browser-third.geojson", third)
+    # The default viewport request should fetch only the local first shard;
+    # the deliberate whole-region control must fetch both remote shards.
+    second_entry["bbox"] = [10, 10, 11, 11]
+    third_entry["bbox"] = [12, 12, 13, 13]
+    school_type["shards"] = [first_entry, second_entry, third_entry]
+    school_type["feature_count"] = len(features)
+    school_type["size_bytes"] = (
+        first_entry["size_bytes"] + second_entry["size_bytes"] + third_entry["size_bytes"]
+    )
+    group["shards"] = [
+        entry
+        for type_metadata in group["types"].values()
+        for entry in type_metadata["shards"]
+    ]
+    group["feature_count"] = sum(
+        type_metadata["feature_count"] for type_metadata in group["types"].values()
+    )
+    group["size_bytes"] = sum(
+        type_metadata["size_bytes"] for type_metadata in group["types"].values()
+    )
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     return (
         str(first_entry["path"]),
         str(second_entry["path"]),
+        str(third_entry["path"]),
         str(first[0]["id"]),
         str(second[0]["id"]),
+        str(third[0]["id"]),
     )
 
 
@@ -166,12 +199,17 @@ def test_area_deployment_progressive_loading_recovers_without_losing_data(
         fixture,
         ignore=shutil.ignore_patterns(".satn-cache"),
     )
+    definition = CouncilConfig.from_yaml(fixture / "council.yaml")
+    snapshot(definition)
+    compile(definition)
     run_path = fixture / "work" / "output" / "run.json"
     run = json.loads(run_path.read_text())
     run.setdefault("compilation_diagnostics", {})
     run_path.write_text(json.dumps(run), encoding="utf-8")
-    definition = CouncilConfig.from_yaml(fixture / "council.yaml")
-    deployment = build_area_deployment(definition, tmp_path / "deployment")
+    deployment = tmp_path / "deployment"
+    build_area_deployment(definition, deployment, bootstrap=True)
+    generate_lock(definition, deployment=deployment)
+    deployment = build_area_deployment(definition, deployment)
     template = (PROJECT / "src" / "satn" / "assets" / "review-map.html").read_text()
     replacements = {
         "__TITLE__": definition.publication.title,
@@ -195,9 +233,35 @@ def test_area_deployment_progressive_loading_recovers_without_losing_data(
     (
         first_school_shard,
         second_school_shard,
+        third_school_shard,
         first_school_id,
         second_school_id,
+        third_school_id,
     ) = _split_school_shards(deployment)
+    manifest = json.loads((deployment / "layer-manifest.json").read_text())
+    school_street_paths = [
+        entry["path"]
+        for entry in manifest["groups"]["schools"]["types"]["school-street-assessment"]["shards"]
+    ]
+    school_size_bytes = manifest["groups"]["schools"]["types"]["school"]["size_bytes"]
+    school_shard_sizes = {
+        entry["path"]: entry["size_bytes"]
+        for entry in manifest["groups"]["schools"]["types"]["school"]["shards"]
+    }
+    retail_paths = [
+        entry["path"]
+        for entry in manifest["groups"]["amenities"]["types"]["retail-centre"]["shards"]
+    ]
+    healthcare_paths = [
+        entry["path"]
+        for entry in manifest["groups"]["amenities"]["types"]["healthcare"]["shards"]
+    ]
+    # A stale/older manifest can legitimately lack an optional logical type.
+    # Its control must make no sibling request, rather than falling back to the
+    # group-wide shard list.
+    manifest["groups"]["amenities"]["types"].pop("healthcare")
+    (deployment / "layer-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    retail_size_bytes = manifest["groups"]["amenities"]["types"]["retail-centre"]["size_bytes"]
     unavailable_topography_id = _add_unavailable_topography(deployment)
 
     with (
@@ -211,8 +275,9 @@ def test_area_deployment_progressive_loading_recovers_without_losing_data(
         # manifest failure, so its retry state cannot be overwritten by the
         # service-worker progress message.
         server.delays["/layer-manifest.json"] = 2
-        server.failures[f"/{second_school_shard}"] = 1
+        server.failures[f"/{third_school_shard}"] = 1
         server.delays[f"/{second_school_shard}"] = 0.2
+        server.delays[f"/{third_school_shard}"] = 0.2
 
         context.route("https://tile.openstreetmap.org/**", lambda route: route.abort())
         page = context.new_page()
@@ -221,6 +286,7 @@ def test_area_deployment_progressive_loading_recovers_without_losing_data(
             "document.documentElement.dataset.mapReady === 'true'",
             timeout=BROWSER_TIMEOUT_MS,
         )
+        assert not any(path.startswith("/topography/") for path in server.request_counts)
         page.wait_for_function(
             "document.querySelector('#deployment-status').textContent."
             "includes('Layer sizes are unavailable')",
@@ -236,41 +302,90 @@ def test_area_deployment_progressive_loading_recovers_without_losing_data(
         assert "Layer sizes loaded" in page.locator("#deployment-status").inner_text(
             timeout=BROWSER_TIMEOUT_MS
         )
+        school_label = page.locator("#layer-schools").locator("xpath=..").inner_text()
+        assert _format_bytes(school_size_bytes) in school_label
+        retail_label = page.locator("#layer-retail-centres").locator("xpath=..").inner_text()
+        assert _format_bytes(retail_size_bytes) in retail_label
 
-        page.locator("#layer-schools").click(timeout=BROWSER_TIMEOUT_MS)
+        page.locator("#layer-healthcare").click(timeout=BROWSER_TIMEOUT_MS)
         page.wait_for_function(
-            "document.querySelector('#deployment-status').textContent."
-            "includes('Contextual school evidence is unavailable')",
+            "document.querySelector('#layer-healthcare').closest('label')."
+            "querySelector('.layer-load-status').textContent."
+            "includes('no evidence in this view')",
             timeout=BROWSER_TIMEOUT_MS,
         )
+        assert all(server.request_counts[f"/{path}"] == 0 for path in healthcare_paths)
+        assert all(server.request_counts[f"/{path}"] == 0 for path in retail_paths)
+
+        page.locator("#layer-schools").click(timeout=BROWSER_TIMEOUT_MS)
         page.wait_for_function(
             "window.SATN_DATA.network.features.some("
             f"feature => feature.id === {first_school_id!r})",
             timeout=BROWSER_TIMEOUT_MS,
         )
+        assert server.request_counts[f"/{second_school_shard}"] == 0
+        assert server.request_counts[f"/{third_school_shard}"] == 0
+        assert all(server.request_counts[f"/{path}"] == 0 for path in school_street_paths)
         assert page.evaluate(
             "() => ['school-access-obligations', 'school-access-connections', "
             "'school-access-gaps'].every(layer => "
             "window.SATN_REVIEW_MAP.getLayoutProperty(layer, 'visibility') === 'visible')"
         )
 
-        page.locator("#layer-schools").click(timeout=BROWSER_TIMEOUT_MS)
-        page.locator("#layer-schools").click(timeout=BROWSER_TIMEOUT_MS)
+        page.locator("#load-complete-region").click(timeout=BROWSER_TIMEOUT_MS)
+        page.wait_for_function(
+            "document.querySelector('#complete-region-status').textContent."
+            "includes('could not finish')",
+            timeout=BROWSER_TIMEOUT_MS,
+        )
+        partial_status = page.locator("#complete-region-status").inner_text()
+        assert "2 features" in partial_status
+        assert _format_bytes(
+            school_shard_sizes[first_school_shard] + school_shard_sizes[second_school_shard]
+        ) in partial_status
+        assert server.request_counts[f"/{second_school_shard}"] == 1
+        assert server.request_counts[f"/{third_school_shard}"] == 1
+        assert (
+            abs(
+                server.request_started[f"/{second_school_shard}"][0]
+                - server.request_started[f"/{third_school_shard}"][0]
+            )
+            < 0.15
+        )
         page.wait_for_function(
             "window.SATN_DATA.network.features.some("
             f"feature => feature.id === {second_school_id!r})",
             timeout=BROWSER_TIMEOUT_MS,
         )
+        assert not page.evaluate(
+            f"window.SATN_DATA.network.features.some(feature => feature.id === {third_school_id!r})"
+        )
+        page.locator("#load-complete-region").click(timeout=BROWSER_TIMEOUT_MS)
         page.wait_for_function(
-            "document.querySelector('#layer-schools').parentElement.querySelector('.layer-load-status').textContent.includes('loaded')",
+            "window.SATN_DATA.network.features.some("
+            f"feature => feature.id === {third_school_id!r})",
             timeout=BROWSER_TIMEOUT_MS,
         )
         assert server.request_counts[f"/{first_school_shard}"] == 1
-        assert server.request_counts[f"/{second_school_shard}"] == 2
+        assert server.request_counts[f"/{second_school_shard}"] == 1
+        assert server.request_counts[f"/{third_school_shard}"] == 2
+        assert all(server.request_counts[f"/{path}"] == 0 for path in school_street_paths)
         assert page.evaluate(
             "() => { const ids = window.SATN_DATA.network.features.map(feature => feature.id); "
             "return ids.length === new Set(ids).size; }"
         )
+
+        # Grouped amenities are independently selected.  A deliberate full
+        # region load of retail evidence must not download healthcare shards.
+        page.locator("#layer-retail-centres").click(timeout=BROWSER_TIMEOUT_MS)
+        page.locator("#load-complete-region").click(timeout=BROWSER_TIMEOUT_MS)
+        page.wait_for_function(
+            "document.querySelector('#complete-region-status').textContent."
+            "includes('Whole-region evidence loaded')",
+            timeout=BROWSER_TIMEOUT_MS,
+        )
+        assert all(server.request_counts[f"/{path}"] == 1 for path in retail_paths)
+        assert all(server.request_counts[f"/{path}"] == 0 for path in healthcare_paths)
 
         page.evaluate("window.SATN_REVIEW_MAP.jumpTo({zoom: 11})")
         page.locator("#layer-gradient-sections").click(timeout=BROWSER_TIMEOUT_MS)
@@ -279,9 +394,12 @@ def test_area_deployment_progressive_loading_recovers_without_losing_data(
             f"feature => feature.id === {unavailable_topography_id!r})",
             timeout=BROWSER_TIMEOUT_MS,
         )
-        assert page.evaluate(
-            "window.SATN_REVIEW_MAP.getLayoutProperty('topography-unavailable', 'visibility')"
-        ) == "visible"
+        assert (
+            page.evaluate(
+                "window.SATN_REVIEW_MAP.getLayoutProperty('topography-unavailable', 'visibility')"
+            )
+            == "visible"
+        )
         _fit_map_to_feature(page, unavailable_topography_id)
         page.wait_for_function(
             f"window.SATN_REVIEW_MAP.queryRenderedFeatures({{layers: ['topography-unavailable']}})"
@@ -366,7 +484,5 @@ def test_area_deployment_progressive_loading_recovers_without_losing_data(
             "document.documentElement.dataset.mapReady === 'true'",
             timeout=BROWSER_TIMEOUT_MS,
         )
-        assert page.locator("#layer-authority-boundaries").is_checked(
-            timeout=BROWSER_TIMEOUT_MS
-        )
+        assert page.locator("#layer-authority-boundaries").is_checked(timeout=BROWSER_TIMEOUT_MS)
         context.set_offline(False)

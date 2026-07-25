@@ -28,13 +28,15 @@ from satn.compiler import CompiledNetwork
 from satn.constants import DISCLAIMER, SCHEMA_VERSION
 from satn.identifiers import stable_id
 from satn.models import (
+    AgentDecisionLedger,
     AgentRecord,
+    AreaConfig,
     CompilationResult,
-    CouncilConfig,
     DivergenceRecord,
     PublishedArtifactReference,
     PublishedNetworkFeatureReference,
     TrafficLight,
+    canonical_decision_ledger_payload,
 )
 from satn.sources import NCN_ATTRIBUTION, OSM_ATTRIBUTION
 
@@ -179,13 +181,13 @@ def _validate_published_geojson_geometry(feature: dict[object, object], feature_
         raise ValueError(f"SATN public GeoJSON feature {feature_id!r} has empty geometry")
 
 
-def validate_publication(output: Path, config: CouncilConfig) -> None:
+def validate_publication(output: Path, config: AreaConfig) -> None:
     """Validate an existing publication before any whole-run reuse."""
     _validate_artifacts(output, config)
 
 
 def publish(
-    config: CouncilConfig,
+    config: AreaConfig,
     compiled: CompiledNetwork,
     run_id: str,
 ) -> dict[str, Path]:
@@ -516,7 +518,7 @@ def _layer_counts(compiled: CompiledNetwork) -> dict[str, int]:
 
 def _write_json_records(
     output: Path,
-    config: CouncilConfig,
+    config: AreaConfig,
     compiled: CompiledNetwork,
     run_id: str,
 ) -> None:
@@ -529,7 +531,9 @@ def _write_json_records(
     run = {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
-        "council_id": config.council_id,
+        # Historical artifact name retained for compatibility; the value is the
+        # canonical Area Definition identity.
+        "council_id": config.area_id,
         "status": compiled.status,
         "criteria": {
             section: {criterion: status.value for criterion, status in values.items()}
@@ -539,8 +543,12 @@ def _write_json_records(
         "authoritative_features": _authoritative_feature_records(compiled),
         "agent_review": _agent_review_summary(config, review_records),
         "decision_contract": compiled.decision_contract,
+        "decision_ledger_input": compiled.decision_ledger_input,
         "accepted_decisions": compiled.accepted_decisions,
         "compilation_input_fingerprint": compiled.compilation_input_fingerprint,
+        "governed_input_fingerprint": compiled.governed_input_fingerprint,
+        "snapshot_manifest_sha256": compiled.snapshot_manifest_sha256,
+        "area_definition_sha256": compiled.area_definition_sha256,
         "compilation_diagnostics": compiled.compilation_diagnostics,
         "connection_count": compiled.connection_count,
         "gap_count": len(compiled.gaps),
@@ -618,7 +626,7 @@ def _write_json_records(
 
 
 def _agent_review_summary(
-    config: CouncilConfig,
+    config: AreaConfig,
     records: list[AgentRecord | DivergenceRecord],
 ) -> dict[str, object]:
     return {
@@ -883,7 +891,7 @@ def _linework_length_m(geometries: list[object], crs: object) -> float:
 
 def _write_review_map(
     review: Path,
-    config: CouncilConfig,
+    config: AreaConfig,
     compiled: CompiledNetwork,
 ) -> None:
     asset_root = files("satn.assets")
@@ -1010,7 +1018,7 @@ def _zip_review_map(path: Path, review: Path) -> None:
             archive.write(item, arcname=f"review-map/{item.relative_to(review)}")
 
 
-def _write_pdf(path: Path, config: CouncilConfig, compiled: CompiledNetwork) -> None:
+def _write_pdf(path: Path, config: AreaConfig, compiled: CompiledNetwork) -> None:
     page_sizes = {"A2": A2, "A3": A3, "A4": A4}
     requested = config.publication.pdf_page_size.upper()
     if requested not in page_sizes:
@@ -1536,7 +1544,7 @@ def _offset_linework(geometry: object, distance: float) -> object:
     return geometry
 
 
-def _validate_artifacts(output: Path, config: CouncilConfig) -> None:
+def _validate_artifacts(output: Path, config: AreaConfig) -> None:
     required = (
         "network.gpkg",
         "network.geojson",
@@ -1575,6 +1583,21 @@ def _validate_artifacts(output: Path, config: CouncilConfig) -> None:
     run = json.loads((output / "run.json").read_text(encoding="utf-8"))
     if run.get("disclaimer") != DISCLAIMER or run.get("network_model") != "backbone-outward":
         raise ValueError("run manifest does not describe the current publication")
+    try:
+        input_ledger = canonical_decision_ledger_payload(run["decision_ledger_input"])
+        accepted_ledger = canonical_decision_ledger_payload(
+            {
+                "decision_contract": run["decision_contract"],
+                "responses": run["accepted_decisions"],
+            }
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("run manifest has an invalid decision provenance contract") from error
+    if input_ledger.decision_contract != run["decision_contract"] or (
+        accepted_ledger.model_dump(mode="json")["responses"]
+        != run["accepted_decisions"]
+    ):
+        raise ValueError("run manifest has a non-canonical decision provenance contract")
     authoritative_count = sum(
         feature["properties"].get("feature_type")
         in {
@@ -1687,7 +1710,10 @@ def _validate_artifacts(output: Path, config: CouncilConfig) -> None:
         for record in [*agent_records, *divergence_records]
         if record.responder_mode in {"caller", "direct-runtime"}
     ]
-    accepted_decisions = [
+    accepted_decisions = AgentDecisionLedger.model_validate(
+        {
+            "decision_contract": run["decision_contract"],
+            "responses": [
         {
             "request_id": record.decision_request.request_id,
             "dependency_fingerprint": record.decision_request.dependency_fingerprint,
@@ -1695,7 +1721,9 @@ def _validate_artifacts(output: Path, config: CouncilConfig) -> None:
         }
         for record in bounded_choice_records
         if record.decision_request is not None
-    ]
+            ],
+        }
+    ).model_dump(mode="json")["responses"]
     if run.get("decision_contract") != "agent-decision-menu/v1":
         raise ValueError("run manifest decision contract is unsupported")
     if run.get("accepted_decisions") != accepted_decisions:
@@ -2072,9 +2100,7 @@ def _validate_withheld_cross_spine_connector_references(
             f"{duplicate_references[0]}"
         )
     duplicate_findings = sorted(
-        finding_id
-        for finding_id in set(finding_ids)
-        if finding_ids.count(finding_id) != 1
+        finding_id for finding_id in set(finding_ids) if finding_ids.count(finding_id) != 1
     )
     if duplicate_findings:
         raise ValueError(

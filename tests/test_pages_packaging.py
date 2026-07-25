@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -12,10 +13,25 @@ from pathlib import Path
 
 import pytest
 
+from satn.constants import DISCLAIMER
+from satn.deployment import DEFERRED_GROUPS, build_area_deployment
+from satn.deployment_catalogue import generate_catalogue_lock
+from satn.deployment_provenance import generate_lock
+from satn.models import AgentDecisionLedger, AreaDefinition
 from satn.pages_packaging import (
     GITHUB_PAGES_LIMIT_BYTES,
     package_pages,
 )
+from satn.pages_packaging import (
+    _validate_review_map_zip as validate_packaged_review_map_zip,
+)
+from satn.pipeline import (
+    compilation_governed_input_fingerprint,
+    compile,
+    decision_ledger_input_fingerprint,
+    snapshot_manifest_sha256,
+)
+from satn.sources import snapshot
 
 PROJECT = Path(__file__).parents[1]
 _VALIDATOR_SPEC = importlib.util.spec_from_file_location(
@@ -36,7 +52,7 @@ def write_catalogue(path: Path) -> None:
 area_name: Test area
 deployment_id: test-area
 source:
-  snapshot_dir: snapshots
+  snapshot_dir: ../snapshots
 publication:
   output_dir: build
   title: Test area deployment
@@ -59,26 +75,211 @@ deployments:
 """,
         encoding="utf-8",
     )
+    generate_catalogue_lock(path)
 
 
-def write_bundle(root: Path) -> None:
+def empty_layer_groups() -> dict[str, dict[str, object]]:
+    """Return the exact progressive contract, including empty feature types."""
+    return {
+        group: {
+            "feature_types": sorted(feature_types),
+            "feature_count": 0,
+            "size_bytes": 0,
+            "shards": [],
+            "types": {
+                feature_type: {"feature_count": 0, "size_bytes": 0, "shards": []}
+                for feature_type in sorted(feature_types)
+            },
+        }
+        for group, feature_types in sorted(DEFERRED_GROUPS.items())
+    }
+
+
+def write_bundle(root: Path, *, accepted_decisions: list[dict[str, str]] | None = None) -> None:
     bundle = root / "test-area"
-    (bundle / "assets").mkdir(parents=True)
+    (bundle / "assets").mkdir(parents=True, exist_ok=True)
     (bundle / "index.html").write_text("<h1>Test area</h1>", encoding="utf-8")
     (bundle / "network-map.pdf").write_bytes(b"%PDF-test")
+    (bundle / "network.geojson").write_text(
+        json.dumps({"type": "FeatureCollection", "features": []}), encoding="utf-8"
+    )
     (bundle / "assets" / "map.js").write_text("window.map = true;", encoding="utf-8")
+    snapshot = root.parent / "snapshots" / "current" / "snapshot.json"
+    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    snapshot.write_text('{"snapshot_id":"current"}', encoding="utf-8")
+    definition_path = root.parent / "test-area" / "area.yaml"
+    definition = AreaDefinition.from_yaml(definition_path)
+    ledger = AgentDecisionLedger()
+    accepted_decisions = accepted_decisions or []
+    governed = compilation_governed_input_fingerprint(definition)
+    input_fingerprint = decision_ledger_input_fingerprint(governed, ledger)
+    snapshot_digest = snapshot_manifest_sha256(definition)
+    definition_digest = hashlib.sha256(definition_path.read_bytes()).hexdigest()
+    compiler_run = {
+        "run_id": "test-run",
+        "status": "complete",
+        "disclaimer": DISCLAIMER,
+        "compilation_input_fingerprint": input_fingerprint,
+        "governed_input_fingerprint": governed,
+        "snapshot_manifest_sha256": snapshot_digest,
+        "area_definition_sha256": definition_digest,
+        "decision_contract": ledger.decision_contract,
+        "decision_ledger_input": ledger.model_dump(mode="json"),
+        "accepted_decisions": accepted_decisions,
+    }
+    (bundle / "compiler-run.json").write_text(json.dumps(compiler_run), encoding="utf-8")
+    (bundle / "layer-manifest.json").write_text(
+        json.dumps({"groups": empty_layer_groups()}), encoding="utf-8"
+    )
+    (bundle / "topography-manifest.json").write_text(
+        json.dumps(
+            {
+                "overview": [],
+                "detail": [],
+                "overview_feature_count": 0,
+                "detail_feature_count": 0,
+                "overview_size_bytes": 0,
+                "detail_size_bytes": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (bundle / "topography-profile-evidence.json").write_text(
+        json.dumps({"profile_count": 0, "chunks": []}), encoding="utf-8"
+    )
+    (bundle / "data.js").write_text(
+        "window.SATN_DATA = "
+        + json.dumps(
+            {
+                "area_id": "test-geography",
+                "area_name": "Test area",
+                "title": "Test area deployment",
+                "scope": {
+                    "area_id": "test-geography",
+                    "area_name": "Test area",
+                    "audience": "public",
+                },
+                "evidence_provenance": {
+                    "source": {"kind": "fixture", "authority_boundary_queries": []},
+                    "snapshot": {"snapshot_id": "current", "manifest_sha256": snapshot_digest},
+                    "run": {"run_id": "test-run", "status": "complete"},
+                    "agent_runtime": {"response_mode": "caller", "provider": "fake", "model": None},
+                },
+                "run_id": "test-run",
+                "status": "complete",
+                "area_definition_sha256": definition_digest,
+                "compilation_input_fingerprint": input_fingerprint,
+                "network_url": "network.geojson",
+                "layer_manifest_url": "layer-manifest.json",
+                "topography_manifest_url": "topography-manifest.json",
+                "profile_evidence_index_url": "topography-profile-evidence.json",
+                "connection_count": 0,
+                "gap_count": 0,
+                "provenance_lock": {
+                    "schema_version": "satn-deployment-provenance-lock/v2",
+                    "deployment_id": "test-area",
+                    "run_id": "test-run",
+                    "status": "complete",
+                    "area_definition_sha256": definition_digest,
+                    "snapshot_manifest_sha256": snapshot_digest,
+                    "compilation_input_fingerprint": input_fingerprint,
+                },
+                "disclaimer": DISCLAIMER,
+                "criteria": {},
+                "layer_counts": {},
+            }
+        )
+        + ";\n",
+        encoding="utf-8",
+    )
     (bundle / "publication.json").write_text(
         json.dumps(
             {
                 "deployment_id": "test-area",
                 "area_id": "test-geography",
-                "area_definition_sha256": hashlib.sha256(
-                    (root.parent / "test-area" / "area.yaml").read_bytes()
-                ).hexdigest(),
+                "area_name": "Test area",
+                "title": "Test area deployment",
+                "scope": {
+                    "area_id": "test-geography",
+                    "area_name": "Test area",
+                    "audience": "public",
+                },
+                "evidence_provenance": {
+                    "source": {"kind": "fixture", "authority_boundary_queries": []},
+                    "snapshot": {
+                        "snapshot_id": "current",
+                        "manifest_sha256": snapshot_digest,
+                    },
+                    "run": {"run_id": "test-run", "status": "complete"},
+                    "agent_runtime": {
+                        "response_mode": "caller",
+                        "provider": "fake",
+                        "model": None,
+                    },
+                },
+                "run_id": "test-run",
+                "status": "complete",
+                "area_definition_sha256": definition_digest,
+                "compilation_input_fingerprint": input_fingerprint,
+                "connection_count": 0,
+                "gap_count": 0,
+                "compiler_run": "compiler-run.json",
+                "layer_manifest": "layer-manifest.json",
+                "topography_manifest": "topography-manifest.json",
+                "topography_profile_evidence_index": "topography-profile-evidence.json",
+                "criteria": {},
+                "layer_counts": {},
+                "disclaimer": DISCLAIMER,
             }
         ),
         encoding="utf-8",
     )
+
+    def artifact(path: Path) -> dict[str, object]:
+        return {
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "size_bytes": path.stat().st_size,
+        }
+
+    lock = {
+        "schema_version": "satn-deployment-provenance-lock/v2",
+        "deployment_id": "test-area",
+        "area_id": "test-geography",
+        "area_name": "Test area",
+        "title": "Test area deployment",
+        "scope": {"area_id": "test-geography", "area_name": "Test area", "audience": "public"},
+        "snapshot_id": "current",
+        "run_id": "test-run",
+        "status": "complete",
+        "area_definition_sha256": definition_digest,
+        "snapshot_manifest_sha256": snapshot_digest,
+        "governed_input_fingerprint": governed,
+        "decision_ledger_input_sha256": hashlib.sha256(
+            json.dumps(
+                ledger.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+            ).encode()
+        ).hexdigest(),
+        "decision_contract_sha256": hashlib.sha256(
+            json.dumps(ledger.decision_contract, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+        "accepted_decisions_sha256": hashlib.sha256(
+            json.dumps(accepted_decisions, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+        "compilation_input_fingerprint": input_fingerprint,
+        "connection_count": 0,
+        "gap_count": 0,
+        "layer_counts": {},
+        "criteria": {},
+        "cyclic_runtime_files": ["provenance-lock.json", "review-map.zip"],
+        "artifacts": {
+            item.relative_to(bundle).as_posix(): artifact(item)
+            for item in sorted(bundle.rglob("*"))
+            if item.is_file() and item.name != "provenance-lock.json"
+        },
+    }
+    # The lock is tracked beside its Area Definition and copied into the bundle.
+    (definition_path.parent / "provenance-lock.json").write_text(json.dumps(lock), encoding="utf-8")
+    (bundle / "provenance-lock.json").write_text(json.dumps(lock), encoding="utf-8")
 
 
 def write_release_from_tree(root: Path, release: Path) -> None:
@@ -86,6 +287,222 @@ def write_release_from_tree(root: Path, release: Path) -> None:
         for item in sorted(root.rglob("*")):
             if item.is_file():
                 archive.write(item, item.relative_to(root).as_posix())
+
+
+def write_layer_shard(
+    bundle: Path, feature_type: str, coordinates: tuple[int, int]
+) -> tuple[dict[str, object], bytes]:
+    features = [
+        {
+            "type": "Feature",
+            "id": f"test-{feature_type}",
+            "properties": {"feature_type": feature_type},
+            "geometry": {"type": "Point", "coordinates": list(coordinates)},
+        }
+    ]
+    encoded = json.dumps(
+        {"type": "FeatureCollection", "features": features}, separators=(",", ":")
+    ).encode()
+    digest = hashlib.sha256(encoded).hexdigest()
+    shard = bundle / "layers" / f"amenities-{feature_type}-{digest[:16]}.geojson"
+    shard.parent.mkdir(exist_ok=True)
+    shard.write_bytes(encoded)
+    entry = {
+        "path": f"layers/{shard.name}",
+        "sha256": digest,
+        "size_bytes": len(encoded),
+        "feature_count": 1,
+        "bbox": [
+            float(coordinates[0]),
+            float(coordinates[1]),
+            float(coordinates[0]),
+            float(coordinates[1]),
+        ],
+    }
+    return entry, encoded
+
+
+def add_layer_shard(bundle: Path) -> Path:
+    """Add one declared shard for general shard-integrity tests."""
+    entry, encoded = write_layer_shard(bundle, "retail-centre", (1, 2))
+    groups = empty_layer_groups()
+    amenities = groups["amenities"]
+    amenities["feature_count"] = 1
+    amenities["size_bytes"] = len(encoded)
+    amenities["shards"] = [entry]
+    types = amenities["types"]
+    assert isinstance(types, dict)
+    retail = types["retail-centre"]
+    assert isinstance(retail, dict)
+    retail["feature_count"] = 1
+    retail["size_bytes"] = len(encoded)
+    retail["shards"] = [entry]
+    (bundle / "layer-manifest.json").write_text(
+        json.dumps({"groups": groups}), encoding="utf-8"
+    )
+    return bundle / str(entry["path"])
+
+
+def add_layer_shards(bundle: Path) -> None:
+    healthcare, healthcare_bytes = write_layer_shard(bundle, "healthcare", (1, 2))
+    retail, retail_bytes = write_layer_shard(bundle, "retail-centre", (3, 4))
+    groups = empty_layer_groups()
+    amenities = groups["amenities"]
+    amenities["feature_count"] = 2
+    amenities["size_bytes"] = len(healthcare_bytes) + len(retail_bytes)
+    amenities["shards"] = [healthcare, retail]
+    types = amenities["types"]
+    assert isinstance(types, dict)
+    for feature_type, entry, encoded in (
+        ("healthcare", healthcare, healthcare_bytes),
+        ("retail-centre", retail, retail_bytes),
+    ):
+        metadata = types[feature_type]
+        assert isinstance(metadata, dict)
+        metadata["feature_count"] = 1
+        metadata["size_bytes"] = len(encoded)
+        metadata["shards"] = [entry]
+    (bundle / "layer-manifest.json").write_text(
+        json.dumps({"groups": groups}),
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.parametrize(
+    ("tamper", "match"),
+    [
+        (
+            lambda manifest: manifest["groups"].pop("urban"),
+            "groups must exactly match canonical deferred groups",
+        ),
+        (
+            lambda manifest: manifest["groups"].__setitem__(
+                "shops", manifest["groups"].pop("amenities")
+            ),
+            "groups must exactly match canonical deferred groups",
+        ),
+        (
+            lambda manifest: (
+                manifest["groups"]["amenities"]["types"].__setitem__(
+                    "local-retail", manifest["groups"]["amenities"]["types"].pop("retail-centre")
+                ),
+                manifest["groups"]["amenities"].__setitem__(
+                    "feature_types", ["healthcare", "local-retail"]
+                ),
+            ),
+            "types must exactly match canonical feature types",
+        ),
+        (
+            lambda manifest: manifest["groups"]["amenities"]["shards"].reverse(),
+            "typed shards must exactly match group shards in order",
+        ),
+        (
+            lambda manifest: manifest["groups"]["amenities"]["types"]["retail-centre"].__setitem__(
+                "feature_count", 2
+            ),
+            "type retail-centre aggregate counts do not match shards",
+        ),
+        (
+            lambda manifest: manifest["groups"]["amenities"]["types"]["retail-centre"].__setitem__(
+                "size_bytes", 1
+            ),
+            "type retail-centre aggregate counts do not match shards",
+        ),
+        (
+            lambda manifest: (
+                manifest["groups"]["amenities"].__setitem__("feature_count", 3),
+                manifest["groups"]["amenities"].__setitem__("size_bytes", 1),
+            ),
+            "layer group amenities aggregate counts do not match shards",
+        ),
+    ],
+)
+def test_progressive_manifest_tampering_is_rejected_by_packager_and_isolated_validator(
+    tmp_path: Path, tamper: object, match: str
+) -> None:
+    """The typed metadata is a signed loading boundary, not UI-only decoration."""
+    catalogue = tmp_path / "catalogue.yaml"
+    deployments = tmp_path / "deployments"
+    write_catalogue(catalogue)
+    write_bundle(deployments)
+    add_layer_shards(deployments / "test-area")
+    manifest_path = deployments / "test-area" / "layer-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert callable(tamper)
+    tamper(manifest)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=match):
+        package_pages(catalogue, deployments, tmp_path / "pages", tmp_path / "release.zip")
+
+    # The isolated validator must make the identical decision for a forged archive.
+    # Copy a valid release tree, then add a typed layer manifest solely to forge
+    # it. The independent check runs before the unrelated provenance lock detects
+    # that the release was altered.
+    shutil.rmtree(deployments / "test-area" / "layers", ignore_errors=True)
+    write_bundle(deployments)
+    package_pages(catalogue, deployments, tmp_path / "valid-pages", tmp_path / "valid.zip")
+    package_root = tmp_path / "forged-pages"
+    shutil.copytree(tmp_path / "valid-pages", package_root)
+    forged_manifest = package_root / "deployments" / "test-area" / "layer-manifest.json"
+    add_layer_shards(package_root / "deployments" / "test-area")
+    forged = json.loads(forged_manifest.read_text(encoding="utf-8"))
+    tamper(forged)
+    forged_manifest.write_text(json.dumps(forged), encoding="utf-8")
+    release = tmp_path / "forged.zip"
+    write_release_from_tree(package_root, release)
+    with pytest.raises(ValueError, match=match):
+        validate_pages_release(release, tmp_path / "validated-pages", catalogue)
+
+
+def test_real_fixture_bootstrap_lock_rebuild_package_and_isolated_validation(
+    tmp_path: Path,
+) -> None:
+    """Exercise the release path with a compiler-produced core-subset deployment."""
+    fixture = tmp_path / "fixture"
+    shutil.copytree(PROJECT / "examples" / "fixture", fixture)
+    council_path = fixture / "council.yaml"
+    council_path.write_text(
+        council_path.read_text(encoding="utf-8")
+        .replace("council_id: tiny-council", "area_id: tiny-council")
+        .replace("council_name: Tiny Council", "area_name: Tiny Council")
+        + "\ndeployment_id: tiny-council\n",
+        encoding="utf-8",
+    )
+    definition = AreaDefinition.from_yaml(fixture / "council.yaml")
+    snapshot(definition)
+    compile(definition)
+
+    bundles = tmp_path / "bundles"
+    deployment = bundles / definition.deployment_slug
+    build_area_deployment(definition, deployment, bootstrap=True)
+    generate_lock(definition, deployment=deployment)
+    build_area_deployment(definition, deployment)
+
+    catalogue = fixture / "catalogue.yaml"
+    catalogue.write_text(
+        f"""schema_version: satn-deployment-catalogue/v1
+title: Fixture deployments
+deployments:
+  - deployment_id: {definition.deployment_slug}
+    area_id: {definition.area_id}
+    area_name: {definition.area_name}
+    area_definition: council.yaml
+    deployment_path: deployments/{definition.deployment_slug}/
+    artifacts:
+      review_map: index.html
+      network_map_pdf: network-map.pdf
+      review_map_zip: review-map.zip
+""",
+        encoding="utf-8",
+    )
+    generate_catalogue_lock(catalogue)
+    release = tmp_path / "satn-pages.zip"
+    package_pages(catalogue, bundles, tmp_path / "pages", release)
+    validated = validate_pages_release(release, tmp_path / "validated", catalogue)
+    assert (
+        validated.pages_directory / f"deployments/{definition.deployment_slug}/review-map.zip"
+    ).is_file()
 
 
 def test_package_pages_generates_stable_links_deployment_zip_and_release_archive(
@@ -110,20 +527,41 @@ def test_package_pages_generates_stable_links_deployment_zip_and_release_archive
         "review_map_zip": "deployments/test-area/review-map.zip",
     }
     assert publication["deployments"][0]["area_id"] == "test-geography"
+    assert publication["deployments"][0]["title"] == "Test area deployment"
+    assert publication["deployments"][0]["scope"] == {
+        "area_id": "test-geography",
+        "area_name": "Test area",
+        "audience": "public",
+    }
+    assert publication["deployments"][0]["evidence_provenance"] == {
+        "source": {"kind": "fixture", "authority_boundary_queries": []},
+        "snapshot": {"snapshot_id": "current"},
+        "agent_runtime": {"response_mode": "caller", "provider": "fake", "model": None},
+    }
     area_definition_sha256 = hashlib.sha256(
         (catalogue.parent / "test-area" / "area.yaml").read_bytes()
     ).hexdigest()
     assert publication["deployments"][0]["area_definition_sha256"] == area_definition_sha256
-    assert json.loads(
-        (destination / "deployments" / "test-area" / "publication.json").read_text()
-    )["area_definition_sha256"] == area_definition_sha256
+    assert (
+        json.loads((destination / "deployments" / "test-area" / "publication.json").read_text())[
+            "area_definition_sha256"
+        ]
+        == area_definition_sha256
+    )
     assert (destination / "deployments" / "test-area" / "network-map.pdf").exists()
     with zipfile.ZipFile(destination / "deployments" / "test-area" / "review-map.zip") as archive:
         assert set(archive.namelist()) == {
             "review-map/assets/map.js",
+            "review-map/compiler-run.json",
+            "review-map/data.js",
             "review-map/index.html",
+            "review-map/layer-manifest.json",
             "review-map/network-map.pdf",
+            "review-map/network.geojson",
             "review-map/publication.json",
+            "review-map/provenance-lock.json",
+            "review-map/topography-manifest.json",
+            "review-map/topography-profile-evidence.json",
         }
     with zipfile.ZipFile(release) as archive:
         assert "index.html" in archive.namelist()
@@ -143,9 +581,7 @@ def test_validate_pages_release_independently_checks_extracted_content(tmp_path:
 
     assert result.pages_size_bytes < 900_000_000
     assert (result.pages_directory / "catalogue.json").is_file()
-    assert (
-        result.pages_directory / "deployments" / "test-area" / "publication.json"
-    ).is_file()
+    assert (result.pages_directory / "deployments" / "test-area" / "publication.json").is_file()
 
 
 def test_validate_pages_release_rejects_mismatched_deployment_content(tmp_path: Path) -> None:
@@ -196,13 +632,64 @@ def test_validate_pages_release_binds_archive_catalogue_to_tracked_identities(
     package_pages(catalogue, deployments, packaged_pages, tmp_path / "original-release.zip")
     archived_catalogue = json.loads((packaged_pages / "catalogue.json").read_text())
     archived_catalogue["deployments"][0]["area_name"] = "Untracked area name"
-    (packaged_pages / "catalogue.json").write_text(
-        json.dumps(archived_catalogue), encoding="utf-8"
-    )
+    (packaged_pages / "catalogue.json").write_text(json.dumps(archived_catalogue), encoding="utf-8")
     write_release_from_tree(packaged_pages, release)
 
     with pytest.raises(ValueError, match="does not exactly match"):
         validate_pages_release(release, tmp_path / "validated-pages", catalogue)
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ("root-index", "root file does not match"),
+        ("extra-root", "undeclared or missing files"),
+        ("rogue-deployment", "undeclared or missing files"),
+        ("missing-file", "artifacts are invalid"),
+    ],
+)
+def test_validate_pages_release_requires_the_exact_tag_locked_global_file_set(
+    tmp_path: Path, change: str, message: str
+) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    deployments = tmp_path / "deployments"
+    pages = tmp_path / "pages"
+    release = tmp_path / "satn-pages.zip"
+    write_catalogue(catalogue)
+    write_bundle(deployments)
+    package_pages(catalogue, deployments, pages, tmp_path / "original-release.zip")
+    if change == "root-index":
+        (pages / "index.html").write_text("forged root", encoding="utf-8")
+    elif change == "extra-root":
+        (pages / "unlocked-root.html").write_text("forged root", encoding="utf-8")
+    elif change == "rogue-deployment":
+        rogue = pages / "deployments" / "rogue"
+        rogue.mkdir()
+        (rogue / "index.html").write_text("forged deployment", encoding="utf-8")
+    else:
+        (pages / "deployments" / "test-area" / "network.geojson").unlink()
+    write_release_from_tree(pages, release)
+
+    with pytest.raises(ValueError, match=message):
+        validate_pages_release(release, tmp_path / "validated-pages", catalogue)
+
+
+def test_review_map_zip_rejects_high_compression_members_before_decompression(
+    tmp_path: Path,
+) -> None:
+    deployment = tmp_path / "deployment"
+    deployment.mkdir()
+    payload = b"0" * 200_000
+    (deployment / "index.html").write_bytes(payload)
+    with zipfile.ZipFile(
+        deployment / "review-map.zip", "w", compression=zipfile.ZIP_DEFLATED
+    ) as archive:
+        archive.writestr("review-map/index.html", payload)
+
+    with pytest.raises(ValueError, match="high-compression"):
+        validate_packaged_review_map_zip(deployment)
+    with pytest.raises(ValueError, match="high-compression"):
+        _VALIDATOR._validate_review_map_zip(deployment)
 
 
 def test_validate_pages_release_runs_in_an_isolated_stdlib_subprocess(tmp_path: Path) -> None:
@@ -276,7 +763,7 @@ def test_validate_pages_release_rejects_stale_area_definition_in_isolated_subpro
     )
 
     assert completed.returncode != 0
-    assert "area_definition_sha256 does not match" in completed.stderr
+    assert "does not exactly match" in completed.stderr
 
 
 def test_package_pages_rejects_missing_or_mismatched_deployment_publication(
@@ -300,6 +787,26 @@ def test_package_pages_rejects_missing_or_mismatched_deployment_publication(
         package_pages(catalogue, deployments, tmp_path / "pages", tmp_path / "release.zip")
 
 
+def test_package_pages_rejects_unbound_publication_scope_and_provenance(tmp_path: Path) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    deployments = tmp_path / "deployments"
+    write_catalogue(catalogue)
+    write_bundle(deployments)
+    publication_path = deployments / "test-area" / "publication.json"
+    publication = json.loads(publication_path.read_text(encoding="utf-8"))
+    publication["scope"]["audience"] = "local"
+    publication_path.write_text(json.dumps(publication), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="scope does not match"):
+        package_pages(catalogue, deployments, tmp_path / "pages", tmp_path / "release.zip")
+
+    publication["scope"]["audience"] = "public"
+    publication["evidence_provenance"]["source"]["authority_boundary_queries"] = ["invented"]
+    publication_path.write_text(json.dumps(publication), encoding="utf-8")
+    with pytest.raises(ValueError, match="evidence_provenance does not match"):
+        package_pages(catalogue, deployments, tmp_path / "pages", tmp_path / "release.zip")
+
+
 def test_package_pages_rejects_stale_area_definition_with_stable_identity(tmp_path: Path) -> None:
     catalogue = tmp_path / "catalogue.yaml"
     deployments = tmp_path / "deployments"
@@ -315,6 +822,139 @@ def test_package_pages_rejects_stale_area_definition_with_stable_identity(tmp_pa
 
     with pytest.raises(ValueError, match="area_definition_sha256 does not match"):
         package_pages(catalogue, deployments, tmp_path / "pages", tmp_path / "release.zip")
+
+
+def test_package_pages_rejects_stale_snapshot_and_tampered_dynamic_provenance(
+    tmp_path: Path,
+) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    deployments = tmp_path / "deployments"
+    write_catalogue(catalogue)
+    write_bundle(deployments)
+    snapshot = tmp_path / "snapshots" / "current" / "snapshot.json"
+    snapshot.write_text('{"snapshot_id":"changed"}', encoding="utf-8")
+    with pytest.raises(ValueError, match="snapshot digest does not match"):
+        package_pages(catalogue, deployments, tmp_path / "pages", tmp_path / "release.zip")
+
+
+def test_package_pages_binds_input_ledger_separately_from_runtime_decisions(tmp_path: Path) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    deployments = tmp_path / "deployments"
+    write_catalogue(catalogue)
+    # Direct runtime has no caller replay input but does produce an audit output.
+    accepted = [
+        {
+            "request_id": "runtime-choice",
+            "dependency_fingerprint": "a" * 64,
+            "choice_id": "1",
+        }
+    ]
+    write_bundle(deployments, accepted_decisions=accepted)
+    package_pages(catalogue, deployments, tmp_path / "pages", tmp_path / "release.zip")
+
+    write_bundle(deployments, accepted_decisions=accepted)
+    run_path = deployments / "test-area" / "compiler-run.json"
+    run = json.loads(run_path.read_text(encoding="utf-8"))
+    run["decision_ledger_input"]["responses"] = accepted
+    run_path.write_text(json.dumps(run), encoding="utf-8")
+    with pytest.raises(ValueError, match="decision_ledger_input"):
+        package_pages(catalogue, deployments, tmp_path / "pages", tmp_path / "release.zip")
+
+    write_bundle(deployments, accepted_decisions=accepted)
+    run = json.loads(run_path.read_text(encoding="utf-8"))
+    run["accepted_decisions"][0]["choice_id"] = "2"
+    run_path.write_text(json.dumps(run), encoding="utf-8")
+    with pytest.raises(ValueError, match="accepted_decisions"):
+        package_pages(catalogue, deployments, tmp_path / "pages", tmp_path / "release.zip")
+
+    write_bundle(deployments)
+    publication_path = deployments / "test-area" / "publication.json"
+    publication = json.loads(publication_path.read_text(encoding="utf-8"))
+    publication["compilation_input_fingerprint"] = "0" * 64
+    publication_path.write_text(json.dumps(publication), encoding="utf-8")
+    with pytest.raises(ValueError, match="compiler run compilation_input_fingerprint"):
+        package_pages(catalogue, deployments, tmp_path / "pages", tmp_path / "release.zip")
+
+
+def test_package_pages_rejects_reordered_runtime_decision_audits(tmp_path: Path) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    deployments = tmp_path / "deployments"
+    write_catalogue(catalogue)
+    accepted = [
+        {"request_id": "a", "dependency_fingerprint": "a" * 64, "choice_id": "1"},
+        {"request_id": "b", "dependency_fingerprint": "b" * 64, "choice_id": "1"},
+    ]
+    write_bundle(deployments, accepted_decisions=accepted)
+    run_path = deployments / "test-area" / "compiler-run.json"
+    run = json.loads(run_path.read_text(encoding="utf-8"))
+    run["accepted_decisions"].reverse()
+    run_path.write_text(json.dumps(run), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="decision provenance"):
+        package_pages(catalogue, deployments, tmp_path / "pages", tmp_path / "release.zip")
+
+
+def test_isolated_validator_rejects_non_ascii_numeric_decision_choice() -> None:
+    with pytest.raises(ValueError, match="choice_id is invalid"):
+        _VALIDATOR._canonical_decision_ledger(
+            {
+                "decision_contract": "agent-decision-menu/v1",
+                "responses": [
+                    {
+                        "request_id": "request-a",
+                        "dependency_fingerprint": "a" * 64,
+                        "choice_id": "\u0661",
+                    }
+                ],
+            },
+            "compiler run accepted_decisions",
+        )
+
+
+def test_package_pages_rejects_tampered_disclaimer_and_content_addressed_shard(
+    tmp_path: Path,
+) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    deployments = tmp_path / "deployments"
+    write_catalogue(catalogue)
+    write_bundle(deployments)
+    publication_path = deployments / "test-area" / "publication.json"
+    publication = json.loads(publication_path.read_text(encoding="utf-8"))
+    publication["disclaimer"] = "tampered"
+    publication_path.write_text(json.dumps(publication), encoding="utf-8")
+    with pytest.raises(ValueError, match="disclaimer"):
+        package_pages(catalogue, deployments, tmp_path / "pages", tmp_path / "release.zip")
+
+    write_bundle(deployments)
+    shard = add_layer_shard(deployments / "test-area")
+    shard.write_bytes(b"tampered")
+    with pytest.raises(ValueError, match="content hash does not match"):
+        package_pages(catalogue, deployments, tmp_path / "pages", tmp_path / "release.zip")
+
+
+def test_isolated_release_validator_rejects_tampered_run_and_shard(tmp_path: Path) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    deployments = tmp_path / "deployments"
+    packaged_pages = tmp_path / "packaged-pages"
+    release = tmp_path / "satn-pages.zip"
+    write_catalogue(catalogue)
+    write_bundle(deployments)
+    package_pages(catalogue, deployments, packaged_pages, tmp_path / "original-release.zip")
+    compiler_run = packaged_pages / "deployments" / "test-area" / "compiler-run.json"
+    run = json.loads(compiler_run.read_text(encoding="utf-8"))
+    run["run_id"] = "tampered-run"
+    compiler_run.write_text(json.dumps(run), encoding="utf-8")
+    write_release_from_tree(packaged_pages, release)
+    with pytest.raises(ValueError, match="compiler run run_id"):
+        validate_pages_release(release, tmp_path / "validated-pages", catalogue)
+
+    shutil.rmtree(tmp_path / "validated-pages", ignore_errors=True)
+    package_pages(catalogue, deployments, packaged_pages, tmp_path / "original-release.zip")
+    shard = add_layer_shard(packaged_pages / "deployments" / "test-area")
+    shard.write_bytes(b"tampered")
+    write_release_from_tree(packaged_pages, release)
+    with pytest.raises(ValueError, match="content hash does not match"):
+        validate_pages_release(release, tmp_path / "validated-pages", catalogue)
 
 
 def test_package_pages_rejects_file_and_directory_symlinks_before_copying(tmp_path: Path) -> None:
@@ -402,9 +1042,7 @@ def test_validate_pages_release_rejects_symlinked_destination_before_resolving(
     destination.symlink_to(destination_target, target_is_directory=True)
 
     with pytest.raises(ValueError, match="destination must not be a symlink"):
-        validate_pages_release(
-            tmp_path / "missing.zip", destination, tmp_path / "catalogue.yaml"
-        )
+        validate_pages_release(tmp_path / "missing.zip", destination, tmp_path / "catalogue.yaml")
 
 
 def test_package_pages_rejects_symlinked_destination_before_removal(tmp_path: Path) -> None:

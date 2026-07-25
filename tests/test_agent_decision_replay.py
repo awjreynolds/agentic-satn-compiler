@@ -11,6 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from satn import compile
+from satn.deployment import build_area_deployment
 from satn.models import (
     AgentDecisionAction,
     AgentDecisionChoice,
@@ -297,7 +298,8 @@ def test_complete_replay_is_stable_and_published_records_agree(tmp_path: Path) -
     applied = [record for record in records if record["responder_mode"] == "caller"]
     assert applied
     assert run["decision_contract"] == "agent-decision-menu/v1"
-    assert run["accepted_decisions"] == [
+    assert run["decision_ledger_input"] == ledger.model_dump(mode="json")
+    assert run["accepted_decisions"] == sorted([
         {
             "request_id": record["decision_request"]["request_id"],
             "dependency_fingerprint": record["decision_request"][
@@ -306,7 +308,7 @@ def test_complete_replay_is_stable_and_published_records_agree(tmp_path: Path) -
             "choice_id": record["selected_choice_id"],
         }
         for record in applied
-    ]
+    ], key=lambda response: response["request_id"])
     assert {
         (record["decision_request"]["request_id"], record["selected_choice_id"])
         for record in applied
@@ -351,6 +353,79 @@ def test_complete_replay_is_stable_and_published_records_agree(tmp_path: Path) -
     assert forced_again.artifacts["run"].read_bytes() == first_run
     assert forced_again.artifacts["agents"].read_bytes() == first_records
     assert forced_again.artifacts["geojson"].read_bytes() == first_network
+
+
+def test_persisted_decision_ledgers_must_be_canonical_at_compile_and_reuse_boundaries(
+    tmp_path: Path,
+) -> None:
+    config = prepared_config(tmp_path)
+    completed, ledger = complete_with_first_choices(config)
+    assert len(ledger.responses) > 1
+
+    # A caller-owned JSON input has no safe normalisation step: its raw order is
+    # part of the signed/fingerprinted wire contract.
+    reordered_path = tmp_path / "reordered-decisions.json"
+    reordered = ledger.model_dump(mode="json")
+    reordered["responses"].reverse()
+    reordered_path.write_text(json.dumps(reordered), encoding="utf-8")
+    with pytest.raises(ValueError, match="not canonical"):
+        compile(config, decision_ledger=reordered_path)
+
+    run_path = completed.artifacts["run"]
+    run = json.loads(run_path.read_text(encoding="utf-8"))
+    run.pop("decision_ledger_input")
+    run_path.write_text(json.dumps(run), encoding="utf-8")
+    rebuilt = compile(config, decision_ledger=ledger)
+    assert rebuilt.status == "complete"
+    assert rebuilt.metadata.get("publication_reused") is not True
+
+    # A reordered persisted audit is equally invalid for reuse; compilation
+    # repairs it rather than treating it as the original decision record.
+    run = json.loads(rebuilt.artifacts["run"].read_text(encoding="utf-8"))
+    run["accepted_decisions"].reverse()
+    rebuilt.artifacts["run"].write_text(json.dumps(run), encoding="utf-8")
+    repaired = compile(config, decision_ledger=ledger)
+    assert repaired.status == "complete"
+    assert repaired.metadata.get("publication_reused") is not True
+
+    # A stored ledger can remain canonical while no longer describing the
+    # compilation input.  Reuse must recompute its fingerprint, rather than
+    # trusting the old run fingerprint that an altered wire record retained.
+    run = json.loads(repaired.artifacts["run"].read_text(encoding="utf-8"))
+    run["decision_ledger_input"]["responses"][0]["choice_id"] = "2"
+    repaired.artifacts["run"].write_text(json.dumps(run), encoding="utf-8")
+    rebuilt_again = compile(config, decision_ledger=ledger)
+    assert rebuilt_again.status == "complete"
+    assert rebuilt_again.metadata.get("publication_reused") is not True
+
+
+def test_direct_runtime_publishes_a_canonical_multi_decision_audit(tmp_path: Path) -> None:
+    config = prepared_config(tmp_path)
+    config.compilation.agent.response_mode = "direct-runtime"
+    config.compilation.agent.max_requests = 100
+    config.compilation.agent.max_tokens = 10_000
+    config.compilation.agent.deadline_seconds = 5
+
+    completed = compile(config)
+    assert completed.status in {"complete", "reviewable"}
+    run = json.loads(completed.artifacts["run"].read_text(encoding="utf-8"))
+    accepted = run["accepted_decisions"]
+    assert len(accepted) > 1
+    assert [response["request_id"] for response in accepted] == sorted(
+        response["request_id"] for response in accepted
+    )
+
+
+def test_area_deployment_rejects_a_reordered_caller_ledger_run(tmp_path: Path) -> None:
+    config = prepared_config(tmp_path)
+    completed, _ledger = complete_with_first_choices(config)
+    run_path = completed.artifacts["run"]
+    run = json.loads(run_path.read_text(encoding="utf-8"))
+    run["decision_ledger_input"]["responses"].reverse()
+    run_path.write_text(json.dumps(run), encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="decision provenance"):
+        build_area_deployment(config, tmp_path / "deployment", bootstrap=True)
 
 
 def test_cli_accepts_a_json_ledger_and_exits_at_the_next_request(tmp_path: Path) -> None:

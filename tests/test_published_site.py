@@ -10,6 +10,7 @@ import pytest
 
 from satn.constants import DISCLAIMER
 from satn.deployment import build_area_deployment
+from satn.deployment_provenance import generate_lock
 from satn.models import CouncilConfig
 from satn.pipeline import compile
 from satn.sources import snapshot
@@ -20,19 +21,22 @@ PROJECT = Path(__file__).parents[1]
 def test_area_deployment_is_progressive_portable_and_not_git_path_bound(
     tmp_path: Path,
 ) -> None:
-    definition = CouncilConfig.from_yaml(PROJECT / "examples" / "fixture" / "council.yaml")
+    fixture = tmp_path / "fixture"
+    shutil.copytree(PROJECT / "examples" / "fixture", fixture)
+    definition = CouncilConfig.from_yaml(fixture / "council.yaml")
     definition.publication.output_dir = tmp_path / "compiled"
     definition.source.snapshot_dir = tmp_path / "snapshots"
 
     snapshot(definition)
     result = compile(definition)
-    deployment = build_area_deployment(definition, tmp_path / "deployments" / "tiny")
+    deployment = tmp_path / "deployments" / "tiny"
+    build_area_deployment(definition, deployment, bootstrap=True)
+    generate_lock(definition, deployment=deployment)
+    deployment = build_area_deployment(definition, deployment)
 
     publication = json.loads((deployment / "publication.json").read_text(encoding="utf-8"))
     network = json.loads((deployment / "network.geojson").read_text(encoding="utf-8"))
-    layer_manifest = json.loads(
-        (deployment / "layer-manifest.json").read_text(encoding="utf-8")
-    )
+    layer_manifest = json.loads((deployment / "layer-manifest.json").read_text(encoding="utf-8"))
     topography_manifest = json.loads(
         (deployment / "topography-manifest.json").read_text(encoding="utf-8")
     )
@@ -44,9 +48,36 @@ def test_area_deployment_is_progressive_portable_and_not_git_path_bound(
     assert result.status in {"complete", "reviewable"}
     assert publication["area_id"] == definition.area_id
     assert publication["area_name"] == definition.area_name
-    assert publication["area_definition_sha256"] == hashlib.sha256(
-        definition.config_path.read_bytes()
-    ).hexdigest()
+    assert publication["title"] == definition.publication.title
+    assert publication["scope"] == {
+        "area_id": definition.area_id,
+        "area_name": definition.area_name,
+        "audience": definition.publication.audience,
+    }
+    assert publication["evidence_provenance"] == {
+        "source": {
+            "kind": definition.source.kind,
+            "authority_boundary_queries": list(definition.source.boundary_queries),
+        },
+        "snapshot": {
+            "snapshot_id": definition.source.snapshot_id,
+            "manifest_sha256": hashlib.sha256(
+                (
+                    definition.source.snapshot_dir / definition.source.snapshot_id / "snapshot.json"
+                ).read_bytes()
+            ).hexdigest(),
+        },
+        "run": {"run_id": result.run_id, "status": result.status},
+        "agent_runtime": {
+            "response_mode": definition.compilation.agent.response_mode,
+            "provider": definition.compilation.agent.provider,
+            "model": definition.compilation.agent.model,
+        },
+    }
+    assert (
+        publication["area_definition_sha256"]
+        == hashlib.sha256(definition.config_path.read_bytes()).hexdigest()
+    )
     assert publication["disclaimer"] == DISCLAIMER
     assert publication["network_model"] == "backbone-outward"
     assert publication["layer_manifest"] == "layer-manifest.json"
@@ -80,25 +111,25 @@ def test_area_deployment_is_progressive_portable_and_not_git_path_bound(
         "retail-centre",
         "healthcare",
     }
-    assert not {
-        feature["properties"]["feature_type"] for feature in network["features"]
-    } & deferred_types
+    assert (
+        not {feature["properties"]["feature_type"] for feature in network["features"]}
+        & deferred_types
+    )
     assert all(
         json.loads(feature["properties"]["micro_gradient_intervals"]) == []
         for feature in network["features"]
         if feature["properties"]["feature_type"] == "topography-profile"
     )
     assert topography_manifest["detail_min_zoom"] == 10
-    assert topography_manifest["gradient_section_count"] == publication["layer_counts"][
-        "gradient_sections"
-    ]
+    assert (
+        topography_manifest["gradient_section_count"]
+        == publication["layer_counts"]["gradient_sections"]
+    )
     assert topography_manifest["detail_feature_count"] == (
         topography_manifest["gradient_section_count"]
         + topography_manifest["unavailable_profile_count"]
     )
-    assert profile_index["profile_count"] == publication["layer_counts"][
-        "topography_profiles"
-    ]
+    assert profile_index["profile_count"] == publication["layer_counts"]["topography_profiles"]
     assert all("profile_ids" in chunk for chunk in profile_index["chunks"])
     assert (deployment / "network-map.pdf").read_bytes().startswith(b"%PDF-")
     service_worker = (deployment / "service-worker.js").read_text(encoding="utf-8")
@@ -110,34 +141,33 @@ def test_area_deployment_is_progressive_portable_and_not_git_path_bound(
     assert "network.geojson" not in service_worker
     assert "layer-manifest.json" not in service_worker
     assert "topography-manifest.json" not in service_worker
+
     assert "topography-profile-evidence.json" not in service_worker
     assert 'event.data?.type !== "cache-core"' in service_worker
     assert '"network_url":"network.geojson"' in (deployment / "data.js").read_text()
-    assert '"layer_manifest_url":"layer-manifest.json"' in (
-        deployment / "data.js"
-    ).read_text()
+    assert '"layer_manifest_url":"layer-manifest.json"' in (deployment / "data.js").read_text()
 
     deferred_features = [
         feature
         for group in layer_manifest["groups"].values()
         for entry in group["shards"]
-        for feature in json.loads(
-            (deployment / entry["path"]).read_text(encoding="utf-8")
-        )["features"]
+        for feature in json.loads((deployment / entry["path"]).read_text(encoding="utf-8"))[
+            "features"
+        ]
     ]
     overview_features = [
         feature
         for entry in topography_manifest["overview"]
-        for feature in json.loads(
-            (deployment / entry["path"]).read_text(encoding="utf-8")
-        )["features"]
+        for feature in json.loads((deployment / entry["path"]).read_text(encoding="utf-8"))[
+            "features"
+        ]
     ]
     detail_features = [
         feature
         for entry in topography_manifest["detail"]
-        for feature in json.loads(
-            (deployment / entry["path"]).read_text(encoding="utf-8")
-        )["features"]
+        for feature in json.loads((deployment / entry["path"]).read_text(encoding="utf-8"))[
+            "features"
+        ]
     ]
     original_by_id = {feature["id"]: feature for feature in original_network["features"]}
     delivered_by_id = {
@@ -208,10 +238,52 @@ console.log(JSON.stringify({ calls, replies }));
         capture_output=True,
     )
     assert json.loads(completed.stdout) == {
-        "calls": [["./", "index.html", "data.js", "publication.json", *sorted([
-            item.relative_to(deployment).as_posix()
-            for item in (deployment / "assets").iterdir()
-            if item.is_file() and item.suffix in {".css", ".js"}
-        ])], ["network.geojson"]],
+        "calls": [
+            [
+                "./",
+                "index.html",
+                "data.js",
+                "publication.json",
+                *sorted(
+                    [
+                        item.relative_to(deployment).as_posix()
+                        for item in (deployment / "assets").iterdir()
+                        if item.is_file() and item.suffix in {".css", ".js"}
+                    ]
+                ),
+            ],
+            ["network.geojson"],
+        ],
         "replies": [{"ok": True}],
     }
+
+
+def test_area_deployment_rejects_stale_snapshot_and_tampered_compiler_fingerprint(
+    tmp_path: Path,
+) -> None:
+    fixture = tmp_path / "fixture"
+    shutil.copytree(PROJECT / "examples" / "fixture", fixture)
+    definition = CouncilConfig.from_yaml(fixture / "council.yaml")
+    definition.publication.output_dir = tmp_path / "compiled"
+    definition.source.snapshot_dir = tmp_path / "snapshots"
+    snapshot(definition)
+    compile(definition)
+    bootstrap = tmp_path / "deployments" / "bootstrap"
+    build_area_deployment(definition, bootstrap, bootstrap=True)
+    generate_lock(definition, deployment=bootstrap)
+
+    snapshot_path = definition.source.snapshot_dir / definition.source.snapshot_id / "snapshot.json"
+    snapshot_path.write_text('{"snapshot_id":"stale"}', encoding="utf-8")
+    with pytest.raises(SystemExit, match="stale snapshot manifest"):
+        build_area_deployment(definition, tmp_path / "deployments" / "tiny")
+
+    snapshot(definition)
+    compile(definition)
+    build_area_deployment(definition, bootstrap, bootstrap=True)
+    generate_lock(definition, deployment=bootstrap)
+    run_path = definition.publication.output_dir / "run.json"
+    run = json.loads(run_path.read_text(encoding="utf-8"))
+    run["compilation_input_fingerprint"] = "0" * 64
+    run_path.write_text(json.dumps(run), encoding="utf-8")
+    with pytest.raises(SystemExit, match="compilation_input_fingerprint"):
+        build_area_deployment(definition, tmp_path / "deployments" / "tiny")
