@@ -28,6 +28,11 @@ def main() -> None:
         type=int,
         default=int(os.environ.get("SATN_PAGES_MAX_BYTES", DEFAULT_MAXIMUM_BYTES)),
     )
+    parser.add_argument(
+        "--promote-production",
+        action="store_true",
+        help="Require every deployment to match an approved immutable runtime class.",
+    )
     args = parser.parse_args()
     result = package_pages(
         args.catalogue,
@@ -35,6 +40,7 @@ def main() -> None:
         args.destination,
         args.release_artifact,
         maximum_bytes=args.maximum_bytes,
+        promote_production=args.promote_production,
     )
     print(
         f"{result.pages_directory} ({result.pages_size_bytes} bytes); "

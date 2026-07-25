@@ -310,6 +310,19 @@ def test_public_compiler_applies_bounded_direct_runtime_choices(tmp_path: Path) 
     assert all(record.selected_choice_id == "1" for record in direct_records)
     assert all(record.usage == {"requests": 1, "tokens": 1} for record in direct_records)
     assert all(record.attempts == [] for record in direct_records)
+    run = json.loads(result.artifacts["run"].read_text())
+    governance = run["runtime_governance"]
+    assert governance["status"] == "non-production"
+    assert governance["reason"] == "fake-runtime"
+    assert governance["configured_runtime"] == {
+        "provider": "fake",
+        "model": None,
+        "response_mode": "direct-runtime",
+    }
+    assert governance["observed_runtime"]["responder_modes"] == ["direct-runtime"]
+    assert governance["replay_status"] == "fresh"
+    assert governance["usage"]["requests"] == len(direct_records)
+    assert governance["usage"]["tokens"] == len(direct_records)
 
 
 def test_public_direct_runtime_failure_returns_non_publishing_decision_required(
@@ -328,6 +341,15 @@ def test_public_direct_runtime_failure_returns_non_publishing_decision_required(
     assert result.artifacts == {}
     assert result.metadata["decision_response_validation"] == "runtime-unavailable"
     assert result.decision_requests
+    governance = result.metadata["runtime_governance"]
+    # The fixture adapter is permanently non-production, including when the
+    # direct-runtime invocation itself is incomplete.
+    assert governance["status"] == "non-production"
+    assert governance["reason"] == "fake-runtime"
+    assert governance["promotion"] == {
+        "allowed": False,
+        "reason": "fake-runtime",
+    }
 
 
 def test_public_compilation_routes_a_configured_red_gap_to_review(tmp_path: Path) -> None:

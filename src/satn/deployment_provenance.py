@@ -86,10 +86,21 @@ def _run_contract(definition: AreaConfig, run: dict[str, Any]) -> dict[str, str]
         ).hexdigest(),
         "compilation_input_fingerprint": expected,
     }
+    if "runtime_governance" in run:
+        runtime_governance = run["runtime_governance"]
+        if not isinstance(runtime_governance, dict):
+            raise ValueError("compiler run runtime governance must be an object")
+        contract["runtime_governance_sha256"] = hashlib.sha256(
+            json.dumps(runtime_governance, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
     for key, expected_value in contract.items():
         if key.endswith("sha256") or key.endswith("fingerprint"):
             actual = _exact_digest(run.get(key), key) if key in run else expected_value
-            if key in {"decision_contract_sha256", "accepted_decisions_sha256"}:
+            if key in {
+                "decision_contract_sha256",
+                "accepted_decisions_sha256",
+                "runtime_governance_sha256",
+            }:
                 continue
             if actual != expected_value:
                 if key == "snapshot_manifest_sha256":

@@ -70,6 +70,17 @@ packager's in-process result:
   build/validated-pages --catalogue deployments/catalogue.yaml
 ```
 
+This standalone release gate is production fail-closed by default: every
+deployment must carry an approved, content-bound runtime-governance class and
+decision-ledger provenance.  Local review of a fake or otherwise
+non-production package is an explicit exception only:
+
+```sh
+.venv/bin/python -I scripts/validate_pages_release.py build/satn-pages.zip \
+  build/validated-pages --catalogue deployments/catalogue.yaml \
+  --allow-non-production
+```
+
 The only excluded cyclic files are `provenance-lock.json` itself and the nested
 `review-map.zip`; the latter is separately required to be a safe, byte-for-byte
 mirror of every other standalone deployment file, including the copied lock.

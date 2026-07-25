@@ -37,6 +37,7 @@ from satn.publisher import (
     publish,
     validate_publication,
 )
+from satn.runtime_governance import incomplete_runtime_governance
 from satn.sources import load_snapshot
 
 LOGGER = logging.getLogger(__name__)
@@ -128,6 +129,7 @@ def _compile(
             council,
             input_fingerprint,
             required.request,
+            ledger,
             required.applied_records,
             required.applied_divergence_records,
             required.validation,
@@ -164,6 +166,7 @@ def _compile(
                 council,
                 input_fingerprint,
                 required.request,
+                ledger,
                 required.applied_records,
                 required.applied_divergence_records,
                 required.validation,
@@ -672,11 +675,13 @@ def _decision_required_result(
     council: AreaConfig,
     input_fingerprint: str,
     request: AgentDecisionRequest,
+    ledger: AgentDecisionLedger,
     agent_records: list[AgentRecord] | None = None,
     divergence_records: list[DivergenceRecord] | None = None,
     validation: str | None = None,
 ) -> CompilationResult:
     """Return a durable menu without publishing or retaining continuation state."""
+    records = [*(agent_records or []), *(divergence_records or [])]
     return CompilationResult(
         run_id=f"decision-{request.dependency_fingerprint[:12]}",
         status="decision-required",
@@ -691,6 +696,12 @@ def _decision_required_result(
         metadata={
             "compilation_input_fingerprint": input_fingerprint,
             "decision_response_validation": validation,
+            "runtime_governance": incomplete_runtime_governance(
+                council.compilation.agent,
+                records,
+                decision_ledger_input=ledger.model_dump(mode="json"),
+                validation=validation,
+            ),
         },
     )
 

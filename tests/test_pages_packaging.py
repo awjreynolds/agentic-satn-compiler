@@ -289,6 +289,122 @@ def write_release_from_tree(root: Path, release: Path) -> None:
                 archive.write(item, item.relative_to(root).as_posix())
 
 
+def test_production_promotion_gate_denies_non_production_runtime(tmp_path: Path) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    write_catalogue(catalogue)
+    deployments = tmp_path / "deployments"
+    write_bundle(deployments)
+
+    with pytest.raises(ValueError, match="production promotion denied"):
+        package_pages(
+            catalogue,
+            deployments,
+            tmp_path / "pages",
+            tmp_path / "release.zip",
+            promote_production=True,
+        )
+
+
+def _forge_self_consistent_production_governance(bundle: Path) -> None:
+    """Forge every mutable release artefact a malicious packager can control."""
+
+    governance = {
+        "schema_version": "satn-runtime-governance/v1",
+        "status": "production-approved",
+        "reason": "approved-immutable-runtime-class-and-ledger-provenance",
+        "promotion": {
+            "allowed": True,
+            "reason": "approved-immutable-runtime-class-and-ledger-provenance",
+        },
+        "runtime_class_sha256": "a" * 64,
+        "decision_ledger_provenance_sha256": "b" * 64,
+    }
+    compiler_run_path = bundle / "compiler-run.json"
+    compiler_run = json.loads(compiler_run_path.read_text(encoding="utf-8"))
+    compiler_run["runtime_governance"] = governance
+    compiler_run_path.write_text(json.dumps(compiler_run), encoding="utf-8")
+
+    publication_path = bundle / "publication.json"
+    publication = json.loads(publication_path.read_text(encoding="utf-8"))
+    publication["runtime_governance"] = governance
+    publication_path.write_text(json.dumps(publication), encoding="utf-8")
+
+    data_path = bundle / "data.js"
+    prefix = "window.SATN_DATA = "
+    data = json.loads(
+        data_path.read_text(encoding="utf-8").removeprefix(prefix).removesuffix(";\n")
+    )
+    data["runtime_governance"] = governance
+    data_path.write_text(prefix + json.dumps(data) + ";\n", encoding="utf-8")
+
+    lock_path = bundle / "provenance-lock.json"
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    lock["runtime_governance_sha256"] = hashlib.sha256(
+        json.dumps(governance, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    lock["artifacts"] = {
+        item.relative_to(bundle).as_posix(): {
+            "sha256": hashlib.sha256(item.read_bytes()).hexdigest(),
+            "size_bytes": item.stat().st_size,
+        }
+        for item in sorted(bundle.rglob("*"))
+        if item.is_file() and item.name != "provenance-lock.json"
+    }
+    serialized_lock = json.dumps(lock)
+    lock_path.write_text(serialized_lock, encoding="utf-8")
+    (bundle.parent.parent / "test-area" / "provenance-lock.json").write_text(
+        serialized_lock, encoding="utf-8"
+    )
+
+
+def test_production_package_rejects_forged_self_consistent_runtime_and_lock(tmp_path: Path) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    write_catalogue(catalogue)
+    deployments = tmp_path / "deployments"
+    write_bundle(deployments)
+    _forge_self_consistent_production_governance(deployments / "test-area")
+
+    with pytest.raises(ValueError, match="production promotion denied"):
+        package_pages(
+            catalogue,
+            deployments,
+            tmp_path / "pages",
+            tmp_path / "release.zip",
+            promote_production=True,
+        )
+
+
+def test_production_release_validator_cannot_be_bypassed_by_local_packaging(tmp_path: Path) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    write_catalogue(catalogue)
+    deployments = tmp_path / "deployments"
+    write_bundle(deployments)
+    # Local packaging intentionally does not require production approval: it is
+    # useful for reviewable/fake deployments.  Forge the entire package and
+    # both mutable locks to prove that the *deployed* validator is still the
+    # independent deny-by-default production gate.
+    _forge_self_consistent_production_governance(deployments / "test-area")
+    package_pages(catalogue, deployments, tmp_path / "pages", tmp_path / "release.zip")
+
+    with pytest.raises(ValueError, match="production promotion denied"):
+        validate_pages_release(
+            tmp_path / "release.zip",
+            tmp_path / "validated-pages",
+            catalogue,
+        )
+
+
+def test_published_pages_workflow_requires_the_independent_production_gate() -> None:
+    """A missing local packager flag must never make it to GitHub Pages."""
+
+    workflow = (PROJECT / ".github" / "workflows" / "pages.yml").read_text(encoding="utf-8")
+    validation_command = (
+        "python scripts/validate_pages_release.py release/satn-pages.zip pages"
+    )
+    assert validation_command in workflow
+    assert "--allow-non-production" not in workflow
+
+
 def write_layer_shard(
     bundle: Path, feature_type: str, coordinates: tuple[int, int]
 ) -> tuple[dict[str, object], bytes]:
@@ -452,7 +568,12 @@ def test_progressive_manifest_tampering_is_rejected_by_packager_and_isolated_val
     release = tmp_path / "forged.zip"
     write_release_from_tree(package_root, release)
     with pytest.raises(ValueError, match=match):
-        validate_pages_release(release, tmp_path / "validated-pages", catalogue)
+        validate_pages_release(
+            release,
+            tmp_path / "validated-pages",
+            catalogue,
+            allow_non_production=True,
+        )
 
 
 def test_real_fixture_bootstrap_lock_rebuild_package_and_isolated_validation(
@@ -499,7 +620,9 @@ deployments:
     generate_catalogue_lock(catalogue)
     release = tmp_path / "satn-pages.zip"
     package_pages(catalogue, bundles, tmp_path / "pages", release)
-    validated = validate_pages_release(release, tmp_path / "validated", catalogue)
+    validated = validate_pages_release(
+        release, tmp_path / "validated", catalogue, allow_non_production=True
+    )
     assert (
         validated.pages_directory / f"deployments/{definition.deployment_slug}/review-map.zip"
     ).is_file()
@@ -577,7 +700,9 @@ def test_validate_pages_release_independently_checks_extracted_content(tmp_path:
     write_bundle(deployments)
     package_pages(catalogue, deployments, tmp_path / "packaged-pages", release)
 
-    result = validate_pages_release(release, tmp_path / "validated-pages", catalogue)
+    result = validate_pages_release(
+        release, tmp_path / "validated-pages", catalogue, allow_non_production=True
+    )
 
     assert result.pages_size_bytes < 900_000_000
     assert (result.pages_directory / "catalogue.json").is_file()
@@ -671,7 +796,12 @@ def test_validate_pages_release_requires_the_exact_tag_locked_global_file_set(
     write_release_from_tree(pages, release)
 
     with pytest.raises(ValueError, match=message):
-        validate_pages_release(release, tmp_path / "validated-pages", catalogue)
+        validate_pages_release(
+            release,
+            tmp_path / "validated-pages",
+            catalogue,
+            allow_non_production=True,
+        )
 
 
 def test_review_map_zip_rejects_high_compression_members_before_decompression(
@@ -710,6 +840,7 @@ def test_validate_pages_release_runs_in_an_isolated_stdlib_subprocess(tmp_path: 
             str(tmp_path / "validated-pages"),
             "--catalogue",
             str(catalogue),
+            "--allow-non-production",
         ],
         cwd=tmp_path,
         env=environment,
@@ -755,6 +886,7 @@ def test_validate_pages_release_rejects_stale_area_definition_in_isolated_subpro
             str(tmp_path / "validated-pages"),
             "--catalogue",
             str(catalogue),
+            "--allow-non-production",
         ],
         cwd=tmp_path,
         check=False,
@@ -946,7 +1078,12 @@ def test_isolated_release_validator_rejects_tampered_run_and_shard(tmp_path: Pat
     compiler_run.write_text(json.dumps(run), encoding="utf-8")
     write_release_from_tree(packaged_pages, release)
     with pytest.raises(ValueError, match="compiler run run_id"):
-        validate_pages_release(release, tmp_path / "validated-pages", catalogue)
+        validate_pages_release(
+            release,
+            tmp_path / "validated-pages",
+            catalogue,
+            allow_non_production=True,
+        )
 
     shutil.rmtree(tmp_path / "validated-pages", ignore_errors=True)
     package_pages(catalogue, deployments, packaged_pages, tmp_path / "original-release.zip")
@@ -954,7 +1091,12 @@ def test_isolated_release_validator_rejects_tampered_run_and_shard(tmp_path: Pat
     shard.write_bytes(b"tampered")
     write_release_from_tree(packaged_pages, release)
     with pytest.raises(ValueError, match="content hash does not match"):
-        validate_pages_release(release, tmp_path / "validated-pages", catalogue)
+        validate_pages_release(
+            release,
+            tmp_path / "validated-pages",
+            catalogue,
+            allow_non_production=True,
+        )
 
 
 def test_package_pages_rejects_file_and_directory_symlinks_before_copying(tmp_path: Path) -> None:

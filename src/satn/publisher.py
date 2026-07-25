@@ -38,6 +38,7 @@ from satn.models import (
     TrafficLight,
     canonical_decision_ledger_payload,
 )
+from satn.runtime_governance import classify_runtime_governance, validate_runtime_governance
 from satn.sources import NCN_ATTRIBUTION, OSM_ATTRIBUTION
 
 LOGGER = logging.getLogger(__name__)
@@ -528,6 +529,12 @@ def _write_json_records(
         sort=False,
     )
     review_records = [*compiled.agent_records, *compiled.divergence_records]
+    runtime_governance = classify_runtime_governance(
+        config.compilation.agent,
+        review_records,
+        decision_ledger_input=compiled.decision_ledger_input,
+        accepted_decisions=compiled.accepted_decisions,
+    )
     run = {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
@@ -542,6 +549,7 @@ def _write_json_records(
         "network_model": "backbone-outward",
         "authoritative_features": _authoritative_feature_records(compiled),
         "agent_review": _agent_review_summary(config, review_records),
+        "runtime_governance": runtime_governance,
         "decision_contract": compiled.decision_contract,
         "decision_ledger_input": compiled.decision_ledger_input,
         "accepted_decisions": compiled.accepted_decisions,
@@ -1728,6 +1736,21 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
         raise ValueError("run manifest decision contract is unsupported")
     if run.get("accepted_decisions") != accepted_decisions:
         raise ValueError("run manifest accepted choices differ from decision records")
+    # Publications generated before runtime governance existed are retained as
+    # legacy, unclassified artefacts.  A newly present manifest is an exact
+    # trust boundary and must never be accepted after a provider/model/ledger
+    # claim has been altered.
+    if "runtime_governance" in run:
+        runtime_governance = run["runtime_governance"]
+        if not isinstance(runtime_governance, dict):
+            raise ValueError("run manifest runtime governance must be an object")
+        validate_runtime_governance(
+            runtime_governance,
+            config.compilation.agent,
+            [*agent_records, *divergence_records],
+            decision_ledger_input=run["decision_ledger_input"],
+            accepted_decisions=run["accepted_decisions"],
+        )
     public_features = geojson.get("features")
     if not isinstance(public_features, list):
         raise ValueError("GeoJSON has no feature collection for withheld connector validation")
