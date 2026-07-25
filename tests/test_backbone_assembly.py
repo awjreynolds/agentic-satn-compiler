@@ -1,6 +1,7 @@
+# ruff: noqa: E501 -- the exact static provenance contract is intentionally readable as JSON.
+
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 from pathlib import Path
@@ -9,6 +10,7 @@ from types import SimpleNamespace
 import geopandas as gpd
 import networkx as nx
 import pytest
+from geopandas.testing import assert_geodataframe_equal
 from shapely.geometry import LineString, Point, Polygon
 
 import satn.backbone as backbone_module
@@ -21,11 +23,94 @@ from satn.publisher import _write_json_records, publish
 from satn.routing import RouteOption
 
 PROJECT = Path(__file__).parents[1]
-PARALLEL_SPINE_PRE_INSTRUMENTATION_STRUCTURAL_DIGEST = (
-    "f5661337121e4f3f1a77e2da4de90a0229a20a72cc0b3c420d946ca081dc097a"
-)
-CANONICAL_GEOMETRY_DECIMAL_PLACES = 3
-CANONICAL_GEOMETRY_CRS = "EPSG:27700"
+PARALLEL_SPINE_PRE_INSTRUMENTATION_SEMANTIC_SNAPSHOT = {
+    "access": [
+        (
+            "spine-access-88acfd9a756c",
+            "access-obligation-c3fd462181b2",
+            "community",
+            "left-near",
+            "strategic-spine-358914d2994f",
+            "spine-access-branch-0307342d9c53",
+            None,
+            "strategic-spine",
+            None,
+            None,
+            "strategic-spine-358914d2994f",
+            1,
+            "spine-access-connection",
+            "validated",
+            '["left-feed", "strategic-spine-evidence-43b76ca0b781", "strategic-spine-sources-7023563c3d64"]',
+            '{"access_connection_id": "spine-access-88acfd9a756c", "branch_id": "spine-access-branch-0307342d9c53", "obligation_kind": "community", "parent_access_connection_id": null, "parent_branch_id": null, "parent_place_id": null, "parent_role": "strategic-spine", "parent_target_id": "strategic-spine-358914d2994f", "parent_target_name": "A1", "place_id": "left-near", "root_evidence_id": "strategic-spine-evidence-43b76ca0b781", "root_source_id": "strategic-spine-sources-7023563c3d64", "root_spine_id": "strategic-spine-358914d2994f", "source_ids": ["left-feed", "strategic-spine-evidence-43b76ca0b781", "strategic-spine-sources-7023563c3d64"]}',
+        ),
+        (
+            "spine-access-b3bb4a8f47cc",
+            "access-obligation-ea07bd160461",
+            "community",
+            "hinterland",
+            "strategic-spine-358914d2994f",
+            "spine-access-branch-0307342d9c53",
+            "spine-access-branch-0307342d9c53",
+            "spine-access-connection",
+            "left-near",
+            "spine-access-88acfd9a756c",
+            "spine-access-88acfd9a756c",
+            2,
+            "spine-access-connection",
+            "validated",
+            '["hinterland-feed", "strategic-spine-evidence-43b76ca0b781", "strategic-spine-sources-7023563c3d64"]',
+            '{"access_connection_id": "spine-access-b3bb4a8f47cc", "branch_id": "spine-access-branch-0307342d9c53", "obligation_kind": "community", "parent_access_connection_id": "spine-access-88acfd9a756c", "parent_branch_id": "spine-access-branch-0307342d9c53", "parent_place_id": "left-near", "parent_role": "spine-access-connection", "parent_target_id": "spine-access-88acfd9a756c", "parent_target_name": "Left Near", "place_id": "hinterland", "root_evidence_id": "strategic-spine-evidence-43b76ca0b781", "root_source_id": "strategic-spine-sources-7023563c3d64", "root_spine_id": "strategic-spine-358914d2994f", "source_ids": ["hinterland-feed", "strategic-spine-evidence-43b76ca0b781", "strategic-spine-sources-7023563c3d64"]}',
+        ),
+        (
+            "spine-access-c56547bf7abe",
+            "access-obligation-dbd66a5d950a",
+            "community",
+            "right-near",
+            "strategic-spine-2b3ce3ab0f72",
+            "spine-access-branch-9c944cfbd8cf",
+            None,
+            "strategic-spine",
+            None,
+            None,
+            "strategic-spine-2b3ce3ab0f72",
+            1,
+            "spine-access-connection",
+            "validated",
+            '["right-feed", "strategic-spine-evidence-cfdf45c2a36c", "strategic-spine-sources-e03825e2f853"]',
+            '{"access_connection_id": "spine-access-c56547bf7abe", "branch_id": "spine-access-branch-9c944cfbd8cf", "obligation_kind": "community", "parent_access_connection_id": null, "parent_branch_id": null, "parent_place_id": null, "parent_role": "strategic-spine", "parent_target_id": "strategic-spine-2b3ce3ab0f72", "parent_target_name": "A2", "place_id": "right-near", "root_evidence_id": "strategic-spine-evidence-cfdf45c2a36c", "root_source_id": "strategic-spine-sources-e03825e2f853", "root_spine_id": "strategic-spine-2b3ce3ab0f72", "source_ids": ["right-feed", "strategic-spine-evidence-cfdf45c2a36c", "strategic-spine-sources-e03825e2f853"]}',
+        ),
+    ],
+    "meetings": [
+        (
+            "branch-meeting-03f25aacfaf0",
+            "right-near",
+            "hinterland",
+            "spine-access-branch-9c944cfbd8cf",
+            "spine-access-branch-0307342d9c53",
+            "strategic-spine-2b3ce3ab0f72",
+            "strategic-spine-358914d2994f",
+            "branch-meeting-connection",
+            "validated",
+            '["middle-feed"]',
+            '{"from_branch_id": "spine-access-branch-9c944cfbd8cf", "from_place_id": "right-near", "from_root_spine_id": "strategic-spine-2b3ce3ab0f72", "meeting_connection_id": "branch-meeting-03f25aacfaf0", "source_ids": ["middle-feed"], "to_branch_id": "spine-access-branch-0307342d9c53", "to_place_id": "hinterland", "to_root_spine_id": "strategic-spine-358914d2994f"}',
+        )
+    ],
+    "connectors": [
+        (
+            "cross-spine-connector-fb341299de3c",
+            "branch-meeting-03f25aacfaf0",
+            "strategic-spine-2b3ce3ab0f72",
+            "strategic-spine-358914d2994f",
+            '["spine-access-branch-0307342d9c53", "spine-access-branch-9c944cfbd8cf"]',
+            '["branch-meeting-03f25aacfaf0", "spine-access-88acfd9a756c", "spine-access-b3bb4a8f47cc", "spine-access-c56547bf7abe"]',
+            '["hinterland", "left-near", "right-near"]',
+            "cross-spine-connector",
+            "validated",
+            '["hinterland-feed", "left-feed", "middle-feed", "right-feed", "strategic-spine-evidence-43b76ca0b781", "strategic-spine-evidence-cfdf45c2a36c", "strategic-spine-sources-7023563c3d64", "strategic-spine-sources-e03825e2f853"]',
+            '{"branch_ids": ["spine-access-branch-0307342d9c53", "spine-access-branch-9c944cfbd8cf"], "community_ids": ["hinterland", "left-near", "right-near"], "connection_ids": ["branch-meeting-03f25aacfaf0", "spine-access-88acfd9a756c", "spine-access-b3bb4a8f47cc", "spine-access-c56547bf7abe"], "cross_spine_connector_id": "cross-spine-connector-fb341299de3c", "meeting_connection_id": "branch-meeting-03f25aacfaf0", "named_root_traversal": {"from_root_distance_m": 0.0, "from_root_spine_id": "strategic-spine-2b3ce3ab0f72", "noded_segment_count": 1, "pruned_segment_count": 0, "selected_segment_count": 1, "to_root_distance_m": 0.0, "to_root_spine_id": "strategic-spine-358914d2994f"}, "source_ids": ["hinterland-feed", "left-feed", "middle-feed", "right-feed", "strategic-spine-evidence-43b76ca0b781", "strategic-spine-evidence-cfdf45c2a36c", "strategic-spine-sources-7023563c3d64", "strategic-spine-sources-e03825e2f853"]}',
+        )
+    ],
+}
 
 
 def config() -> CouncilConfig:
@@ -233,132 +318,116 @@ def backbone_snapshot(compiled: object) -> dict[str, object]:
     }
 
 
-def governed_structural_digest(compiled: object) -> str:
-    """Hash the old fixture's topology, stable identifiers and provenance only.
+def governed_semantic_snapshot(compiled: object) -> dict[str, list[tuple[object, ...]]]:
+    """Capture the fixture's platform-neutral assembly contract.
 
-    This intentionally excludes diagnostics and every wall-clock observation:
-    instrumentation may evolve operational reporting, but it must not alter the
-    governed network generated from this fixed pre-instrumentation fixture.
-
-    WKB is deliberately not used here.  Its binary encoding can vary with the
-    GEOS/Shapely build even when the governed geometry is identical.  The
-    canonical signature keeps this as a strict geometry invariant, using
-    millimetre precision in the projected metre coordinate space and a
-    direction-independent LineString representation.  This admits only
-    sub-millimetre GEOS numerical noise; it does not discard topology, vertex
-    order, stable identifiers, meeting identifiers, or provenance.
+    Geometry bytes and calculated coordinates stay out of this static golden:
+    those are owned by the same-runtime control comparison below.  This golden
+    instead pins the topology, stable IDs, meeting and parent relationships,
+    provenance, source evidence, roles, and publication status generated by
+    the pre-instrumentation fixture.
     """
-    access = canonical_metric_frame(compiled.spine_access_connections)
-    meetings = canonical_metric_frame(compiled.branch_meeting_connections)
-    connectors = canonical_metric_frame(compiled.cross_spine_connectors)
-    payload = {
+    return {
         "access": sorted(
             (
                 row.access_connection_id,
-                canonical_linestring_signature(row.geometry),
-                str(row.provenance),
+                row.obligation_id,
+                row.obligation_kind,
+                row.place_id,
+                row.root_spine_id,
+                row.branch_id,
+                None if row.parent_branch_id != row.parent_branch_id else row.parent_branch_id,
+                row.parent_role,
+                None if row.parent_place_id != row.parent_place_id else row.parent_place_id,
+                (
+                    None
+                    if row.parent_access_connection_id != row.parent_access_connection_id
+                    else row.parent_access_connection_id
+                ),
+                row.parent_target_id,
+                row.attachment_depth,
+                row.network_role,
+                row.status,
+                row.source_ids,
+                row.provenance,
             )
-            for row in access.itertuples()
+            for row in compiled.spine_access_connections.itertuples()
         ),
         "meetings": sorted(
             (
                 row.meeting_connection_id,
-                canonical_linestring_signature(row.geometry),
-                str(row.provenance),
+                row.from_place_id,
+                row.to_place_id,
+                row.from_branch_id,
+                row.to_branch_id,
+                row.from_root_spine_id,
+                row.to_root_spine_id,
+                row.network_role,
+                row.status,
+                row.source_ids,
+                row.provenance,
             )
-            for row in meetings.itertuples()
+            for row in compiled.branch_meeting_connections.itertuples()
         ),
         "connectors": sorted(
             (
                 row.cross_spine_connector_id,
                 row.meeting_connection_id,
-                canonical_linestring_signature(row.geometry),
-                str(row.provenance),
+                row.from_root_spine_id,
+                row.to_root_spine_id,
+                row.branch_ids,
+                row.connection_ids,
+                row.community_ids,
+                row.network_role,
+                row.status,
+                row.source_ids,
+                row.provenance,
             )
-            for row in connectors.itertuples()
+            for row in compiled.cross_spine_connectors.itertuples()
         ),
     }
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
 
 
-def canonical_metric_frame(frame: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
-    """Transform a governed geometry frame into its canonical metric CRS.
+def assert_same_runtime_governed_frame_equal(
+    actual: gpd.GeoDataFrame,
+    expected: gpd.GeoDataFrame,
+) -> None:
+    """Compare a governed frame's data and its exact emitted geometry.
 
-    A digest must never silently interpret degrees as metres: every governed
-    frame therefore needs a declared source CRS before it is transformed to
-    British National Grid.  Transforming the complete frame once also keeps
-    the coordinate interpretation uniform across its rows.
+    GeoPandas' normal geometry assertion is deliberately topological: it
+    accepts equivalent reversed or densified LineStrings.  That is useful for
+    many spatial tests but is too weak for this observer-isolation regression.
+    Both frames are produced in the same Python/GEOS runtime, so their ordered
+    WKB must agree exactly as well as their tabular data.
     """
-    if frame.crs is None:
-        raise ValueError("Governed geometry frame must declare a source CRS")
-    return frame.to_crs(CANONICAL_GEOMETRY_CRS)
+    assert_geodataframe_equal(actual, expected, check_like=False, check_crs=True)
+    assert [geometry.wkb_hex for geometry in actual.geometry] == [
+        geometry.wkb_hex for geometry in expected.geometry
+    ]
 
 
-def canonical_linestring_signature(geometry: LineString) -> tuple[tuple[float, ...], ...]:
-    """Return a millimetre-stable, direction-independent LineString signature.
-
-    The governed fixture is assembled in a projected coordinate reference
-    system measured in metres.  Rounding to three decimal places masks only
-    sub-millimetre cross-platform GEOS noise while preserving every vertex and
-    any material change in route geometry.
-    """
-    if geometry.geom_type != "LineString":
-        raise TypeError(f"Expected LineString, got {geometry.geom_type}")
-
-    coordinates = tuple(
-        tuple(
-            0.0
-            if (rounded := round(value, CANONICAL_GEOMETRY_DECIMAL_PLACES)) == 0
-            else rounded
-            for value in point
-        )
-        for point in geometry.coords
-    )
-    return min(coordinates, tuple(reversed(coordinates)))
-
-
-def test_canonical_linestring_signature_is_direction_independent_and_millimetre_stable() -> None:
-    forward = LineString([(530000.0, 180000.0), (530002.0, 180003.0)])
-    reverse = LineString([(530002.0, 180003.0), (530000.0, 180000.0)])
-    sub_millimetre_noise = LineString([(530000.0004, 180000.0), (530002.0, 180003.0)])
-    millimetre_movement = LineString([(530000.001, 180000.0), (530002.0, 180003.0)])
-
-    assert canonical_linestring_signature(forward) == (
-        (530000.0, 180000.0),
-        (530002.0, 180003.0),
-    )
-    assert canonical_linestring_signature(forward) == canonical_linestring_signature(reverse)
-    assert canonical_linestring_signature(forward) == canonical_linestring_signature(
-        sub_millimetre_noise
-    )
-    assert canonical_linestring_signature(forward) != canonical_linestring_signature(
-        millimetre_movement
-    )
-
-
-def test_canonical_metric_frame_requires_a_crs_and_projects_degrees_to_metres() -> None:
-    geographic = gpd.GeoDataFrame(
-        {"geometry": [LineString([(-2.4, 51.4), (-2.399, 51.401)])]},
+@pytest.mark.parametrize(
+    "equivalent_geometry",
+    [
+        LineString([(2, 0), (0, 0)]),
+        LineString([(0, 0), (1, 0), (2, 0)]),
+    ],
+    ids=["reversed", "densified"],
+)
+def test_same_runtime_governed_frame_comparison_rejects_topologically_equal_geometry(
+    equivalent_geometry: LineString,
+) -> None:
+    expected = gpd.GeoDataFrame(
+        {"connection_id": ["example"], "geometry": [LineString([(0, 0), (2, 0)])]},
         crs="EPSG:4326",
     )
+    changed = expected.copy()
+    changed.loc[0, "geometry"] = equivalent_geometry
 
-    projected = canonical_metric_frame(geographic)
-
-    assert projected.crs.to_string() == CANONICAL_GEOMETRY_CRS
-    assert canonical_linestring_signature(projected.geometry.iloc[0]) != (
-        (-2.4, 51.4),
-        (-2.399, 51.401),
-    )
-
-    with pytest.raises(ValueError, match="source CRS"):
-        canonical_metric_frame(gpd.GeoDataFrame({"geometry": [LineString([(0, 0), (1, 1)])]}))
-
-
-def test_canonical_linestring_signature_rejects_unexpected_geometry() -> None:
-    with pytest.raises(TypeError, match="Expected LineString"):
-        canonical_linestring_signature(Point(0, 0))
+    # Establish the intended contrast with GeoPandas' topology-aware default.
+    assert_geodataframe_equal(changed, expected, check_like=False, check_crs=True)
+    with pytest.raises(AssertionError):
+        assert_same_runtime_governed_frame_equal(changed, expected)
 
 
 def with_source_costs_below_geometry(
@@ -444,6 +513,16 @@ def test_compiler_progress_adapter_updates_real_heartbeat_without_changing_gover
 ) -> None:
     council = config()
     council.publication.output_dir = tmp_path / "published"
+    # Compile the same fixed fixture without the new instrumentation first.
+    # The strict GeoDataFrame comparisons below are deliberately same-runtime:
+    # they prove that the observer and heartbeat cannot alter any geometry or
+    # connection data without treating GEOS's cross-platform byte encoding as
+    # a portable golden.
+    control = compiler_module.compile_network(
+        council,
+        parallel_spine_source(),
+        FakeAgentRuntime(),
+    )
     heartbeat = StageHeartbeat(
         logging.getLogger("tests.cross-spine-progress"),
         "network-compilation",
@@ -491,9 +570,22 @@ def test_compiler_progress_adapter_updates_real_heartbeat_without_changing_gover
         "route-refinement-required": 0
     }
     assert (
-        governed_structural_digest(compiled)
-        == PARALLEL_SPINE_PRE_INSTRUMENTATION_STRUCTURAL_DIGEST
+        governed_semantic_snapshot(control)
+        == PARALLEL_SPINE_PRE_INSTRUMENTATION_SEMANTIC_SNAPSHOT
     )
+    assert (
+        governed_semantic_snapshot(compiled)
+        == PARALLEL_SPINE_PRE_INSTRUMENTATION_SEMANTIC_SNAPSHOT
+    )
+    for frame_name in (
+        "spine_access_connections",
+        "branch_meeting_connections",
+        "cross_spine_connectors",
+    ):
+        assert_same_runtime_governed_frame_equal(
+            getattr(compiled, frame_name),
+            getattr(control, frame_name),
+        )
     # The run carries only the deterministic diagnostic contract: never the
     # heartbeat's clock, throughput, or ETA fields.
     output = tmp_path / "run-only"
