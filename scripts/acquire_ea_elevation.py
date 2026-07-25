@@ -11,7 +11,8 @@ import shutil
 import time
 import urllib.parse
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from itertools import pairwise
 from pathlib import Path
 
@@ -64,6 +65,7 @@ WECA_AUTHORITIES = (
     "South Gloucestershire",
 )
 MAX_WCS_ATTEMPTS = 3
+MAX_PROGRESS_HEARTBEATS = 20
 
 
 def route_sample_points(
@@ -326,38 +328,99 @@ def _assigned_samples(
     return assigned
 
 
-def _survey_choice(point: Point, index: gpd.GeoDataFrame) -> dict[str, object] | None:
+class _SurveyRecord:
+    def __init__(
+        self, *, geometry: object, feature_id: str, ed_flown: str | None, resolution_m: float
+    ) -> None:
+        self.geometry = geometry
+        self.feature_id = feature_id
+        self.ed_flown = ed_flown
+        self.resolution_m = resolution_m
+
+    def choice(self) -> dict[str, object]:
+        return {
+            "feature_id": self.feature_id,
+            "ed_flown": self.ed_flown,
+            "resolution_m": self.resolution_m,
+        }
+
+
+class _SurveyAttributionIndex:
+    """Pre-normalised official survey records with a reusable spatial index."""
+
+    def __init__(self, index: gpd.GeoDataFrame) -> None:
+        normalised = index.to_crs(27700)
+        records: list[_SurveyRecord] = []
+        for position, row in normalised.iterrows():
+            feature_id = str(row.get("id") or row.get("polygon_id") or position)
+            date = str(row.get("ed_flown") or "")[:10]
+            try:
+                resolution = float(row.get("resolution"))
+            except (TypeError, ValueError):
+                resolution = float("inf")
+            records.append(
+                _SurveyRecord(
+                    geometry=row.geometry,
+                    feature_id=feature_id,
+                    ed_flown=date or None,
+                    resolution_m=resolution,
+                )
+            )
+        self._records = tuple(records)
+        self._spatial_index = normalised.sindex
+        self.candidate_checks = 0
+
+    def choice(self, point: Point) -> dict[str, object] | None:
+        """Return the existing deterministic choice without scanning every polygon."""
+        positions = self._spatial_index.query(point)
+        self.candidate_checks += len(positions)
+        matches = [
+            self._records[position].choice()
+            for position in positions
+            if self._records[position].geometry.covers(point)
+        ]
+        if not matches:
+            return None
+        # Reversing all sort components would invert feature IDs too; sort by
+        # the desired human-readable stable preference directly instead.
+        return sorted(
+            matches,
+            key=lambda row: (
+                -(int(str(row["ed_flown"] or "0000-00-00").replace("-", ""))),
+                float(row["resolution_m"]),
+                str(row["feature_id"]),
+            ),
+        )[0]
+
+
+def _survey_choice(point: Point, index: _SurveyAttributionIndex) -> dict[str, object] | None:
     """Choose one official overlapping survey deterministically.
 
     Newest end-of-flight wins, followed by the finest declared resolution and
     then the immutable official feature ID.  This makes legitimate EA composite
     overlaps auditable rather than treating them as an error.
     """
-    matches: list[dict[str, object]] = []
-    for position, row in index.to_crs(27700).iterrows():
-        if not row.geometry.covers(point):
-            continue
-        feature_id = str(row.get("id") or row.get("polygon_id") or position)
-        date = str(row.get("ed_flown") or "")[:10]
-        try:
-            resolution = float(row.get("resolution"))
-        except (TypeError, ValueError):
-            resolution = float("inf")
-        matches.append(
-            {"feature_id": feature_id, "ed_flown": date or None, "resolution_m": resolution}
-        )
-    if not matches:
-        return None
-    # Reversing all sort components would invert feature IDs too; sort by the
-    # desired human-readable stable preference directly instead.
-    return sorted(
-        matches,
-        key=lambda row: (
-            -(int(str(row["ed_flown"] or "0000-00-00").replace("-", ""))),
-            float(row["resolution_m"]),
-            str(row["feature_id"]),
-        ),
-    )[0]
+    return index.choice(point)
+
+
+def _progress_heartbeat(phase: str, completed: int, total: int) -> None:
+    """Print no more than a bounded number of useful long-running progress updates."""
+    if total <= 0:
+        return
+    interval = max(1, math.ceil(total / MAX_PROGRESS_HEARTBEATS))
+    if completed == total or completed % interval == 0:
+        print(f"[ea-elevation] {phase}: {completed}/{total}", flush=True)
+
+
+def _survey_choices(
+    samples: list[dict[str, object]], index: _SurveyAttributionIndex, *, phase: str
+) -> dict[tuple[str, int], dict[str, object] | None]:
+    """Attribute every route observation once so ledger and manifest stay aligned."""
+    choices: dict[tuple[str, int], dict[str, object] | None] = {}
+    for completed, sample in enumerate(samples, start=1):
+        choices[_sample_identity(sample)] = _survey_choice(sample["geometry"], index)
+        _progress_heartbeat(phase, completed, len(samples))
+    return choices
 
 
 def preflight_weca_coverage(
@@ -372,26 +435,24 @@ def preflight_weca_coverage(
     routes = gpd.read_file(route_path)
     samples, _feature_ids = eligible_route_samples(routes, spacing_m)
     boundaries = gpd.read_file(authority_boundaries_path)
-    index = gpd.read_file(survey_index_path)
     boundary_identity = _authority_identity(boundaries, authority_boundaries_path)
     contract = validate_official_weca_survey_index(survey_index_path)
+    survey_index = _SurveyAttributionIndex(gpd.read_file(survey_index_path))
     expected = {_normalise_authority(name): name for name in WECA_AUTHORITIES}
     assigned = _assigned_samples(samples, boundaries)
-    coverage = index.to_crs(27700).geometry
+    choices = _survey_choices(assigned, survey_index, phase="checking official survey coverage")
     report: list[dict[str, object]] = []
     for normalised, authority_name in expected.items():
-        authority_points = [
-            row["geometry"] for row in assigned if row["authority_key"] == normalised
-        ]
+        authority_samples = [row for row in assigned if row["authority_key"] == normalised]
         missing = [
-            point
-            for point in authority_points
-            if not any(geometry.covers(point) for geometry in coverage)
+            sample
+            for sample in authority_samples
+            if choices[_sample_identity(sample)] is None
         ]
-        available = len(authority_points) - len(missing)
+        available = len(authority_samples) - len(missing)
         status = (
             "available"
-            if authority_points and not missing
+            if authority_samples and not missing
             else "partial"
             if available
             else "unavailable"
@@ -400,8 +461,8 @@ def preflight_weca_coverage(
             {
                 "authority": authority_name,
                 "status": status,
-                "route_sample_count": len(authority_points),
-                "requested_sample_count": len(authority_points),
+                "route_sample_count": len(authority_samples),
+                "requested_sample_count": len(authority_samples),
                 "available_sample_count": available,
                 "nodata_sample_count": len(missing),
                 "missing_sample_count": len(missing),
@@ -603,19 +664,22 @@ def write_evidence(
     points = _acquisition_points(ordered_samples)
     keys = sorted({tile_key(point, tile_size_m) for point in points})
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        acquired = list(
-            executor.map(
-                lambda key: acquire_tile(
-                    key,
-                    cache_dir,
-                    tile_size_m=tile_size_m,
-                    spacing_m=spacing_m,
-                    endpoint=endpoint,
-                    max_attempts=max_wcs_attempts,
-                ),
-                keys,
+        futures = [
+            executor.submit(
+                acquire_tile,
+                key,
+                cache_dir,
+                tile_size_m=tile_size_m,
+                spacing_m=spacing_m,
+                endpoint=endpoint,
+                max_attempts=max_wcs_attempts,
             )
-        )
+            for key in keys
+        ]
+        acquired = []
+        for completed, future in enumerate(as_completed(futures), start=1):
+            acquired.append(future.result())
+            _progress_heartbeat("acquiring EA WCS tiles", completed, len(futures))
     tiles = {
         key: path for key, path, _url, _digest, _attempts, _failure in acquired if path is not None
     }
@@ -680,9 +744,13 @@ def write_evidence(
     # an output-specific sibling; snapshotting normalises the internal name.
     ledger_path = output_path.with_name(f"{output_path.stem}.sample-ledger.jsonl")
     ledger_rows: list[dict[str, object]] = []
+    survey_choices: dict[tuple[str, int], dict[str, object] | None] | None = None
     if authority_boundaries_path is not None and survey_index_path is not None:
         assigned = _assigned_samples(ordered_samples, gpd.read_file(authority_boundaries_path))
-        survey_index = gpd.read_file(survey_index_path).to_crs(27700)
+        survey_index = _SurveyAttributionIndex(gpd.read_file(survey_index_path))
+        survey_choices = _survey_choices(
+            ordered_samples, survey_index, phase="attributing official EA surveys"
+        )
         by_route: dict[str, list[dict[str, object]]] = {}
         for sample in assigned:
             by_route.setdefault(str(sample["route_id"]), []).append(sample)
@@ -691,7 +759,7 @@ def write_evidence(
             for route_position, sample in enumerate(route_samples_for_ledger):
                 identity = _sample_identity(sample)
                 point = sample["geometry"]
-                chosen = _survey_choice(point, survey_index)
+                chosen = survey_choices[identity]
                 ledger_rows.append(
                     {
                         "schema_version": "ea-lidar-sample-ledger/v1",
@@ -767,8 +835,8 @@ def write_evidence(
         "survey_coverage_preflight": preflight,
         "sample_validation": sample_validation,
         "effective_survey_date": (
-            _effective_survey_date(ordered_samples, authority_boundaries_path, survey_index_path)
-            if authority_boundaries_path is not None and survey_index_path is not None
+            _effective_survey_date(survey_choices.values(), authority_boundaries_path)
+            if authority_boundaries_path is not None and survey_choices is not None
             else None
         ),
         "survey_index_path": (survey_index_path.name if survey_index_path is not None else None),
@@ -805,20 +873,18 @@ def write_evidence(
 
 
 def _effective_survey_date(
-    samples: list[dict[str, object]], authority_boundaries_path: Path, survey_index_path: Path
+    choices: Iterable[dict[str, object] | None], authority_boundaries_path: Path
 ) -> str | None:
-    """Latest official ``ed_flown`` that intersects an actual requested sample."""
+    """Latest date from the same selected attributions written to the ledger."""
     # Boundaries are loaded here to ensure this computation is only possible with
     # governed authority scope, not caller-supplied dates.
     _authority_identity(gpd.read_file(authority_boundaries_path), authority_boundaries_path)
-    index = gpd.read_file(survey_index_path).to_crs(27700)
     # It is the latest deterministically-selected official survey date for all
     # requested points, including explicit NoData observations.
     dates = [
         str(choice["ed_flown"])
-        for sample in samples
-        if (choice := _survey_choice(sample["geometry"], index)) is not None
-        and choice["ed_flown"] is not None
+        for choice in choices
+        if choice is not None and choice["ed_flown"] is not None
     ]
     return max(dates) if dates else None
 
