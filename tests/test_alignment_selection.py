@@ -23,7 +23,6 @@ from satn.alignment_selection import (
     AlignmentDecisionResponse,
     AssessmentKind,
     CandidateCriteria,
-    CandidateEducationOptionBinding,
     CandidateGenerationGapReason,
     CandidatePopulationOptionBinding,
     CandidateSetGapEvidence,
@@ -54,6 +53,7 @@ from satn.alignment_selection import (
     build_alignment_decision_request,
     build_existing_alignment_near_equivalence_proof,
     build_reference_adoption_request,
+    education_option_id_for_candidate,
     orchestrate_scenario_review,
     review_frontier_fingerprint,
     select_preferred_alignment,
@@ -160,7 +160,7 @@ def reference_decision(
         "decision_maker_label": "B&NES local SATN review board",
         "rationale": "The exact publishable Scenario is adopted as the Reference SATN.",
         "evidence_ids": list(request.governed_evidence_ids[:1]),
-        "source_url": "committee://banes-satn/reference-board-minutes-2026-07-26",
+        "source_url": "committee:/reference-board-minutes-2026-07-26",
         "adoption_request": request.model_dump(mode="json"),
         "selected_scenario_fingerprint": compiled.scenario_fingerprint,
         "selected_profile_fingerprint": compiled.profile_fingerprint,
@@ -380,7 +380,7 @@ def compile_education(
 ):
     items = admitted.admitted_candidates
     option_by_candidate = {
-        item.candidate_id: f"education-option-{index}" for index, item in enumerate(items, start=1)
+        item.candidate_id: education_option_id_for_candidate(item, admitted) for item in items
     }
     completeness = completeness or {}
     ito = ito or {item.candidate_id: 1 for item in items}
@@ -454,10 +454,7 @@ def compile_education(
         option_evidence=tuple(evidence),
         option_ids=tuple(option_by_candidate.values()),
     )
-    return assessment, tuple(
-        CandidateEducationOptionBinding(candidate_id=candidate_id, option_id=option_id)
-        for candidate_id, option_id in sorted(option_by_candidate.items())
-    )
+    return assessment
 
 
 def state_findings(
@@ -503,7 +500,7 @@ def criteria(
         headline_distance_m=population_headline_distance_m,
     )
     ito = ito or {item.candidate_id: 1 for item in items}
-    education_assessment, education_option_bindings = compile_education(
+    education_assessment = compile_education(
         admitted,
         completeness=completeness,
         ito=ito,
@@ -520,9 +517,7 @@ def criteria(
             kind=AssessmentKind.EDUCATION_ACCESS,
             assessment_id=education_assessment.assessment_id,
             assessment_content_sha256=education_assessment.assessment_id,
-            source_content_sha256=(
-                education_assessment.source_snapshot.source_snapshot_fingerprint
-            ),
+            source_content_sha256=(education_assessment.source_snapshot.source_content_fingerprint),
             method_version="education-access/v1",
         ),
         GovernedAssessmentBinding(
@@ -564,7 +559,7 @@ def criteria(
         population=population,
         education=EducationCriterionSummary.from_assessment(
             education_assessment,
-            option_bindings=education_option_bindings,
+            candidate_set=admitted,
             scenario_evidence_snapshot_fingerprint=snapshot.snapshot_fingerprint,
         ),
         existing_alignment=existing,
@@ -599,6 +594,53 @@ def digest_assessment(assessment) -> str:
             allow_nan=False,
         ).encode()
     ).hexdigest()
+
+
+def test_education_option_bindings_reject_swapped_candidate_options() -> None:
+    admitted = candidate_set(candidate("education-left"), candidate("education-right"))
+    compiled_criteria = criteria(admitted)
+    payload = compiled_criteria.education.model_dump(mode="json")
+    bindings = payload["option_bindings"]
+    assert len(bindings) == 2
+    bindings[0]["option_id"], bindings[1]["option_id"] = (
+        bindings[1]["option_id"],
+        bindings[0]["option_id"],
+    )
+    with pytest.raises(ValidationError, match="exact candidate lineage"):
+        EducationCriterionSummary.model_validate(payload)
+
+
+def test_education_source_content_lineage_rejects_rebuilt_forged_snapshot() -> None:
+    admitted = candidate_set(candidate("education-source-lineage"))
+    compiled_criteria = criteria(admitted)
+    forged_bindings = tuple(
+        binding.model_copy(
+            update={"source_content_sha256": "f" * 64}
+            if binding.kind == AssessmentKind.EDUCATION_ACCESS
+            else {}
+        )
+        for binding in compiled_criteria.evidence_snapshot.assessments
+    )
+    forged_snapshot = GovernedEvidenceSnapshot(
+        snapshot_id=compiled_criteria.evidence_snapshot.snapshot_id,
+        assessments=forged_bindings,
+    )
+    forged_education = compiled_criteria.education.model_copy(
+        update={"scenario_evidence_snapshot_fingerprint": forged_snapshot.snapshot_fingerprint}
+    )
+    with pytest.raises(ValidationError, match="education section is stale"):
+        CandidateCriteria(
+            evidence_snapshot=forged_snapshot,
+            population=compiled_criteria.population.model_copy(
+                update={
+                    "scenario_evidence_snapshot_fingerprint": forged_snapshot.snapshot_fingerprint
+                }
+            ),
+            education=forged_education,
+            directness=compiled_criteria.directness,
+            gradient=compiled_criteria.gradient,
+            uncertainty=compiled_criteria.uncertainty,
+        )
 
 
 def reusable() -> ReusableAssetEvidence:
@@ -2578,6 +2620,7 @@ def test_review_orchestration_uses_bounded_dependency_frontier_and_fresh_replay(
     first = orchestrate_scenario_review(
         base,
         dependencies=dependencies,
+        run_instance_id="frontier-run-1",
     )
     assert first.round_number == 1
     assert tuple(item.request.candidate_set_id for item in first.actionable_requests) == (
@@ -2608,6 +2651,7 @@ def test_review_orchestration_uses_bounded_dependency_frontier_and_fresh_replay(
     second = orchestrate_scenario_review(
         replayed,
         dependencies=dependencies,
+        run_instance_id="frontier-run-2",
         prior_orchestration=first,
     )
     assert second.round_number == 2
@@ -2670,6 +2714,7 @@ def test_review_orchestration_preserves_cumulative_three_round_ledger() -> None:
     first = orchestrate_scenario_review(
         compiled,
         dependencies=dependencies,
+        run_instance_id="ledger-run-1",
     )
     cumulative: list[AcceptedDecisionEnvelope] = []
     prior = first
@@ -2696,6 +2741,7 @@ def test_review_orchestration_preserves_cumulative_three_round_ledger() -> None:
         prior = orchestrate_scenario_review(
             compiled,
             dependencies=dependencies,
+            run_instance_id=f"ledger-run-{expected_round}",
             prior_orchestration=prior,
         )
         assert prior.round_number == expected_round
@@ -2715,6 +2761,7 @@ def test_review_orchestration_preserves_cumulative_three_round_ledger() -> None:
         orchestrate_scenario_review(
             dropped_first,
             dependencies=dependencies,
+            run_instance_id="ledger-run-invalid",
             prior_orchestration=prior,
         )
 
@@ -2741,6 +2788,7 @@ def test_timeout_is_a_counted_frontier_attempt_and_empty_replay_cannot_advance()
     first = orchestrate_scenario_review(
         base,
         dependencies=dependencies,
+        run_instance_id="timeout-run-1",
     )
     with pytest.raises(ValidationError, match="exact typed result"):
         RuntimeDecisionAttempt(
@@ -2776,6 +2824,7 @@ def test_timeout_is_a_counted_frontier_attempt_and_empty_replay_cannot_advance()
     exhausted = orchestrate_scenario_review(
         replayed,
         dependencies=dependencies,
+        run_instance_id="timeout-run-2",
         prior_orchestration=first,
     )
     assert exhausted.human_intervention_request is not None
@@ -2785,7 +2834,107 @@ def test_timeout_is_a_counted_frontier_attempt_and_empty_replay_cannot_advance()
         orchestrate_scenario_review(
             replayed,
             dependencies=dependencies,
+            run_instance_id="timeout-run-3",
             prior_orchestration=exhausted,
+        )
+
+
+def test_review_run_instances_reset_attempt_numbers_without_duplicate_pairs() -> None:
+    selection_profile = profile(maximum_review_rounds=3)
+    admitted = candidate_set(
+        candidate("run-instance"),
+        selection_profile=selection_profile,
+    )
+    selection = select_preferred_alignment(
+        selection_profile,
+        admitted,
+        criteria(
+            admitted,
+            uncertainty={admitted.admitted_candidates[0].candidate_id: "unknown"},
+        ),
+    )
+    base = scenario((selection,), mode="provisional-review-awaiting-decision")
+    dependencies = (ScenarioReviewDependency(candidate_set_id=selection.candidate_set_id),)
+    first = orchestrate_scenario_review(
+        base,
+        dependencies=dependencies,
+        run_instance_id="run-instance-a",
+    )
+
+    def timeout_attempt(orchestration: ScenarioReviewOrchestration) -> RuntimeDecisionAttempt:
+        request = orchestration.actionable_requests[0].request
+        return RuntimeDecisionAttempt(
+            request=request,
+            outcome="provider-timeout",
+            provider_failure_code="adapter-timeout",
+            invocation_record=RuntimeInvocationRecord(
+                invocation_id=f"timeout-{orchestration.review_run.run_id[-12:]}",
+                review_run_id=orchestration.review_run.run_id,
+                attempt_number=1,
+                maximum_attempts=orchestration.review_run.maximum_attempts,
+                deadline_seconds=orchestration.review_run.deadline_seconds,
+                frontier_fingerprint=review_frontier_fingerprint(orchestration),
+                request_fingerprint=request.request_fingerprint,
+                outcome="provider-timeout",
+                failure_code="adapter-timeout",
+                started_at_ms=1000,
+                completed_at_ms=2000,
+            ),
+        )
+
+    first_attempt = timeout_attempt(first)
+    first_ledger = scenario(
+        (selection,),
+        decision_record=ScenarioDecisionRecord(
+            mode="accepted-agent-decision-ledger",
+            runtime_attempts=(first_attempt,),
+        ),
+    )
+    second = orchestrate_scenario_review(
+        first_ledger,
+        dependencies=dependencies,
+        run_instance_id="run-instance-b",
+        prior_orchestration=first,
+    )
+    second_attempt = timeout_attempt(second)
+    assert first_attempt.invocation_record is not None
+    assert second_attempt.invocation_record is not None
+    assert first_attempt.invocation_record.attempt_number == 1
+    assert second_attempt.invocation_record.attempt_number == 1
+    assert (
+        first_attempt.invocation_record.review_run_id
+        != second_attempt.invocation_record.review_run_id
+    )
+    assert second.review_run.run_instance_id == "run-instance-b"
+
+    retained_ledger = scenario(
+        (selection,),
+        decision_record=ScenarioDecisionRecord(
+            mode="accepted-agent-decision-ledger",
+            runtime_attempts=(first_attempt, second_attempt),
+        ),
+    )
+    third = orchestrate_scenario_review(
+        retained_ledger,
+        dependencies=dependencies,
+        run_instance_id="run-instance-c",
+        prior_orchestration=second,
+    )
+    assert third.review_run.run_instance_id == "run-instance-c"
+
+    duplicate_record = second_attempt.invocation_record.model_copy(
+        update={"invocation_id": "duplicate-run-instance", "receipt_fingerprint": ""}
+    )
+    duplicate_attempt = RuntimeDecisionAttempt(
+        request=second_attempt.request,
+        outcome="provider-timeout",
+        provider_failure_code="adapter-timeout",
+        invocation_record=duplicate_record,
+    )
+    with pytest.raises(ValidationError, match=r"unique \(review_run_id, attempt_number\)"):
+        ScenarioDecisionRecord(
+            mode="accepted-agent-decision-ledger",
+            runtime_attempts=(first_attempt, second_attempt, duplicate_attempt),
         )
 
 
@@ -2839,6 +2988,7 @@ def test_review_orchestration_terminates_with_typed_human_intervention(
         prior = orchestrate_scenario_review(
             compiled,
             dependencies=dependencies,
+            run_instance_id=f"intervention-{dependency_kind}-run-1",
         )
         request = prior.actionable_requests[0].request
         terminate = next(item for item in request.options if item.action == "terminate")
@@ -2907,6 +3057,7 @@ def test_review_orchestration_terminates_with_typed_human_intervention(
     result = orchestrate_scenario_review(
         compiled,
         dependencies=dependencies,
+        run_instance_id=f"intervention-{dependency_kind}-run-2",
         prior_orchestration=prior,
     )
     assert result.actionable_requests == ()
@@ -3153,6 +3304,27 @@ def test_reference_requires_typed_decision_for_exact_scenario() -> None:
     payload["reference_selection_fingerprint"] = ""
     with pytest.raises(ValidationError, match="do not match"):
         ReferenceSATNSelection.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "source_url",
+    (
+        "http:foo",
+        "https://",
+        "https://user@example.com/minutes",
+        "committee://minutes",
+        "reference:/unsafe/path",
+    ),
+)
+def test_reference_source_url_requires_strict_scheme_syntax(source_url: str) -> None:
+    admitted = candidate_set(candidate("reference-url"))
+    selected = select_preferred_alignment(profile(), admitted, criteria(admitted))
+    decision = reference_decision(scenario((selected,)))
+    payload = decision.model_dump(mode="json")
+    payload["source_url"] = source_url
+    payload["decision_fingerprint"] = ""
+    with pytest.raises(ValidationError, match=r"source URL|source_url"):
+        GovernedReferenceSelectionDecision.model_validate(payload)
 
 
 def test_selection_rejects_forged_change_conditions_and_winner() -> None:

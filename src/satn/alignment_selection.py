@@ -64,6 +64,11 @@ _ID = re.compile(r"^[a-z0-9][a-z0-9._:-]*$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _CANDIDATE_ID = re.compile(r"^candidate-[0-9a-f]{20}$")
 _CANDIDATE_SET_ID = re.compile(r"^candidate-set-[0-9a-f]{20}$")
+_HOSTNAME = re.compile(
+    r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\."
+    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$",
+    re.IGNORECASE,
+)
 
 
 def _canonical_json(value: object) -> str:
@@ -1084,12 +1089,97 @@ class IndependentTravelOpportunityFinding(BaseModel):
 
 
 class CandidateEducationOptionBinding(BaseModel):
-    """Exact bridge from one compiler candidate to one assessed education option."""
+    """Compiler-derived bridge from a route identity to its education option evidence."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     candidate_id: str = Field(pattern=_CANDIDATE_ID.pattern)
+    candidate_geometry_fingerprint: str = Field(pattern=_SHA256.pattern)
+    candidate_connection_id: str = Field(pattern=_ID.pattern)
+    candidate_lineage_fingerprint: str = Field(pattern=_SHA256.pattern)
     option_id: str = Field(min_length=1)
+    option_evidence_fingerprint: str = Field(pattern=_SHA256.pattern)
+
+    @model_validator(mode="after")
+    def bind_option_identity(self) -> Self:
+        expected = _stable_id(
+            "education-option",
+            {
+                "candidate_id": self.candidate_id,
+                "candidate_geometry_fingerprint": self.candidate_geometry_fingerprint,
+                "candidate_connection_id": self.candidate_connection_id,
+                "candidate_lineage_fingerprint": self.candidate_lineage_fingerprint,
+            },
+        )
+        if self.option_id != expected:
+            raise ValueError("education option ID is not derived from the exact candidate lineage")
+        return self
+
+
+def _candidate_education_lineage(candidate: AlignmentCandidateInput) -> str:
+    return _fingerprint(candidate.model_dump(mode="json"))
+
+
+def education_option_id_for_candidate(
+    candidate: AlignmentCandidateInput,
+    candidate_set: AlignmentCandidateSet,
+) -> str:
+    """Derive the only education option identity allowed for an admitted route."""
+    return _stable_id(
+        "education-option",
+        {
+            "candidate_id": candidate.candidate_id,
+            "candidate_geometry_fingerprint": candidate.geometry_fingerprint,
+            "candidate_connection_id": candidate_set.connection_id,
+            "candidate_lineage_fingerprint": _candidate_education_lineage(candidate),
+        },
+    )
+
+
+def _education_option_evidence_fingerprint(
+    assessment: EducationAccessAssessment,
+    option_id: str,
+) -> str:
+    return _fingerprint(
+        {
+            "source_content_fingerprint": assessment.source_snapshot.source_content_fingerprint,
+            "option_id": option_id,
+            "option_evidence": [
+                item.model_dump(mode="json")
+                for item in assessment.source_snapshot.option_evidence
+                if item.option_id == option_id
+            ],
+        }
+    )
+
+
+def _derive_education_option_bindings(
+    assessment: EducationAccessAssessment,
+    candidate_set: AlignmentCandidateSet,
+) -> tuple[CandidateEducationOptionBinding, ...]:
+    bindings = tuple(
+        CandidateEducationOptionBinding(
+            candidate_id=candidate.candidate_id,
+            candidate_geometry_fingerprint=candidate.geometry_fingerprint,
+            candidate_connection_id=candidate_set.connection_id,
+            candidate_lineage_fingerprint=_candidate_education_lineage(candidate),
+            option_id=education_option_id_for_candidate(candidate, candidate_set),
+            option_evidence_fingerprint="0" * 64,
+        )
+        for candidate in candidate_set.admitted_candidates
+    )
+    if {item.option_id for item in bindings} != set(assessment.source_snapshot.option_ids):
+        raise ValueError("education assessment option IDs are not derived from admitted candidates")
+    return tuple(
+        item.model_copy(
+            update={
+                "option_evidence_fingerprint": _education_option_evidence_fingerprint(
+                    assessment, item.option_id
+                )
+            }
+        )
+        for item in bindings
+    )
 
 
 def _education_assessment_fingerprint(assessment: EducationAccessAssessment) -> str:
@@ -1191,6 +1281,7 @@ class EducationCriterionSummary(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     assessment: EducationAccessAssessment
+    candidate_set: AlignmentCandidateSet
     option_bindings: tuple[CandidateEducationOptionBinding, ...] = Field(min_length=1)
     completeness: tuple[CriterionFinding, ...] = Field(min_length=1)
     independent_travel_opportunity: tuple[
@@ -1206,13 +1297,18 @@ class EducationCriterionSummary(BaseModel):
         cls,
         assessment: EducationAccessAssessment,
         *,
-        option_bindings: tuple[CandidateEducationOptionBinding, ...],
+        candidate_set: AlignmentCandidateSet,
         scenario_evidence_snapshot_fingerprint: str,
     ) -> EducationCriterionSummary:
+        candidate_set = AlignmentCandidateSet.model_validate(
+            candidate_set.model_dump(mode="python")
+        )
+        option_bindings = _derive_education_option_bindings(assessment, candidate_set)
         fingerprint = _education_assessment_fingerprint(assessment)
         completeness, opportunities = _derive_education_findings(assessment, option_bindings)
         return cls(
             assessment=assessment,
+            candidate_set=candidate_set,
             option_bindings=option_bindings,
             completeness=completeness,
             independent_travel_opportunity=opportunities,
@@ -1224,11 +1320,19 @@ class EducationCriterionSummary(BaseModel):
     @model_validator(mode="after")
     def validate_sections(self) -> Self:
         assessment_fingerprint = _education_assessment_fingerprint(self.assessment)
+        candidate_set = AlignmentCandidateSet.model_validate(
+            self.candidate_set.model_dump(mode="python")
+        )
         bindings = tuple(sorted(self.option_bindings, key=lambda item: item.candidate_id))
         if len({item.candidate_id for item in bindings}) != len(bindings) or len(
             {item.option_id for item in bindings}
         ) != len(bindings):
             raise ValueError("education option bindings require unique candidates and options")
+        expected_bindings = _derive_education_option_bindings(self.assessment, candidate_set)
+        if bindings != expected_bindings:
+            raise ValueError(
+                "education option bindings are not exact candidate geometry/lineage outputs"
+            )
         expected_completeness, expected_opportunities = _derive_education_findings(
             self.assessment,
             bindings,
@@ -1244,6 +1348,7 @@ class EducationCriterionSummary(BaseModel):
         ):
             raise ValueError("education assessment binding is stale")
         object.__setattr__(self, "option_bindings", bindings)
+        object.__setattr__(self, "candidate_set", candidate_set)
         for findings in (self.completeness, self.independent_travel_opportunity):
             ids = tuple(item.candidate_id for item in findings)
             if ids != tuple(sorted(ids)) or len(set(ids)) != len(ids):
@@ -1341,6 +1446,8 @@ class CandidateCriteria(BaseModel):
             self.education.assessment_id != education_binding.assessment_id
             or self.education.assessment_content_sha256
             != education_binding.assessment_content_sha256
+            or self.education.assessment.source_snapshot.source_content_fingerprint
+            != education_binding.source_content_sha256
             or self.education.scenario_evidence_snapshot_fingerprint
             != self.evidence_snapshot.snapshot_fingerprint
         ):
@@ -1513,6 +1620,11 @@ class PreferredStrategicAlignment(BaseModel):
             criteria = CandidateCriteria.model_validate(self.criteria.model_dump(mode="python"))
         object.__setattr__(self, "candidate_set", candidate_set)
         object.__setattr__(self, "criteria", criteria)
+        if (
+            isinstance(criteria, CandidateCriteria)
+            and criteria.education.candidate_set != candidate_set
+        ):
+            raise ValueError("education assessment is not bound to this exact Candidate Set")
         if self.profile_fingerprint != candidate_set.profile_fingerprint:
             raise ValueError("selection profile does not match the exact Candidate Set")
         all_ids = {item.candidate_id for item in candidate_set.candidates}
@@ -4061,6 +4173,15 @@ class ScenarioDecisionRecord(BaseModel):
             raise ValueError("decision revision records must be unique")
         if len({item.attempt_fingerprint for item in attempts}) != len(attempts):
             raise ValueError("runtime decision attempts must be unique")
+        invocation_pairs = tuple(
+            (item.invocation_record.review_run_id, item.invocation_record.attempt_number)
+            for item in attempts
+            if item.invocation_record is not None
+        )
+        if len(set(invocation_pairs)) != len(invocation_pairs):
+            raise ValueError(
+                "runtime invocation records must have unique (review_run_id, attempt_number)"
+            )
         if set(request_ids) & {item.request.request_id for item in revisions}:
             raise ValueError("one request cannot appear in both accepted and revision records")
         known_challenges = {
@@ -4940,6 +5061,7 @@ class ReviewRun(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     run_id: str = ""
+    run_instance_id: str = Field(pattern=_ID.pattern)
     run_scope_fingerprint: str = Field(pattern=_SHA256.pattern)
     prior_orchestration_fingerprint: str = ""
     deadline_seconds: float = Field(default=30.0, gt=0, le=300)
@@ -5014,6 +5136,8 @@ class ScenarioReviewOrchestration(BaseModel):
             delta_revisions: tuple[DecisionRevisionRecord, ...] = ()
             delta_attempts: tuple[RuntimeDecisionAttempt, ...] = ()
         else:
+            if run.run_instance_id == prior.review_run.run_instance_id:
+                raise ValueError("fresh review replay requires a distinct run_instance_id")
             if (
                 run.prior_orchestration_fingerprint != prior.orchestration_fingerprint
                 or scenario.profile_fingerprint != prior.scenario.profile_fingerprint
@@ -5353,6 +5477,7 @@ def orchestrate_scenario_review(
     scenario: ScenarioCompilation,
     *,
     dependencies: tuple[ScenarioReviewDependency, ...],
+    run_instance_id: str,
     agent_config: AgentConfig | None = None,
     prior_orchestration: ScenarioReviewOrchestration | None = None,
 ) -> ScenarioReviewOrchestration:
@@ -5363,6 +5488,7 @@ def orchestrate_scenario_review(
         scenario=scenario,
         dependencies=dependencies,
         review_run=ReviewRun(
+            run_instance_id=run_instance_id,
             run_scope_fingerprint=scope,
             prior_orchestration_fingerprint=(
                 prior_orchestration.orchestration_fingerprint if prior_orchestration else ""
@@ -5533,6 +5659,47 @@ def build_reference_adoption_request(
     )
 
 
+def _validate_reference_source_url(source_url: str) -> None:
+    parsed = urlparse(source_url)
+    if parsed.scheme in {"http", "https"}:
+        try:
+            hostname = parsed.hostname
+            port = parsed.port
+        except ValueError as error:
+            raise ValueError(
+                "Reference decision source_url has an invalid HTTP authority"
+            ) from error
+        if (
+            not parsed.netloc
+            or hostname is None
+            or not _HOSTNAME.fullmatch(hostname)
+            or parsed.username is not None
+            or parsed.password is not None
+            or (port is not None and not 1 <= port <= 65535)
+        ):
+            raise ValueError(
+                "Reference decision source_url requires a valid credential-free HTTP hostname"
+            )
+        return
+    if parsed.scheme in {"committee", "reference"}:
+        path = parsed.path
+        if (
+            parsed.netloc
+            or parsed.params
+            or parsed.query
+            or parsed.fragment
+            or not path.startswith("/")
+            or not _ID.fullmatch(path[1:])
+        ):
+            raise ValueError(
+                "committee/reference source URLs must use scheme:/safe-identifier syntax"
+            )
+        return
+    raise ValueError(
+        "Reference decision source_url must be an http(s), committee, or reference URI"
+    )
+
+
 class GovernedReferenceSelectionDecision(BaseModel):
     """Attributable local human decision for one exact scenario packet."""
 
@@ -5566,13 +5733,7 @@ class GovernedReferenceSelectionDecision(BaseModel):
             or not set(evidence).issubset(request.governed_evidence_ids)
         ):
             raise ValueError("Reference decision must select the exact local adoption packet")
-        parsed = urlparse(self.source_url)
-        if parsed.scheme not in {"http", "https", "committee", "reference"} or not (
-            parsed.netloc or parsed.path
-        ):
-            raise ValueError(
-                "Reference decision source_url must be an http(s), committee, or reference URI"
-            )
+        _validate_reference_source_url(self.source_url)
         object.__setattr__(self, "adoption_request", request)
         object.__setattr__(self, "evidence_ids", evidence)
         expected = _fingerprint(self.model_dump(mode="json", exclude={"decision_fingerprint"}))
