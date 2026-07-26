@@ -764,6 +764,103 @@ def test_retained_core_snapshot_augmentation_keeps_core_bytes_unchanged(tmp_path
     assert (augmented / "elevation-evidence.geojson").exists()
 
 
+def _banes_style_generic_elevation_snapshot(tmp_path: Path) -> tuple[CouncilConfig, Path]:
+    """Build a local-elevation snapshot matching B&NES's generic EA source contract."""
+    config = copied_config(tmp_path)
+    terrain = tmp_path / "banes-elevation.geojson"
+    gpd.GeoDataFrame(
+        [{"sample": "banes-elevation", "height": 10, "geometry": Point(-2.5, 51.4)}],
+        geometry="geometry",
+        crs=4326,
+    ).to_file(terrain, driver="GeoJSON")
+    config.source.national_elevation = NationalElevationConfig(
+        provider="local-geojson",
+        path=terrain,
+        source_id="ea-lidar-composite-dtm-1m",
+        effective_date="2023-02-08",
+        licence="Open Government Licence v3.0",
+        attribution="© Environment Agency copyright and/or database right 2022.",
+        elevation_field="height",
+        identifier_field="sample",
+    )
+    return config, snapshot(config)
+
+
+def test_legacy_banes_generic_elevation_snapshot_loads_without_provenance_map(
+    tmp_path: Path,
+) -> None:
+    config, snapshot_path = _banes_style_generic_elevation_snapshot(tmp_path)
+    manifest_path = snapshot_path / "snapshot.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    elevation_bytes = (snapshot_path / ELEVATION_EVIDENCE_FILENAME).read_bytes()
+    manifest.pop("provenance_file_sha256")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    _validate_snapshot(snapshot_path)
+
+    assert (snapshot_path / ELEVATION_EVIDENCE_FILENAME).read_bytes() == elevation_bytes
+    assert list(load_snapshot(config)["elevation_evidence"]["source_id"]) == [
+        "ea-lidar-composite-dtm-1m"
+    ]
+
+
+def test_legacy_generic_elevation_snapshot_rejects_resealed_tampering(tmp_path: Path) -> None:
+    _config, snapshot_path = _banes_style_generic_elevation_snapshot(tmp_path)
+    manifest_path = snapshot_path / "snapshot.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.pop("provenance_file_sha256")
+    evidence_path = snapshot_path / ELEVATION_EVIDENCE_FILENAME
+    evidence_path.write_bytes(evidence_path.read_bytes() + b"\n")
+    manifest["file_sha256"][ELEVATION_EVIDENCE_FILENAME] = hashlib.sha256(
+        evidence_path.read_bytes()
+    ).hexdigest()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="elevation evidence provenance mismatch"):
+        _validate_snapshot(snapshot_path)
+
+
+def test_legacy_generic_elevation_snapshot_rejects_present_partial_provenance(
+    tmp_path: Path,
+) -> None:
+    _config, snapshot_path = _banes_style_generic_elevation_snapshot(tmp_path)
+    manifest_path = snapshot_path / "snapshot.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["provenance_file_sha256"] = {}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="elevation evidence provenance mismatch"):
+        _validate_snapshot(snapshot_path)
+
+
+def test_legacy_retained_core_elevation_snapshot_rejects_missing_provenance(tmp_path: Path) -> None:
+    _config, snapshot_path = _banes_style_generic_elevation_snapshot(tmp_path)
+    manifest_path = snapshot_path / "snapshot.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.pop("provenance_file_sha256")
+    manifest["retained_core_lineage"] = {
+        "source_snapshot_id": "historical-core",
+        "source_manifest_sha256": "a" * 64,
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="elevation evidence provenance mismatch"):
+        _validate_snapshot(snapshot_path)
+
+
+def test_legacy_ea_fixed_point_snapshot_rejects_missing_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _config, snapshot_path, _terrain_digest = _write_synthetic_ea_snapshot(tmp_path, monkeypatch)
+    manifest_path = snapshot_path / "snapshot.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.pop("provenance_file_sha256")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="elevation evidence provenance mismatch"):
+        _validate_snapshot(snapshot_path)
+
+
 @pytest.mark.parametrize(
     ("mutate", "message"),
     [

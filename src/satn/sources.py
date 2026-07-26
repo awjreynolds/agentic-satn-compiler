@@ -2277,7 +2277,7 @@ def _validate_snapshot(path: Path) -> None:
             f"invalid snapshot schema: expected {SCHEMA_VERSION}, "
             f"found {manifest.get('schema_version')}"
         )
-    _retained_core_lineage(manifest)
+    retained_core_lineage = _retained_core_lineage(manifest)
     files = _manifest_siblings(path, manifest.get("files"), label="snapshot file")
     file_hashes = _manifest_hashes(manifest, "file_sha256", label="snapshot file hashes")
     provenance_hashes = _manifest_hashes(
@@ -2300,9 +2300,34 @@ def _validate_snapshot(path: Path) -> None:
             or any(character not in "0123456789abcdef" for character in content_fingerprint)
         ):
             raise ValueError("invalid snapshot: elevation evidence has no content fingerprint")
+        legacy_generic_local_elevation = (
+            "provenance_file_sha256" not in manifest
+            and retained_core_lineage is None
+            and isinstance(elevation, dict)
+            and elevation.get("provider") == "local-geojson"
+            and not set(files).intersection(
+                ELEVATION_ARTIFACT_FILENAMES - {ELEVATION_EVIDENCE_FILENAME}
+            )
+            and not {
+                "acquisition_protocol",
+                "acquisition_output_sha256",
+                "authority_boundary_sha256",
+                "cross_boundary_transitions",
+                "ea_acquisition_manifest_sha256",
+                "evidence_row_sha256s",
+                "governed_input_fingerprint",
+                "pre_elevation_network_sha256",
+                "sample_ledger_sha256",
+                "survey_index_feature_sha256",
+                "survey_index_sha256",
+            }.intersection(elevation)
+        )
         if (
             file_hashes[ELEVATION_EVIDENCE_FILENAME] != content_fingerprint
-            or provenance_hashes.get(ELEVATION_EVIDENCE_FILENAME) != content_fingerprint
+            or (
+                provenance_hashes.get(ELEVATION_EVIDENCE_FILENAME) != content_fingerprint
+                and not legacy_generic_local_elevation
+            )
         ):
             raise ValueError("invalid snapshot: elevation evidence provenance mismatch")
     # All sibling paths have now passed containment, regular-file and duplicate
