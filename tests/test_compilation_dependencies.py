@@ -33,6 +33,7 @@ def test_manifest_is_explicit_complete_and_records_component_digests() -> None:
         "satn/backbone.py",
         "satn/sources.py",
         "satn/models.py",
+        "satn/education_access.py",
         "satn/ea_elevation.py",
         "satn/population_reach.py",
         "runtime-distribution/geopandas",
