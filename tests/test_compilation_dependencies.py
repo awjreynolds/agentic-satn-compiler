@@ -36,6 +36,7 @@ def test_manifest_is_explicit_complete_and_records_component_digests() -> None:
         "satn/education_access.py",
         "satn/ea_elevation.py",
         "satn/population_reach.py",
+        "satn/alignment_selection.py",
         "runtime-distribution/geopandas",
         "runtime-distribution/httpx",
         "runtime-distribution/networkx",
@@ -53,6 +54,15 @@ def test_manifest_is_explicit_complete_and_records_component_digests() -> None:
     )
     assert population_component["kind"] == "module"
     assert population_component["reason"] == "governed Population Reach evidence assessment"
+    alignment_component = next(
+        component
+        for component in manifest["components"]
+        if component["path"] == "satn/alignment_selection.py"
+    )
+    assert (
+        alignment_component["reason"]
+        == "deterministic Preferred Strategic Alignment selection contract"
+    )
     assert all(not path.startswith("src/") for path in components)
     runtime_components = {
         component["path"]: component for component in manifest["components"]

@@ -57,6 +57,10 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
         "module",
         "frozen Network Selection Profile validation and fingerprinting",
     ),
+    "satn/alignment_selection.py": (
+        "module",
+        "deterministic Preferred Strategic Alignment selection contract",
+    ),
     "satn/pipeline.py": ("module", "compilation orchestration and reuse binding"),
     "satn/population_reach.py": ("module", "governed Population Reach evidence assessment"),
     "satn/psa_evidence_loaders.py": (
