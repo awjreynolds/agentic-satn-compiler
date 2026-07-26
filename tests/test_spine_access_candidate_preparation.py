@@ -154,9 +154,9 @@ def connections() -> gpd.GeoDataFrame:
             "community_id": "community-1",
             "spine_id": "strategic-spine-1",
             "root_spine_id": "strategic-spine-1",
-            "parent_role": "strategic-spine",
-            "parent_target_id": "strategic-spine-1",
-            "parent_place_id": None,
+            "parent_role": "spine-access-connection",
+            "parent_target_id": "parent-access-connection-2",
+            "parent_place_id": "parent-community-2",
             "community_attachment_node": "community-node",
             "target_attachment_node": "target-node",
             "spine_attachment_node": "target-node",
@@ -660,8 +660,40 @@ def test_unknown_topology_never_beats_satisfied_material_candidate_by_precedence
     )
 
 
+def test_direct_spine_attachment_is_explicitly_out_of_scope_not_unresolved() -> None:
+    frame = connections()
+    mask = frame["obligation_kind"].eq("community")
+    frame.loc[mask, "parent_role"] = "strategic-spine"
+    frame.loc[mask, "parent_target_id"] = "strategic-spine-1"
+    frame.loc[mask, "parent_place_id"] = None
+
+    result = prepare_spine_access_candidates(
+        profile(),
+        road_graph=routing_graph(),
+        spine_access_connections=frame,
+        access_obligations=obligations(),
+        strategic_spines=spines(),
+        context=current_asset_context(),
+        official_road_classification=None,
+        source_config=empty_source_config(),
+        config_directory=Path.cwd(),
+    )
+
+    assert result.prepared_spine_access_connections == ()
+    assert len(result.connection_roster) == 1
+    roster = result.connection_roster[0]
+    assert roster.disposition == "out-of-scope-direct-strategic-spine"
+    assert roster.reason == "out-of-scope-direct-strategic-spine-attachment"
+    assert any(
+        issue.reason == "out-of-scope-direct-strategic-spine-attachment"
+        for issue in result.generation_issues
+    )
+    assert result.diagnostics["out_of_scope_connection_count"] == 1
+    assert result.diagnostics["unresolved_connection_count"] == 0
+
+
 @pytest.mark.parametrize("parent_place_id", [None, float("nan"), ""])
-def test_parent_endpoint_fallback_ignores_missing_pandas_values(
+def test_missing_parent_place_is_an_explicit_unresolved_roster_gap(
     parent_place_id: object,
 ) -> None:
     frame = connections()
@@ -681,21 +713,16 @@ def test_parent_endpoint_fallback_ignores_missing_pandas_values(
         source_config=empty_source_config(),
         config_directory=Path.cwd(),
     )
-    candidate_set = result.prepared_spine_access_connections[0].candidate_set
-
-    assert candidate_set.endpoints == ("community-1", "strategic-spine-1")
-    assert candidate_set.mandatory_network_place_ids == (
-        "community-1",
-        "strategic-spine-1",
-    )
-    assert all(
-        candidate.served_network_place_ids
-        == ("community-1", "strategic-spine-1")
-        for candidate in candidate_set.candidates
+    assert result.prepared_spine_access_connections == ()
+    assert result.connection_roster[0].disposition == "unresolved-gap"
+    assert result.connection_roster[0].reason == "missing-parent-network-place-endpoint"
+    assert any(
+        issue.reason == "missing-parent-network-place-endpoint"
+        for issue in result.generation_issues
     )
 
 
-def test_parent_endpoint_falls_back_to_attachment_without_missing_hash() -> None:
+def test_missing_parent_identifiers_never_promote_an_attachment_node() -> None:
     frame = connections()
     mask = frame["obligation_kind"].eq("community")
     frame.loc[mask, ["parent_place_id", "parent_target_id"]] = None
@@ -773,7 +800,7 @@ def test_unverified_b_road_is_a_complete_immutable_rejected_record() -> None:
     assert canonical["geometry_fingerprint"]
     assert canonical["source_class"] == "other-routable"
     assert canonical["topology_state"] == "satisfied"
-    assert canonical["endpoints"] == ["community-1", "strategic-spine-1"]
+    assert canonical["endpoints"] == ["community-1", "parent-community-2"]
     assert canonical["served_network_place_ids"] == canonical["endpoints"]
     assert canonical["served_access_obligation_ids"] == ["access-obligation-1"]
     assert canonical["served_strategic_destination_ids"] == []

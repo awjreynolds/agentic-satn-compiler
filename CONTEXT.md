@@ -85,7 +85,7 @@ A named endpoint admitted to the network as a Community, standalone Strategic De
 _Avoid_: arbitrary endpoint, map point, School Access Obligation
 
 **Community Connection**:
-The single selected access link between adjacent Communities when it extends access toward a Strategic Spine or forms part of a Cross-Spine Connector. It is not created merely because two Communities are locally adjacent.
+The single selected access link between distinct adjacent Communities when it extends access toward a Strategic Spine or forms part of a Cross-Spine Connector. A Spine Access Connection is evidence for a Community Connection only when its child and parent are both identified Network Places for those Communities.
 _Avoid_: arbitrary neighbour link, route alternative, duplicate link
 
 **Local Adjacency**:
@@ -201,7 +201,7 @@ The bounded connection from a rural Access Obligation to its nearest reachable S
 _Avoid_: arbitrary point-to-point route, complete journey, spine segment
 
 **Spine Access Candidate Preparation**:
-The bounded generation and pre-admission audit of finite routing alternatives for an already-compiled Spine Access Connection. It does not create an Alignment Candidate Set for a strategic Community Connection, select a Preferred Strategic Alignment or change the compiled network.
+The bounded generation, disposition roster and pre-admission audit of finite routing alternatives for already-compiled Spine Access Connections. Its evidence may support a Community Connection only for a child-to-parent Community link; a direct Strategic Spine attachment remains Spine Access, and an unresolved row remains an explicit preparation gap.
 _Avoid_: Preferred Strategic Alignment evidence preparation, Community Connection selection, route decision
 
 **Spine Access Branch**:

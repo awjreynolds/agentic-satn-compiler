@@ -107,6 +107,9 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     "satn/publisher.py": "publication, PDF and review-map serialization",
     "satn/runtime_governance.py": "current publication runtime-governance validation",
     "satn/runtime_governance_contract.py": "current publication governance contract",
+    "satn/scenario_compilation.py": (
+        "post-compile Scenario Compilation bridge without CompiledNetwork mutation"
+    ),
 }
 
 # These are the distributions whose executed runtime can change a compiled

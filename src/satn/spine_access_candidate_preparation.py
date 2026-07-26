@@ -5,8 +5,8 @@ alignment-selection domain without claiming that a selection has happened. It
 re-runs the existing deterministic route-option boundary for each compiled
 Spine Access connection, admits only bounded material alternatives, and loads
 configured population and education inputs. It does not select strategic
-Community Connections or produce Preferred Strategic Alignments; a later
-package must address that wider scope.
+Community Connections or produce Preferred Strategic Alignments; a separate
+scenario bridge may consume only provenance-proven chained Community rows.
 
 The local operator and their chosen input files are trusted. SHA-256 values in
 this module are reproducible content identities used for stale-input detection
@@ -93,6 +93,32 @@ class CandidatePreparationIssue:
 
 
 @dataclass(frozen=True)
+class PreparedConnectionRosterRecord:
+    """Exhaustive disposition for one compiler-emitted community connection."""
+
+    access_connection_id: str
+    obligation_kind: str | None
+    parent_role: str | None
+    community_id: str | None
+    place_id: str | None
+    parent_place_id: str | None
+    disposition: str
+    reason: str | None = None
+
+    def canonical(self) -> dict[str, object]:
+        return {
+            "access_connection_id": self.access_connection_id,
+            "obligation_kind": self.obligation_kind,
+            "parent_role": self.parent_role,
+            "community_id": self.community_id,
+            "place_id": self.place_id,
+            "parent_place_id": self.parent_place_id,
+            "disposition": self.disposition,
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True)
 class _GeneratedCandidate:
     """Internal candidate plus its immutable pre-admission audit record."""
 
@@ -173,6 +199,11 @@ class PreparedSpineAccessConnection:
     strategic_source_id: object
     strategic_evidence_id: object
     strategic_provenance: object
+    obligation_kind: str
+    parent_role: str
+    community_id: str
+    place_id: str
+    parent_place_id: str
     candidate_generation_rationales: tuple[dict[str, str], ...]
     candidate_records: tuple[PreparedCandidateRecord, ...]
 
@@ -184,6 +215,11 @@ class PreparedSpineAccessConnection:
             "strategic_source_id": _json_safe(self.strategic_source_id),
             "strategic_evidence_id": _json_safe(self.strategic_evidence_id),
             "strategic_provenance": _json_safe(self.strategic_provenance),
+            "obligation_kind": self.obligation_kind,
+            "parent_role": self.parent_role,
+            "community_id": self.community_id,
+            "place_id": self.place_id,
+            "parent_place_id": self.parent_place_id,
             "candidate_generation_rationales": [
                 dict(item) for item in self.candidate_generation_rationales
             ],
@@ -199,6 +235,7 @@ class SpineAccessCandidatePreparationResult:
     profile_fingerprint: str
     status: str
     prepared_spine_access_connections: tuple[PreparedSpineAccessConnection, ...]
+    connection_roster: tuple[PreparedConnectionRosterRecord, ...]
     generation_issues: tuple[CandidatePreparationIssue, ...]
     missing_inputs: tuple[str, ...]
     evidence_fingerprints: tuple[str, ...]
@@ -227,7 +264,26 @@ class SpineAccessCandidatePreparationResult:
             "prepared_spine_access_connections": [
                 item.canonical() for item in self.prepared_spine_access_connections
             ],
+            "connection_roster": [item.canonical() for item in self.connection_roster],
             "generation_issues": [item.canonical() for item in self.generation_issues],
+            "diagnostics": _json_safe(self.diagnostics),
+        }
+
+    def canonical_payload(self) -> dict[str, object]:
+        """Return every field bound by ``preparation_fingerprint``."""
+
+        return {
+            "contract": self.contract,
+            "profile_fingerprint": self.profile_fingerprint,
+            "status": self.status,
+            "prepared_spine_access_connections": [
+                item.canonical() for item in self.prepared_spine_access_connections
+            ],
+            "connection_roster": [item.canonical() for item in self.connection_roster],
+            "generation_issues": [item.canonical() for item in self.generation_issues],
+            "missing_inputs": list(self.missing_inputs),
+            "evidence_lineage": _json_safe(self.evidence_lineage),
+            "evidence_fingerprints": list(self.evidence_fingerprints),
             "diagnostics": _json_safe(self.diagnostics),
         }
 
@@ -253,14 +309,16 @@ def prepare_spine_access_candidates(
     """
 
     profile = NetworkSelectionProfile.model_validate(profile.model_dump(mode="json"))
-    prepared_spine_access_connections, issues = _prepare_spine_access_candidate_sets(
-        profile,
-        road_graph=road_graph,
-        spine_access_connections=spine_access_connections,
-        access_obligations=access_obligations,
-        strategic_spines=strategic_spines,
-        context=context,
-        official_road_classification=official_road_classification,
+    prepared_spine_access_connections, issues, connection_roster = (
+        _prepare_spine_access_candidate_sets(
+            profile,
+            road_graph=road_graph,
+            spine_access_connections=spine_access_connections,
+            access_obligations=access_obligations,
+            strategic_spines=strategic_spines,
+            context=context,
+            official_road_classification=official_road_classification,
+        )
     )
     missing: list[str] = []
     population_evidence: PopulationReachEvidenceLoad | None = None
@@ -324,11 +382,22 @@ def prepare_spine_access_candidates(
         ),
         "school_branch_candidates_generated": 0,
         "generation_issue_count": len(issues),
+        "expected_connection_roster_count": len(connection_roster),
+        "prepared_connection_count": sum(
+            item.disposition.startswith("prepared-") for item in connection_roster
+        ),
+        "out_of_scope_connection_count": sum(
+            item.disposition == "out-of-scope-direct-strategic-spine"
+            for item in connection_roster
+        ),
+        "unresolved_connection_count": sum(
+            item.disposition == "unresolved-gap" for item in connection_roster
+        ),
         "replay_directive": "recompile-whole-network-on-ledger-change",
         "selection_performed": False,
         "agent_runtime_invoked": False,
         "scope": "spine-access-candidate-preparation",
-        "strategic_community_connection_scope": "not-implemented",
+        "strategic_community_connection_scope": "chained-community-connections-only",
     }
     preparation_payload = {
         "contract": _PREPARATION_CONTRACT,
@@ -337,6 +406,7 @@ def prepare_spine_access_candidates(
         "prepared_spine_access_connections": [
             item.canonical() for item in prepared_spine_access_connections
         ],
+        "connection_roster": [item.canonical() for item in connection_roster],
         "generation_issues": [item.canonical() for item in issues],
         "missing_inputs": ordered_missing,
         "evidence_lineage": evidence_lineage,
@@ -348,6 +418,7 @@ def prepare_spine_access_candidates(
         profile_fingerprint=profile.fingerprint,
         status=status,
         prepared_spine_access_connections=prepared_spine_access_connections,
+        connection_roster=connection_roster,
         generation_issues=issues,
         missing_inputs=ordered_missing,
         evidence_fingerprints=evidence_fingerprints,
@@ -369,63 +440,158 @@ def _prepare_spine_access_candidate_sets(
 ) -> tuple[
     tuple[PreparedSpineAccessConnection, ...],
     tuple[CandidatePreparationIssue, ...],
+    tuple[PreparedConnectionRosterRecord, ...],
 ]:
     if spine_access_connections.empty:
-        return (), ()
+        return (), (), ()
     community = spine_access_connections[
         spine_access_connections["obligation_kind"].eq("community")
     ].copy()
     prepared: list[PreparedSpineAccessConnection] = []
     issues: list[CandidatePreparationIssue] = []
+    roster: list[PreparedConnectionRosterRecord] = []
     for _, connection in community.sort_values("access_connection_id").iterrows():
         access_connection_id = str(connection["access_connection_id"])
+        obligation_kind = _text(connection.get("obligation_kind"))
+        parent_role = _text(connection.get("parent_role"))
+        exact_community_id = _text(connection.get("community_id"))
+        exact_place_id = _text(connection.get("place_id"))
+        exact_parent_place_id = _text(connection.get("parent_place_id"))
+        if parent_role == "strategic-spine":
+            reason = "out-of-scope-direct-strategic-spine-attachment"
+            issues.append(
+                CandidatePreparationIssue(
+                    access_connection_id=access_connection_id,
+                    reason=reason,
+                    detail=(
+                        "A direct Community-to-Strategic-Spine attachment is Spine "
+                        "Access, not a strategic Community Connection, and cannot be "
+                        "promoted into Preferred Strategic Alignment selection"
+                    ),
+                )
+            )
+            roster.append(
+                PreparedConnectionRosterRecord(
+                    access_connection_id=access_connection_id,
+                    obligation_kind=obligation_kind,
+                    parent_role=parent_role,
+                    community_id=exact_community_id,
+                    place_id=exact_place_id,
+                    parent_place_id=exact_parent_place_id,
+                    disposition="out-of-scope-direct-strategic-spine",
+                    reason=reason,
+                )
+            )
+            continue
+        if parent_role != "spine-access-connection":
+            reason = "unsupported-parent-role"
+            issues.append(
+                CandidatePreparationIssue(
+                    access_connection_id=access_connection_id,
+                    reason=reason,
+                    detail=(
+                        "Strategic Community Connection promotion requires exact "
+                        "parent_role=spine-access-connection provenance"
+                    ),
+                )
+            )
+            roster.append(
+                PreparedConnectionRosterRecord(
+                    access_connection_id=access_connection_id,
+                    obligation_kind=obligation_kind,
+                    parent_role=parent_role,
+                    community_id=exact_community_id,
+                    place_id=exact_place_id,
+                    parent_place_id=exact_parent_place_id,
+                    disposition="unresolved-gap",
+                    reason=reason,
+                )
+            )
+            continue
         start = _first_present(connection.get("community_attachment_node"))
         end = _first_present(
             connection.get("target_attachment_node"),
             connection.get("spine_attachment_node"),
         )
-        community_place_id = _first_present(
-            connection.get("community_id"),
-            connection.get("place_id"),
-        )
-        parent_place_id = _first_present(
-            connection.get("parent_place_id"),
-            connection.get("parent_target_id"),
-        )
-        if community_place_id is None:
+        community_place_id = exact_community_id
+        parent_place_id = exact_parent_place_id
+        if (
+            community_place_id is None
+            or exact_place_id is None
+            or community_place_id != exact_place_id
+        ):
+            reason = "missing-or-conflicting-community-network-place"
             issues.append(
                 CandidatePreparationIssue(
                     access_connection_id=access_connection_id,
-                    reason="missing-community-network-place-endpoint",
+                    reason=reason,
                     detail=(
-                        "Spine Access preparation requires a governed community "
-                        "Network Place identifier"
+                        "Strategic Community Connection promotion requires matching, "
+                        "governed community_id and place_id values"
                     ),
+                )
+            )
+            roster.append(
+                PreparedConnectionRosterRecord(
+                    access_connection_id=access_connection_id,
+                    obligation_kind=obligation_kind,
+                    parent_role=parent_role,
+                    community_id=exact_community_id,
+                    place_id=exact_place_id,
+                    parent_place_id=exact_parent_place_id,
+                    disposition="unresolved-gap",
+                    reason=reason,
                 )
             )
             continue
         if parent_place_id is None:
+            reason = "missing-parent-network-place-endpoint"
             issues.append(
                 CandidatePreparationIssue(
                     access_connection_id=access_connection_id,
-                    reason="missing-parent-network-place-endpoint",
+                    reason=reason,
                     detail=(
-                        "parent_place_id or parent_target_id is required; routing "
-                        "attachment node identifiers are not Network Places, so this "
-                        "preparation gap retains unresolved topology"
+                        "Exact parent_place_id provenance is required; parent targets "
+                        "and routing attachment nodes are not governed Network Places, "
+                        "so this preparation gap retains unresolved topology"
                     ),
+                )
+            )
+            roster.append(
+                PreparedConnectionRosterRecord(
+                    access_connection_id=access_connection_id,
+                    obligation_kind=obligation_kind,
+                    parent_role=parent_role,
+                    community_id=exact_community_id,
+                    place_id=exact_place_id,
+                    parent_place_id=exact_parent_place_id,
+                    disposition="unresolved-gap",
+                    reason=reason,
                 )
             )
             continue
         if not start or not end:
+            reason = "missing-routing-endpoint"
             issues.append(
                 CandidatePreparationIssue(
                     access_connection_id=access_connection_id,
-                    reason="missing-routing-endpoint",
+                    reason=reason,
                     detail=(
                         "community and target routing attachment identifiers are "
                         "required to generate candidate geometry"
                     ),
+                )
+            )
+            roster.append(
+                PreparedConnectionRosterRecord(
+                    access_connection_id=access_connection_id,
+                    obligation_kind=obligation_kind,
+                    parent_role=parent_role,
+                    community_id=exact_community_id,
+                    place_id=exact_place_id,
+                    parent_place_id=exact_parent_place_id,
+                    disposition="unresolved-gap",
+                    reason=reason,
                 )
             )
             continue
@@ -440,11 +606,24 @@ def _prepare_spine_access_candidate_sets(
         assert endpoint_left is not None
         assert endpoint_right is not None
         if endpoint_left == endpoint_right:
+            reason = "invalid-connection-endpoints"
             issues.append(
                 CandidatePreparationIssue(
                     access_connection_id=access_connection_id,
-                    reason="invalid-connection-endpoints",
+                    reason=reason,
                     detail="community and network endpoints resolve to the same identifier",
+                )
+            )
+            roster.append(
+                PreparedConnectionRosterRecord(
+                    access_connection_id=access_connection_id,
+                    obligation_kind=obligation_kind,
+                    parent_role=parent_role,
+                    community_id=exact_community_id,
+                    place_id=exact_place_id,
+                    parent_place_id=exact_parent_place_id,
+                    disposition="unresolved-gap",
+                    reason=reason,
                 )
             )
             continue
@@ -610,6 +789,11 @@ def _prepare_spine_access_candidate_sets(
                 strategic_source_id=strategic_payload["source_id"],
                 strategic_evidence_id=strategic_payload["evidence_id"],
                 strategic_provenance=strategic_payload["provenance"],
+                obligation_kind=obligation_kind or "",
+                parent_role=parent_role,
+                community_id=community_place_id,
+                place_id=exact_place_id,
+                parent_place_id=parent_place_id,
                 candidate_generation_rationales=tuple(
                     {
                         "route_role": item.route_role,
@@ -631,6 +815,21 @@ def _prepare_spine_access_candidate_sets(
                 ),
             )
         )
+        roster.append(
+            PreparedConnectionRosterRecord(
+                access_connection_id=access_connection_id,
+                obligation_kind=obligation_kind,
+                parent_role=parent_role,
+                community_id=exact_community_id,
+                place_id=exact_place_id,
+                parent_place_id=exact_parent_place_id,
+                disposition=(
+                    "prepared-candidate-set"
+                    if candidate_set.admitted_candidates
+                    else "prepared-candidate-set-gap"
+                ),
+            )
+        )
     return (
         tuple(sorted(prepared, key=lambda item: item.access_connection_id)),
         tuple(
@@ -646,6 +845,7 @@ def _prepare_spine_access_candidate_sets(
                 ),
             )
         ),
+        tuple(sorted(roster, key=lambda item: item.access_connection_id)),
     )
 
 

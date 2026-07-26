@@ -48,13 +48,29 @@ an unconditional winner.
 Different declared profiles may generate comparable Scenario Compilations. The
 compiler does not silently choose which scenario becomes authoritative.
 
-The initial compiler integration is deliberately narrower than this complete
-decision. It performs **Spine Access Candidate Preparation** for already-compiled
-Spine Access Connections: it generates finite routing alternatives, rejects
-topologically invalid inputs before admission and publishes complete preparation
-records. It does not yet generate Alignment Candidate Sets for strategic
-Community Connections, run Preferred Strategic Alignment selection or alter the
-compiled network. That strategic-connection scope requires a later package.
+The current compiler integration is deliberately narrower than this complete
+decision. **Spine Access Candidate Preparation** generates finite routing
+alternatives, rejects topologically invalid inputs before admission and retains
+an exhaustive disposition roster. **Scenario Compilation** may promote only a
+Community-kind row whose declared parent is another Spine Access Connection and
+whose distinct child and parent Community identifiers exactly match every
+candidate's endpoints and served Network Places. A direct Strategic Spine
+attachment remains explicitly out of scope; an unresolved row, a candidate set
+with no options or one whose options were all rejected cannot disappear or
+become publishable by default.
+
+Criterion lineage is fail-closed. Population source identity must equal the
+prepared population source; an option-specific education assessment must be a
+self-validating deterministic extension of the exact prepared register and
+destination source snapshot; network evidence is bound to the complete canonical
+prepared connection; and topography is bound to the candidate-set identity,
+candidate geometry and declared gradient. These content hashes identify and
+replay inputs only: they are not signatures, credentials, certificates or trust
+roots, and the open-source compiler requires no repository secret.
+
+This integration emits an immutable, reviewable Scenario Compilation and
+replayable review requests. It does not create a Reference SATN, mutate the
+compiled network, invoke an agent provider or exercise publication authority.
 
 The following remain separate downstream LCWIP capabilities:
 
@@ -93,6 +109,8 @@ evidence, weights or policy.
   profile fingerprint and decision provenance.
 - Changed profiles or accepted decisions create a fresh Scenario Compilation;
   they do not mutate an earlier result.
+- Candidate-generation gaps remain non-publishable and review-required until an
+  explicit governed gap decision is recorded.
 - Version 1 uses whole-network replay after a changed decision ledger. Targeted
   spatial regeneration is deferred until dependency-closure equivalence can be
   proven.
