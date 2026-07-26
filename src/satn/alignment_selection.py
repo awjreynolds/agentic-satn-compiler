@@ -78,151 +78,11 @@ def _stable_id(prefix: str, value: object) -> str:
     return f"{prefix}-{_fingerprint(value)[:20]}"
 
 
-_ED25519_FIELD = 2**255 - 19
-_ED25519_ORDER = 2**252 + 27742317777372353535851937790883648493
-_ED25519_D = (-121665 * pow(121666, _ED25519_FIELD - 2, _ED25519_FIELD)) % (_ED25519_FIELD)
-_ED25519_I = pow(2, (_ED25519_FIELD - 1) // 4, _ED25519_FIELD)
-_ED25519_BASE_Y = (4 * pow(5, _ED25519_FIELD - 2, _ED25519_FIELD)) % (_ED25519_FIELD)
+"""The local compiler deliberately has no signing keys or remote trust roots.
 
-
-def _ed25519_xrecover(y: int) -> int:
-    xx = (y * y - 1) * pow(
-        _ED25519_D * y * y + 1,
-        _ED25519_FIELD - 2,
-        _ED25519_FIELD,
-    )
-    x = pow(xx, (_ED25519_FIELD + 3) // 8, _ED25519_FIELD)
-    if (x * x - xx) % _ED25519_FIELD:
-        x = (x * _ED25519_I) % _ED25519_FIELD
-    return x if x % 2 == 0 else _ED25519_FIELD - x
-
-
-_ED25519_BASE_X = _ed25519_xrecover(_ED25519_BASE_Y)
-_ED25519_BASE = (
-    _ED25519_BASE_X,
-    _ED25519_BASE_Y,
-    1,
-    (_ED25519_BASE_X * _ED25519_BASE_Y) % _ED25519_FIELD,
-)
-_ED25519_IDENTITY = (0, 1, 1, 0)
-
-
-def _ed25519_add(
-    left: tuple[int, int, int, int],
-    right: tuple[int, int, int, int],
-) -> tuple[int, int, int, int]:
-    x1, y1, z1, t1 = left
-    x2, y2, z2, t2 = right
-    a = ((y1 - x1) * (y2 - x2)) % _ED25519_FIELD
-    b = ((y1 + x1) * (y2 + x2)) % _ED25519_FIELD
-    c = (2 * _ED25519_D * t1 * t2) % _ED25519_FIELD
-    d = (2 * z1 * z2) % _ED25519_FIELD
-    e = b - a
-    f = d - c
-    g = d + c
-    h = b + a
-    return (
-        (e * f) % _ED25519_FIELD,
-        (g * h) % _ED25519_FIELD,
-        (f * g) % _ED25519_FIELD,
-        (e * h) % _ED25519_FIELD,
-    )
-
-
-def _ed25519_scalarmult(
-    point: tuple[int, int, int, int],
-    scalar: int,
-) -> tuple[int, int, int, int]:
-    result = _ED25519_IDENTITY
-    addend = point
-    while scalar:
-        if scalar & 1:
-            result = _ed25519_add(result, addend)
-        addend = _ed25519_add(addend, addend)
-        scalar >>= 1
-    return result
-
-
-def _ed25519_encode(point: tuple[int, int, int, int]) -> bytes:
-    x, y, z, _ = point
-    inverse = pow(z, _ED25519_FIELD - 2, _ED25519_FIELD)
-    affine_x = (x * inverse) % _ED25519_FIELD
-    affine_y = (y * inverse) % _ED25519_FIELD
-    encoded = affine_y | ((affine_x & 1) << 255)
-    return encoded.to_bytes(32, "little")
-
-
-def _ed25519_decode(encoded: bytes) -> tuple[int, int, int, int]:
-    if len(encoded) != 32:
-        raise ValueError("Ed25519 point must contain 32 bytes")
-    value = int.from_bytes(encoded, "little")
-    y = value & ((1 << 255) - 1)
-    if y >= _ED25519_FIELD:
-        raise ValueError("Ed25519 point is non-canonical")
-    x = _ed25519_xrecover(y)
-    if (x & 1) != (value >> 255):
-        x = _ED25519_FIELD - x
-    if (-x * x + y * y - 1 - _ED25519_D * x * x * y * y) % _ED25519_FIELD:
-        raise ValueError("Ed25519 point is not on the curve")
-    return x, y, 1, (x * y) % _ED25519_FIELD
-
-
-def _verify_ed25519_signature(
-    *,
-    public_key_hex: str,
-    message: bytes,
-    signature_hex: str,
-) -> None:
-    try:
-        public_key = bytes.fromhex(public_key_hex)
-        signature = bytes.fromhex(signature_hex)
-        if len(public_key) != 32 or len(signature) != 64:
-            raise ValueError
-        encoded_r = signature[:32]
-        scalar_s = int.from_bytes(signature[32:], "little")
-        if scalar_s >= _ED25519_ORDER:
-            raise ValueError
-        authority_point = _ed25519_decode(public_key)
-        r_point = _ed25519_decode(encoded_r)
-        encoded_identity = _ed25519_encode(_ED25519_IDENTITY)
-        if (
-            _ed25519_encode(authority_point) == encoded_identity
-            or _ed25519_encode(r_point) == encoded_identity
-            or _ed25519_encode(_ed25519_scalarmult(authority_point, _ED25519_ORDER))
-            != encoded_identity
-            or _ed25519_encode(_ed25519_scalarmult(r_point, _ED25519_ORDER)) != encoded_identity
-        ):
-            raise ValueError
-        challenge = (
-            int.from_bytes(
-                hashlib.sha512(encoded_r + public_key + message).digest(),
-                "little",
-            )
-            % _ED25519_ORDER
-        )
-        expected = _ed25519_add(
-            r_point,
-            _ed25519_scalarmult(authority_point, challenge),
-        )
-        actual = _ed25519_scalarmult(_ED25519_BASE, scalar_s)
-        if _ed25519_encode(actual) != _ed25519_encode(expected):
-            raise ValueError
-    except (TypeError, ValueError) as error:
-        raise ValueError("external Ed25519 signature verification failed") from error
-
-
-_CONFIGURED_PUBLIC_KEYS = {
-    "primary-agent-key-v1": ("67e7c59b1e926d90ad1c01063f18654fb907d69ea3f3f1fd681dd125fb2a3aee"),
-    "critic-agent-key-v1": ("36ea2d0c7dd423d3c2e810f5560b9abc6e433540d0272a95cd2ebd1da2f7326e"),
-    "reference-adoption-key-v1": (
-        "90d84cd53f508aac71fdd8804e294873fbbf62b1dddedee00155866469ba3656"
-    ),
-    "material-waiver-key-v1": ("793e1a6e38705743455885095aa3af210cb9ab14d76a88e10956cdde9302aa51"),
-    "review-session-store-key-v1": (
-        "b7126a83eaa744127f34da4f32849da98a39df4e84924e04b47baebf540949ee"
-    ),
-    "runtime-provider-key-v1": ("1293230f725b9331041aba8eefce1ff58224545ed925eb2afd18bdb5f8d0363b"),
-}
+Fingerprints detect stale or structurally altered records. They are not claims
+of identity: the local operator controls the workspace, inputs and harness.
+"""
 
 
 def _finite(value: float, field: str) -> float:
@@ -2647,15 +2507,13 @@ def _alignment_decision_request_payload(
         ),
         "profile_fingerprint": selection.profile_fingerprint,
         "scenario_context_fingerprint": scenario_context_fingerprint,
-        "agent_authority_registry": _compile_agent_authority_registry(
+        "agent_review_contracts": _compile_agent_review_contracts(
             profile_fingerprint=selection.profile_fingerprint,
             evidence_snapshot_fingerprint=(
                 selection.criteria.evidence_snapshot.snapshot_fingerprint
             ),
             scenario_context_fingerprint=scenario_context_fingerprint,
         ).model_dump(mode="json"),
-        "primary_authority_id": "satn-primary-alignment-agent",
-        "critic_authority_id": "satn-independent-alignment-critic",
         "prior_challenge_fingerprints": list(prior_challenges),
         "immutable_evidence_ids": list(evidence_ids),
         "options": [item.model_dump(mode="json") for item in ordered_options],
@@ -2829,9 +2687,7 @@ class AlignmentDecisionRequest(BaseModel):
     evidence_snapshot_fingerprint: str = Field(pattern=_SHA256.pattern)
     profile_fingerprint: str = Field(pattern=_SHA256.pattern)
     scenario_context_fingerprint: str = Field(pattern=_SHA256.pattern)
-    agent_authority_registry: AgentAuthorityRegistry
-    primary_authority_id: Literal["satn-primary-alignment-agent"]
-    critic_authority_id: Literal["satn-independent-alignment-critic"]
+    agent_review_contracts: AgentReviewContracts
     prior_challenge_fingerprints: tuple[str, ...] = ()
     immutable_evidence_ids: tuple[str, ...] = Field(min_length=1)
     options: tuple[AlignmentDecisionOption, ...] = Field(min_length=1, max_length=12)
@@ -2964,40 +2820,26 @@ class AgentAuthorityRole(StrEnum):
     INDEPENDENT_ALIGNMENT_CRITIC = "independent-alignment-critic"
 
 
-class AgentIdentityAuthority(BaseModel):
-    """Immutable authority binding an agent role and prompt to one runtime identity."""
+class AgentInvocation(BaseModel):
+    """A locally recorded agent invocation, not a proof of external identity."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    authority_id: str = Field(pattern=_ID.pattern)
-    authority_version: str = Field(min_length=1)
-    allowed_role: AgentAuthorityRole
-    runtime_identity_id: str = Field(pattern=_ID.pattern)
-    role_contract_id: str = Field(pattern=_ID.pattern)
-    role_contract_content_sha256: str = Field(pattern=_SHA256.pattern)
+    invocation_id: str = Field(pattern=_ID.pattern)
+    role: AgentAuthorityRole
     role_contract_fingerprint: str = Field(pattern=_SHA256.pattern)
-    prompt_contract_id: str = Field(pattern=_ID.pattern)
-    prompt_contract_content_sha256: str = Field(pattern=_SHA256.pattern)
     prompt_contract_fingerprint: str = Field(pattern=_SHA256.pattern)
-    verification_key_id: str = Field(pattern=_ID.pattern)
-    ed25519_public_key: str = Field(pattern=r"^[0-9a-f]{64}$")
-    authority_content_sha256: str = ""
-    authority_fingerprint: str = ""
+    request_fingerprint: str = Field(pattern=_SHA256.pattern)
+    recorded_on: date
+    invocation_fingerprint: str = ""
 
     @model_validator(mode="after")
-    def bind_authority(self) -> Self:
-        payload = self.model_dump(
-            mode="json",
-            exclude={"authority_content_sha256", "authority_fingerprint"},
-        )
-        content_sha256 = _fingerprint(payload)
-        if self.authority_content_sha256 and self.authority_content_sha256 != content_sha256:
-            raise ValueError("agent authority content SHA-256 is stale")
-        object.__setattr__(self, "authority_content_sha256", content_sha256)
-        fingerprint = _fingerprint({**payload, "authority_content_sha256": content_sha256})
-        if self.authority_fingerprint and self.authority_fingerprint != fingerprint:
-            raise ValueError("agent authority fingerprint is stale")
-        object.__setattr__(self, "authority_fingerprint", fingerprint)
+    def bind_invocation(self) -> Self:
+        payload = self.model_dump(mode="json", exclude={"invocation_fingerprint"})
+        fingerprint = _fingerprint(payload)
+        if self.invocation_fingerprint and self.invocation_fingerprint != fingerprint:
+            raise ValueError("agent invocation fingerprint is stale")
+        object.__setattr__(self, "invocation_fingerprint", fingerprint)
         return self
 
 
@@ -3014,12 +2856,12 @@ def _configured_agent_contracts(
                     "Record material and mandatory challenges without selecting a route.",
                 ),
                 evidence_packet_rules=(
-                    "Use only request evidence and the exact signed primary response.",
-                    "Reject foreign, stale, incomplete or authority-unverified evidence.",
+                    "Use only request evidence and the exact recorded primary response.",
+                    "Reject foreign, stale or incomplete evidence.",
                 ),
                 allowed_tools=(
                     "read-governed-evidence",
-                    "verify-primary-response-signature",
+                    "verify-primary-response-fingerprint",
                     "submit-alignment-critique-record",
                 ),
                 output_schema_fields=(
@@ -3032,7 +2874,7 @@ def _configured_agent_contracts(
                     "finding",
                     "resolved",
                     "evidence_ids",
-                    "critic_assertion",
+                    "invocation",
                     "decision_revision_record.challenge_findings",
                 ),
                 stopping_policy=(
@@ -3046,7 +2888,7 @@ def _configured_agent_contracts(
             PromptContract(
                 contract_id="satn-independent-alignment-critic-prompt.v3",
                 canonical_instructions=(
-                    "Audit the exact request and signed primary response independently.",
+                    "Audit the exact request and recorded primary response independently.",
                     "Return one schema-valid AlignmentCritiqueRecord and typed challenges.",
                 ),
                 evidence_packet_rules=(
@@ -3054,7 +2896,7 @@ def _configured_agent_contracts(
                 ),
                 allowed_tools=(
                     "read-only-evidence-inspection",
-                    "verify-external-ed25519-receipt",
+                    "verify-local-invocation-record",
                     "schema-bound-critique",
                 ),
                 output_schema_fields=(
@@ -3067,7 +2909,7 @@ def _configured_agent_contracts(
                     "finding",
                     "resolved",
                     "evidence_ids",
-                    "critic_assertion",
+                    "invocation",
                     "decision_revision_record.challenge_findings",
                 ),
                 stopping_policy=(
@@ -3120,7 +2962,7 @@ def _configured_agent_contracts(
         output_schema_fields=(
             "option_id",
             "evidence_ids",
-            "authenticated_principal_receipt",
+            "agent_invocation",
         ),
         stopping_policy=(
             "Stop when evidence is insufficient and choose the compiler-authored escalation.",
@@ -3132,41 +2974,13 @@ def _configured_agent_contracts(
     return role_contract, prompt_contract
 
 
-def _configured_agent_authority(
-    *,
-    authority_id: str,
-    role: AgentAuthorityRole,
-    runtime_identity_id: str,
-) -> AgentIdentityAuthority:
-    role_contract, prompt_contract = _configured_agent_contracts(role)
-    key_id = (
-        "primary-agent-key-v1"
-        if role == AgentAuthorityRole.PRIMARY_ALIGNMENT_DECISION
-        else "critic-agent-key-v1"
-    )
-    return AgentIdentityAuthority(
-        authority_id=authority_id,
-        authority_version="1",
-        allowed_role=role,
-        runtime_identity_id=runtime_identity_id,
-        role_contract_id=role_contract.contract_id,
-        role_contract_content_sha256=role_contract.content_sha256,
-        role_contract_fingerprint=role_contract.contract_fingerprint,
-        prompt_contract_id=prompt_contract.contract_id,
-        prompt_contract_content_sha256=prompt_contract.content_sha256,
-        prompt_contract_fingerprint=prompt_contract.contract_fingerprint,
-        verification_key_id=key_id,
-        ed25519_public_key=_CONFIGURED_PUBLIC_KEYS[key_id],
-    )
-
-
-class AgentAuthorityRegistry(BaseModel):
-    """Compiler-owned configured authorities for one exact scenario context."""
+class AgentReviewContracts(BaseModel):
+    """Compiler-authored role and prompt contracts for one review request."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    registry_config_id: Literal["satn-agent-authority-registry/v1"] = (
-        "satn-agent-authority-registry/v1"
+    contract_set_id: Literal["satn-agent-review-contracts/v1"] = (
+        "satn-agent-review-contracts/v1"
     )
     profile_fingerprint: str = Field(pattern=_SHA256.pattern)
     evidence_snapshot_fingerprint: str = Field(pattern=_SHA256.pattern)
@@ -3175,32 +2989,16 @@ class AgentAuthorityRegistry(BaseModel):
     primary_prompt_contract: PromptContract
     critic_role_contract: AgentRoleContract
     critic_prompt_contract: PromptContract
-    primary_authority: AgentIdentityAuthority
-    critic_authority: AgentIdentityAuthority
-    registry_fingerprint: str = ""
+    contracts_fingerprint: str = ""
 
     @model_validator(mode="after")
-    def bind_registry(self) -> Self:
-        expected_primary = _configured_agent_authority(
-            authority_id="satn-primary-alignment-agent",
-            role=AgentAuthorityRole.PRIMARY_ALIGNMENT_DECISION,
-            runtime_identity_id="configured-primary-runtime-principal",
-        )
-        expected_critic = _configured_agent_authority(
-            authority_id="satn-independent-alignment-critic",
-            role=AgentAuthorityRole.INDEPENDENT_ALIGNMENT_CRITIC,
-            runtime_identity_id="configured-critic-runtime-principal",
-        )
+    def bind_contracts(self) -> Self:
         expected_primary_role, expected_primary_prompt = _configured_agent_contracts(
             AgentAuthorityRole.PRIMARY_ALIGNMENT_DECISION
         )
         expected_critic_role, expected_critic_prompt = _configured_agent_contracts(
             AgentAuthorityRole.INDEPENDENT_ALIGNMENT_CRITIC
         )
-        if self.primary_authority != expected_primary or self.critic_authority != expected_critic:
-            raise ValueError(
-                "agent authorities must come from the compiler-owned configured registry"
-            )
         if (
             self.primary_role_contract != expected_primary_role
             or self.primary_prompt_contract != expected_primary_prompt
@@ -3210,27 +3008,27 @@ class AgentAuthorityRegistry(BaseModel):
             raise ValueError(
                 "agent contracts must contain exact compiler-configured substantive content"
             )
-        payload = self.model_dump(mode="json", exclude={"registry_fingerprint"})
+        payload = self.model_dump(mode="json", exclude={"contracts_fingerprint"})
         fingerprint = _fingerprint(payload)
-        if self.registry_fingerprint and self.registry_fingerprint != fingerprint:
-            raise ValueError("agent authority registry fingerprint is stale")
-        object.__setattr__(self, "registry_fingerprint", fingerprint)
+        if self.contracts_fingerprint and self.contracts_fingerprint != fingerprint:
+            raise ValueError("agent review contracts fingerprint is stale")
+        object.__setattr__(self, "contracts_fingerprint", fingerprint)
         return self
 
 
-def _compile_agent_authority_registry(
+def _compile_agent_review_contracts(
     *,
     profile_fingerprint: str,
     evidence_snapshot_fingerprint: str,
     scenario_context_fingerprint: str,
-) -> AgentAuthorityRegistry:
+) -> AgentReviewContracts:
     primary_role, primary_prompt = _configured_agent_contracts(
         AgentAuthorityRole.PRIMARY_ALIGNMENT_DECISION
     )
     critic_role, critic_prompt = _configured_agent_contracts(
         AgentAuthorityRole.INDEPENDENT_ALIGNMENT_CRITIC
     )
-    return AgentAuthorityRegistry(
+    return AgentReviewContracts(
         profile_fingerprint=profile_fingerprint,
         evidence_snapshot_fingerprint=evidence_snapshot_fingerprint,
         scenario_context_fingerprint=scenario_context_fingerprint,
@@ -3238,74 +3036,7 @@ def _compile_agent_authority_registry(
         primary_prompt_contract=primary_prompt,
         critic_role_contract=critic_role,
         critic_prompt_contract=critic_prompt,
-        primary_authority=_configured_agent_authority(
-            authority_id="satn-primary-alignment-agent",
-            role=AgentAuthorityRole.PRIMARY_ALIGNMENT_DECISION,
-            runtime_identity_id="configured-primary-runtime-principal",
-        ),
-        critic_authority=_configured_agent_authority(
-            authority_id="satn-independent-alignment-critic",
-            role=AgentAuthorityRole.INDEPENDENT_ALIGNMENT_CRITIC,
-            runtime_identity_id="configured-critic-runtime-principal",
-        ),
     )
-
-
-class AuthenticatedPrincipalAssertion(BaseModel):
-    """Externally signed principal receipt verified only with public material."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    authority_id: str = Field(pattern=_ID.pattern)
-    runtime_principal_id: str = Field(pattern=_ID.pattern)
-    authority_fingerprint: str = Field(pattern=_SHA256.pattern)
-    registry_fingerprint: str = Field(pattern=_SHA256.pattern)
-    verification_key_id: str = Field(pattern=_ID.pattern)
-    ed25519_public_key: str = Field(pattern=r"^[0-9a-f]{64}$")
-    external_receipt_id: str = Field(pattern=_ID.pattern)
-    issued_on: date
-    signed_payload_fingerprint: str = Field(pattern=_SHA256.pattern)
-    external_signature: str = Field(pattern=r"^[0-9a-f]{128}$")
-    verifier_receipt_fingerprint: str = ""
-
-    @model_validator(mode="after")
-    def bind_assertion(self) -> Self:
-        payload = self.model_dump(
-            mode="json",
-            exclude={
-                "external_signature",
-                "verifier_receipt_fingerprint",
-            },
-        )
-        _verify_ed25519_signature(
-            public_key_hex=self.ed25519_public_key,
-            message=_canonical_json(payload).encode(),
-            signature_hex=self.external_signature,
-        )
-        receipt = _fingerprint({**payload, "external_signature": self.external_signature})
-        if self.verifier_receipt_fingerprint and self.verifier_receipt_fingerprint != receipt:
-            raise ValueError("external verifier receipt fingerprint is stale")
-        object.__setattr__(self, "verifier_receipt_fingerprint", receipt)
-        return self
-
-
-def _actor_signed_payload(
-    request_fingerprint: str,
-    option_id: str,
-) -> str:
-    return _fingerprint(
-        {
-            "kind": "alignment-decision-response",
-            "request_fingerprint": request_fingerprint,
-            "option_id": option_id,
-        }
-    )
-
-
-def _critic_signed_payload(
-    critique_payload: dict[str, object],
-) -> str:
-    return _fingerprint({"kind": "alignment-decision-critique", **critique_payload})
 
 
 AlignmentDecisionRequest.model_rebuild()
@@ -3317,13 +3048,13 @@ class AlignmentDecisionResponse(BaseModel):
     request_id: str = Field(pattern=_ID.pattern)
     request_fingerprint: str = Field(pattern=_SHA256.pattern)
     option_id: str = Field(pattern=_ID.pattern)
-    actor_assertion: AuthenticatedPrincipalAssertion
+    invocation: AgentInvocation
     prompt_fingerprint: str = ""
     response_fingerprint: str = ""
 
     @property
     def actor_id(self) -> str:
-        return self.actor_assertion.authority_id
+        return self.invocation.invocation_id
 
     @property
     def actor_role(self) -> str:
@@ -3331,26 +3062,21 @@ class AlignmentDecisionResponse(BaseModel):
 
     @property
     def actor_identity_fingerprint(self) -> str:
-        return self.actor_assertion.authority_fingerprint
+        return self.invocation.invocation_fingerprint
 
     @model_validator(mode="after")
     def bind_response(self) -> Self:
-        assertion = AuthenticatedPrincipalAssertion.model_validate(
-            self.actor_assertion.model_dump(mode="python")
-        )
-        if assertion.signed_payload_fingerprint != _actor_signed_payload(
-            self.request_fingerprint,
-            self.option_id,
-        ):
-            raise ValueError("primary signature is not bound to the exact response payload")
-        object.__setattr__(self, "actor_assertion", assertion)
+        invocation = AgentInvocation.model_validate(self.invocation.model_dump(mode="python"))
+        if invocation.role != AgentAuthorityRole.PRIMARY_ALIGNMENT_DECISION:
+            raise ValueError("alignment response must record a primary agent invocation")
+        if invocation.request_fingerprint != self.request_fingerprint:
+            raise ValueError("primary invocation is not bound to the exact response request")
+        object.__setattr__(self, "invocation", invocation)
         prompt_fingerprint = _fingerprint(
             {
                 "request_fingerprint": self.request_fingerprint,
                 "option_id": self.option_id,
-                "authority_fingerprint": assertion.authority_fingerprint,
-                "registry_fingerprint": assertion.registry_fingerprint,
-                "verifier_receipt_fingerprint": (assertion.verifier_receipt_fingerprint),
+                "invocation_fingerprint": invocation.invocation_fingerprint,
             }
         )
         if self.prompt_fingerprint and self.prompt_fingerprint != prompt_fingerprint:
@@ -3384,13 +3110,13 @@ class AlignmentCritiqueRecord(BaseModel):
     finding: CritiqueFinding
     resolved: bool = Field(strict=True)
     evidence_ids: tuple[str, ...] = Field(min_length=1)
-    critic_assertion: AuthenticatedPrincipalAssertion
+    invocation: AgentInvocation
     prompt_fingerprint: str = ""
     critique_fingerprint: str = ""
 
     @property
     def critic_id(self) -> str:
-        return self.critic_assertion.authority_id
+        return self.invocation.invocation_id
 
     @property
     def critic_role(self) -> str:
@@ -3398,7 +3124,7 @@ class AlignmentCritiqueRecord(BaseModel):
 
     @property
     def critic_fingerprint(self) -> str:
-        return self.critic_assertion.authority_fingerprint
+        return self.invocation.invocation_fingerprint
 
     @model_validator(mode="after")
     def bind_critique(self) -> Self:
@@ -3406,27 +3132,17 @@ class AlignmentCritiqueRecord(BaseModel):
             raise ValueError("only an accepted critique is resolved")
         evidence_ids = _canonical_ids(self.evidence_ids, "evidence_ids")
         object.__setattr__(self, "evidence_ids", evidence_ids)
-        assertion = AuthenticatedPrincipalAssertion.model_validate(
-            self.critic_assertion.model_dump(mode="python")
-        )
-        signed_payload = self.model_dump(
-            mode="json",
-            exclude={
-                "critic_assertion",
-                "prompt_fingerprint",
-                "critique_fingerprint",
-            },
-        )
-        if assertion.signed_payload_fingerprint != _critic_signed_payload(signed_payload):
-            raise ValueError("critic signature is not bound to the exact critique payload")
-        object.__setattr__(self, "critic_assertion", assertion)
+        invocation = AgentInvocation.model_validate(self.invocation.model_dump(mode="python"))
+        if invocation.role != AgentAuthorityRole.INDEPENDENT_ALIGNMENT_CRITIC:
+            raise ValueError("critique must record an independent critic invocation")
+        if invocation.request_fingerprint != self.request_fingerprint:
+            raise ValueError("critic invocation is not bound to the exact critique request")
+        object.__setattr__(self, "invocation", invocation)
         prompt_fingerprint = _fingerprint(
             {
                 "request_fingerprint": self.request_fingerprint,
                 "response_fingerprint": self.response_fingerprint,
-                "authority_fingerprint": assertion.authority_fingerprint,
-                "registry_fingerprint": assertion.registry_fingerprint,
-                "verifier_receipt_fingerprint": (assertion.verifier_receipt_fingerprint),
+                "invocation_fingerprint": invocation.invocation_fingerprint,
             }
         )
         if self.prompt_fingerprint and self.prompt_fingerprint != prompt_fingerprint:
@@ -3504,37 +3220,21 @@ class AcceptedDecisionEnvelope(BaseModel):
             or not critique.resolved
         ):
             raise ValueError("accepted alignment decision lacks an exact resolved critique")
-        registry = request.agent_authority_registry
-        primary = registry.primary_authority
-        critic_authority = registry.critic_authority
         if (
-            response.actor_assertion.authority_id != request.primary_authority_id
-            or response.actor_assertion.runtime_principal_id != primary.runtime_identity_id
-            or response.actor_assertion.authority_fingerprint != primary.authority_fingerprint
-            or response.actor_assertion.registry_fingerprint != registry.registry_fingerprint
-            or response.actor_assertion.verification_key_id != primary.verification_key_id
-            or response.actor_assertion.ed25519_public_key != primary.ed25519_public_key
-            or response.actor_assertion.signed_payload_fingerprint
-            != _actor_signed_payload(
-                request.request_fingerprint,
-                response.option_id,
-            )
-            or critique.critic_assertion.authority_id != request.critic_authority_id
-            or critique.critic_assertion.runtime_principal_id
-            != critic_authority.runtime_identity_id
-            or critique.critic_assertion.authority_fingerprint
-            != critic_authority.authority_fingerprint
-            or critique.critic_assertion.registry_fingerprint != registry.registry_fingerprint
-            or critique.critic_assertion.verification_key_id != critic_authority.verification_key_id
-            or critique.critic_assertion.ed25519_public_key != critic_authority.ed25519_public_key
+            response.invocation.role_contract_fingerprint
+            != request.agent_review_contracts.primary_role_contract.contract_fingerprint
+            or response.invocation.prompt_contract_fingerprint
+            != request.agent_review_contracts.primary_prompt_contract.contract_fingerprint
+            or critique.invocation.role_contract_fingerprint
+            != request.agent_review_contracts.critic_role_contract.contract_fingerprint
+            or critique.invocation.prompt_contract_fingerprint
+            != request.agent_review_contracts.critic_prompt_contract.contract_fingerprint
         ):
-            raise ValueError("decision principals must resolve through the exact compiler registry")
+            raise ValueError("agent invocation is not bound to the exact compiler contracts")
         if (
-            critique.critic_assertion.authority_id == response.actor_assertion.authority_id
-            or critique.critic_assertion.runtime_principal_id
-            == response.actor_assertion.runtime_principal_id
+            critique.invocation.invocation_id == response.invocation.invocation_id
         ):
-            raise ValueError("alignment decision critic must be independent of the primary actor")
+            raise ValueError("alignment decision critic must be a separately recorded invocation")
         payload = self.model_dump(mode="json", exclude={"envelope_fingerprint"})
         expected = _fingerprint(payload)
         if self.envelope_fingerprint and self.envelope_fingerprint != expected:
@@ -3684,71 +3384,6 @@ class ChallengeSeverity(StrEnum):
 class ChallengeResolution(StrEnum):
     UNRESOLVED = "unresolved"
     REVISED = "resolved-by-revision"
-    WAIVED = "governed-waiver"
-
-
-class GovernedWaiverDecision(BaseModel):
-    """Externally issued, signed waiver of one material challenge and no other."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    waiver_decision_id: str = Field(pattern=_ID.pattern)
-    decided_on: date
-    decision_maker_name: str = Field(min_length=1)
-    decision_maker_principal_id: str = Field(pattern=_ID.pattern)
-    provenance_id: str = Field(pattern=_ID.pattern)
-    scenario_fingerprint: str = Field(pattern=_SHA256.pattern)
-    profile_fingerprint: str = Field(pattern=_SHA256.pattern)
-    evidence_snapshot_fingerprint: str = Field(pattern=_SHA256.pattern)
-    challenge_id: str = Field(pattern=_ID.pattern)
-    challenge_core_fingerprint: str = Field(pattern=_SHA256.pattern)
-    request: AlignmentDecisionRequest
-    evidence_ids: tuple[str, ...] = Field(min_length=1)
-    rationale: str = Field(min_length=1)
-    waiver_authority_registry: WaiverAuthorityRegistry
-    external_signature: str = Field(pattern=r"^[0-9a-f]{128}$")
-    waiver_fingerprint: str = ""
-
-    @model_validator(mode="after")
-    def bind_waiver(self) -> Self:
-        request = AlignmentDecisionRequest.model_validate(self.request.model_dump(mode="python"))
-        evidence = _canonical_ids(self.evidence_ids, "evidence_ids")
-        if not set(evidence).issubset(request.immutable_evidence_ids):
-            raise ValueError("governed waiver cites evidence outside the exact request")
-        registry = WaiverAuthorityRegistry.model_validate(
-            self.waiver_authority_registry.model_dump(mode="python")
-        )
-        if (
-            registry.scope != "material-challenge-waiver"
-            or self.scenario_fingerprint != registry.scenario_fingerprint
-            or self.profile_fingerprint != registry.profile_fingerprint
-            or self.evidence_snapshot_fingerprint != registry.evidence_snapshot_fingerprint
-            or request.profile_fingerprint != self.profile_fingerprint
-            or request.scenario_context_fingerprint != self.scenario_fingerprint
-            or self.decision_maker_principal_id != registry.authority_principal_id
-        ):
-            raise ValueError("governed waiver requires its exact scenario-scoped waiver authority")
-        object.__setattr__(self, "request", request)
-        object.__setattr__(self, "evidence_ids", evidence)
-        object.__setattr__(self, "waiver_authority_registry", registry)
-        signature_payload = self.model_dump(
-            mode="json",
-            exclude={"external_signature", "waiver_fingerprint"},
-        )
-        _verify_ed25519_signature(
-            public_key_hex=registry.ed25519_public_key,
-            message=_canonical_json(signature_payload).encode(),
-            signature_hex=self.external_signature,
-        )
-        payload = {
-            **signature_payload,
-            "external_signature": self.external_signature,
-        }
-        fingerprint = _fingerprint(payload)
-        if self.waiver_fingerprint and self.waiver_fingerprint != fingerprint:
-            raise ValueError("governed waiver fingerprint is stale")
-        object.__setattr__(self, "waiver_fingerprint", fingerprint)
-        return self
 
 
 class AlignmentChallengeFinding(BaseModel):
@@ -3762,7 +3397,6 @@ class AlignmentChallengeFinding(BaseModel):
     missing_evidence_ids: tuple[str, ...] = ()
     resolution: ChallengeResolution = ChallengeResolution.UNRESOLVED
     resolution_evidence_ids: tuple[str, ...] = ()
-    governed_waiver_decision: GovernedWaiverDecision | None = None
     challenge_fingerprint: str = ""
 
     @model_validator(mode="after")
@@ -3773,39 +3407,10 @@ class AlignmentChallengeFinding(BaseModel):
             self.resolution_evidence_ids,
             "resolution_evidence_ids",
         )
-        waiver = (
-            GovernedWaiverDecision.model_validate(
-                self.governed_waiver_decision.model_dump(mode="python")
-            )
-            if self.governed_waiver_decision is not None
-            else None
-        )
-        object.__setattr__(self, "governed_waiver_decision", waiver)
-        if self.resolution == ChallengeResolution.UNRESOLVED and (
-            resolution_evidence or waiver is not None
-        ):
+        if self.resolution == ChallengeResolution.UNRESOLVED and resolution_evidence:
             raise ValueError("unresolved challenge cannot claim resolution evidence")
         if self.resolution == ChallengeResolution.REVISED and not resolution_evidence:
             raise ValueError("revised challenge requires exact resolution evidence")
-        core_payload = {
-            "challenge_id": self.challenge_id,
-            "severity": self.severity,
-            "evidence_ids": evidence,
-            "missing_evidence_ids": missing,
-        }
-        core_fingerprint = _fingerprint(core_payload)
-        if self.resolution == ChallengeResolution.WAIVED:
-            if self.severity == ChallengeSeverity.MANDATORY_RED:
-                raise ValueError("mandatory Red challenges can never be waived")
-            if (
-                waiver is None
-                or waiver.challenge_id != self.challenge_id
-                or waiver.challenge_core_fingerprint != core_fingerprint
-                or waiver.evidence_ids != resolution_evidence
-            ):
-                raise ValueError("challenge waiver requires an exact governed human decision")
-        elif waiver is not None:
-            raise ValueError("only waived challenges contain a governed waiver decision")
         object.__setattr__(self, "evidence_ids", evidence)
         object.__setattr__(self, "missing_evidence_ids", missing)
         object.__setattr__(self, "resolution_evidence_ids", resolution_evidence)
@@ -3864,34 +3469,17 @@ class DecisionRevisionRecord(BaseModel):
             for item in challenges
         ):
             raise ValueError("revision challenge cites evidence outside the compiler request")
-        if any(
-            item.governed_waiver_decision is not None
-            and item.governed_waiver_decision.request != request
-            for item in challenges
-        ):
-            raise ValueError("governed challenge waiver is stale for the revision request")
-        registry = request.agent_authority_registry
         if (
-            response.actor_assertion.authority_fingerprint
-            != registry.primary_authority.authority_fingerprint
-            or response.actor_assertion.runtime_principal_id
-            != registry.primary_authority.runtime_identity_id
-            or response.actor_assertion.registry_fingerprint != registry.registry_fingerprint
-            or response.actor_assertion.verification_key_id
-            != registry.primary_authority.verification_key_id
-            or response.actor_assertion.ed25519_public_key
-            != registry.primary_authority.ed25519_public_key
-            or critique.critic_assertion.authority_fingerprint
-            != registry.critic_authority.authority_fingerprint
-            or critique.critic_assertion.runtime_principal_id
-            != registry.critic_authority.runtime_identity_id
-            or critique.critic_assertion.registry_fingerprint != registry.registry_fingerprint
-            or critique.critic_assertion.verification_key_id
-            != registry.critic_authority.verification_key_id
-            or critique.critic_assertion.ed25519_public_key
-            != registry.critic_authority.ed25519_public_key
+            response.invocation.role_contract_fingerprint
+            != request.agent_review_contracts.primary_role_contract.contract_fingerprint
+            or response.invocation.prompt_contract_fingerprint
+            != request.agent_review_contracts.primary_prompt_contract.contract_fingerprint
+            or critique.invocation.role_contract_fingerprint
+            != request.agent_review_contracts.critic_role_contract.contract_fingerprint
+            or critique.invocation.prompt_contract_fingerprint
+            != request.agent_review_contracts.critic_prompt_contract.contract_fingerprint
         ):
-            raise ValueError("revision principals must resolve through the exact compiler registry")
+            raise ValueError("revision invocations must use the exact compiler contracts")
         object.__setattr__(self, "request", request)
         object.__setattr__(self, "response", response)
         object.__setattr__(self, "critique", critique)
@@ -3913,14 +3501,13 @@ class RuntimeAttemptOutcome(StrEnum):
     PROVIDER_REJECTION = "provider-rejection"
 
 
-class RuntimeInvocationReceipt(BaseModel):
-    """Externally signed proof that a provider invocation actually occurred."""
+class RuntimeInvocationRecord(BaseModel):
+    """Typed local record of a provider failure in one bounded review run."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     invocation_id: str = Field(pattern=_ID.pattern)
-    session_id: str = Field(pattern=r"^review-session-[0-9a-f]{20}$")
-    session_revision: int = Field(ge=1, strict=True)
+    review_run_id: str = Field(pattern=r"^review-run-[0-9a-f]{20}$")
     frontier_fingerprint: str = Field(pattern=_SHA256.pattern)
     request_fingerprint: str = Field(pattern=_SHA256.pattern)
     outcome: Literal[
@@ -3930,42 +3517,21 @@ class RuntimeInvocationReceipt(BaseModel):
     failure_code: str = Field(pattern=_ID.pattern)
     started_at_ms: int = Field(ge=0, strict=True)
     completed_at_ms: int = Field(ge=0, strict=True)
-    provider_principal_id: Literal["configured-runtime-provider"]
-    verification_key_id: Literal["runtime-provider-key-v1"]
-    ed25519_public_key: str = Field(pattern=r"^[0-9a-f]{64}$")
-    external_signature: str = Field(pattern=r"^[0-9a-f]{128}$")
     receipt_fingerprint: str = ""
 
     @model_validator(mode="after")
     def bind_invocation(self) -> Self:
-        if (
-            self.completed_at_ms < self.started_at_ms
-            or self.ed25519_public_key != _CONFIGURED_PUBLIC_KEYS[self.verification_key_id]
-        ):
-            raise ValueError("runtime invocation receipt is not configured or timed")
-        signature_payload = self.model_dump(
-            mode="json",
-            exclude={"external_signature", "receipt_fingerprint"},
-        )
-        _verify_ed25519_signature(
-            public_key_hex=self.ed25519_public_key,
-            message=_canonical_json(signature_payload).encode(),
-            signature_hex=self.external_signature,
-        )
-        fingerprint = _fingerprint(
-            {
-                **signature_payload,
-                "external_signature": self.external_signature,
-            }
-        )
+        if self.completed_at_ms < self.started_at_ms:
+            raise ValueError("runtime invocation record is not timed")
+        fingerprint = _fingerprint(self.model_dump(mode="json", exclude={"receipt_fingerprint"}))
         if self.receipt_fingerprint and self.receipt_fingerprint != fingerprint:
-            raise ValueError("runtime invocation receipt fingerprint is stale")
+            raise ValueError("runtime invocation record fingerprint is stale")
         object.__setattr__(self, "receipt_fingerprint", fingerprint)
         return self
 
 
 class RuntimeDecisionAttempt(BaseModel):
-    """One authenticated attempt charged to the bounded review session."""
+    """One locally recorded attempt charged to the bounded review run."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -3975,9 +3541,9 @@ class RuntimeDecisionAttempt(BaseModel):
     revision_fingerprint: str = ""
     envelope_rejection: DecisionEnvelopeRejection | None = None
     provider_failure_code: str = ""
-    invocation_receipt: RuntimeInvocationReceipt | None = None
-    counting_policy: Literal["count-every-authenticated-attempt"] = (
-        "count-every-authenticated-attempt"
+    invocation_record: RuntimeInvocationRecord | None = None
+    counting_policy: Literal["count-every-recorded-attempt"] = (
+        "count-every-recorded-attempt"
     )
     attempt_fingerprint: str = ""
 
@@ -3994,10 +3560,10 @@ class RuntimeDecisionAttempt(BaseModel):
             else None
         )
         invocation = (
-            RuntimeInvocationReceipt.model_validate(
-                self.invocation_receipt.model_dump(mode="python")
+            RuntimeInvocationRecord.model_validate(
+                self.invocation_record.model_dump(mode="python")
             )
-            if self.invocation_receipt is not None
+            if self.invocation_record is not None
             else None
         )
         if accepted and _SHA256.fullmatch(accepted) is None:
@@ -4046,10 +3612,10 @@ class RuntimeDecisionAttempt(BaseModel):
             }
             and invocation is not None
         ):
-            raise ValueError("only provider failures contain invocation receipts")
+            raise ValueError("only provider failures contain invocation records")
         object.__setattr__(self, "request", request)
         object.__setattr__(self, "envelope_rejection", rejection)
-        object.__setattr__(self, "invocation_receipt", invocation)
+        object.__setattr__(self, "invocation_record", invocation)
         payload = self.model_dump(mode="json", exclude={"attempt_fingerprint"})
         fingerprint = _fingerprint(payload)
         if self.attempt_fingerprint and self.attempt_fingerprint != fingerprint:
@@ -4912,12 +4478,6 @@ class ScenarioCompilation(BaseModel):
                 raise ValueError("decision option names a foreign alignment candidate")
             if not set(envelope.request.immutable_evidence_ids).issubset(known_evidence_ids):
                 raise ValueError("decision request names foreign governed evidence")
-            if isinstance(envelope, DecisionRevisionRecord) and any(
-                challenge.governed_waiver_decision is not None
-                and challenge.governed_waiver_decision.scenario_fingerprint != scenario_context
-                for challenge in envelope.challenge_findings
-            ):
-                raise ValueError("governed challenge waiver belongs to another Scenario")
 
         envelope_by_set = {
             item.request.candidate_set_id: item for item in decision_record.accepted_envelopes
@@ -5221,7 +4781,7 @@ def review_session_scope_fingerprint(
     scenario: ScenarioCompilation,
     dependencies: tuple[ScenarioReviewDependency, ...],
 ) -> str:
-    """Canonical scope an external orchestration store must lease."""
+    """Canonical local scope for a bounded compile or replay run."""
     dependencies = tuple(sorted(dependencies, key=lambda item: item.candidate_set_id))
     return _fingerprint(
         {
@@ -5246,49 +4806,32 @@ def _review_frontier_fingerprint(
     return _fingerprint([item.model_dump(mode="json") for item in (*actionable, *nonactionable)])
 
 
-class ReviewSessionLease(BaseModel):
-    """Externally persisted and signed lease for one monotonic review chain head."""
+class ReviewRun(BaseModel):
+    """Local, deterministic scope for one compile or replay run."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    session_id: str = Field(pattern=r"^review-session-[0-9a-f]{20}$")
-    lease_revision: int = Field(ge=1, strict=True)
-    nonce: str = Field(pattern=_ID.pattern)
-    session_scope_fingerprint: str = Field(pattern=_SHA256.pattern)
-    previous_chain_head_fingerprint: str = ""
-    orchestration_store_principal_id: Literal["configured-review-orchestration-store"]
-    verification_key_id: Literal["review-session-store-key-v1"]
-    ed25519_public_key: str = Field(pattern=r"^[0-9a-f]{64}$")
-    external_signature: str = Field(pattern=r"^[0-9a-f]{128}$")
-    lease_fingerprint: str = ""
+    run_id: str = ""
+    run_scope_fingerprint: str = Field(pattern=_SHA256.pattern)
+    prior_orchestration_fingerprint: str = ""
+    run_fingerprint: str = ""
 
     @model_validator(mode="after")
-    def bind_lease(self) -> Self:
+    def bind_run(self) -> Self:
         if (
-            self.previous_chain_head_fingerprint
-            and _SHA256.fullmatch(self.previous_chain_head_fingerprint) is None
+            self.prior_orchestration_fingerprint
+            and _SHA256.fullmatch(self.prior_orchestration_fingerprint) is None
         ):
-            raise ValueError("review lease previous chain head is malformed")
-        if self.ed25519_public_key != _CONFIGURED_PUBLIC_KEYS[self.verification_key_id]:
-            raise ValueError("review session lease public key is not configured")
-        signature_payload = self.model_dump(
-            mode="json",
-            exclude={"external_signature", "lease_fingerprint"},
-        )
-        _verify_ed25519_signature(
-            public_key_hex=self.ed25519_public_key,
-            message=_canonical_json(signature_payload).encode(),
-            signature_hex=self.external_signature,
-        )
-        fingerprint = _fingerprint(
-            {
-                **signature_payload,
-                "external_signature": self.external_signature,
-            }
-        )
-        if self.lease_fingerprint and self.lease_fingerprint != fingerprint:
-            raise ValueError("review session lease fingerprint is stale")
-        object.__setattr__(self, "lease_fingerprint", fingerprint)
+            raise ValueError("review run prior orchestration fingerprint is malformed")
+        payload = self.model_dump(mode="json", exclude={"run_id", "run_fingerprint"})
+        run_id = _stable_id("review-run", payload)
+        if self.run_id and self.run_id != run_id:
+            raise ValueError("review run ID is stale")
+        fingerprint = _fingerprint({**payload, "run_id": run_id})
+        if self.run_fingerprint and self.run_fingerprint != fingerprint:
+            raise ValueError("review run fingerprint is stale")
+        object.__setattr__(self, "run_id", run_id)
+        object.__setattr__(self, "run_fingerprint", fingerprint)
         return self
 
 
@@ -5299,7 +4842,7 @@ class ScenarioReviewOrchestration(BaseModel):
 
     scenario: ScenarioCompilation
     dependencies: tuple[ScenarioReviewDependency, ...]
-    session_lease: ReviewSessionLease
+    review_run: ReviewRun
     prior_orchestration: ScenarioReviewOrchestration | None = None
     round_history: tuple[ScenarioReviewRoundHistory, ...] = ()
     round_number: int = 1
@@ -5313,8 +4856,8 @@ class ScenarioReviewOrchestration(BaseModel):
     orchestration_fingerprint: str = ""
 
     @property
-    def session_id(self) -> str:
-        return self.session_lease.session_id
+    def review_run_id(self) -> str:
+        return self.review_run.run_id
 
     @model_validator(mode="after")
     def bind_orchestration(self) -> Self:
@@ -5322,10 +4865,10 @@ class ScenarioReviewOrchestration(BaseModel):
         dependencies = tuple(sorted(self.dependencies, key=lambda item: item.candidate_set_id))
         if len({item.candidate_set_id for item in dependencies}) != len(dependencies):
             raise ValueError("review dependencies must have unique Candidate Set IDs")
-        lease = ReviewSessionLease.model_validate(self.session_lease.model_dump(mode="python"))
+        run = ReviewRun.model_validate(self.review_run.model_dump(mode="python"))
         expected_scope = review_session_scope_fingerprint(scenario, dependencies)
-        if lease.session_scope_fingerprint != expected_scope:
-            raise ValueError("review session lease is scoped to another scenario")
+        if run.run_scope_fingerprint != expected_scope:
+            raise ValueError("review run is scoped to another scenario")
         prior = (
             ScenarioReviewOrchestration.model_validate(
                 self.prior_orchestration.model_dump(mode="python")
@@ -5334,9 +4877,9 @@ class ScenarioReviewOrchestration(BaseModel):
             else None
         )
         if prior is None:
-            if lease.lease_revision != 1 or lease.previous_chain_head_fingerprint:
+            if run.prior_orchestration_fingerprint:
                 raise ValueError(
-                    "review genesis requires an external revision-one empty-head lease"
+                    "review genesis cannot name a prior orchestration"
                 )
             if (
                 scenario.decision_record.accepted_envelopes
@@ -5350,10 +4893,7 @@ class ScenarioReviewOrchestration(BaseModel):
             delta_attempts: tuple[RuntimeDecisionAttempt, ...] = ()
         else:
             if (
-                lease.session_id != prior.session_lease.session_id
-                or lease.lease_revision != prior.session_lease.lease_revision + 1
-                or lease.nonce == prior.session_lease.nonce
-                or lease.previous_chain_head_fingerprint != prior.orchestration_fingerprint
+                run.prior_orchestration_fingerprint != prior.orchestration_fingerprint
                 or scenario.profile_fingerprint != prior.scenario.profile_fingerprint
                 or scenario.evidence_snapshot.snapshot_fingerprint
                 != prior.scenario.evidence_snapshot.snapshot_fingerprint
@@ -5431,17 +4971,15 @@ class ScenarioReviewOrchestration(BaseModel):
                 prior.nonactionable_requests,
             )
             if any(
-                attempt.invocation_receipt is not None
+                attempt.invocation_record is not None
                 and (
-                    attempt.invocation_receipt.session_id != lease.session_id
-                    or attempt.invocation_receipt.session_revision
-                    != prior.session_lease.lease_revision
-                    or attempt.invocation_receipt.frontier_fingerprint != frontier_fingerprint
+                    attempt.invocation_record.review_run_id != prior.review_run.run_id
+                    or attempt.invocation_record.frontier_fingerprint != frontier_fingerprint
                 )
                 for attempt in delta_attempts
             ):
                 raise ValueError(
-                    "provider invocation receipt is stale for the leased prior frontier"
+                    "provider invocation record is stale for the prior review frontier"
                 )
             prior_record = ScenarioReviewRoundHistory(
                 round_number=prior.round_number,
@@ -5659,7 +5197,7 @@ class ScenarioReviewOrchestration(BaseModel):
             raise ValueError("scenario review history is not compiler-chain-derived")
         object.__setattr__(self, "scenario", scenario)
         object.__setattr__(self, "dependencies", dependencies)
-        object.__setattr__(self, "session_lease", lease)
+        object.__setattr__(self, "review_run", run)
         object.__setattr__(self, "prior_orchestration", prior)
         object.__setattr__(self, "round_history", history)
         payload = self.model_dump(mode="json", exclude={"orchestration_fingerprint"})
@@ -5674,14 +5212,19 @@ def orchestrate_scenario_review(
     scenario: ScenarioCompilation,
     *,
     dependencies: tuple[ScenarioReviewDependency, ...],
-    session_lease: ReviewSessionLease,
     prior_orchestration: ScenarioReviewOrchestration | None = None,
 ) -> ScenarioReviewOrchestration:
-    """Build a frontier only under an externally persisted signed lease."""
+    """Build one deterministic, bounded local review run."""
+    scope = review_session_scope_fingerprint(scenario, dependencies)
     return ScenarioReviewOrchestration(
         scenario=scenario,
         dependencies=dependencies,
-        session_lease=session_lease,
+        review_run=ReviewRun(
+            run_scope_fingerprint=scope,
+            prior_orchestration_fingerprint=(
+                prior_orchestration.orchestration_fingerprint if prior_orchestration else ""
+            ),
+        ),
         prior_orchestration=prior_orchestration,
     )
 
@@ -5689,7 +5232,7 @@ def orchestrate_scenario_review(
 def review_frontier_fingerprint(
     orchestration: ScenarioReviewOrchestration,
 ) -> str:
-    """Expose the exact frontier an external runtime receipt must sign."""
+    """Expose the exact local review frontier for a typed runtime record."""
     return _review_frontier_fingerprint(
         orchestration.actionable_requests,
         orchestration.nonactionable_requests,
@@ -5715,13 +5258,15 @@ def _configured_human_adoption_contract() -> HumanAdoptionContract:
             "decision_id",
             "decided_on",
             "decision_maker_name",
-            "decision_maker_principal_id",
+            "decision_maker_label",
             "rationale",
             "evidence_ids",
-            "provenance_id",
             "adoption_request_fingerprint",
             "selected_scenario_fingerprint",
-            "external_signature",
+            "selected_profile_fingerprint",
+            "selected_evidence_snapshot_fingerprint",
+            "selection_run_fingerprint",
+            "source_url",
         ),
         stopping_policy=(
             "Reject adoption when the scenario is provisional, stale or unpublishable.",
@@ -5732,127 +5277,41 @@ def _configured_human_adoption_contract() -> HumanAdoptionContract:
     )
 
 
-class HumanIdentityAuthority(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    authority_id: Literal["satn-reference-adoption-board"]
-    authority_version: Literal["1"] = "1"
-    runtime_principal_id: Literal["configured-reference-board-principal"]
-    role_contract_id: Literal["satn-reference-adoption-role.v1"]
-    role_contract_content_sha256: str = Field(pattern=_SHA256.pattern)
-    adoption_contract_fingerprint: str = Field(pattern=_SHA256.pattern)
-    verification_key_id: Literal["reference-adoption-key-v1"]
-    ed25519_public_key: str = Field(pattern=r"^[0-9a-f]{64}$")
-    authority_fingerprint: str = ""
-
-    @model_validator(mode="after")
-    def bind_human_authority(self) -> Self:
-        expected_contract = _configured_human_adoption_contract()
-        if (
-            self.role_contract_content_sha256 != expected_contract.content_sha256
-            or self.adoption_contract_fingerprint != expected_contract.contract_fingerprint
-            or self.ed25519_public_key != _CONFIGURED_PUBLIC_KEYS[self.verification_key_id]
-        ):
-            raise ValueError("human authority role contract SHA-256 is not configured")
-        payload = self.model_dump(mode="json", exclude={"authority_fingerprint"})
-        fingerprint = _fingerprint(payload)
-        if self.authority_fingerprint and self.authority_fingerprint != fingerprint:
-            raise ValueError("human authority fingerprint is stale")
-        object.__setattr__(self, "authority_fingerprint", fingerprint)
-        return self
-
-
-class HumanAuthorityRegistry(BaseModel):
-    """Compiler-owned configured human adoption authority for one scenario."""
+class ReferenceAdoptionPacket(BaseModel):
+    """Compiler-authored, fingerprinted packet for a local human decision."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    registry_config_id: Literal["satn-human-authority-registry/v1"] = (
-        "satn-human-authority-registry/v1"
+    packet_config_id: Literal["satn-reference-adoption-packet/v1"] = (
+        "satn-reference-adoption-packet/v1"
     )
     scope: Literal["reference-satn-adoption"] = "reference-satn-adoption"
     scenario_fingerprint: str = Field(pattern=_SHA256.pattern)
     profile_fingerprint: str = Field(pattern=_SHA256.pattern)
     evidence_snapshot_fingerprint: str = Field(pattern=_SHA256.pattern)
     adoption_contract: HumanAdoptionContract
-    adoption_authority: HumanIdentityAuthority
-    registry_fingerprint: str = ""
+    packet_fingerprint: str = ""
 
     @model_validator(mode="after")
-    def bind_human_registry(self) -> Self:
+    def bind_packet(self) -> Self:
         expected_contract = _configured_human_adoption_contract()
-        expected = HumanIdentityAuthority(
-            authority_id="satn-reference-adoption-board",
-            runtime_principal_id="configured-reference-board-principal",
-            role_contract_id="satn-reference-adoption-role.v1",
-            role_contract_content_sha256=expected_contract.content_sha256,
-            adoption_contract_fingerprint=(expected_contract.contract_fingerprint),
-            verification_key_id="reference-adoption-key-v1",
-            ed25519_public_key=(_CONFIGURED_PUBLIC_KEYS["reference-adoption-key-v1"]),
-        )
-        if self.adoption_authority != expected or self.adoption_contract != expected_contract:
+        if self.adoption_contract != expected_contract:
             raise ValueError(
-                "human authority must come from the compiler-owned configured registry"
+                "adoption packet must contain the exact compiler contract"
             )
-        payload = self.model_dump(mode="json", exclude={"registry_fingerprint"})
+        payload = self.model_dump(mode="json", exclude={"packet_fingerprint"})
         fingerprint = _fingerprint(payload)
-        if self.registry_fingerprint and self.registry_fingerprint != fingerprint:
-            raise ValueError("human authority registry fingerprint is stale")
-        object.__setattr__(self, "registry_fingerprint", fingerprint)
+        if self.packet_fingerprint and self.packet_fingerprint != fingerprint:
+            raise ValueError("reference adoption packet fingerprint is stale")
+        object.__setattr__(self, "packet_fingerprint", fingerprint)
         return self
 
 
-class WaiverAuthorityRegistry(BaseModel):
-    """Public verification authority scoped only to one scenario's material waivers."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    registry_config_id: Literal["satn-waiver-authority-registry/v1"] = (
-        "satn-waiver-authority-registry/v1"
-    )
-    scope: Literal["material-challenge-waiver"] = "material-challenge-waiver"
-    scenario_fingerprint: str = Field(pattern=_SHA256.pattern)
-    profile_fingerprint: str = Field(pattern=_SHA256.pattern)
-    evidence_snapshot_fingerprint: str = Field(pattern=_SHA256.pattern)
-    authority_id: Literal["satn-material-waiver-panel"] = "satn-material-waiver-panel"
-    authority_principal_id: Literal["configured-material-waiver-principal"] = (
-        "configured-material-waiver-principal"
-    )
-    verification_key_id: Literal["material-waiver-key-v1"] = "material-waiver-key-v1"
-    ed25519_public_key: str = Field(pattern=r"^[0-9a-f]{64}$")
-    registry_fingerprint: str = ""
-
-    @model_validator(mode="after")
-    def bind_waiver_registry(self) -> Self:
-        if self.ed25519_public_key != _CONFIGURED_PUBLIC_KEYS[self.verification_key_id]:
-            raise ValueError("waiver registry public key is not configured")
-        payload = self.model_dump(mode="json", exclude={"registry_fingerprint"})
-        fingerprint = _fingerprint(payload)
-        if self.registry_fingerprint and self.registry_fingerprint != fingerprint:
-            raise ValueError("waiver authority registry fingerprint is stale")
-        object.__setattr__(self, "registry_fingerprint", fingerprint)
-        return self
-
-
-GovernedWaiverDecision.model_rebuild()
 AlignmentChallengeFinding.model_rebuild()
 DecisionRevisionRecord.model_rebuild()
 ScenarioDecisionRecord.model_rebuild()
 ScenarioCompilation.model_rebuild()
 ScenarioReviewOrchestration.model_rebuild()
-
-
-def build_waiver_authority_registry(
-    scenario: ScenarioCompilation,
-) -> WaiverAuthorityRegistry:
-    """Build unsigned, scenario-scoped public verification material."""
-    scenario = ScenarioCompilation.model_validate(scenario.model_dump(mode="python"))
-    return WaiverAuthorityRegistry(
-        scenario_fingerprint=scenario.scenario_context_fingerprint,
-        profile_fingerprint=scenario.profile_fingerprint,
-        evidence_snapshot_fingerprint=(scenario.evidence_snapshot.snapshot_fingerprint),
-        ed25519_public_key=_CONFIGURED_PUBLIC_KEYS["material-waiver-key-v1"],
-    )
 
 
 class ReferenceAdoptionRequest(BaseModel):
@@ -5861,22 +5320,22 @@ class ReferenceAdoptionRequest(BaseModel):
     scenario_fingerprint: str = Field(pattern=_SHA256.pattern)
     profile_fingerprint: str = Field(pattern=_SHA256.pattern)
     evidence_snapshot_fingerprint: str = Field(pattern=_SHA256.pattern)
-    human_authority_registry: HumanAuthorityRegistry
+    adoption_packet: ReferenceAdoptionPacket
     request_id: str = ""
     request_fingerprint: str = ""
 
     @model_validator(mode="after")
     def bind_adoption_request(self) -> Self:
-        registry = HumanAuthorityRegistry.model_validate(
-            self.human_authority_registry.model_dump(mode="python")
+        packet = ReferenceAdoptionPacket.model_validate(
+            self.adoption_packet.model_dump(mode="python")
         )
         if (
-            registry.scenario_fingerprint != self.scenario_fingerprint
-            or registry.profile_fingerprint != self.profile_fingerprint
-            or registry.evidence_snapshot_fingerprint != self.evidence_snapshot_fingerprint
+            packet.scenario_fingerprint != self.scenario_fingerprint
+            or packet.profile_fingerprint != self.profile_fingerprint
+            or packet.evidence_snapshot_fingerprint != self.evidence_snapshot_fingerprint
         ):
-            raise ValueError("human authority registry is stale for adoption request")
-        object.__setattr__(self, "human_authority_registry", registry)
+            raise ValueError("adoption packet is stale for adoption request")
+        object.__setattr__(self, "adoption_packet", packet)
         payload = self.model_dump(
             mode="json",
             exclude={"request_id", "request_fingerprint"},
@@ -5897,45 +5356,37 @@ def build_reference_adoption_request(
 ) -> ReferenceAdoptionRequest:
     scenario = ScenarioCompilation.model_validate(scenario.model_dump(mode="python"))
     adoption_contract = _configured_human_adoption_contract()
-    authority = HumanIdentityAuthority(
-        authority_id="satn-reference-adoption-board",
-        runtime_principal_id="configured-reference-board-principal",
-        role_contract_id="satn-reference-adoption-role.v1",
-        role_contract_content_sha256=adoption_contract.content_sha256,
-        adoption_contract_fingerprint=(adoption_contract.contract_fingerprint),
-        verification_key_id="reference-adoption-key-v1",
-        ed25519_public_key=(_CONFIGURED_PUBLIC_KEYS["reference-adoption-key-v1"]),
-    )
-    registry = HumanAuthorityRegistry(
+    packet = ReferenceAdoptionPacket(
         scenario_fingerprint=scenario.scenario_fingerprint,
         profile_fingerprint=scenario.profile_fingerprint,
         evidence_snapshot_fingerprint=(scenario.evidence_snapshot.snapshot_fingerprint),
         adoption_contract=adoption_contract,
-        adoption_authority=authority,
     )
     return ReferenceAdoptionRequest(
         scenario_fingerprint=scenario.scenario_fingerprint,
         profile_fingerprint=scenario.profile_fingerprint,
         evidence_snapshot_fingerprint=(scenario.evidence_snapshot.snapshot_fingerprint),
-        human_authority_registry=registry,
+        adoption_packet=packet,
     )
 
 
 class GovernedReferenceSelectionDecision(BaseModel):
-    """Externally issued signed response to an unsigned adoption request."""
+    """Attributable local human decision for one exact scenario packet."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     decision_id: str = Field(pattern=_ID.pattern)
     decided_on: date
     decision_maker_name: str = Field(min_length=1)
-    decision_maker_principal_id: str = Field(pattern=_ID.pattern)
+    decision_maker_label: str = Field(min_length=1)
     rationale: str = Field(min_length=1)
     evidence_ids: tuple[str, ...] = Field(min_length=1)
-    provenance_id: str = Field(pattern=_ID.pattern)
+    source_url: str = Field(min_length=1)
     adoption_request: ReferenceAdoptionRequest
     selected_scenario_fingerprint: str = Field(pattern=_SHA256.pattern)
-    external_signature: str = Field(pattern=r"^[0-9a-f]{128}$")
+    selected_profile_fingerprint: str = Field(pattern=_SHA256.pattern)
+    selected_evidence_snapshot_fingerprint: str = Field(pattern=_SHA256.pattern)
+    selection_run_fingerprint: str = Field(pattern=_SHA256.pattern)
     decision_fingerprint: str = ""
 
     @model_validator(mode="after")
@@ -5943,31 +5394,17 @@ class GovernedReferenceSelectionDecision(BaseModel):
         request = ReferenceAdoptionRequest.model_validate(
             self.adoption_request.model_dump(mode="python")
         )
-        authority = request.human_authority_registry.adoption_authority
         evidence = _canonical_ids(self.evidence_ids, "evidence_ids")
         if (
             self.selected_scenario_fingerprint != request.scenario_fingerprint
-            or self.decision_maker_principal_id != authority.runtime_principal_id
+            or self.selected_profile_fingerprint != request.profile_fingerprint
+            or self.selected_evidence_snapshot_fingerprint
+            != request.evidence_snapshot_fingerprint
         ):
-            raise ValueError(
-                "Reference decision must resolve through the exact compiler human registry"
-            )
+            raise ValueError("Reference decision must select the exact local adoption packet")
         object.__setattr__(self, "adoption_request", request)
         object.__setattr__(self, "evidence_ids", evidence)
-        signature_payload = self.model_dump(
-            mode="json",
-            exclude={"external_signature", "decision_fingerprint"},
-        )
-        _verify_ed25519_signature(
-            public_key_hex=authority.ed25519_public_key,
-            message=_canonical_json(signature_payload).encode(),
-            signature_hex=self.external_signature,
-        )
-        payload = {
-            **signature_payload,
-            "external_signature": self.external_signature,
-        }
-        expected = _fingerprint(payload)
+        expected = _fingerprint(self.model_dump(mode="json", exclude={"decision_fingerprint"}))
         if self.decision_fingerprint and self.decision_fingerprint != expected:
             raise ValueError("governed reference decision fingerprint is stale")
         object.__setattr__(self, "decision_fingerprint", expected)
@@ -6019,6 +5456,11 @@ class ReferenceSATNSelection(BaseModel):
             )
         if self.governed_decision.selected_scenario_fingerprint != scenario.scenario_fingerprint:
             raise ValueError("governed reference decision selects another scenario")
+        if (
+            self.governed_decision.selection_run_fingerprint
+            != scenario.decision_record.record_fingerprint
+        ):
+            raise ValueError("governed reference decision names another selection run")
         expected_adoption_request = build_reference_adoption_request(scenario)
         if self.governed_decision.adoption_request != expected_adoption_request:
             raise ValueError(
