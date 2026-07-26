@@ -395,14 +395,23 @@ def test_production_release_validator_cannot_be_bypassed_by_local_packaging(tmp_
 
 
 def test_published_pages_workflow_requires_the_independent_production_gate() -> None:
-    """A missing local packager flag must never make it to GitHub Pages."""
+    """Only an explicit manual preview may bypass the production runtime gate."""
 
     workflow = (PROJECT / ".github" / "workflows" / "pages.yml").read_text(encoding="utf-8")
-    validation_command = (
-        "python scripts/validate_pages_release.py release/satn-pages.zip pages"
-    )
+    assert "allow_non_production:" in workflow
+    assert "default: false" in workflow
+    assert "type: boolean" in workflow
+    assert (
+        "ALLOW_NON_PRODUCTION: ${{ github.event_name == 'workflow_dispatch' "
+        "&& inputs.allow_non_production }}"
+    ) in workflow
+    assert (
+        'if [[ "$ALLOW_NON_PRODUCTION" == "true" ]]; then\n'
+        "            validator_args+=(--allow-non-production)\n"
+        "          fi"
+    ) in workflow
+    validation_command = 'python scripts/validate_pages_release.py "${validator_args[@]}"'
     assert validation_command in workflow
-    assert "--allow-non-production" not in workflow
 
 
 def write_layer_shard(

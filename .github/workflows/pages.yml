@@ -9,6 +9,11 @@ on:
         description: Published release tag containing satn-pages.zip
         required: true
         type: string
+      allow_non_production:
+        description: Explicitly permit a non-production runtime-governance preview
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   verify-release:
@@ -54,10 +59,19 @@ jobs:
       - name: Safely extract and validate the Pages release
         env:
           SATN_PAGES_MAX_BYTES: "900000000"
-        run: >-
-          python scripts/validate_pages_release.py release/satn-pages.zip pages
-          --catalogue deployments/catalogue.yaml
-          --maximum-bytes "$SATN_PAGES_MAX_BYTES"
+          ALLOW_NON_PRODUCTION: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_non_production }}
+        run: |
+          set -euo pipefail
+          validator_args=(
+            release/satn-pages.zip
+            pages
+            --catalogue deployments/catalogue.yaml
+            --maximum-bytes "$SATN_PAGES_MAX_BYTES"
+          )
+          if [[ "$ALLOW_NON_PRODUCTION" == "true" ]]; then
+            validator_args+=(--allow-non-production)
+          fi
+          python scripts/validate_pages_release.py "${validator_args[@]}"
       - name: Upload validated Pages artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
