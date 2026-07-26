@@ -344,6 +344,7 @@ def compile_network(
             access_obligations=access_obligations,
             strategic_spines=strategic_spines,
             context=context,
+            official_road_classification=official_road_classification,
             configuration={
                 "population_reach_evidence": config.source.population_reach_evidence,
                 "school_register_evidence": config.source.school_register_evidence,

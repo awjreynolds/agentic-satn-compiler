@@ -221,6 +221,11 @@ def _compile(
             "schema_version": SCHEMA_VERSION,
             "criteria_version": council.compilation.criteria_version,
             "compilation_input_fingerprint": input_fingerprint,
+            "alignment_evidence_preparation_fingerprint": (
+                compiled.alignment_evidence_preparation.preparation_fingerprint
+                if compiled.alignment_evidence_preparation is not None
+                else None
+            ),
             "snapshot_manifest": hashlib.sha256(
                 (
                     council.source.snapshot_dir / council.source.snapshot_id / "snapshot.json"

@@ -37,7 +37,7 @@ def profile(*, include_b_road: bool = False, maximum_options: int = 5) -> Networ
     )
 
 
-def routing_graph() -> RoadGraph:
+def routing_graph(*, include_b_road: bool = False) -> RoadGraph:
     rows = [
         {
             "u": "community-node",
@@ -95,6 +95,37 @@ def routing_graph() -> RoadGraph:
             "geometry": LineString([(400500, 169900), (401000, 170000)]),
         },
     ]
+    if include_b_road:
+        rows.extend(
+            [
+                {
+                    "u": "community-node",
+                    "v": "b-mid",
+                    "osmid": "b-left",
+                    "length": 575.0,
+                    "highway": "secondary",
+                    "ref": "B3116",
+                    "oneway": False,
+                    "satn_ncn": False,
+                    "geometry": LineString(
+                        [(400000, 170000), (400500, 170200)]
+                    ),
+                },
+                {
+                    "u": "b-mid",
+                    "v": "target-node",
+                    "osmid": "b-right",
+                    "length": 575.0,
+                    "highway": "secondary",
+                    "ref": "B3116",
+                    "oneway": False,
+                    "satn_ncn": False,
+                    "geometry": LineString(
+                        [(400500, 170200), (401000, 170000)]
+                    ),
+                },
+            ]
+        )
     return RoadGraph(gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:27700"))
 
 
@@ -191,6 +222,26 @@ def current_asset_context() -> gpd.GeoDataFrame:
     )
 
 
+def official_b_roads() -> gpd.GeoDataFrame:
+    return gpd.GeoDataFrame(
+        [
+            {
+                "official_feature_id": "official-b3116",
+                "official_classification": "b-road",
+                "source_id": "official-highway-list",
+                "effective_date": "2026-04-01",
+                "licence": "Open Government Licence v3.0",
+                "content_fingerprint": "b" * 64,
+                "geometry": LineString(
+                    [(400000, 170000), (400500, 170200), (401000, 170000)]
+                ),
+            }
+        ],
+        geometry="geometry",
+        crs="EPSG:27700",
+    )
+
+
 def prepare_without_evidence() -> preparation.AlignmentEvidencePreparationResult:
     return prepare_alignment_evidence(
         profile(),
@@ -199,6 +250,7 @@ def prepare_without_evidence() -> preparation.AlignmentEvidencePreparationResult
         access_obligations=obligations(),
         strategic_spines=spines(),
         context=current_asset_context(),
+        official_road_classification=None,
         configuration=None,
         config_directory=Path.cwd(),
         as_at=None,
@@ -257,6 +309,7 @@ def test_routing_deduplication_is_recorded_and_admission_enforces_profile_limit(
         access_obligations=obligations(),
         strategic_spines=spines(),
         context=current_asset_context(),
+        official_road_classification=None,
         configuration=None,
         config_directory=Path.cwd(),
         as_at=None,
@@ -271,9 +324,288 @@ def test_routing_deduplication_is_recorded_and_admission_enforces_profile_limit(
         for item in candidate_set.admissions
     )
     assert any(
-        item.reason == "duplicate-routing-geometry"
+        item.reason == "exact-equivalent-routing-geometry"
+        and item.candidate_id is not None
+        and item.retained_candidate_id is not None
         for item in result.generation_issues
     )
+
+
+def test_material_representative_prefers_current_asset_over_earlier_direct_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    geometry = LineString([(400000, 170000), (401000, 170000)])
+    direct = RouteOption(
+        role="direct",
+        geometry=geometry,
+        length_km=1.0,
+        edge_ids=["direct"],
+        a_road_share=0.0,
+        ncn_share=0.0,
+        bidirectional=True,
+        reverse_length_km=1.0,
+        reverse_edge_ids=["direct"],
+        reverse_corridor_share=1.0,
+        impracticable_alongside=False,
+    )
+    ncn = RouteOption(
+        role="ncn-informed",
+        geometry=geometry,
+        length_km=1.0,
+        edge_ids=["ncn-left", "ncn-right"],
+        a_road_share=0.0,
+        ncn_share=1.0,
+        bidirectional=True,
+        reverse_length_km=1.0,
+        reverse_edge_ids=["ncn-right", "ncn-left"],
+        reverse_corridor_share=1.0,
+        impracticable_alongside=False,
+    )
+    monkeypatch.setattr(
+        preparation,
+        "choose_alignment",
+        lambda _graph, _start, _end: (direct, [direct, ncn], "direct-first fixture"),
+    )
+    current = current_asset_context().iloc[[0]].copy()
+    current.geometry = [geometry]
+
+    result = prepare_alignment_evidence(
+        profile(),
+        road_graph=routing_graph(),
+        spine_access_connections=connections(),
+        access_obligations=obligations(),
+        strategic_spines=spines(),
+        context=current,
+        official_road_classification=None,
+        configuration=None,
+        config_directory=Path.cwd(),
+        as_at=None,
+        school_register_max_age_days=None,
+        strategic_admissions_max_age_days=None,
+    )
+    prepared = result.prepared_connections[0]
+
+    assert [item.source_class.value for item in prepared.candidate_set.candidates] == [
+        "verified-existing-asset"
+    ]
+    rejected = next(
+        item
+        for item in prepared.candidate_provenance
+        if item["preparation_disposition"].startswith("rejected-")
+    )
+    retained = next(
+        item
+        for item in prepared.candidate_provenance
+        if item["preparation_disposition"] == "retained-representative"
+    )
+    assert rejected["source_class"] == "other-routable"
+    assert retained["source_class"] == "verified-existing-asset"
+    assert rejected["retained_candidate_id"] == retained["candidate_id"]
+
+
+def test_material_clustering_prevents_profile_limit_dangling_duplicate_crash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ncn = RouteOption(
+        role="ncn-informed",
+        geometry=LineString(
+            [(400000, 170000), (400500, 169900), (401000, 170000)]
+        ),
+        length_km=1.2,
+        edge_ids=["ncn-left", "ncn-right"],
+        a_road_share=0.0,
+        ncn_share=1.0,
+        bidirectional=True,
+        reverse_length_km=1.2,
+        reverse_edge_ids=["ncn-right", "ncn-left"],
+        reverse_corridor_share=1.0,
+        impracticable_alongside=False,
+    )
+    a_road = RouteOption(
+        role="strategic-spine",
+        geometry=LineString(
+            [(400000, 170000), (400500, 170100), (401000, 170000)]
+        ),
+        length_km=1.1,
+        edge_ids=["a-left", "a-right"],
+        a_road_share=1.0,
+        ncn_share=0.0,
+        bidirectional=True,
+        reverse_length_km=1.1,
+        reverse_edge_ids=["a-right", "a-left"],
+        reverse_corridor_share=1.0,
+        impracticable_alongside=False,
+    )
+    shifted_other = RouteOption(
+        role="direct",
+        geometry=LineString(
+            [(400000, 170000.01), (400500, 170100.01), (401000, 170000.01)]
+        ),
+        length_km=1.1,
+        edge_ids=["direct"],
+        a_road_share=0.0,
+        ncn_share=0.0,
+        bidirectional=True,
+        reverse_length_km=1.1,
+        reverse_edge_ids=["direct"],
+        reverse_corridor_share=1.0,
+        impracticable_alongside=False,
+    )
+    monkeypatch.setattr(
+        preparation,
+        "choose_alignment",
+        lambda _graph, _start, _end: (
+            ncn,
+            [ncn, a_road, shifted_other],
+            "material cluster fixture",
+        ),
+    )
+
+    result = prepare_alignment_evidence(
+        profile(maximum_options=1),
+        road_graph=routing_graph(),
+        spine_access_connections=connections(),
+        access_obligations=obligations(),
+        strategic_spines=spines(),
+        context=current_asset_context(),
+        official_road_classification=None,
+        configuration=None,
+        config_directory=Path.cwd(),
+        as_at=None,
+        school_register_max_age_days=None,
+        strategic_admissions_max_age_days=None,
+    )
+    candidate_set = result.prepared_connections[0].candidate_set
+
+    assert len(candidate_set.candidates) == 2
+    assert sum(item.disposition.value == "admitted" for item in candidate_set.admissions) == 1
+    issue = next(
+        item
+        for item in result.generation_issues
+        if item.reason == "materially-equivalent-routing-geometry"
+    )
+    retained = next(
+        item
+        for item in result.prepared_connections[0].candidate_provenance
+        if item["candidate_id"] == issue.retained_candidate_id
+    )
+    assert retained["source_class"] == "a-road-corridor"
+
+
+@pytest.mark.parametrize("parent_place_id", [None, float("nan"), ""])
+def test_parent_endpoint_fallback_ignores_missing_pandas_values(
+    parent_place_id: object,
+) -> None:
+    frame = connections()
+    frame["parent_place_id"] = frame["parent_place_id"].astype(object)
+    frame.loc[frame["obligation_kind"].eq("community"), "parent_place_id"] = (
+        parent_place_id
+    )
+
+    result = prepare_alignment_evidence(
+        profile(),
+        road_graph=routing_graph(),
+        spine_access_connections=frame,
+        access_obligations=obligations(),
+        strategic_spines=spines(),
+        context=current_asset_context(),
+        official_road_classification=None,
+        configuration=None,
+        config_directory=Path.cwd(),
+        as_at=None,
+        school_register_max_age_days=None,
+        strategic_admissions_max_age_days=None,
+    )
+    candidate_set = result.prepared_connections[0].candidate_set
+
+    assert candidate_set.endpoints == ("community-1", "strategic-spine-1")
+    assert candidate_set.mandatory_network_place_ids == (
+        "community-1",
+        "strategic-spine-1",
+    )
+    assert all(
+        candidate.served_network_place_ids
+        == ("community-1", "strategic-spine-1")
+        for candidate in candidate_set.candidates
+    )
+
+
+def test_parent_endpoint_falls_back_to_attachment_without_missing_hash() -> None:
+    frame = connections()
+    mask = frame["obligation_kind"].eq("community")
+    frame.loc[mask, ["parent_place_id", "parent_target_id"]] = None
+
+    result = prepare_alignment_evidence(
+        profile(),
+        road_graph=routing_graph(),
+        spine_access_connections=frame,
+        access_obligations=obligations(),
+        strategic_spines=spines(),
+        context=current_asset_context(),
+        official_road_classification=None,
+        configuration=None,
+        config_directory=Path.cwd(),
+        as_at=None,
+        school_register_max_age_days=None,
+        strategic_admissions_max_age_days=None,
+    )
+
+    assert result.prepared_connections[0].candidate_set.endpoints == (
+        "community-1",
+        "target-node",
+    )
+
+
+def test_enabled_b_road_candidate_requires_and_retains_official_evidence() -> None:
+    result = prepare_alignment_evidence(
+        profile(include_b_road=True),
+        road_graph=routing_graph(include_b_road=True),
+        spine_access_connections=connections(),
+        access_obligations=obligations(),
+        strategic_spines=spines(),
+        context=current_asset_context(),
+        official_road_classification=official_b_roads(),
+        configuration=None,
+        config_directory=Path.cwd(),
+        as_at=None,
+        school_register_max_age_days=None,
+        strategic_admissions_max_age_days=None,
+    )
+    prepared = result.prepared_connections[0]
+    b_candidate = next(
+        item
+        for item in prepared.candidate_provenance
+        if item["source_class"] == "b-road-corridor"
+    )
+
+    assert b_candidate["route_role"] == "b-road-corridor"
+    assert b_candidate["official_b_road_share"] > 0
+    assert {
+        item["official_feature_id"]
+        for item in b_candidate["official_b_road_evidence"]
+    } == {"official-b3116"}
+
+
+def test_disabled_b_road_profile_generates_no_b_candidate() -> None:
+    result = prepare_alignment_evidence(
+        profile(),
+        road_graph=routing_graph(include_b_road=True),
+        spine_access_connections=connections(),
+        access_obligations=obligations(),
+        strategic_spines=spines(),
+        context=current_asset_context(),
+        official_road_classification=official_b_roads(),
+        configuration=None,
+        config_directory=Path.cwd(),
+        as_at=None,
+        school_register_max_age_days=None,
+        strategic_admissions_max_age_days=None,
+    )
+
+    assert "b-road-corridor" not in {
+        item["source_class"]
+        for item in result.prepared_connections[0].candidate_provenance
+    }
 
 
 def test_disconnected_multipart_route_is_an_explicit_generation_issue(
@@ -434,6 +766,7 @@ def test_declared_content_mismatch_fails_closed_instead_of_becoming_incomplete(
             access_obligations=obligations(),
             strategic_spines=spines(),
             context=current_asset_context(),
+            official_road_classification=None,
             configuration={"population_reach_evidence": configured},
             config_directory=tmp_path,
             as_at=None,
