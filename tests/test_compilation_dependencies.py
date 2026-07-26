@@ -28,6 +28,7 @@ def test_manifest_is_explicit_complete_and_records_component_digests() -> None:
     assert {
         "satn/__init__.py",
         "satn/compiler.py",
+        "satn/existing_alignment.py",
         "satn/routing.py",
         "satn/backbone.py",
         "satn/sources.py",
@@ -72,6 +73,22 @@ def test_network_selection_contract_is_a_controlled_compilation_component(
     changed = dependencies.compilation_dependency_manifest(package_root=root)
 
     assert "satn/network_selection.py" in {
+        component["path"] for component in original["components"]
+    }
+    assert changed["sha256"] != original["sha256"]
+
+
+def test_existing_alignment_contract_is_a_controlled_compilation_component(
+    tmp_path: Path,
+) -> None:
+    root = copied_compiler_tree(tmp_path)
+    original = dependencies.compilation_dependency_manifest(package_root=root)
+    module = root / "existing_alignment.py"
+    module.write_bytes(module.read_bytes() + b"\n# dependency-manifest regression probe\n")
+
+    changed = dependencies.compilation_dependency_manifest(package_root=root)
+
+    assert "satn/existing_alignment.py" in {
         component["path"] for component in original["components"]
     }
     assert changed["sha256"] != original["sha256"]

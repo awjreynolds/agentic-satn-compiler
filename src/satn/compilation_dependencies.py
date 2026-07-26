@@ -43,6 +43,10 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
     "satn/cross_spine.py": ("module", "Cross-Spine Connector assembly"),
     "satn/ea_elevation.py": ("module", "governed elevation contract and sampling"),
     "satn/evidence.py": ("module", "network evidence derivation"),
+    "satn/existing_alignment.py": (
+        "module",
+        "Existing-Alignment Advantage evidence derivation and tie-break records",
+    ),
     "satn/identifiers.py": ("module", "stable compiled feature identifiers"),
     "satn/models.py": ("module", "Area Definition and compiled model semantics"),
     "satn/network_selection.py": (
