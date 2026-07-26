@@ -1,28 +1,29 @@
-"""Strict loaders for Preferred Strategic Alignment governed evidence.
+"""Strict, content-bound loaders for Preferred Strategic Alignment evidence.
 
-The loaders intentionally have a small, file-only boundary.  They do not
-discover files, retrieve data, infer access, or make safety or demand claims.
-Each configured artifact is read exactly once, SHA-256 checked before it is
-parsed, and retained as immutable lineage alongside the compiler input.
+The module is an adapter boundary, not a source-discovery layer. Every
+configured file is opened beneath one required base directory without
+following symlinks, read through the opened descriptor, SHA-256 checked before
+parsing, and parsed with a closed JSON schema.
 
-Supported formats are deliberately closed:
+Supported source schemas:
 
-* OA geometry and population-weighted-centroid artifacts are GeoJSON feature
-  collections with exactly ``type``, ``crs`` and ``features``. ``crs`` is
-  either ``EPSG:4326`` or ``EPSG:27700``; feature properties contain only
-  ``OA21CD``.
-* usual-resident counts are ``{"records": [{"OA21CD": ..., "usual_residents": ...}]}``.
-* school registers are ``{"schema": "satn-school-register/v1", "register":
-  {"source_name": ..., "as_of": ...}, "schools": [{"school_id": ...,
-  "name": ..., "phase": ...}]}``.
-* strategic-destination admissions are ``{"schema":
-  "satn-strategic-education-destination-admission/v1", "admissions":
-  [{"record_id": ..., "record_version": ..., "strategic_destination_id": ...,
-  "name": ..., "admitted_on": ..., "rationale": ...,
-  "review_trigger": ..., "access_evidence_ids": [...]}]}``.
+* OA geometry and population-weighted-centroid GeoJSON use exactly ``type``,
+  ``crs`` and ``features`` at the root. Each feature has only ``type``,
+  ``properties`` and ``geometry``; properties contain only ``OA21CD``.
+* usual-resident counts use
+  ``{"records": [{"OA21CD": ..., "usual_residents": ...}]}``.
+* school registers use ``satn-school-register/v1`` with explicit source,
+  authority, current/governed status, effective date and current school rows.
+* strategic admissions use
+  ``satn-strategic-education-destination-admission/v1`` with explicit
+  admission authority, disposition, current site identity/type/status and
+  access-point evidence.
 
-The absence of an optional configuration remains meaningful: no artifact is
-loaded and no source snapshot is invented.
+Population records are retained as immutable WKB/count tuples. The exposed
+GeoDataFrame is always a detached reconstruction, and the loader-owned compile
+adapter revalidates the bound frame and source fingerprints immediately before
+compilation. Education adapters similarly bind the approved
+``EducationAccessSourceSnapshot`` to exact artifact hashes and lineage.
 """
 
 from __future__ import annotations
@@ -30,21 +31,27 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
+import stat
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Final, Literal
 
 import geopandas as gpd
+from shapely import from_wkb
 from shapely.geometry import shape
 from shapely.geometry.base import BaseGeometry
 
 from satn.education_access import (
+    EducationAccessAssessment,
     EducationAccessSourceSnapshot,
+    OptionEducationEvidence,
     School,
     SchoolRegisterEvidence,
     StrategicEducationDestination,
+    SupplementaryPCTEvidence,
     assess_education_access,
 )
 from satn.network_selection import (
@@ -53,7 +60,13 @@ from satn.network_selection import (
     SchoolRegisterEvidenceConfig,
     StrategicEducationDestinationAdmissionConfig,
 )
-from satn.population_reach import PopulationReachColumns, PopulationReachSource
+from satn.population_reach import (
+    PopulationReachAssessment,
+    PopulationReachColumns,
+    PopulationReachProfile,
+    PopulationReachSource,
+    compile_population_reach,
+)
 from satn.runtime_governance_contract import canonical_sha256
 
 
@@ -62,17 +75,25 @@ class GovernedEvidenceLoadError(ValueError):
 
 
 _OA_ID: Final = re.compile(r"^[EWNS][0-9]{8}$")
+_STRICT_ID: Final = re.compile(r"^\S+$")
+_SHA256: Final = re.compile(r"^[0-9a-f]{64}$")
 _SUPPORTED_CRS: Final = frozenset({"EPSG:4326", "EPSG:27700"})
 _GEOJSON_ROOT_KEYS: Final = frozenset({"type", "crs", "features"})
 _REGISTER_SCHEMA: Final = "satn-school-register/v1"
 _ADMISSIONS_SCHEMA: Final = "satn-strategic-education-destination-admission/v1"
+_SCHOOL_REGISTER_MAX_AGE_DAYS: Final = 366
+_PWC_ASSOCIATION_RULE: Final = (
+    "same-OA record; point covered by OA polygon, or outside a concave/multipart "
+    "polygon only when inside its envelope and not covered by another OA"
+)
+_DESTINATION_TYPES: Final = frozenset({"college", "university", "other-non-school-education"})
 
 type JSONValue = dict[str, object] | list[object] | str | int | float | bool | None
 
 
 @dataclass(frozen=True)
 class GovernedArtifactLineage:
-    """The declared identity and verified byte identity of one loaded artifact."""
+    """Declared provenance and verified byte identity for one opened artifact."""
 
     source_id: str
     path: Path
@@ -82,24 +103,110 @@ class GovernedArtifactLineage:
     redistribution: Literal["public", "controlled", "aggregate-only"]
     content_sha256: str
 
+    def __post_init__(self) -> None:
+        for value, label in (
+            (self.source_id, "source_id"),
+            (self.release, "release"),
+            (self.licence, "licence"),
+        ):
+            _require_nonblank_text(value, label=label)
+        if not isinstance(self.path, Path) or not self.path.is_absolute():
+            raise GovernedEvidenceLoadError("verified artifact path must be absolute")
+        if type(self.effective_date) is not date:
+            raise GovernedEvidenceLoadError("effective_date must be an exact date")
+        if self.redistribution not in {"public", "controlled", "aggregate-only"}:
+            raise GovernedEvidenceLoadError("unsupported redistribution state")
+        if (
+            not isinstance(self.content_sha256, str)
+            or _SHA256.fullmatch(self.content_sha256) is None
+        ):
+            raise GovernedEvidenceLoadError("content_sha256 must be lowercase SHA-256")
+
+    def canonical(self) -> dict[str, object]:
+        return {
+            "source_id": self.source_id,
+            "path": self.path.as_posix(),
+            "release": self.release,
+            "effective_date": self.effective_date.isoformat(),
+            "licence": self.licence,
+            "redistribution": self.redistribution,
+            "content_sha256": self.content_sha256,
+        }
+
+
+@dataclass(frozen=True)
+class _PopulationReachBoundRecord:
+    oa_id: str
+    usual_residents: int
+    geometry_wkb: bytes
+    population_weighted_centroid_wkb: bytes
+
+    def canonical(self) -> dict[str, object]:
+        return {
+            "OA21CD": self.oa_id,
+            "usual_residents": self.usual_residents,
+            "geometry_wkb": self.geometry_wkb.hex(),
+            "population_weighted_centroid_wkb": (self.population_weighted_centroid_wkb.hex()),
+        }
+
 
 @dataclass(frozen=True)
 class PopulationReachEvidenceLoad:
-    """OA evidence in the exact ``PopulationReachSource``/column contract."""
+    """Immutable OA evidence bound to exact raw and canonical frame identities."""
 
     source: PopulationReachSource
-    output_areas: gpd.GeoDataFrame
     columns: PopulationReachColumns
     artifact_lineage: tuple[GovernedArtifactLineage, ...]
+    crs: str
+    frame_content_sha256: str
+    _records: tuple[_PopulationReachBoundRecord, ...]
+
+    def __post_init__(self) -> None:
+        _verified_population_frame(self)
+
+    @property
+    def output_areas(self) -> gpd.GeoDataFrame:
+        """Return a detached frame; mutations cannot alter the bound evidence."""
+
+        return _verified_population_frame(self)
 
 
 @dataclass(frozen=True)
 class EducationAccessEvidenceLoad:
-    """Current school/admission evidence in the education source-snapshot contract."""
+    """Approved source snapshot bound to exact register/admission artifacts."""
 
     source_snapshot: EducationAccessSourceSnapshot
     school_register_lineage: GovernedArtifactLineage
     admissions_lineage: GovernedArtifactLineage | None
+    as_at: date
+    school_register_max_age_days: int
+    governed_source_fingerprint: str
+
+    def __post_init__(self) -> None:
+        _verify_education_load(self)
+
+
+@dataclass(frozen=True)
+class GovernedEducationAccessAssessment:
+    """Education assessment retaining exact raw-source identity downstream."""
+
+    assessment: EducationAccessAssessment
+    artifact_lineage: tuple[GovernedArtifactLineage, ...]
+    as_at: date
+    school_register_max_age_days: int
+    governed_input_fingerprint: str
+
+    def __post_init__(self) -> None:
+        expected = _governed_education_fingerprint(
+            self.assessment.source_snapshot,
+            self.artifact_lineage,
+            as_at=self.as_at,
+            school_register_max_age_days=self.school_register_max_age_days,
+        )
+        if self.governed_input_fingerprint != expected:
+            raise GovernedEvidenceLoadError(
+                "governed education assessment source fingerprint mismatch"
+            )
 
 
 def load_population_reach_evidence(
@@ -107,25 +214,24 @@ def load_population_reach_evidence(
     *,
     base_directory: Path | None = None,
 ) -> PopulationReachEvidenceLoad | None:
-    """Load all three declared OA artifacts, or preserve an absent configuration.
-
-    No partial join is accepted: ONS OA IDs must be canonical, unique, and
-    identical across geometry, population-weighted centroids and counts.
-    """
+    """Load the exact three-way governed OA join, or preserve absent config."""
 
     if evidence is None:
         return None
+    base = _required_base_directory(base_directory)
     geometry_lineage, geometry_payload = _read_artifact(
-        evidence.output_area_geometry, base_directory=base_directory
+        evidence.output_area_geometry, base_directory=base
     )
     centroid_lineage, centroid_payload = _read_artifact(
-        evidence.population_weighted_centroids, base_directory=base_directory
+        evidence.population_weighted_centroids, base_directory=base
     )
     counts_lineage, counts_payload = _read_artifact(
-        evidence.usual_resident_counts, base_directory=base_directory
+        evidence.usual_resident_counts, base_directory=base
     )
     geometry_rows, crs = _load_geojson_rows(
-        geometry_payload, label="output-area geometry", geometry_types={"Polygon", "MultiPolygon"}
+        geometry_payload,
+        label="output-area geometry",
+        geometry_types={"Polygon", "MultiPolygon"},
     )
     centroid_rows, centroid_crs = _load_geojson_rows(
         centroid_payload,
@@ -144,38 +250,61 @@ def load_population_reach_evidence(
         raise GovernedEvidenceLoadError(
             "OA artifacts must have a complete exact join on canonical OA21CD identifiers"
         )
-    rows = [
-        {
-            "OA21CD": oa_id,
-            "usual_residents": counts[oa_id],
-            "population_weighted_centroid": centroid_rows[oa_id],
-            "geometry": geometry_rows[oa_id],
-        }
+    _validate_pwc_associations(geometry_rows, centroid_rows)
+    records = tuple(
+        _PopulationReachBoundRecord(
+            oa_id=oa_id,
+            usual_residents=counts[oa_id],
+            geometry_wkb=bytes(geometry_rows[oa_id].wkb),
+            population_weighted_centroid_wkb=bytes(centroid_rows[oa_id].wkb),
+        )
         for oa_id in sorted(geometry_ids)
-    ]
-    output_areas = gpd.GeoDataFrame(rows, geometry="geometry", crs=crs)
+    )
+    frame_fingerprint = _population_frame_fingerprint(crs, records)
     lineages = (geometry_lineage, centroid_lineage, counts_lineage)
-    source = _population_source(lineages)
+    source = _population_source(lineages, frame_fingerprint)
     return PopulationReachEvidenceLoad(
         source=source,
-        output_areas=output_areas,
         columns=PopulationReachColumns(),
         artifact_lineage=lineages,
+        crs=crs,
+        frame_content_sha256=frame_fingerprint,
+        _records=records,
+    )
+
+
+def compile_population_reach_from_evidence(
+    evidence: PopulationReachEvidenceLoad,
+    route_options: gpd.GeoDataFrame,
+    area_definition: gpd.GeoDataFrame,
+    *,
+    profile: PopulationReachProfile | None = None,
+) -> PopulationReachAssessment:
+    """Reverify immutable OA/source binding immediately before compilation."""
+
+    if not isinstance(evidence, PopulationReachEvidenceLoad):
+        raise GovernedEvidenceLoadError(
+            "population reach compilation requires a bound evidence load"
+        )
+    frame = _verified_population_frame(evidence)
+    return compile_population_reach(
+        route_options,
+        frame,
+        area_definition,
+        source=evidence.source,
+        profile=profile,
+        columns=evidence.columns,
     )
 
 
 def load_education_access_evidence(
     school_register_evidence: SchoolRegisterEvidenceConfig | None,
-    strategic_destination_admissions: StrategicEducationDestinationAdmissionConfig | None = None,
+    strategic_destination_admissions: (StrategicEducationDestinationAdmissionConfig | None) = None,
     *,
     base_directory: Path | None = None,
+    as_at: date | None = None,
 ) -> EducationAccessEvidenceLoad | None:
-    """Load current register/admissions data into an evidence-only source snapshot.
-
-    The returned snapshot has no option evidence and no implied result about
-    safety, suitability, demand, or independent access.  Such claims require
-    separately typed input to ``assess_education_access``.
-    """
+    """Load current governed education sources into a raw-identity binding."""
 
     if school_register_evidence is None:
         if strategic_destination_admissions is not None:
@@ -183,15 +312,30 @@ def load_education_access_evidence(
                 "strategic destination admissions require current school-register evidence"
             )
         return None
+    base = _required_base_directory(base_directory)
+    assessment_date = _required_assessment_date(as_at)
     register_lineage, register_payload = _read_artifact(
-        school_register_evidence.school_register, base_directory=base_directory
+        school_register_evidence.school_register,
+        base_directory=base,
+    )
+    _require_current_artifact(
+        register_lineage,
+        as_at=assessment_date,
+        max_age_days=_SCHOOL_REGISTER_MAX_AGE_DAYS,
+        label="school register",
     )
     register, schools = _load_school_register(register_payload, register_lineage)
     admissions_lineage: GovernedArtifactLineage | None = None
     destinations: tuple[StrategicEducationDestination, ...] = ()
     if strategic_destination_admissions is not None:
         admissions_lineage, admissions_payload = _read_artifact(
-            strategic_destination_admissions.admissions, base_directory=base_directory
+            strategic_destination_admissions.admissions,
+            base_directory=base,
+        )
+        _require_not_future(
+            admissions_lineage.effective_date,
+            as_at=assessment_date,
+            label="strategic admissions effective_date",
         )
         destinations = _load_admissions(admissions_payload, admissions_lineage)
     assessment = assess_education_access(
@@ -200,32 +344,84 @@ def load_education_access_evidence(
         strategic_destinations=destinations,
         option_evidence=(),
     )
+    lineages = _education_lineages(register_lineage, admissions_lineage)
+    fingerprint = _governed_education_fingerprint(
+        assessment.source_snapshot,
+        lineages,
+        as_at=assessment_date,
+        school_register_max_age_days=_SCHOOL_REGISTER_MAX_AGE_DAYS,
+    )
     return EducationAccessEvidenceLoad(
         source_snapshot=assessment.source_snapshot,
         school_register_lineage=register_lineage,
         admissions_lineage=admissions_lineage,
+        as_at=assessment_date,
+        school_register_max_age_days=_SCHOOL_REGISTER_MAX_AGE_DAYS,
+        governed_source_fingerprint=fingerprint,
+    )
+
+
+def assess_education_access_from_evidence(
+    evidence: EducationAccessEvidenceLoad,
+    *,
+    option_evidence: tuple[OptionEducationEvidence, ...],
+    option_ids: tuple[str, ...] = (),
+    supplementary_pct_evidence: tuple[SupplementaryPCTEvidence, ...] = (),
+) -> GovernedEducationAccessAssessment:
+    """Assess options while retaining and reverifying exact raw-source identity."""
+
+    if not isinstance(evidence, EducationAccessEvidenceLoad):
+        raise GovernedEvidenceLoadError("education assessment requires a bound evidence load")
+    _verify_education_load(evidence)
+    source = evidence.source_snapshot
+    assessment = assess_education_access(
+        register_evidence=source.register_evidence,
+        schools=source.schools,
+        strategic_destinations=source.strategic_education_destinations,
+        option_evidence=option_evidence,
+        option_ids=option_ids,
+        supplementary_pct_evidence=supplementary_pct_evidence,
+    )
+    lineages = _education_lineages(
+        evidence.school_register_lineage,
+        evidence.admissions_lineage,
+    )
+    return GovernedEducationAccessAssessment(
+        assessment=assessment,
+        artifact_lineage=lineages,
+        as_at=evidence.as_at,
+        school_register_max_age_days=evidence.school_register_max_age_days,
+        governed_input_fingerprint=_governed_education_fingerprint(
+            assessment.source_snapshot,
+            lineages,
+            as_at=evidence.as_at,
+            school_register_max_age_days=evidence.school_register_max_age_days,
+        ),
     )
 
 
 def _read_artifact(
     artifact: GovernedEvidenceArtifactConfig,
     *,
-    base_directory: Path | None,
+    base_directory: Path,
 ) -> tuple[GovernedArtifactLineage, JSONValue]:
-    path = _resolve_declared_artifact_path(artifact.path, base_directory=base_directory)
-    try:
-        content = path.read_bytes()
-    except OSError as error:
-        raise GovernedEvidenceLoadError(
-            f"declared governed artifact cannot be read: {path}"
-        ) from error
+    path, content = _read_confined_regular_file(
+        artifact.path,
+        base_directory=base_directory,
+    )
     actual_sha256 = hashlib.sha256(content).hexdigest()
     if actual_sha256 != artifact.content_sha256:
         raise GovernedEvidenceLoadError(
             f"declared governed artifact SHA-256 mismatch for {artifact.source_id!r}"
         )
     try:
-        payload = json.loads(content.decode("utf-8"), parse_constant=_reject_json_constant)
+        payload = json.loads(
+            content.decode("utf-8"),
+            parse_constant=_reject_json_constant,
+            object_pairs_hook=_unique_json_object,
+        )
+    except GovernedEvidenceLoadError:
+        raise
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         raise GovernedEvidenceLoadError(
             f"declared governed artifact is not strict UTF-8 JSON: {artifact.source_id!r}"
@@ -245,39 +441,191 @@ def _read_artifact(
     )
 
 
-def _resolve_declared_artifact_path(path: Path, *, base_directory: Path | None) -> Path:
-    if not isinstance(path, Path):  # defensive: Pydantic normally guarantees this
+def _required_base_directory(base_directory: Path | None) -> Path:
+    if not isinstance(base_directory, Path):
+        raise GovernedEvidenceLoadError(
+            "configured governed artifacts require an explicit base_directory"
+        )
+    if not base_directory.is_absolute():
+        raise GovernedEvidenceLoadError("base_directory must be absolute")
+    if ".." in base_directory.parts:
+        raise GovernedEvidenceLoadError("base_directory must not contain parent traversal")
+    return base_directory
+
+
+def _read_confined_regular_file(
+    configured_path: Path,
+    *,
+    base_directory: Path,
+) -> tuple[Path, bytes]:
+    """Open one confined file without following any symlink component.
+
+    Directory descriptors plus ``O_NOFOLLOW`` close path-resolution races on
+    POSIX. A before/after ``fstat`` also rejects mutation during the read.
+    """
+
+    if not isinstance(configured_path, Path):
         raise GovernedEvidenceLoadError("governed artifact path must be a Path")
-    if path.is_absolute():
-        candidate = path
-    elif base_directory is not None:
-        candidate = base_directory / path
-    else:
-        raise GovernedEvidenceLoadError("relative governed artifact path requires base_directory")
+    if ".." in configured_path.parts:
+        raise GovernedEvidenceLoadError(
+            "declared governed artifact path must not contain parent traversal"
+        )
+    base = Path(os.path.abspath(base_directory))
+    candidate = (
+        Path(os.path.abspath(configured_path))
+        if configured_path.is_absolute()
+        else base / configured_path
+    )
     try:
-        resolved = candidate.resolve(strict=True)
+        relative = candidate.relative_to(base)
+    except ValueError as error:
+        raise GovernedEvidenceLoadError(
+            "declared governed artifact path escapes base_directory"
+        ) from error
+    if not relative.parts:
+        raise GovernedEvidenceLoadError("declared governed artifact path must name a direct file")
+    base_fd = _open_absolute_directory_without_symlinks(base)
+    directory_fd = base_fd
+    try:
+        for component in relative.parts[:-1]:
+            next_fd = _open_child_directory_without_symlinks(
+                directory_fd,
+                component,
+            )
+            if directory_fd != base_fd:
+                os.close(directory_fd)
+            directory_fd = next_fd
+        content = _read_regular_file_descriptor(
+            directory_fd,
+            relative.parts[-1],
+        )
+    finally:
+        if directory_fd != base_fd:
+            os.close(directory_fd)
+        os.close(base_fd)
+    return candidate, content
+
+
+def _open_absolute_directory_without_symlinks(path: Path) -> int:
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = os.open(path.anchor, directory_flags)
+    try:
+        for component in path.parts[1:]:
+            next_descriptor = _open_child_directory_without_symlinks(
+                descriptor,
+                component,
+            )
+            os.close(descriptor)
+            descriptor = next_descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _open_child_directory_without_symlinks(parent_fd: int, component: str) -> int:
+    try:
+        metadata = os.stat(component, dir_fd=parent_fd, follow_symlinks=False)
+        if stat.S_ISLNK(metadata.st_mode):
+            raise GovernedEvidenceLoadError(
+                "governed artifact path must not contain symlink components"
+            )
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        descriptor = os.open(component, flags, dir_fd=parent_fd)
+        opened = os.fstat(descriptor)
+        if not stat.S_ISDIR(opened.st_mode):
+            os.close(descriptor)
+            raise GovernedEvidenceLoadError(
+                "governed artifact parent component must be a directory"
+            )
+        return descriptor
+    except GovernedEvidenceLoadError:
+        raise
     except OSError as error:
         raise GovernedEvidenceLoadError(
-            f"declared governed artifact path does not resolve: {candidate}"
+            "governed artifact directory cannot be opened without symlinks"
         ) from error
-    if candidate.is_symlink():
-        raise GovernedEvidenceLoadError("declared governed artifact path must not be a symlink")
-    if base_directory is not None:
-        root = base_directory.resolve(strict=True)
-        if not resolved.is_relative_to(root):
+
+
+def _read_regular_file_descriptor(parent_fd: int, component: str) -> bytes:
+    try:
+        metadata = os.stat(component, dir_fd=parent_fd, follow_symlinks=False)
+        if stat.S_ISLNK(metadata.st_mode):
+            raise GovernedEvidenceLoadError("declared governed artifact path must not be a symlink")
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_BINARY", 0)
+        )
+        descriptor = os.open(component, flags, dir_fd=parent_fd)
+    except GovernedEvidenceLoadError:
+        raise
+    except OSError as error:
+        raise GovernedEvidenceLoadError(
+            "declared governed artifact cannot be opened without symlinks"
+        ) from error
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
             raise GovernedEvidenceLoadError(
-                "declared governed artifact path escapes base_directory"
+                "declared governed artifact path must name a regular file"
             )
-    if not resolved.is_file():
-        raise GovernedEvidenceLoadError("declared governed artifact path must name a regular file")
-    return resolved
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
+        if (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+        ):
+            raise GovernedEvidenceLoadError(
+                "declared governed artifact changed while it was being read"
+            )
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
 
 
 def _reject_json_constant(value: str) -> None:
-    raise ValueError(f"non-finite JSON value {value!r} is forbidden")
+    raise GovernedEvidenceLoadError(f"non-finite JSON value {value!r} is forbidden")
 
 
-def _require_exact_keys(value: object, keys: frozenset[str], *, label: str) -> dict[str, object]:
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise GovernedEvidenceLoadError(f"strict JSON object contains duplicate member {key!r}")
+        result[key] = value
+    return result
+
+
+def _require_exact_keys(
+    value: object,
+    keys: frozenset[str],
+    *,
+    label: str,
+) -> dict[str, object]:
     if not isinstance(value, dict) or set(value) != keys:
         raise GovernedEvidenceLoadError(f"{label} must contain exactly: {', '.join(sorted(keys))}")
     if any(not isinstance(key, str) for key in value):
@@ -317,7 +665,10 @@ def _load_geojson_rows(
         oa_id = _canonical_oa_id(properties["OA21CD"], label=label)
         if oa_id in rows:
             raise GovernedEvidenceLoadError(f"{label} contains duplicate OA21CD {oa_id!r}")
-        geometry = _parse_geometry(item["geometry"], label=f"{label} feature {position}")
+        geometry = _parse_geometry(
+            item["geometry"],
+            label=f"{label} feature {position}",
+        )
         if geometry.geom_type not in geometry_types:
             raise GovernedEvidenceLoadError(
                 f"{label} has unsupported geometry type {geometry.geom_type!r}"
@@ -330,7 +681,13 @@ def _load_geojson_rows(
 
 def _parse_geometry(value: object, *, label: str) -> BaseGeometry:
     geometry_data = _require_exact_keys(
-        value, frozenset({"type", "coordinates"}), label=f"{label} geometry"
+        value,
+        frozenset({"type", "coordinates"}),
+        label=f"{label} geometry",
+    )
+    _require_real_coordinate_tree(
+        geometry_data["coordinates"],
+        label=f"{label} geometry coordinates",
     )
     try:
         geometry = shape(geometry_data)
@@ -338,12 +695,39 @@ def _parse_geometry(value: object, *, label: str) -> BaseGeometry:
         raise GovernedEvidenceLoadError(f"{label} has malformed GeoJSON geometry") from error
     if geometry.is_empty or not geometry.is_valid:
         raise GovernedEvidenceLoadError(f"{label} geometry must be non-empty and valid")
-    _require_finite_json(geometry_data, label=label)
     return geometry
 
 
+def _require_real_coordinate_tree(value: object, *, label: str) -> None:
+    if not isinstance(value, (list, tuple)) or not value:
+        raise GovernedEvidenceLoadError(f"{label} must be a non-empty coordinate array")
+    if all(not isinstance(item, (list, tuple)) for item in value):
+        if len(value) not in {2, 3}:
+            raise GovernedEvidenceLoadError(
+                f"{label} positions must contain two or three ordinates"
+            )
+        for coordinate in value:
+            if type(coordinate) not in {int, float}:
+                raise GovernedEvidenceLoadError(f"{label} must contain real non-boolean numbers")
+            try:
+                finite = math.isfinite(float(coordinate))
+            except (OverflowError, ValueError):
+                finite = False
+            if not finite:
+                raise GovernedEvidenceLoadError(f"{label} must contain finite real numbers")
+        return
+    if any(not isinstance(item, (list, tuple)) for item in value):
+        raise GovernedEvidenceLoadError(f"{label} must have a consistent coordinate nesting level")
+    for item in value:
+        _require_real_coordinate_tree(item, label=label)
+
+
 def _load_usual_resident_counts(payload: JSONValue) -> dict[str, int]:
-    root = _require_exact_keys(payload, frozenset({"records"}), label="usual-resident counts")
+    root = _require_exact_keys(
+        payload,
+        frozenset({"records"}),
+        label="usual-resident counts",
+    )
     records = root["records"]
     if not isinstance(records, list) or not records:
         raise GovernedEvidenceLoadError(
@@ -356,7 +740,10 @@ def _load_usual_resident_counts(payload: JSONValue) -> dict[str, int]:
             frozenset({"OA21CD", "usual_residents"}),
             label=f"usual-resident count record {position}",
         )
-        oa_id = _canonical_oa_id(row["OA21CD"], label="usual-resident counts")
+        oa_id = _canonical_oa_id(
+            row["OA21CD"],
+            label="usual-resident counts",
+        )
         residents = row["usual_residents"]
         if type(residents) is not int or residents < 0:
             raise GovernedEvidenceLoadError("usual_residents must be a whole non-negative integer")
@@ -368,8 +755,38 @@ def _load_usual_resident_counts(payload: JSONValue) -> dict[str, int]:
     return result
 
 
+def _validate_pwc_associations(
+    geometries: dict[str, BaseGeometry],
+    centroids: dict[str, BaseGeometry],
+) -> None:
+    """Reject clear OA/PWC swaps while permitting concave/multipart centroids."""
+
+    for oa_id in sorted(geometries):
+        polygon = geometries[oa_id]
+        point = centroids[oa_id]
+        if polygon.covers(point):
+            continue
+        covering_other_ids = [
+            other_id
+            for other_id, other_polygon in geometries.items()
+            if other_id != oa_id and other_polygon.covers(point)
+        ]
+        if covering_other_ids:
+            raise GovernedEvidenceLoadError(
+                f"population-weighted centroid for {oa_id!r} is associated with "
+                f"another OA geometry: {', '.join(sorted(covering_other_ids))}"
+            )
+        if polygon.envelope.covers(point):
+            continue
+        raise GovernedEvidenceLoadError(
+            f"population-weighted centroid for {oa_id!r} is clearly outside "
+            "its governed OA geometry association"
+        )
+
+
 def _load_school_register(
-    payload: JSONValue, lineage: GovernedArtifactLineage
+    payload: JSONValue,
+    lineage: GovernedArtifactLineage,
 ) -> tuple[SchoolRegisterEvidence, tuple[School, ...]]:
     root = _require_exact_keys(
         payload,
@@ -379,17 +796,40 @@ def _load_school_register(
     if root["schema"] != _REGISTER_SCHEMA:
         raise GovernedEvidenceLoadError("school register has an unsupported schema")
     register_data = _require_exact_keys(
-        root["register"], frozenset({"source_name", "as_of"}), label="school register metadata"
+        root["register"],
+        frozenset(
+            {
+                "source_id",
+                "source_name",
+                "authority_id",
+                "as_of",
+                "governed",
+                "current",
+                "status",
+            }
+        ),
+        label="school register metadata",
+    )
+    if register_data["source_id"] != lineage.source_id:
+        raise GovernedEvidenceLoadError(
+            "school register source_id must match declared artifact source_id"
+        )
+    _require_strict_identifier(
+        register_data["authority_id"],
+        label="school register authority_id",
     )
     if register_data["as_of"] != lineage.effective_date.isoformat():
         raise GovernedEvidenceLoadError(
             "school register as_of must equal declared artifact effective_date"
         )
-    if (
-        not isinstance(register_data["source_name"], str)
-        or not register_data["source_name"].strip()
-    ):
-        raise GovernedEvidenceLoadError("school register source_name must be non-blank")
+    if register_data["governed"] is not True:
+        raise GovernedEvidenceLoadError("school register governed authority must be literal true")
+    if register_data["current"] is not True or register_data["status"] != "current":
+        raise GovernedEvidenceLoadError("school register must explicitly declare current status")
+    _require_nonblank_text(
+        register_data["source_name"],
+        label="school register source_name",
+    )
     schools_data = root["schools"]
     if not isinstance(schools_data, list) or not schools_data:
         raise GovernedEvidenceLoadError("school register must contain a non-empty schools array")
@@ -398,9 +838,13 @@ def _load_school_register(
     for position, record in enumerate(schools_data):
         row = _require_exact_keys(
             record,
-            frozenset({"school_id", "name", "phase"}),
+            frozenset({"school_id", "name", "phase", "record_status"}),
             label=f"school register record {position}",
         )
+        if row["record_status"] != "current":
+            raise GovernedEvidenceLoadError(
+                f"school register record {position} must have current status"
+            )
         try:
             school = School(
                 school_id=row["school_id"],
@@ -423,6 +867,8 @@ def _load_school_register(
             evidence_id=lineage.source_id,
             source_name=register_data["source_name"],
             as_of=lineage.effective_date,
+            governed=register_data["governed"],
+            current=register_data["current"],
         )
     except Exception as error:
         raise GovernedEvidenceLoadError("school register metadata is malformed") from error
@@ -430,13 +876,37 @@ def _load_school_register(
 
 
 def _load_admissions(
-    payload: JSONValue, lineage: GovernedArtifactLineage
+    payload: JSONValue,
+    lineage: GovernedArtifactLineage,
 ) -> tuple[StrategicEducationDestination, ...]:
     root = _require_exact_keys(
-        payload, frozenset({"schema", "admissions"}), label="strategic admissions"
+        payload,
+        frozenset({"schema", "authority", "admissions"}),
+        label="strategic admissions",
     )
     if root["schema"] != _ADMISSIONS_SCHEMA:
         raise GovernedEvidenceLoadError("strategic admissions has an unsupported schema")
+    authority = _require_exact_keys(
+        root["authority"],
+        frozenset({"authority_id", "source_id", "governed", "effective_date"}),
+        label="strategic admissions authority",
+    )
+    authority_id = _require_strict_identifier(
+        authority["authority_id"],
+        label="strategic admissions authority_id",
+    )
+    if authority["source_id"] != lineage.source_id:
+        raise GovernedEvidenceLoadError(
+            "strategic admissions source_id must match declared artifact source_id"
+        )
+    if authority["governed"] is not True:
+        raise GovernedEvidenceLoadError(
+            "strategic admissions governed authority must be literal true"
+        )
+    if authority["effective_date"] != lineage.effective_date.isoformat():
+        raise GovernedEvidenceLoadError(
+            "strategic admissions authority effective_date must match artifact"
+        )
     records = root["admissions"]
     if not isinstance(records, list):
         raise GovernedEvidenceLoadError("strategic admissions must contain an admissions array")
@@ -448,15 +918,57 @@ def _load_admissions(
             "record_id",
             "record_version",
             "strategic_destination_id",
+            "site_id",
+            "destination_type",
             "name",
+            "site_status",
+            "disposition",
             "admitted_on",
+            "admission_authority_id",
             "rationale",
             "review_trigger",
-            "access_evidence_ids",
+            "access_point_evidence_ids",
         }
     )
     for position, record in enumerate(records):
-        row = _require_exact_keys(record, expected, label=f"strategic admission record {position}")
+        row = _require_exact_keys(
+            record,
+            expected,
+            label=f"strategic admission record {position}",
+        )
+        if row["site_id"] != row["strategic_destination_id"]:
+            raise GovernedEvidenceLoadError(
+                f"strategic admission record {position} site identity mismatch"
+            )
+        if row["destination_type"] not in _DESTINATION_TYPES:
+            raise GovernedEvidenceLoadError(
+                f"strategic admission record {position} has unsupported destination_type"
+            )
+        if row["site_status"] != "current":
+            raise GovernedEvidenceLoadError(
+                f"strategic admission record {position} must be a current site"
+            )
+        if row["disposition"] != "admitted":
+            raise GovernedEvidenceLoadError(
+                f"strategic admission record {position} must have admitted disposition"
+            )
+        if row["admission_authority_id"] != authority_id:
+            raise GovernedEvidenceLoadError(
+                f"strategic admission record {position} authority mismatch"
+            )
+        admitted_on = _parse_exact_date(
+            row["admitted_on"],
+            label=f"strategic admission record {position} admitted_on",
+        )
+        if admitted_on > lineage.effective_date:
+            raise GovernedEvidenceLoadError(
+                f"strategic admission record {position} admitted_on is after "
+                "the artifact effective_date"
+            )
+        access_ids = _strict_identifier_list(
+            row["access_point_evidence_ids"],
+            label=f"strategic admission record {position} access_point_evidence_ids",
+        )
         try:
             destination = StrategicEducationDestination(
                 record_id=row["record_id"],
@@ -464,13 +976,12 @@ def _load_admissions(
                 strategic_destination_id=row["strategic_destination_id"],
                 name=row["name"],
                 source_evidence_id=lineage.source_id,
-                admitted_on=row["admitted_on"],
+                admitted_on=admitted_on,
                 rationale=row["rationale"],
                 admission_evidence_ids=(lineage.source_id,),
                 review_trigger=row["review_trigger"],
-                access_evidence_ids=tuple(row["access_evidence_ids"])
-                if isinstance(row["access_evidence_ids"], list)
-                else (),
+                access_evidence_ids=access_ids,
+                governed=authority["governed"],
             )
         except Exception as error:
             raise GovernedEvidenceLoadError(
@@ -482,43 +993,325 @@ def _load_admissions(
             )
         if destination.strategic_destination_id in destination_ids:
             raise GovernedEvidenceLoadError(
-                "strategic admissions contains duplicate strategic_destination_id "
+                "strategic admissions contains duplicate "
+                "strategic_destination_id "
                 f"{destination.strategic_destination_id!r}"
             )
         record_ids.add(destination.record_id)
         destination_ids.add(destination.strategic_destination_id)
         destinations.append(destination)
-    return tuple(sorted(destinations, key=lambda item: item.strategic_destination_id))
+    return tuple(
+        sorted(
+            destinations,
+            key=lambda item: item.strategic_destination_id,
+        )
+    )
 
 
-def _population_source(lineages: tuple[GovernedArtifactLineage, ...]) -> PopulationReachSource:
+def _population_frame_fingerprint(
+    crs: str,
+    records: tuple[_PopulationReachBoundRecord, ...],
+) -> str:
+    return canonical_sha256(
+        {
+            "schema": "satn-population-reach-bound-frame/v1",
+            "crs": crs,
+            "pwc_association_rule": _PWC_ASSOCIATION_RULE,
+            "records": [record.canonical() for record in records],
+        }
+    )
+
+
+def _population_source(
+    lineages: tuple[GovernedArtifactLineage, ...],
+    frame_content_sha256: str,
+) -> PopulationReachSource:
     content_sha256 = canonical_sha256(
-        [
-            {
-                "source_id": item.source_id,
-                "content_sha256": item.content_sha256,
-                "release": item.release,
-                "effective_date": item.effective_date.isoformat(),
-                "licence": item.licence,
-                "redistribution": item.redistribution,
-            }
-            for item in lineages
-        ]
+        {
+            "schema": "satn-population-reach-governed-binding/v1",
+            "artifacts": [item.canonical() for item in lineages],
+            "frame_content_sha256": frame_content_sha256,
+        }
     )
     return PopulationReachSource(
         source_id="population-reach-governed-artifacts",
         release="; ".join(item.release for item in lineages),
         effective_date=max(item.effective_date for item in lineages),
-        licence="multiple governed artifact licences; inspect artifact_lineage",
+        licence=("multiple governed artifact licences; inspect artifact_lineage"),
         permitted_uses=("population-reach-corridor-comparison",),
-        known_limitations=("whole-OA resident counts are not demand or accessibility evidence",),
-        transformation_lineage=tuple(
-            f"{item.source_id}:{item.content_sha256}:{item.redistribution}" for item in lineages
+        known_limitations=(
+            "whole-OA resident counts are not demand or accessibility evidence",
+            f"PWC association rule: {_PWC_ASSOCIATION_RULE}",
+        ),
+        transformation_lineage=(
+            *(f"{item.source_id}:{item.content_sha256}:{item.redistribution}" for item in lineages),
+            f"canonical-frame:{frame_content_sha256}",
         ),
         source_uri="governed-artifact://population-reach",
         version="satn-population-reach-evidence-loader/v1",
         content_sha256=content_sha256,
     )
+
+
+def _verified_population_frame(
+    evidence: PopulationReachEvidenceLoad,
+) -> gpd.GeoDataFrame:
+    if evidence.crs not in _SUPPORTED_CRS:
+        raise GovernedEvidenceLoadError("bound population evidence has unsupported CRS")
+    if not evidence._records:
+        raise GovernedEvidenceLoadError("bound population evidence must contain records")
+    oa_ids: set[str] = set()
+    rows: list[dict[str, object]] = []
+    geometries: dict[str, BaseGeometry] = {}
+    centroids: dict[str, BaseGeometry] = {}
+    for record in evidence._records:
+        oa_id = _canonical_oa_id(
+            record.oa_id,
+            label="bound population evidence",
+        )
+        if oa_id in oa_ids:
+            raise GovernedEvidenceLoadError(
+                f"bound population evidence contains duplicate OA21CD {oa_id!r}"
+            )
+        oa_ids.add(oa_id)
+        if type(record.usual_residents) is not int or record.usual_residents < 0:
+            raise GovernedEvidenceLoadError(
+                "bound usual_residents must be whole non-negative integers"
+            )
+        geometry = _bound_wkb_geometry(
+            record.geometry_wkb,
+            label=f"bound OA geometry {oa_id}",
+            geometry_types={"Polygon", "MultiPolygon"},
+        )
+        centroid = _bound_wkb_geometry(
+            record.population_weighted_centroid_wkb,
+            label=f"bound PWC geometry {oa_id}",
+            geometry_types={"Point"},
+        )
+        geometries[oa_id] = geometry
+        centroids[oa_id] = centroid
+        rows.append(
+            {
+                "OA21CD": oa_id,
+                "usual_residents": record.usual_residents,
+                "population_weighted_centroid": centroid,
+                "geometry": geometry,
+            }
+        )
+    _validate_pwc_associations(geometries, centroids)
+    expected_frame = _population_frame_fingerprint(
+        evidence.crs,
+        evidence._records,
+    )
+    if evidence.frame_content_sha256 != expected_frame:
+        raise GovernedEvidenceLoadError("bound population frame content fingerprint mismatch")
+    expected_source = _population_source(
+        evidence.artifact_lineage,
+        expected_frame,
+    )
+    if evidence.source != expected_source:
+        raise GovernedEvidenceLoadError(
+            "bound PopulationReachSource does not match exact frame and lineage"
+        )
+    if evidence.columns != PopulationReachColumns():
+        raise GovernedEvidenceLoadError(
+            "bound population evidence requires the approved column contract"
+        )
+    return gpd.GeoDataFrame(rows, geometry="geometry", crs=evidence.crs)
+
+
+def _bound_wkb_geometry(
+    value: bytes,
+    *,
+    label: str,
+    geometry_types: set[str],
+) -> BaseGeometry:
+    if not isinstance(value, bytes) or not value:
+        raise GovernedEvidenceLoadError(f"{label} must be immutable WKB bytes")
+    try:
+        geometry = from_wkb(value)
+    except Exception as error:
+        raise GovernedEvidenceLoadError(f"{label} has malformed WKB") from error
+    if (
+        not isinstance(geometry, BaseGeometry)
+        or geometry.geom_type not in geometry_types
+        or geometry.is_empty
+        or not geometry.is_valid
+    ):
+        raise GovernedEvidenceLoadError(f"{label} must be a valid non-empty approved geometry")
+    interface = geometry.__geo_interface__
+    _require_real_coordinate_tree(
+        interface["coordinates"],
+        label=f"{label} coordinates",
+    )
+    return geometry
+
+
+def _education_lineages(
+    school_register: GovernedArtifactLineage,
+    admissions: GovernedArtifactLineage | None,
+) -> tuple[GovernedArtifactLineage, ...]:
+    return (school_register,) if admissions is None else (school_register, admissions)
+
+
+def _governed_education_fingerprint(
+    snapshot: EducationAccessSourceSnapshot,
+    lineages: tuple[GovernedArtifactLineage, ...],
+    *,
+    as_at: date,
+    school_register_max_age_days: int,
+) -> str:
+    return canonical_sha256(
+        {
+            "schema": "satn-governed-education-source-binding/v1",
+            "education_source_snapshot_fingerprint": (snapshot.source_snapshot_fingerprint),
+            "as_at": as_at.isoformat(),
+            "school_register_max_age_days": school_register_max_age_days,
+            "artifacts": [item.canonical() for item in lineages],
+        }
+    )
+
+
+def _verify_education_load(evidence: EducationAccessEvidenceLoad) -> None:
+    if type(evidence.as_at) is not date:
+        raise GovernedEvidenceLoadError("bound education source requires an exact as_at date")
+    if (
+        type(evidence.school_register_max_age_days) is not int
+        or evidence.school_register_max_age_days <= 0
+    ):
+        raise GovernedEvidenceLoadError(
+            "bound education source requires a positive freshness window"
+        )
+    _require_current_artifact(
+        evidence.school_register_lineage,
+        as_at=evidence.as_at,
+        max_age_days=evidence.school_register_max_age_days,
+        label="school register",
+    )
+    if evidence.admissions_lineage is not None:
+        _require_not_future(
+            evidence.admissions_lineage.effective_date,
+            as_at=evidence.as_at,
+            label="strategic admissions effective_date",
+        )
+    try:
+        snapshot = EducationAccessSourceSnapshot.model_validate(
+            evidence.source_snapshot.model_dump(mode="python")
+        )
+    except Exception as error:
+        raise GovernedEvidenceLoadError("bound education source snapshot is invalid") from error
+    if snapshot != evidence.source_snapshot:
+        raise GovernedEvidenceLoadError(
+            "bound education source snapshot changed during revalidation"
+        )
+    if snapshot.option_ids or snapshot.option_evidence:
+        raise GovernedEvidenceLoadError(
+            "loaded education source binding must not invent option evidence"
+        )
+    if snapshot.supplementary_pct_evidence:
+        raise GovernedEvidenceLoadError(
+            "loaded education source binding must not invent PCT evidence"
+        )
+    if snapshot.register_evidence.evidence_id != evidence.school_register_lineage.source_id:
+        raise GovernedEvidenceLoadError(
+            "education register evidence does not match raw artifact source"
+        )
+    if evidence.admissions_lineage is None:
+        if snapshot.strategic_education_destinations:
+            raise GovernedEvidenceLoadError("education destinations require an admissions artifact")
+    elif any(
+        destination.source_evidence_id != evidence.admissions_lineage.source_id
+        for destination in snapshot.strategic_education_destinations
+    ):
+        raise GovernedEvidenceLoadError(
+            "education destination does not match raw admissions source"
+        )
+    lineages = _education_lineages(
+        evidence.school_register_lineage,
+        evidence.admissions_lineage,
+    )
+    expected = _governed_education_fingerprint(
+        snapshot,
+        lineages,
+        as_at=evidence.as_at,
+        school_register_max_age_days=evidence.school_register_max_age_days,
+    )
+    if evidence.governed_source_fingerprint != expected:
+        raise GovernedEvidenceLoadError("governed education source fingerprint mismatch")
+
+
+def _required_assessment_date(value: date | None) -> date:
+    if type(value) is not date:
+        raise GovernedEvidenceLoadError(
+            "configured education evidence requires an exact as_at date"
+        )
+    return value
+
+
+def _require_current_artifact(
+    lineage: GovernedArtifactLineage,
+    *,
+    as_at: date,
+    max_age_days: int,
+    label: str,
+) -> None:
+    _require_not_future(
+        lineage.effective_date,
+        as_at=as_at,
+        label=f"{label} effective_date",
+    )
+    age_days = (as_at - lineage.effective_date).days
+    if age_days > max_age_days:
+        raise GovernedEvidenceLoadError(
+            f"{label} is stale at as_at; maximum age is {max_age_days} days"
+        )
+
+
+def _require_not_future(
+    value: date,
+    *,
+    as_at: date,
+    label: str,
+) -> None:
+    if value > as_at:
+        raise GovernedEvidenceLoadError(f"{label} must not be in the future")
+
+
+def _parse_exact_date(value: object, *, label: str) -> date:
+    if not isinstance(value, str):
+        raise GovernedEvidenceLoadError(f"{label} must be an ISO-8601 date")
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError as error:
+        raise GovernedEvidenceLoadError(f"{label} must be an ISO-8601 date") from error
+    if parsed.isoformat() != value:
+        raise GovernedEvidenceLoadError(f"{label} must be a canonical ISO-8601 date")
+    return parsed
+
+
+def _strict_identifier_list(
+    value: object,
+    *,
+    label: str,
+) -> tuple[str, ...]:
+    if not isinstance(value, list) or not value:
+        raise GovernedEvidenceLoadError(f"{label} must be a non-empty identifier array")
+    identifiers = tuple(_require_strict_identifier(item, label=label) for item in value)
+    if len(set(identifiers)) != len(identifiers):
+        raise GovernedEvidenceLoadError(f"{label} must not contain duplicates")
+    return tuple(sorted(identifiers))
+
+
+def _require_strict_identifier(value: object, *, label: str) -> str:
+    if not isinstance(value, str) or _STRICT_ID.fullmatch(value) is None:
+        raise GovernedEvidenceLoadError(f"{label} must be non-blank and contain no whitespace")
+    return value
+
+
+def _require_nonblank_text(value: object, *, label: str) -> str:
+    if not isinstance(value, str) or not value.strip() or value != value.strip():
+        raise GovernedEvidenceLoadError(f"{label} must be non-blank and trimmed")
+    return value
 
 
 def _canonical_oa_id(value: object, *, label: str) -> str:
