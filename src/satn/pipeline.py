@@ -425,6 +425,26 @@ def _compile(
             "network_units": compiled.network_units,
             "urban_classification_status": compiled.urban_classification_status,
             "elevation_evidence_status": compiled.elevation_evidence_status,
+            **(
+                {
+                    "preferred_alignment": {
+                        "profile_fingerprint": (
+                            compiled.preferred_alignment.profile_fingerprint
+                        ),
+                        "activation": compiled.preferred_alignment.activation,
+                        "missing_inputs": list(compiled.preferred_alignment.missing_inputs),
+                        "evidence_fingerprints": list(
+                            compiled.preferred_alignment.evidence_fingerprints
+                        ),
+                        "candidate_option_count": len(
+                            compiled.preferred_alignment.candidate_options
+                        ),
+                        "diagnostics": compiled.preferred_alignment.diagnostics,
+                    }
+                }
+                if compiled.preferred_alignment is not None
+                else {}
+            ),
             "urban_spines": len(compiled.urban_spines),
             "urban_classification_unknowns": len(compiled.urban_classification_unknowns),
             "urban_spine_records": [

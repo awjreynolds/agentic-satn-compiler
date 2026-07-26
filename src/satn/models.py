@@ -258,6 +258,25 @@ class SourceConfig(BaseModel):
         default=None,
         exclude_if=lambda value: value is None,
     )
+    network_selection_as_at: date | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "Declared assessment date for governed Preferred Strategic Alignment "
+            "evidence. Required when network_selection uses currentness-sensitive "
+            "population or education artifacts."
+        ),
+    )
+    network_selection_school_register_max_age_days: int | None = Field(
+        default=None,
+        ge=1,
+        exclude_if=lambda value: value is None,
+    )
+    network_selection_strategic_admissions_max_age_days: int | None = Field(
+        default=None,
+        ge=1,
+        exclude_if=lambda value: value is None,
+    )
     retained_core_source: RetainedCoreSourceConfig | None = Field(
         default=None,
         exclude_if=lambda value: value is None,

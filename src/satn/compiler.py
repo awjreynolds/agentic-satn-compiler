@@ -41,6 +41,10 @@ from satn.models import (
     TrafficLight,
     UrbanClassificationStatus,
 )
+from satn.preferred_alignment_pipeline import (
+    PreferredAlignmentPipelineResult,
+    compile_preferred_alignment_pipeline,
+)
 from satn.routing import RoadGraph
 from satn.school_street import assess_school_street_candidates
 from satn.settlement import (
@@ -107,6 +111,10 @@ class CompiledNetwork:
     # the input fingerprint independently reproducible.
     decision_ledger_input: dict[str, object] = field(default_factory=dict)
     accepted_decisions: list[dict[str, str]] = field(default_factory=list)
+    # Optional Wayfinding Pass data.  It remains absent, rather than empty,
+    # for legacy compilations so their route and publication behaviour stays
+    # byte-compatible.
+    preferred_alignment: PreferredAlignmentPipelineResult | None = None
 
     @property
     def connection_count(self) -> int:
@@ -325,6 +333,33 @@ def compile_network(
         maximum_sample_spacing_m=(config.compilation.topography.maximum_sample_spacing_m),
         minimum_sustained_spacing_m=(config.compilation.topography.minimum_sustained_spacing_m),
     )
+    preferred_alignment = None
+    if config.compilation.network_selection is not None:
+        # The adapter owns PSA evidence loading.  It is deliberately reached
+        # after the backbone is stable and never feeds back into legacy route
+        # selection until it has a complete governed evidence basis.
+        preferred_alignment = compile_preferred_alignment_pipeline(
+            config.compilation.network_selection,
+            source={
+                **source,
+                "_network_selection_configuration": {
+                    "population_reach_evidence": config.source.population_reach_evidence,
+                    "school_register_evidence": config.source.school_register_evidence,
+                    "strategic_education_destination_admissions": (
+                        config.source.strategic_education_destination_admissions
+                    ),
+                },
+            },
+            strategic_spines=strategic_spines,
+            config_directory=config.config_path.parent,
+            as_at=config.source.network_selection_as_at,
+            school_register_max_age_days=(
+                config.source.network_selection_school_register_max_age_days
+            ),
+            strategic_admissions_max_age_days=(
+                config.source.network_selection_strategic_admissions_max_age_days
+            ),
+        )
     crossing_warnings = _backbone_crossing_warnings(
         spine_access_connections, branch_meeting_connections
     )
@@ -555,7 +590,13 @@ def compile_network(
             "community_coverage": community_coverage,
             "urban_settlement_form_profiles": urban_settlement_form_profiles(communities),
             "urban_a_road_spine_coverage": urban_a_road_coverage,
+            **(
+                {"preferred_alignment": preferred_alignment.diagnostics}
+                if preferred_alignment is not None
+                else {}
+            ),
         },
+        preferred_alignment=preferred_alignment,
     )
     # ``compile_network`` is also a supported public entry point.  Its output
     # must therefore carry the same exact decision wire contract as the
