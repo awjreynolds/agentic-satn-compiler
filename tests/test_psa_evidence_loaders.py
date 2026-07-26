@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
@@ -19,12 +21,14 @@ from satn.network_selection import (
     StrategicEducationDestinationAdmissionConfig,
 )
 from satn.psa_evidence_loaders import (
+    GovernedEducationAccessAssessment,
     GovernedEvidenceLoadError,
     assess_education_access_from_evidence,
     compile_population_reach_from_evidence,
     load_education_access_evidence,
     load_population_reach_evidence,
 )
+from satn.runtime_governance_contract import canonical_sha256
 
 
 def write_payload(tmp_path: Path, name: str, payload: object) -> GovernedEvidenceArtifactConfig:
@@ -94,7 +98,11 @@ def population_config(tmp_path: Path) -> PopulationReachEvidenceConfig:
 
 
 def test_loads_exact_complete_oa_evidence_with_artifact_lineage(tmp_path: Path) -> None:
-    loaded = load_population_reach_evidence(population_config(tmp_path), base_directory=tmp_path)
+    loaded = load_population_reach_evidence(
+        population_config(tmp_path),
+        base_directory=tmp_path,
+        pwc_outside_tolerance_m=0,
+    )
 
     assert loaded is not None
     assert loaded.columns.oa_id == "OA21CD"
@@ -149,7 +157,11 @@ def test_rejects_changed_bytes_before_parsing(tmp_path: Path, mutate: object, me
     mutate(config, tmp_path)
 
     with pytest.raises(GovernedEvidenceLoadError, match=message):
-        load_population_reach_evidence(config, base_directory=tmp_path)
+        load_population_reach_evidence(
+            config,
+            base_directory=tmp_path,
+            pwc_outside_tolerance_m=0,
+        )
 
 
 def test_rejects_extra_schema_keys_duplicate_ids_and_incomplete_joins(tmp_path: Path) -> None:
@@ -167,7 +179,11 @@ def test_rejects_extra_schema_keys_duplicate_ids_and_incomplete_joins(tmp_path: 
     )
 
     with pytest.raises(GovernedEvidenceLoadError, match="duplicate OA21CD"):
-        load_population_reach_evidence(changed, base_directory=tmp_path)
+        load_population_reach_evidence(
+            changed,
+            base_directory=tmp_path,
+            pwc_outside_tolerance_m=0,
+        )
 
     payload["features"] = payload["features"][:1]
     payload["features"][0]["properties"]["extra"] = "not permitted"
@@ -181,7 +197,11 @@ def test_rejects_extra_schema_keys_duplicate_ids_and_incomplete_joins(tmp_path: 
         }
     )
     with pytest.raises(GovernedEvidenceLoadError, match="must contain exactly"):
-        load_population_reach_evidence(changed, base_directory=tmp_path)
+        load_population_reach_evidence(
+            changed,
+            base_directory=tmp_path,
+            pwc_outside_tolerance_m=0,
+        )
 
 
 def test_rejects_mismatched_canonical_oa_join_ids_after_hash_verification(tmp_path: Path) -> None:
@@ -198,7 +218,11 @@ def test_rejects_mismatched_canonical_oa_join_ids_after_hash_verification(tmp_pa
     )
 
     with pytest.raises(GovernedEvidenceLoadError, match="complete exact join"):
-        load_population_reach_evidence(changed, base_directory=tmp_path)
+        load_population_reach_evidence(
+            changed,
+            base_directory=tmp_path,
+            pwc_outside_tolerance_m=0,
+        )
 
 
 def test_rejects_nonfinite_geometry_and_noncanonical_oa_ids_after_hash_verification(
@@ -217,7 +241,11 @@ def test_rejects_nonfinite_geometry_and_noncanonical_oa_ids_after_hash_verificat
     )
 
     with pytest.raises(GovernedEvidenceLoadError, match="non-finite JSON"):
-        load_population_reach_evidence(changed, base_directory=tmp_path)
+        load_population_reach_evidence(
+            changed,
+            base_directory=tmp_path,
+            pwc_outside_tolerance_m=0,
+        )
 
 
 def test_rejects_noncanonical_ids_after_hash_verification(
@@ -236,7 +264,11 @@ def test_rejects_noncanonical_ids_after_hash_verification(
     )
 
     with pytest.raises(GovernedEvidenceLoadError, match="uppercase canonical ONS OA"):
-        load_population_reach_evidence(changed, base_directory=tmp_path)
+        load_population_reach_evidence(
+            changed,
+            base_directory=tmp_path,
+            pwc_outside_tolerance_m=0,
+        )
 
 
 def test_rejects_malformed_geometry_after_hash_verification(tmp_path: Path) -> None:
@@ -253,7 +285,11 @@ def test_rejects_malformed_geometry_after_hash_verification(tmp_path: Path) -> N
     )
 
     with pytest.raises(GovernedEvidenceLoadError, match="two or three ordinates"):
-        load_population_reach_evidence(changed, base_directory=tmp_path)
+        load_population_reach_evidence(
+            changed,
+            base_directory=tmp_path,
+            pwc_outside_tolerance_m=0,
+        )
 
 
 def education_configs(
@@ -299,6 +335,8 @@ def education_configs(
                 "source_id": "admissions",
                 "governed": True,
                 "effective_date": "2026-07-01",
+                "current": True,
+                "status": "current",
             },
             "admissions": [
                 {
@@ -334,6 +372,8 @@ def test_loads_school_and_strategic_destination_snapshot_without_inventing_claim
         admissions_config,
         base_directory=tmp_path,
         as_at=date(2026, 7, 26),
+        school_register_max_age_days=30,
+        strategic_admissions_max_age_days=30,
     )
 
     assert loaded is not None
@@ -347,6 +387,15 @@ def test_loads_school_and_strategic_destination_snapshot_without_inventing_claim
     assert snapshot.option_evidence == ()
     assert loaded.admissions_lineage is not None
     assert loaded.admissions_lineage.licence == "Open Government Licence v3.0"
+    assert loaded.school_register_governance.authority_id == "banes-council"
+    assert [record.record_status for record in loaded.school_records] == [
+        "current",
+        "current",
+    ]
+    assert loaded.strategic_admissions_authority is not None
+    assert loaded.strategic_admissions_authority.status == "current"
+    assert loaded.strategic_admission_records[0].site_id == "university-one"
+    assert loaded.strategic_admission_records[0].destination_type == "university"
 
 
 def test_rejects_pupil_data_duplicate_school_ids_and_absent_register(tmp_path: Path) -> None:
@@ -367,6 +416,7 @@ def test_rejects_pupil_data_duplicate_school_ids_and_absent_register(tmp_path: P
             changed,
             base_directory=tmp_path,
             as_at=date(2026, 7, 26),
+            school_register_max_age_days=30,
         )
 
     assert load_education_access_evidence(None, base_directory=tmp_path) is None
@@ -385,6 +435,7 @@ def test_population_frame_mutation_cannot_escape_bound_compile_adapter(
     loaded = load_population_reach_evidence(
         population_config(tmp_path),
         base_directory=tmp_path,
+        pwc_outside_tolerance_m=0,
     )
     assert loaded is not None
     detached = loaded.output_areas
@@ -412,7 +463,11 @@ def test_population_frame_mutation_cannot_escape_bound_compile_adapter(
         area,
     )
 
-    assert {record.usual_residents for record in assessment.records} == {123}
+    assert {
+        record.usual_residents
+        for record in assessment.assessment.records
+    } == {123}
+    assert assessment.artifact_lineage == loaded.artifact_lineage
     assert loaded.output_areas["usual_residents"].tolist() == [123]
     assert f"canonical-frame:{loaded.frame_content_sha256}" in (
         loaded.source.transformation_lineage
@@ -425,7 +480,7 @@ def test_rejects_far_and_swapped_population_weighted_centroids(
     config = population_config(tmp_path)
     far = geojson(
         "E00123456",
-        {"type": "Point", "coordinates": [500000, 250000]},
+        {"type": "Point", "coordinates": [900000, 650000]},
     )
     content = json.dumps(far, sort_keys=True, separators=(",", ":")).encode()
     (tmp_path / "pwc.json").write_bytes(content)
@@ -438,8 +493,12 @@ def test_rejects_far_and_swapped_population_weighted_centroids(
             )
         }
     )
-    with pytest.raises(GovernedEvidenceLoadError, match="clearly outside"):
-        load_population_reach_evidence(changed, base_directory=tmp_path)
+    with pytest.raises(GovernedEvidenceLoadError, match="declared tolerance"):
+        load_population_reach_evidence(
+            changed,
+            base_directory=tmp_path,
+            pwc_outside_tolerance_m=100,
+        )
 
     geometry_payload = {
         "type": "FeatureCollection",
@@ -512,10 +571,11 @@ def test_rejects_far_and_swapped_population_weighted_centroids(
             count_payload,
         ),
     )
-    with pytest.raises(GovernedEvidenceLoadError, match="another OA geometry"):
+    with pytest.raises(GovernedEvidenceLoadError, match="cross-OA coverage"):
         load_population_reach_evidence(
             swapped_config,
             base_directory=tmp_path,
+            pwc_outside_tolerance_m=100,
         )
 
 
@@ -559,10 +619,213 @@ def test_concave_oa_pwc_inside_envelope_is_explicitly_supported(
         ),
     )
 
-    loaded = load_population_reach_evidence(config, base_directory=tmp_path)
+    loaded = load_population_reach_evidence(
+        config,
+        base_directory=tmp_path,
+        pwc_outside_tolerance_m=200,
+    )
 
     assert loaded is not None
     assert loaded.output_areas["OA21CD"].tolist() == [oa_id]
+
+
+def test_rejects_overlapping_oa_coverage_and_accepts_unambiguous_boundary(
+    tmp_path: Path,
+) -> None:
+    overlapping_geometries = {
+        "type": "FeatureCollection",
+        "crs": "EPSG:27700",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {"OA21CD": "E00123456"},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [
+                        [
+                            [400000, 150000],
+                            [400200, 150000],
+                            [400200, 150200],
+                            [400000, 150000],
+                        ]
+                    ],
+                },
+            },
+            {
+                "type": "Feature",
+                "properties": {"OA21CD": "E00654321"},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [
+                        [
+                            [400050, 150000],
+                            [400250, 150000],
+                            [400250, 150200],
+                            [400050, 150000],
+                        ]
+                    ],
+                },
+            },
+        ],
+    }
+    centroids = {
+        "type": "FeatureCollection",
+        "crs": "EPSG:27700",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {"OA21CD": "E00123456"},
+                "geometry": {"type": "Point", "coordinates": [400100, 150050]},
+            },
+            {
+                "type": "Feature",
+                "properties": {"OA21CD": "E00654321"},
+                "geometry": {"type": "Point", "coordinates": [400225, 150025]},
+            },
+        ],
+    }
+    counts = {
+        "records": [
+            {"OA21CD": "E00123456", "usual_residents": 1},
+            {"OA21CD": "E00654321", "usual_residents": 2},
+        ]
+    }
+    overlap_config = PopulationReachEvidenceConfig(
+        output_area_geometry=write_payload(
+            tmp_path,
+            "overlap-oa.json",
+            overlapping_geometries,
+        ),
+        population_weighted_centroids=write_payload(
+            tmp_path,
+            "overlap-pwc.json",
+            centroids,
+        ),
+        usual_resident_counts=write_payload(
+            tmp_path,
+            "overlap-counts.json",
+            counts,
+        ),
+    )
+    with pytest.raises(GovernedEvidenceLoadError, match="cross-OA coverage"):
+        load_population_reach_evidence(
+            overlap_config,
+            base_directory=tmp_path,
+            pwc_outside_tolerance_m=0,
+        )
+
+    boundary_config = population_config(tmp_path)
+    boundary = geojson(
+        "E00123456",
+        {"type": "Point", "coordinates": [400000, 150000]},
+    )
+    boundary_content = json.dumps(
+        boundary,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    (tmp_path / "pwc.json").write_bytes(boundary_content)
+    boundary_config = boundary_config.model_copy(
+        update={
+            "population_weighted_centroids": (
+                boundary_config.population_weighted_centroids.model_copy(
+                    update={
+                        "content_sha256": hashlib.sha256(boundary_content).hexdigest()
+                    }
+                )
+            )
+        }
+    )
+    boundary_load = load_population_reach_evidence(
+        boundary_config,
+        base_directory=tmp_path,
+        pwc_outside_tolerance_m=0,
+    )
+    assert boundary_load is not None
+
+
+def test_rejects_outside_pwc_when_nominal_oa_is_not_uniquely_nearest(
+    tmp_path: Path,
+) -> None:
+    geometries = {
+        "type": "FeatureCollection",
+        "crs": "EPSG:27700",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {"OA21CD": "E00123456"},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [
+                        [
+                            [400000, 150000],
+                            [400100, 150000],
+                            [400100, 150100],
+                            [400000, 150100],
+                            [400000, 150000],
+                        ]
+                    ],
+                },
+            },
+            {
+                "type": "Feature",
+                "properties": {"OA21CD": "E00654321"},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [
+                        [
+                            [400200, 150000],
+                            [400300, 150000],
+                            [400300, 150100],
+                            [400200, 150100],
+                            [400200, 150000],
+                        ]
+                    ],
+                },
+            },
+        ],
+    }
+    centroids = {
+        "type": "FeatureCollection",
+        "crs": "EPSG:27700",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {"OA21CD": "E00123456"},
+                "geometry": {"type": "Point", "coordinates": [400150, 150050]},
+            },
+            {
+                "type": "Feature",
+                "properties": {"OA21CD": "E00654321"},
+                "geometry": {"type": "Point", "coordinates": [400250, 150050]},
+            },
+        ],
+    }
+    config = PopulationReachEvidenceConfig(
+        output_area_geometry=write_payload(tmp_path, "tie-oa.json", geometries),
+        population_weighted_centroids=write_payload(
+            tmp_path,
+            "tie-pwc.json",
+            centroids,
+        ),
+        usual_resident_counts=write_payload(
+            tmp_path,
+            "tie-counts.json",
+            {
+                "records": [
+                    {"OA21CD": "E00123456", "usual_residents": 1},
+                    {"OA21CD": "E00654321", "usual_residents": 2},
+                ]
+            },
+        ),
+    )
+
+    with pytest.raises(GovernedEvidenceLoadError, match="nearest OA IDs"):
+        load_population_reach_evidence(
+            config,
+            base_directory=tmp_path,
+            pwc_outside_tolerance_m=100,
+        )
 
 
 def test_strict_json_rejects_duplicate_members_and_boolean_coordinates(
@@ -582,6 +845,7 @@ def test_strict_json_rejects_duplicate_members_and_boolean_coordinates(
         load_population_reach_evidence(
             duplicate_config,
             base_directory=tmp_path,
+            pwc_outside_tolerance_m=0,
         )
 
     config = population_config(tmp_path)
@@ -608,6 +872,7 @@ def test_strict_json_rejects_duplicate_members_and_boolean_coordinates(
         load_population_reach_evidence(
             boolean_config,
             base_directory=tmp_path,
+            pwc_outside_tolerance_m=0,
         )
 
 
@@ -616,7 +881,10 @@ def test_all_configured_paths_require_confined_non_symlink_base(
 ) -> None:
     config = population_config(tmp_path)
     with pytest.raises(GovernedEvidenceLoadError, match="explicit base_directory"):
-        load_population_reach_evidence(config)
+        load_population_reach_evidence(
+            config,
+            pwc_outside_tolerance_m=0,
+        )
 
     leaf_link = tmp_path / "oa-link.json"
     leaf_link.symlink_to(tmp_path / "oa.json")
@@ -631,6 +899,7 @@ def test_all_configured_paths_require_confined_non_symlink_base(
         load_population_reach_evidence(
             leaf_config,
             base_directory=tmp_path,
+            pwc_outside_tolerance_m=0,
         )
 
     real_parent = tmp_path / "real-parent"
@@ -649,6 +918,7 @@ def test_all_configured_paths_require_confined_non_symlink_base(
         load_population_reach_evidence(
             parent_config,
             base_directory=tmp_path,
+            pwc_outside_tolerance_m=0,
         )
 
     real_base = tmp_path / "real-base"
@@ -660,6 +930,99 @@ def test_all_configured_paths_require_confined_non_symlink_base(
         load_population_reach_evidence(
             base_config,
             base_directory=base_link,
+            pwc_outside_tolerance_m=0,
+        )
+
+
+def test_governed_identities_are_portable_across_base_directories(
+    tmp_path: Path,
+) -> None:
+    first_base = tmp_path / "checkout-a"
+    second_base = tmp_path / "checkout-b"
+    first_base.mkdir()
+    second_base.mkdir()
+
+    first_population = load_population_reach_evidence(
+        population_config(first_base),
+        base_directory=first_base,
+        pwc_outside_tolerance_m=0,
+    )
+    second_population = load_population_reach_evidence(
+        population_config(second_base),
+        base_directory=second_base,
+        pwc_outside_tolerance_m=0,
+    )
+    assert first_population is not None
+    assert second_population is not None
+    assert first_population.source == second_population.source
+    assert first_population.frame_content_sha256 == second_population.frame_content_sha256
+    assert first_population.artifact_lineage == second_population.artifact_lineage
+    assert first_population.artifact_lineage[0].path != (
+        second_population.artifact_lineage[0].path
+    )
+    assert first_population.artifact_lineage[0].declared_path == Path("oa.json")
+
+    first_school, first_admissions = education_configs(first_base)
+    second_school, second_admissions = education_configs(second_base)
+    first_education = load_education_access_evidence(
+        first_school,
+        first_admissions,
+        base_directory=first_base,
+        as_at=date(2026, 7, 26),
+        school_register_max_age_days=30,
+        strategic_admissions_max_age_days=30,
+    )
+    second_education = load_education_access_evidence(
+        second_school,
+        second_admissions,
+        base_directory=second_base,
+        as_at=date(2026, 7, 26),
+        school_register_max_age_days=30,
+        strategic_admissions_max_age_days=30,
+    )
+    assert first_education is not None
+    assert second_education is not None
+    assert (
+        first_education.governed_source_fingerprint
+        == second_education.governed_source_fingerprint
+    )
+    assert first_education.school_register_lineage == (
+        second_education.school_register_lineage
+    )
+    assert first_education.school_register_lineage.path != (
+        second_education.school_register_lineage.path
+    )
+
+
+def test_rejects_fifo_before_open_and_missing_secure_open_capability(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("platform does not support FIFOs")
+    config = population_config(tmp_path)
+    fifo_path = tmp_path / "oa-fifo.json"
+    os.mkfifo(fifo_path)
+    fifo_config = config.model_copy(
+        update={
+            "output_area_geometry": config.output_area_geometry.model_copy(
+                update={"path": Path("oa-fifo.json")}
+            )
+        }
+    )
+    with pytest.raises(GovernedEvidenceLoadError, match="regular file"):
+        load_population_reach_evidence(
+            fifo_config,
+            base_directory=tmp_path,
+            pwc_outside_tolerance_m=0,
+        )
+
+    monkeypatch.setattr(os, "O_NOFOLLOW", 0)
+    with pytest.raises(GovernedEvidenceLoadError, match="secure governed artifact opening"):
+        load_population_reach_evidence(
+            config,
+            base_directory=tmp_path,
+            pwc_outside_tolerance_m=0,
         )
 
 
@@ -672,6 +1035,8 @@ def test_education_binding_changes_with_raw_bytes_and_lineage_metadata(
         admissions_config,
         base_directory=tmp_path,
         as_at=date(2026, 7, 26),
+        school_register_max_age_days=30,
+        strategic_admissions_max_age_days=30,
     )
     assert first is not None
     payload = json.loads((tmp_path / "school-register.json").read_text())
@@ -690,6 +1055,8 @@ def test_education_binding_changes_with_raw_bytes_and_lineage_metadata(
         admissions_config,
         base_directory=tmp_path,
         as_at=date(2026, 7, 26),
+        school_register_max_age_days=30,
+        strategic_admissions_max_age_days=30,
     )
     metadata_changed = load_education_access_evidence(
         SchoolRegisterEvidenceConfig(
@@ -700,12 +1067,16 @@ def test_education_binding_changes_with_raw_bytes_and_lineage_metadata(
         admissions_config,
         base_directory=tmp_path,
         as_at=date(2026, 7, 26),
+        school_register_max_age_days=30,
+        strategic_admissions_max_age_days=30,
     )
     later_assessment_date = load_education_access_evidence(
         school_config,
         admissions_config,
         base_directory=tmp_path,
         as_at=date(2026, 7, 27),
+        school_register_max_age_days=30,
+        strategic_admissions_max_age_days=30,
     )
     assert byte_changed is not None
     assert metadata_changed is not None
@@ -728,6 +1099,102 @@ def test_education_binding_changes_with_raw_bytes_and_lineage_metadata(
     assert governed_assessment.artifact_lineage == (
         first.school_register_lineage,
         first.admissions_lineage,
+    )
+
+
+def test_governed_education_assessment_rejects_tampered_or_deleted_outputs(
+    tmp_path: Path,
+) -> None:
+    school_config, admissions_config = education_configs(tmp_path)
+    source = load_education_access_evidence(
+        school_config,
+        admissions_config,
+        base_directory=tmp_path,
+        as_at=date(2026, 7, 26),
+        school_register_max_age_days=30,
+        strategic_admissions_max_age_days=30,
+    )
+    assert source is not None
+    governed = assess_education_access_from_evidence(
+        source,
+        option_evidence=(),
+    )
+
+    tampered_id = governed.assessment.model_copy(
+        update={"assessment_id": "0" * 64}
+    )
+    with pytest.raises(GovernedEvidenceLoadError, match="raw reconstruction"):
+        GovernedEducationAccessAssessment(
+            assessment=tampered_id,
+            source_evidence=source,
+            assessment_content_sha256=canonical_sha256(
+                tampered_id.model_dump(mode="json")
+            ),
+            governed_input_fingerprint="0" * 64,
+        )
+
+    assert governed.assessment.school_evidence_requests
+    deleted_output = governed.assessment.model_copy(
+        update={"school_evidence_requests": ()}
+    )
+    with pytest.raises(GovernedEvidenceLoadError, match="raw reconstruction"):
+        GovernedEducationAccessAssessment(
+            assessment=deleted_output,
+            source_evidence=source,
+            assessment_content_sha256=canonical_sha256(
+                deleted_output.model_dump(mode="json")
+            ),
+            governed_input_fingerprint="0" * 64,
+        )
+
+    with pytest.raises(GovernedEvidenceLoadError, match="destination count"):
+        replace(source, strategic_admission_records=())
+
+
+def test_education_freshness_is_explicit_and_fingerprinted(
+    tmp_path: Path,
+) -> None:
+    school_config, admissions_config = education_configs(tmp_path)
+    with pytest.raises(GovernedEvidenceLoadError, match="explicitly declared"):
+        load_education_access_evidence(
+            school_config,
+            admissions_config,
+            base_directory=tmp_path,
+            as_at=date(2026, 7, 26),
+        )
+
+    with pytest.raises(GovernedEvidenceLoadError, match="stale"):
+        load_education_access_evidence(
+            school_config,
+            admissions_config,
+            base_directory=tmp_path,
+            as_at=date(2027, 7, 3),
+            school_register_max_age_days=366,
+            strategic_admissions_max_age_days=366,
+        )
+    accepted = load_education_access_evidence(
+        school_config,
+        admissions_config,
+        base_directory=tmp_path,
+        as_at=date(2027, 7, 3),
+        school_register_max_age_days=367,
+        strategic_admissions_max_age_days=367,
+    )
+    assert accepted is not None
+    assert accepted.school_register_max_age_days == 367
+    assert accepted.strategic_admissions_max_age_days == 367
+
+    wider_policy = load_education_access_evidence(
+        school_config,
+        admissions_config,
+        base_directory=tmp_path,
+        as_at=date(2027, 7, 3),
+        school_register_max_age_days=400,
+        strategic_admissions_max_age_days=400,
+    )
+    assert wider_policy is not None
+    assert accepted.governed_source_fingerprint != (
+        wider_policy.governed_source_fingerprint
     )
 
 
@@ -761,6 +1228,7 @@ def test_school_register_requires_explicit_current_governed_authority(
             changed,
             base_directory=tmp_path,
             as_at=date(2026, 7, 26),
+            school_register_max_age_days=30,
         )
 
 
@@ -789,6 +1257,7 @@ def test_rejects_stale_register_and_future_or_unauthorised_admission(
             stale,
             base_directory=tmp_path,
             as_at=date(2026, 7, 26),
+            school_register_max_age_days=30,
         )
 
     school_config, admissions_config = education_configs(tmp_path)
@@ -811,6 +1280,8 @@ def test_rejects_stale_register_and_future_or_unauthorised_admission(
             future,
             base_directory=tmp_path,
             as_at=date(2026, 7, 26),
+            school_register_max_age_days=30,
+            strategic_admissions_max_age_days=30,
         )
 
     future_payload["admissions"][0]["admitted_on"] = "2026-07-01"
@@ -832,6 +1303,8 @@ def test_rejects_stale_register_and_future_or_unauthorised_admission(
             unauthorised,
             base_directory=tmp_path,
             as_at=date(2026, 7, 26),
+            school_register_max_age_days=30,
+            strategic_admissions_max_age_days=30,
         )
 
 
