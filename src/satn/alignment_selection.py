@@ -4246,6 +4246,54 @@ class ScenarioDecisionRecord(BaseModel):
                 key=lambda item: item.review_run_id,
             )
         )
+        instance_provenance = {
+            item.run_instance_id: {
+                (
+                    item.review_run_id,
+                    item.run_scope_fingerprint,
+                    item.run_config_fingerprint,
+                    item.deadline_seconds,
+                    item.maximum_attempts,
+                )
+            }
+            for item in expected_run_provenance
+        }
+        for item in expected_run_provenance:
+            instance_provenance.setdefault(item.run_instance_id, set()).add(
+                (
+                    item.review_run_id,
+                    item.run_scope_fingerprint,
+                    item.run_config_fingerprint,
+                    item.deadline_seconds,
+                    item.maximum_attempts,
+                )
+            )
+        if any(len(values) != 1 for values in instance_provenance.values()):
+            raise ValueError("each run_instance_id requires one immutable review run provenance")
+        run_provenance = {
+            item.review_run_id: {
+                (
+                    item.run_instance_id,
+                    item.run_scope_fingerprint,
+                    item.run_config_fingerprint,
+                    item.deadline_seconds,
+                    item.maximum_attempts,
+                )
+            }
+            for item in expected_run_provenance
+        }
+        for item in expected_run_provenance:
+            run_provenance.setdefault(item.review_run_id, set()).add(
+                (
+                    item.run_instance_id,
+                    item.run_scope_fingerprint,
+                    item.run_config_fingerprint,
+                    item.deadline_seconds,
+                    item.maximum_attempts,
+                )
+            )
+        if any(len(values) != 1 for values in run_provenance.values()):
+            raise ValueError("each review_run_id requires one immutable review run provenance")
         if (
             "review_run_provenance" in self.model_fields_set
             and self.review_run_provenance != expected_run_provenance

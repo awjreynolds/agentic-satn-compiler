@@ -39,6 +39,7 @@ from satn.alignment_selection import (
     PopulationCriterionSummary,
     PreferredStrategicAlignment,
     ReferenceSATNSelection,
+    ReviewRun,
     ReviewRunLedgerProvenance,
     RuntimeDecisionAttempt,
     RuntimeInvocationRecord,
@@ -2958,6 +2959,131 @@ def test_review_run_instances_reset_attempt_numbers_without_duplicate_pairs() ->
         ScenarioDecisionRecord(
             mode="accepted-agent-decision-ledger",
             runtime_attempts=(first_attempt, second_attempt, duplicate_attempt),
+        )
+
+
+@pytest.mark.parametrize(
+    "changed_run",
+    (
+        {
+            "deadline_seconds": 31.0,
+            "maximum_attempts": 3,
+            "run_scope_fingerprint": digest("scope-a"),
+        },
+        {
+            "deadline_seconds": 30.0,
+            "maximum_attempts": 4,
+            "run_scope_fingerprint": digest("scope-a"),
+        },
+        {
+            "deadline_seconds": 30.0,
+            "maximum_attempts": 3,
+            "run_scope_fingerprint": digest("scope-b"),
+        },
+    ),
+)
+def test_runtime_ledger_rejects_parallel_mutable_provenance_for_one_instance(
+    changed_run: dict[str, object],
+) -> None:
+    admitted = candidate_set(candidate("parallel-run-provenance"))
+    selection = select_preferred_alignment(
+        profile(),
+        admitted,
+        criteria(admitted, uncertainty={admitted.admitted_candidates[0].candidate_id: "unknown"}),
+    )
+    compiled = scenario((selection,), mode="provisional-review-awaiting-decision")
+    request = build_alignment_decision_request(
+        selection,
+        scenario_context_fingerprint=compiled.scenario_context_fingerprint,
+    )
+    base_run = ReviewRun(
+        run_instance_id="parallel-instance",
+        run_scope_fingerprint=digest("scope-a"),
+        deadline_seconds=30.0,
+        maximum_attempts=3,
+    )
+    alternate_run = ReviewRun(run_instance_id="parallel-instance", **changed_run)
+
+    def attempt(run: ReviewRun, invocation_id: str) -> RuntimeDecisionAttempt:
+        return RuntimeDecisionAttempt(
+            request=request,
+            outcome="provider-timeout",
+            provider_failure_code="adapter-timeout",
+            invocation_record=RuntimeInvocationRecord(
+                invocation_id=invocation_id,
+                review_run_id=run.run_id,
+                run_instance_id=run.run_instance_id,
+                run_scope_fingerprint=run.run_scope_fingerprint,
+                run_config_fingerprint=run.run_config_fingerprint,
+                attempt_number=1,
+                maximum_attempts=run.maximum_attempts,
+                deadline_seconds=run.deadline_seconds,
+                frontier_fingerprint=digest("parallel-frontier"),
+                request_fingerprint=request.request_fingerprint,
+                outcome="provider-timeout",
+                failure_code="adapter-timeout",
+                started_at_ms=1000,
+                completed_at_ms=2000,
+            ),
+        )
+
+    with pytest.raises(ValidationError, match="run_instance_id requires one immutable"):
+        ScenarioDecisionRecord(
+            mode="accepted-agent-decision-ledger",
+            runtime_attempts=(
+                attempt(base_run, "parallel-a"),
+                attempt(alternate_run, "parallel-b"),
+            ),
+        )
+
+
+def test_runtime_ledger_rejects_one_run_id_mapped_to_foreign_instance() -> None:
+    admitted = candidate_set(candidate("foreign-run-provenance"))
+    selection = select_preferred_alignment(
+        profile(),
+        admitted,
+        criteria(admitted, uncertainty={admitted.admitted_candidates[0].candidate_id: "unknown"}),
+    )
+    compiled = scenario((selection,), mode="provisional-review-awaiting-decision")
+    request = build_alignment_decision_request(
+        selection,
+        scenario_context_fingerprint=compiled.scenario_context_fingerprint,
+    )
+    run = ReviewRun(
+        run_instance_id="foreign-instance-a",
+        run_scope_fingerprint=digest("foreign-scope"),
+    )
+
+    def attempt(invocation_id: str, instance_id: str) -> RuntimeDecisionAttempt:
+        return RuntimeDecisionAttempt(
+            request=request,
+            outcome="provider-timeout",
+            provider_failure_code="adapter-timeout",
+            invocation_record=RuntimeInvocationRecord(
+                invocation_id=invocation_id,
+                review_run_id=run.run_id,
+                run_instance_id=instance_id,
+                run_scope_fingerprint=run.run_scope_fingerprint,
+                run_config_fingerprint=run.run_config_fingerprint,
+                attempt_number=1 if instance_id == "foreign-instance-a" else 2,
+                maximum_attempts=run.maximum_attempts,
+                deadline_seconds=run.deadline_seconds,
+                frontier_fingerprint=digest("foreign-frontier"),
+                request_fingerprint=request.request_fingerprint,
+                outcome="provider-timeout",
+                failure_code="adapter-timeout",
+                started_at_ms=1000,
+                completed_at_ms=2000,
+            ),
+        )
+
+    with pytest.raises(ValidationError, match="review_run_id requires one immutable"):
+        ScenarioDecisionRecord(
+            mode="accepted-agent-decision-ledger",
+            runtime_attempts=(
+                attempt("foreign-a", "foreign-instance-a"),
+                attempt("foreign-b", "foreign-instance-b"),
+            ),
         )
 
 
