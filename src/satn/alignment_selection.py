@@ -17,12 +17,17 @@ from dataclasses import dataclass
 from datetime import date
 from enum import StrEnum
 from typing import Literal, Protocol, Self
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from shapely.geometry import LineString
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import linemerge, unary_union
 
+from .education_access import (
+    EducationAccessAssessment,
+    IndependentTravelStatus,
+)
 from .existing_alignment import (
     CandidateEligibilityProof,
     ExistingAlignmentAdvantage,
@@ -32,6 +37,7 @@ from .existing_alignment import (
 from .existing_alignment import (
     _geometry_fingerprint as _existing_geometry_fingerprint,
 )
+from .models import AccessServiceStatus, AgentConfig
 from .network_selection import (
     AlignmentSelectionObjective,
     AmbiguityTrigger,
@@ -1077,11 +1083,115 @@ class IndependentTravelOpportunityFinding(BaseModel):
         return self
 
 
-class EducationCriterionSummary(BaseModel):
-    """School-access completeness is hard; ITO remains a separate objective."""
+class CandidateEducationOptionBinding(BaseModel):
+    """Exact bridge from one compiler candidate to one assessed education option."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    candidate_id: str = Field(pattern=_CANDIDATE_ID.pattern)
+    option_id: str = Field(min_length=1)
+
+
+def _education_assessment_fingerprint(assessment: EducationAccessAssessment) -> str:
+    validated = EducationAccessAssessment.model_validate(assessment.model_dump(mode="python"))
+    if validated != assessment:
+        raise ValueError("education assessment is not self-revalidating")
+    return validated.assessment_id
+
+
+def _derive_education_findings(
+    assessment: EducationAccessAssessment,
+    bindings: tuple[CandidateEducationOptionBinding, ...],
+) -> tuple[tuple[CriterionFinding, ...], tuple[IndependentTravelOpportunityFinding, ...]]:
+    by_option = {binding.option_id: binding.candidate_id for binding in bindings}
+    if set(by_option) != set(assessment.source_snapshot.option_ids):
+        raise ValueError("education option bindings do not cover the exact assessment options")
+    completeness: list[CriterionFinding] = []
+    opportunities: list[IndependentTravelOpportunityFinding] = []
+    for option_id, candidate_id in sorted(by_option.items(), key=lambda item: item[1]):
+        obligations = tuple(
+            item for item in assessment.school_access_obligations if item.option_id == option_id
+        )
+        destinations = tuple(
+            item
+            for item in assessment.strategic_education_destination_access
+            if item.option_id == option_id
+        )
+        gaps = tuple(item for item in assessment.network_gaps if item.option_id == option_id)
+        unknown = any(
+            item.status == AccessServiceStatus.SERVED_PROVISIONAL or item.unknowns
+            for item in (*obligations, *destinations)
+        ) or any(item.option_id == option_id for item in assessment.school_evidence_requests)
+        state = (
+            CriterionState.UNSATISFIED
+            if gaps
+            or any(
+                item.status == AccessServiceStatus.NETWORK_GAP
+                for item in (*obligations, *destinations)
+            )
+            else CriterionState.UNKNOWN
+            if unknown
+            else CriterionState.SATISFIED
+        )
+        evidence_ids = tuple(
+            sorted(
+                {
+                    *(item.obligation_id for item in obligations),
+                    *(item.access_id for item in destinations),
+                    *(item.gap_id for item in gaps),
+                    *(item.request_id for item in assessment.school_evidence_requests),
+                }
+            )
+        )
+        completeness.append(
+            CriterionFinding(
+                candidate_id=candidate_id,
+                state=state,
+                detail=CriterionDetail.EDUCATION_COMPLETENESS,
+                assessment_id=assessment.assessment_id,
+                evidence_record_id=_fingerprint(
+                    {"option_id": option_id, "evidence_ids": evidence_ids}
+                ),
+            )
+        )
+        option_opportunities = tuple(
+            item
+            for item in assessment.independent_travel_opportunities
+            if item.option_id == option_id
+        )
+        opportunity_unknown = any(
+            item.status != IndependentTravelStatus.EVIDENCE_AVAILABLE or item.unknowns
+            for item in option_opportunities
+        )
+        opportunities.append(
+            IndependentTravelOpportunityFinding(
+                candidate_id=candidate_id,
+                opportunity_count=sum(
+                    item.status == IndependentTravelStatus.EVIDENCE_AVAILABLE
+                    for item in option_opportunities
+                )
+                if not opportunity_unknown
+                else None,
+                state=CriterionState.UNKNOWN if opportunity_unknown else CriterionState.SATISFIED,
+                assessment_id=assessment.assessment_id,
+                evidence_record_id=_fingerprint(
+                    {
+                        "option_id": option_id,
+                        "opportunity_ids": [item.opportunity_id for item in option_opportunities],
+                    }
+                ),
+            )
+        )
+    return tuple(completeness), tuple(opportunities)
+
+
+class EducationCriterionSummary(BaseModel):
+    """Canonical EducationAccessAssessment plus its exact candidate adapter."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    assessment: EducationAccessAssessment
+    option_bindings: tuple[CandidateEducationOptionBinding, ...] = Field(min_length=1)
     completeness: tuple[CriterionFinding, ...] = Field(min_length=1)
     independent_travel_opportunity: tuple[
         IndependentTravelOpportunityFinding,
@@ -1091,8 +1201,49 @@ class EducationCriterionSummary(BaseModel):
     assessment_content_sha256: str = Field(pattern=_SHA256.pattern)
     scenario_evidence_snapshot_fingerprint: str = Field(pattern=_SHA256.pattern)
 
+    @classmethod
+    def from_assessment(
+        cls,
+        assessment: EducationAccessAssessment,
+        *,
+        option_bindings: tuple[CandidateEducationOptionBinding, ...],
+        scenario_evidence_snapshot_fingerprint: str,
+    ) -> EducationCriterionSummary:
+        fingerprint = _education_assessment_fingerprint(assessment)
+        completeness, opportunities = _derive_education_findings(assessment, option_bindings)
+        return cls(
+            assessment=assessment,
+            option_bindings=option_bindings,
+            completeness=completeness,
+            independent_travel_opportunity=opportunities,
+            assessment_id=assessment.assessment_id,
+            assessment_content_sha256=fingerprint,
+            scenario_evidence_snapshot_fingerprint=scenario_evidence_snapshot_fingerprint,
+        )
+
     @model_validator(mode="after")
     def validate_sections(self) -> Self:
+        assessment_fingerprint = _education_assessment_fingerprint(self.assessment)
+        bindings = tuple(sorted(self.option_bindings, key=lambda item: item.candidate_id))
+        if len({item.candidate_id for item in bindings}) != len(bindings) or len(
+            {item.option_id for item in bindings}
+        ) != len(bindings):
+            raise ValueError("education option bindings require unique candidates and options")
+        expected_completeness, expected_opportunities = _derive_education_findings(
+            self.assessment,
+            bindings,
+        )
+        if (
+            self.completeness != expected_completeness
+            or self.independent_travel_opportunity != expected_opportunities
+        ):
+            raise ValueError("education findings are not canonical assessment outputs")
+        if (
+            self.assessment_id != self.assessment.assessment_id
+            or self.assessment_content_sha256 != assessment_fingerprint
+        ):
+            raise ValueError("education assessment binding is stale")
+        object.__setattr__(self, "option_bindings", bindings)
         for findings in (self.completeness, self.independent_travel_opportunity):
             ids = tuple(item.candidate_id for item in findings)
             if ids != tuple(sorted(ids)) or len(set(ids)) != len(ids):
@@ -2979,9 +3130,7 @@ class AgentReviewContracts(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    contract_set_id: Literal["satn-agent-review-contracts/v1"] = (
-        "satn-agent-review-contracts/v1"
-    )
+    contract_set_id: Literal["satn-agent-review-contracts/v1"] = "satn-agent-review-contracts/v1"
     profile_fingerprint: str = Field(pattern=_SHA256.pattern)
     evidence_snapshot_fingerprint: str = Field(pattern=_SHA256.pattern)
     scenario_context_fingerprint: str = Field(pattern=_SHA256.pattern)
@@ -3048,24 +3197,15 @@ class AlignmentDecisionResponse(BaseModel):
     request_id: str = Field(pattern=_ID.pattern)
     request_fingerprint: str = Field(pattern=_SHA256.pattern)
     option_id: str = Field(pattern=_ID.pattern)
+    evidence_ids: tuple[str, ...] = Field(min_length=1)
     invocation: AgentInvocation
     prompt_fingerprint: str = ""
     response_fingerprint: str = ""
 
-    @property
-    def actor_id(self) -> str:
-        return self.invocation.invocation_id
-
-    @property
-    def actor_role(self) -> str:
-        return AgentAuthorityRole.PRIMARY_ALIGNMENT_DECISION
-
-    @property
-    def actor_identity_fingerprint(self) -> str:
-        return self.invocation.invocation_fingerprint
-
     @model_validator(mode="after")
     def bind_response(self) -> Self:
+        evidence_ids = _canonical_ids(self.evidence_ids, "evidence_ids")
+        object.__setattr__(self, "evidence_ids", evidence_ids)
         invocation = AgentInvocation.model_validate(self.invocation.model_dump(mode="python"))
         if invocation.role != AgentAuthorityRole.PRIMARY_ALIGNMENT_DECISION:
             raise ValueError("alignment response must record a primary agent invocation")
@@ -3113,18 +3253,6 @@ class AlignmentCritiqueRecord(BaseModel):
     invocation: AgentInvocation
     prompt_fingerprint: str = ""
     critique_fingerprint: str = ""
-
-    @property
-    def critic_id(self) -> str:
-        return self.invocation.invocation_id
-
-    @property
-    def critic_role(self) -> str:
-        return AgentAuthorityRole.INDEPENDENT_ALIGNMENT_CRITIC
-
-    @property
-    def critic_fingerprint(self) -> str:
-        return self.invocation.invocation_fingerprint
 
     @model_validator(mode="after")
     def bind_critique(self) -> Self:
@@ -3207,6 +3335,7 @@ class AcceptedDecisionEnvelope(BaseModel):
             response.request_id != request.request_id
             or response.request_fingerprint != request.request_fingerprint
             or response.option_id not in {item.option_id for item in request.options}
+            or not set(response.evidence_ids).issubset(request.immutable_evidence_ids)
         ):
             raise ValueError("accepted response is stale or chooses an unoffered action")
         if (
@@ -3231,9 +3360,7 @@ class AcceptedDecisionEnvelope(BaseModel):
             != request.agent_review_contracts.critic_prompt_contract.contract_fingerprint
         ):
             raise ValueError("agent invocation is not bound to the exact compiler contracts")
-        if (
-            critique.invocation.invocation_id == response.invocation.invocation_id
-        ):
+        if critique.invocation.invocation_id == response.invocation.invocation_id:
             raise ValueError("alignment decision critic must be a separately recorded invocation")
         payload = self.model_dump(mode="json", exclude={"envelope_fingerprint"})
         expected = _fingerprint(payload)
@@ -3508,6 +3635,9 @@ class RuntimeInvocationRecord(BaseModel):
 
     invocation_id: str = Field(pattern=_ID.pattern)
     review_run_id: str = Field(pattern=r"^review-run-[0-9a-f]{20}$")
+    attempt_number: int = Field(ge=1, strict=True)
+    maximum_attempts: int = Field(default=3, ge=1, le=10, strict=True)
+    deadline_seconds: float = Field(default=30.0, gt=0, le=300)
     frontier_fingerprint: str = Field(pattern=_SHA256.pattern)
     request_fingerprint: str = Field(pattern=_SHA256.pattern)
     outcome: Literal[
@@ -3521,6 +3651,8 @@ class RuntimeInvocationRecord(BaseModel):
 
     @model_validator(mode="after")
     def bind_invocation(self) -> Self:
+        if self.attempt_number > self.maximum_attempts:
+            raise ValueError("runtime invocation exceeds the review run attempt limit")
         if self.completed_at_ms < self.started_at_ms:
             raise ValueError("runtime invocation record is not timed")
         fingerprint = _fingerprint(self.model_dump(mode="json", exclude={"receipt_fingerprint"}))
@@ -3542,9 +3674,7 @@ class RuntimeDecisionAttempt(BaseModel):
     envelope_rejection: DecisionEnvelopeRejection | None = None
     provider_failure_code: str = ""
     invocation_record: RuntimeInvocationRecord | None = None
-    counting_policy: Literal["count-every-recorded-attempt"] = (
-        "count-every-recorded-attempt"
-    )
+    counting_policy: Literal["count-every-recorded-attempt"] = "count-every-recorded-attempt"
     attempt_fingerprint: str = ""
 
     @model_validator(mode="after")
@@ -3560,9 +3690,7 @@ class RuntimeDecisionAttempt(BaseModel):
             else None
         )
         invocation = (
-            RuntimeInvocationRecord.model_validate(
-                self.invocation_record.model_dump(mode="python")
-            )
+            RuntimeInvocationRecord.model_validate(self.invocation_record.model_dump(mode="python"))
             if self.invocation_record is not None
             else None
         )
@@ -4814,6 +4942,8 @@ class ReviewRun(BaseModel):
     run_id: str = ""
     run_scope_fingerprint: str = Field(pattern=_SHA256.pattern)
     prior_orchestration_fingerprint: str = ""
+    deadline_seconds: float = Field(default=30.0, gt=0, le=300)
+    maximum_attempts: int = Field(default=3, ge=1, le=10, strict=True)
     run_fingerprint: str = ""
 
     @model_validator(mode="after")
@@ -4878,15 +5008,7 @@ class ScenarioReviewOrchestration(BaseModel):
         )
         if prior is None:
             if run.prior_orchestration_fingerprint:
-                raise ValueError(
-                    "review genesis cannot name a prior orchestration"
-                )
-            if (
-                scenario.decision_record.accepted_envelopes
-                or scenario.decision_record.revision_records
-                or scenario.decision_record.runtime_attempts
-            ):
-                raise ValueError("review genesis cannot reset an existing decision-ledger history")
+                raise ValueError("review genesis cannot name a prior orchestration")
             history: tuple[ScenarioReviewRoundHistory, ...] = ()
             delta_accepted: tuple[AcceptedDecisionEnvelope, ...] = ()
             delta_revisions: tuple[DecisionRevisionRecord, ...] = ()
@@ -4974,6 +5096,10 @@ class ScenarioReviewOrchestration(BaseModel):
                 attempt.invocation_record is not None
                 and (
                     attempt.invocation_record.review_run_id != prior.review_run.run_id
+                    or attempt.invocation_record.maximum_attempts
+                    != prior.review_run.maximum_attempts
+                    or attempt.invocation_record.deadline_seconds
+                    != prior.review_run.deadline_seconds
                     or attempt.invocation_record.frontier_fingerprint != frontier_fingerprint
                 )
                 for attempt in delta_attempts
@@ -4981,6 +5107,21 @@ class ScenarioReviewOrchestration(BaseModel):
                 raise ValueError(
                     "provider invocation record is stale for the prior review frontier"
                 )
+            if len(delta_attempts) > prior.review_run.maximum_attempts:
+                raise ValueError("review run exceeds its maximum recorded runtime attempts")
+            invocation_records = tuple(
+                attempt.invocation_record
+                for attempt in delta_attempts
+                if attempt.invocation_record is not None
+            )
+            if invocation_records:
+                attempt_numbers = tuple(
+                    sorted(record.attempt_number for record in invocation_records)
+                )
+                if attempt_numbers != tuple(range(1, len(invocation_records) + 1)):
+                    raise ValueError(
+                        "runtime invocation records must use one contiguous local attempt sequence"
+                    )
             prior_record = ScenarioReviewRoundHistory(
                 round_number=prior.round_number,
                 scenario_fingerprint=prior.scenario.scenario_fingerprint,
@@ -5212,9 +5353,11 @@ def orchestrate_scenario_review(
     scenario: ScenarioCompilation,
     *,
     dependencies: tuple[ScenarioReviewDependency, ...],
+    agent_config: AgentConfig | None = None,
     prior_orchestration: ScenarioReviewOrchestration | None = None,
 ) -> ScenarioReviewOrchestration:
     """Build one deterministic, bounded local review run."""
+    config = agent_config or AgentConfig()
     scope = review_session_scope_fingerprint(scenario, dependencies)
     return ScenarioReviewOrchestration(
         scenario=scenario,
@@ -5224,6 +5367,8 @@ def orchestrate_scenario_review(
             prior_orchestration_fingerprint=(
                 prior_orchestration.orchestration_fingerprint if prior_orchestration else ""
             ),
+            deadline_seconds=config.deadline_seconds,
+            maximum_attempts=config.max_attempts,
         ),
         prior_orchestration=prior_orchestration,
     )
@@ -5296,9 +5441,7 @@ class ReferenceAdoptionPacket(BaseModel):
     def bind_packet(self) -> Self:
         expected_contract = _configured_human_adoption_contract()
         if self.adoption_contract != expected_contract:
-            raise ValueError(
-                "adoption packet must contain the exact compiler contract"
-            )
+            raise ValueError("adoption packet must contain the exact compiler contract")
         payload = self.model_dump(mode="json", exclude={"packet_fingerprint"})
         fingerprint = _fingerprint(payload)
         if self.packet_fingerprint and self.packet_fingerprint != fingerprint:
@@ -5320,6 +5463,8 @@ class ReferenceAdoptionRequest(BaseModel):
     scenario_fingerprint: str = Field(pattern=_SHA256.pattern)
     profile_fingerprint: str = Field(pattern=_SHA256.pattern)
     evidence_snapshot_fingerprint: str = Field(pattern=_SHA256.pattern)
+    selection_run_fingerprint: str = Field(pattern=_SHA256.pattern)
+    governed_evidence_ids: tuple[str, ...] = Field(min_length=1)
     adoption_packet: ReferenceAdoptionPacket
     request_id: str = ""
     request_fingerprint: str = ""
@@ -5336,6 +5481,11 @@ class ReferenceAdoptionRequest(BaseModel):
         ):
             raise ValueError("adoption packet is stale for adoption request")
         object.__setattr__(self, "adoption_packet", packet)
+        object.__setattr__(
+            self,
+            "governed_evidence_ids",
+            _canonical_ids(self.governed_evidence_ids, "governed_evidence_ids"),
+        )
         payload = self.model_dump(
             mode="json",
             exclude={"request_id", "request_fingerprint"},
@@ -5366,6 +5516,19 @@ def build_reference_adoption_request(
         scenario_fingerprint=scenario.scenario_fingerprint,
         profile_fingerprint=scenario.profile_fingerprint,
         evidence_snapshot_fingerprint=(scenario.evidence_snapshot.snapshot_fingerprint),
+        selection_run_fingerprint=scenario.decision_record.record_fingerprint,
+        governed_evidence_ids=tuple(
+            sorted(
+                {
+                    *(item.assessment_id for item in scenario.evidence_snapshot.assessments),
+                    *(item.candidate_set_id for item in scenario.candidate_sets),
+                    *scenario.selected_candidate_ids,
+                    *scenario.complementary_candidate_ids,
+                    *(item.gap_id for item in scenario.network_gaps),
+                    scenario.decision_record.record_fingerprint,
+                }
+            )
+        ),
         adoption_packet=packet,
     )
 
@@ -5398,10 +5561,18 @@ class GovernedReferenceSelectionDecision(BaseModel):
         if (
             self.selected_scenario_fingerprint != request.scenario_fingerprint
             or self.selected_profile_fingerprint != request.profile_fingerprint
-            or self.selected_evidence_snapshot_fingerprint
-            != request.evidence_snapshot_fingerprint
+            or self.selected_evidence_snapshot_fingerprint != request.evidence_snapshot_fingerprint
+            or self.selection_run_fingerprint != request.selection_run_fingerprint
+            or not set(evidence).issubset(request.governed_evidence_ids)
         ):
             raise ValueError("Reference decision must select the exact local adoption packet")
+        parsed = urlparse(self.source_url)
+        if parsed.scheme not in {"http", "https", "committee", "reference"} or not (
+            parsed.netloc or parsed.path
+        ):
+            raise ValueError(
+                "Reference decision source_url must be an http(s), committee, or reference URI"
+            )
         object.__setattr__(self, "adoption_request", request)
         object.__setattr__(self, "evidence_ids", evidence)
         expected = _fingerprint(self.model_dump(mode="json", exclude={"decision_fingerprint"}))

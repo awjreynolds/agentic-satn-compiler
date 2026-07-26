@@ -1,4 +1,4 @@
-# ADR 0006: Agentic selection is a local, open-source provenance pipeline
+# ADR 0007: Agentic selection is a local, open-source provenance pipeline
 
 ## Context
 
