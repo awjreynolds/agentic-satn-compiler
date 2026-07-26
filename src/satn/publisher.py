@@ -30,7 +30,12 @@ from satn.constants import DISCLAIMER, SCHEMA_VERSION
 from satn.cross_spine import validate_cross_spine_publication
 from satn.ea_elevation import (
     SAMPLE_LEDGER_FILENAME,
+    WECA_PINNED_ELIGIBLE_ROUTE_BBOX,
+    WECA_ROUTING_BUFFER_M,
+    WECA_SURVEY_REQUEST_BBOX,
     eligible_route_fingerprint,
+    eligible_route_samples,
+    governed_survey_request_bbox,
 )
 from satn.models import (
     AgentDecisionLedger,
@@ -242,6 +247,7 @@ def publish(
                     network_path=temporary / "network.geojson",
                     expected=error.expected,
                     actual=error.actual,
+                    governed_input_fingerprint=compiled.governed_input_fingerprint,
                 )
             except ValueError as retention_error:
                 raise ValueError(
@@ -276,7 +282,8 @@ def publish(
             if backup.exists():
                 shutil.rmtree(backup)
             LOGGER.info("Publication atomically replaced output=%s", output)
-            _remove_ea_fixed_point_candidate(config)
+            if _uses_ea_lidar_weca_fixed_point(config):
+                _remove_ea_fixed_point_candidate(config)
     finally:
         if temporary.exists():
             shutil.rmtree(temporary)
@@ -300,34 +307,68 @@ def _ea_fixed_point_candidate_path(config: AreaConfig) -> Path:
     return candidate
 
 
-def _ea_fixed_point_next_step(config: AreaConfig, candidate_network: Path) -> str:
-    """Record the governed acquisition command that consumes the retained routes."""
+def _uses_ea_lidar_weca_fixed_point(config: AreaConfig) -> bool:
+    """Return whether this publication is governed by the EA fixed-point contract."""
+    elevation = config.source.national_elevation
+    return (
+        elevation is not None
+        and elevation.acquisition_contract == EA_LIDAR_WECA_ACQUISITION_CONTRACT
+    )
+
+
+def _ea_fixed_point_next_step(
+    config: AreaConfig,
+    candidate_network: Path,
+    *,
+    validation_network: Path,
+    governed_input_fingerprint: str,
+) -> dict[str, str]:
+    """Advertise reacquisition only when the candidate matches the pinned WECA request."""
     elevation = config.source.national_elevation
     if elevation is None or elevation.path is None:
-        raise ValueError("EA fixed-point candidate has no local elevation output path")
+        return _ea_fixed_point_repin_required("candidate-has-no-local-elevation-output")
     snapshot = config.source.snapshot_dir / config.source.snapshot_id
     try:
-        acquisition = json.loads(
-            (snapshot / "elevation-evidence.manifest.json").read_text(encoding="utf-8")
+        routes = gpd.read_file(validation_network)
+        samples, _ = eligible_route_samples(routes, spacing_m=10.0)
+        if not samples:
+            raise ValueError("candidate has no eligible routes")
+        actual_extent = (
+            min(float(sample["geometry"].x) for sample in samples),
+            min(float(sample["geometry"].y) for sample in samples),
+            max(float(sample["geometry"].x) for sample in samples),
+            max(float(sample["geometry"].y) for sample in samples),
         )
-        if not isinstance(acquisition, dict):
-            raise TypeError("acquisition manifest must be an object")
-        authority_name = acquisition["authority_boundaries_path"]
-        survey_name = acquisition["survey_index_path"]
-        governed_input = acquisition["governed_input_fingerprint"]
-        if (
-            not isinstance(authority_name, str)
-            or Path(authority_name).name != authority_name
-            or not isinstance(survey_name, str)
-            or Path(survey_name).name != survey_name
-            or not isinstance(governed_input, str)
-            or len(governed_input) != 64
+        if any(
+            not math.isclose(actual, pinned, abs_tol=0.001)
+            for actual, pinned in zip(
+                actual_extent, WECA_PINNED_ELIGIBLE_ROUTE_BBOX, strict=True
+            )
         ):
-            raise ValueError("invalid immutable acquisition context")
-    except (json.JSONDecodeError, KeyError, OSError, TypeError, ValueError) as error:
-        raise ValueError(
-            "EA fixed-point candidate cannot read governed acquisition context"
-        ) from error
+            return _ea_fixed_point_repin_required(
+                "candidate-extent-or-request-differs-from-pinned-survey-index"
+            )
+        if governed_survey_request_bbox(
+            routes, routing_buffer_m=WECA_ROUTING_BUFFER_M
+        ) != tuple(int(value) for value in WECA_SURVEY_REQUEST_BBOX):
+            return _ea_fixed_point_repin_required(
+                "candidate-extent-or-request-differs-from-pinned-survey-index"
+            )
+    except (OSError, ValueError):
+        return _ea_fixed_point_repin_required(
+            "candidate-extent-or-request-differs-from-pinned-survey-index"
+        )
+    if not _is_sha256(governed_input_fingerprint):
+        return _ea_fixed_point_repin_required(
+            "candidate-current-governed-input-fingerprint-is-invalid"
+        )
+    authority_boundaries = snapshot / "ea-authority-boundaries.geojson"
+    survey_index = snapshot / "ea-survey-index.geojson"
+    if any(
+        not path.is_file() or path.is_symlink()
+        for path in (authority_boundaries, survey_index)
+    ):
+        return _ea_fixed_point_repin_required("candidate-missing-pinned-survey-inputs")
     cache_dir = elevation.path.parent / "ea-dtm-cache"
     command = [
         "uv",
@@ -341,16 +382,38 @@ def _ea_fixed_point_next_step(config: AreaConfig, candidate_network: Path) -> st
         "--spacing-m",
         "10",
         "--authority-boundaries",
-        str(snapshot / authority_name),
+        str(authority_boundaries),
         "--survey-index",
-        str(snapshot / survey_name),
+        str(survey_index),
         "--weca-preflight",
         "--routing-buffer-m",
         "15000",
         "--governed-input-fingerprint",
-        governed_input,
+        governed_input_fingerprint,
     ]
-    return " ".join(shlex.quote(part) for part in command)
+    return {
+        "next_step_status": "ea-acquisition-ready",
+        "next_step_command": " ".join(shlex.quote(part) for part in command),
+    }
+
+
+def _ea_fixed_point_repin_required(reason: str) -> dict[str, str]:
+    """Return a machine-readable refusal to reuse a stale pinned survey request."""
+    return {
+        "next_step_status": "survey-index-repin-required",
+        "next_step_reason": reason,
+    }
+
+
+def _is_sha256(value: object) -> bool:
+    """Return whether value is a canonical SHA-256 hex digest."""
+    if not isinstance(value, str) or len(value) != 64:
+        return False
+    try:
+        int(value, 16)
+    except ValueError:
+        return False
+    return True
 
 
 def _retain_ea_fixed_point_candidate(
@@ -360,6 +423,7 @@ def _retain_ea_fixed_point_candidate(
     network_path: Path,
     expected: str,
     actual: str,
+    governed_input_fingerprint: str,
 ) -> Path:
     """Atomically replace the sole retained candidate after an EA route mismatch."""
     candidate = _ea_fixed_point_candidate_path(config)
@@ -381,10 +445,14 @@ def _retain_ea_fixed_point_candidate(
             "run_id": run_id,
             "expected_eligible_route_fingerprint": expected,
             "actual_eligible_route_fingerprint": actual,
+            "governed_input_fingerprint": governed_input_fingerprint,
             "candidate_network_path": EA_FIXED_POINT_CANDIDATE_NETWORK,
             "candidate_network_sha256": candidate_digest,
-            "next_step_command": _ea_fixed_point_next_step(
-                config, candidate / retained_network.name
+            **_ea_fixed_point_next_step(
+                config,
+                candidate / retained_network.name,
+                validation_network=retained_network,
+                governed_input_fingerprint=governed_input_fingerprint,
             ),
         }
         (temporary / EA_FIXED_POINT_CANDIDATE_STATUS).write_text(

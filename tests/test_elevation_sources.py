@@ -848,6 +848,7 @@ def test_ea_fixed_point_mismatch_retains_candidate_with_exact_status_and_keeps_o
         if path.is_file()
     }
     compiled = _publication_compiled(config)
+    compiled.governed_input_fingerprint = "c" * 64
     _final_ea_config(config, tmp_path)
     expected = "0" * 64
     _write_final_ea_snapshot(config, pre_elevation_network_sha256=expected)
@@ -870,22 +871,94 @@ def test_ea_fixed_point_mismatch_retains_candidate_with_exact_status_and_keeps_o
         "candidate_network_path": EA_FIXED_POINT_CANDIDATE_NETWORK,
         "candidate_network_sha256": hashlib.sha256(retained_network.read_bytes()).hexdigest(),
         "expected_eligible_route_fingerprint": expected,
-        "next_step_command": status["next_step_command"],
+        "governed_input_fingerprint": "c" * 64,
+        "next_step_reason": status["next_step_reason"],
+        "next_step_status": "survey-index-repin-required",
         "run_id": "run-ea-candidate",
         "schema_version": "ea-fixed-point-candidate/v1",
         "snapshot_id": config.source.snapshot_id,
         "status": "eligible-route-mismatch",
         "timestamp": status["timestamp"],
     }
-    assert status["next_step_command"].startswith(
-        "uv run python scripts/acquire_ea_elevation.py "
+    assert (
+        status["next_step_reason"]
+        == "candidate-extent-or-request-differs-from-pinned-survey-index"
     )
-    assert str(retained_network) in status["next_step_command"]
-    snapshot_dir = config.source.snapshot_dir / config.source.snapshot_id
-    assert str(snapshot_dir / "ea-authority-boundaries.geojson") in status["next_step_command"]
-    assert str(snapshot_dir / "ea-survey-index.geojson") in status["next_step_command"]
-    assert "b" * 64 in status["next_step_command"]
-    assert "--weca-preflight" in status["next_step_command"]
+    assert "next_step_command" not in status
+
+
+def test_ea_fixed_point_candidate_advertises_only_pinned_weca_request_with_current_fingerprint(
+    tmp_path: Path,
+) -> None:
+    from satn.ea_elevation import WECA_PINNED_ELIGIBLE_ROUTE_BBOX
+
+    config = _final_ea_config(copied_config(tmp_path), tmp_path)
+    config.publication.output_dir = tmp_path / "published"
+    compiled = _publication_compiled(config)
+    compiled.governed_input_fingerprint = "c" * 64
+    snapshot_path = _write_final_ea_snapshot(config, pre_elevation_network_sha256="0" * 64)
+    for filename in ("ea-authority-boundaries.geojson", "ea-survey-index.geojson"):
+        (snapshot_path / filename).write_text("{}", encoding="utf-8")
+    west, south, east, north = WECA_PINNED_ELIGIBLE_ROUTE_BBOX
+    candidate_network = tmp_path / "pinned-candidate.geojson"
+    gpd.GeoDataFrame(
+        [
+            {
+                "feature_id": "pinned-route",
+                "feature_type": "strategic-spine",
+                "topography_profile_id": "profile",
+                "geometry": LineString([(west, south), (east, north)]),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    ).to_file(candidate_network, driver="GeoJSON")
+
+    _retain_ea_fixed_point_candidate(
+        config,
+        run_id="run-pinned-candidate",
+        network_path=candidate_network,
+        expected="0" * 64,
+        actual=eligible_route_fingerprint(gpd.read_file(candidate_network)),
+        governed_input_fingerprint=compiled.governed_input_fingerprint,
+    )
+
+    candidate = _ea_fixed_point_candidate_path(config)
+    status = json.loads((candidate / EA_FIXED_POINT_CANDIDATE_STATUS).read_text())
+    assert status["governed_input_fingerprint"] == compiled.governed_input_fingerprint
+    assert status["next_step_status"] == "ea-acquisition-ready"
+    command = status["next_step_command"]
+    assert "--weca-preflight" in command
+    assert f"--governed-input-fingerprint {'c' * 64}" in command
+    assert "b" * 64 not in command
+
+
+def test_bootstrap_publication_sharing_output_parent_preserves_ea_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    final = _final_ea_config(copied_config(tmp_path), tmp_path)
+    final.publication.output_dir = tmp_path / "published"
+    final_candidate_network = tmp_path / "candidate.geojson"
+    _final_eligible_network(final_candidate_network)
+    _write_final_ea_snapshot(final, pre_elevation_network_sha256="0" * 64)
+    _retain_ea_fixed_point_candidate(
+        final,
+        run_id="run-final-candidate",
+        network_path=final_candidate_network,
+        expected="0" * 64,
+        actual=eligible_route_fingerprint(gpd.read_file(final_candidate_network)),
+        governed_input_fingerprint="c" * 64,
+    )
+    candidate = _ea_fixed_point_candidate_path(final)
+    retained_status = (candidate / EA_FIXED_POINT_CANDIDATE_STATUS).read_bytes()
+
+    bootstrap = CouncilConfig.from_yaml(final.config_path)
+    bootstrap.publication.output_dir = final.publication.output_dir
+    monkeypatch.setattr("satn.publisher._validate_artifacts", lambda *_args: None)
+
+    publish(bootstrap, _publication_compiled(bootstrap), "run-bootstrap-success")
+
+    assert (candidate / EA_FIXED_POINT_CANDIDATE_STATUS).read_bytes() == retained_status
 
 
 def test_ea_fixed_point_candidate_replaces_stale_contents_and_stays_contained(
@@ -904,6 +977,7 @@ def test_ea_fixed_point_candidate_replaces_stale_contents_and_stays_contained(
         network_path=network,
         expected="1" * 64,
         actual="2" * 64,
+        governed_input_fingerprint="c" * 64,
     )
     (candidate / "stale.txt").write_text("remove me", encoding="utf-8")
     network.write_bytes(network.read_bytes() + b"\n")
@@ -913,6 +987,7 @@ def test_ea_fixed_point_candidate_replaces_stale_contents_and_stays_contained(
         network_path=network,
         expected="3" * 64,
         actual="4" * 64,
+        governed_input_fingerprint="c" * 64,
     )
 
     status = json.loads((candidate / EA_FIXED_POINT_CANDIDATE_STATUS).read_text())
@@ -936,6 +1011,7 @@ def test_successful_publication_clears_stale_ea_fixed_point_candidate(
     config = _final_ea_config(copied_config(tmp_path), tmp_path)
     config.publication.output_dir = tmp_path / "published"
     compiled = _publication_compiled(config)
+    compiled.governed_input_fingerprint = "c" * 64
     rendered_network = tmp_path / "rendered-network.geojson"
     _write_geojson(rendered_network, compiled)
     expected = eligible_route_fingerprint(gpd.read_file(rendered_network))
@@ -946,6 +1022,7 @@ def test_successful_publication_clears_stale_ea_fixed_point_candidate(
         network_path=rendered_network,
         expected="0" * 64,
         actual=expected,
+        governed_input_fingerprint=compiled.governed_input_fingerprint,
     )
     monkeypatch.setattr("satn.publisher._validate_artifacts", lambda *_args: None)
 
