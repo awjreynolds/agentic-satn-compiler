@@ -45,6 +45,10 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
     "satn/evidence.py": ("module", "network evidence derivation"),
     "satn/identifiers.py": ("module", "stable compiled feature identifiers"),
     "satn/models.py": ("module", "Area Definition and compiled model semantics"),
+    "satn/network_selection.py": (
+        "module",
+        "frozen Network Selection Profile validation and fingerprinting",
+    ),
     "satn/pipeline.py": ("module", "compilation orchestration and reuse binding"),
     "satn/routing.py": ("module", "routable network and route selection"),
     "satn/school_street.py": ("module", "school-street assessment"),

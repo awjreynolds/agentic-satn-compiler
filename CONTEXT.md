@@ -108,6 +108,46 @@ _Avoid_: dead end, dangling route
 One evidence-backed, end-to-end way of realising a Community Connection. Only one Alignment Option may be selected into a published network.
 _Avoid_: parallel connection, final design
 
+**Alignment Candidate Set**:
+The finite, evidence-backed Alignment Options generated for one strategic Community Connection before substitute/complementary classification and selection.
+_Avoid_: unconstrained route search, alternative network
+
+**Preferred Strategic Alignment**:
+The one selected Alignment Option for a substitute Alignment Candidate Set under a declared Network Selection Profile, with rejected alternatives and change conditions retained for inspection. It is not final design, a safety finding, feasibility evidence or a funding decision.
+_Avoid_: objectively correct route, scheme approval, preferred scheme
+
+**Network Selection Profile**:
+A frozen, versioned, data-only local policy declaration that orders candidate classes and defines how otherwise eligible Alignment Options are compared, including population, education, existing-alignment, ambiguity and publication policies.
+_Avoid_: hidden score, agent policy, mutable setting
+
+**Population Reach Profile**:
+The governed whole-Output-Area measure of residents whose population-weighted centroids lie within a declared straight-line corridor around an Alignment Option, with its source date, radii and sensitivity retained. It is not predicted demand, accessible population or a walking-time claim.
+_Avoid_: five-minute catchment, demand model, connected homes
+
+**Education Access Profile**:
+The frozen, evidence-bounded declaration of which education-access measures may inform Alignment Option comparison, including the independent-travel phases and the boundary between school-register and supplementary evidence. It does not create a school safety finding, travel-demand model or access guarantee.
+_Avoid_: school-safety policy, school-mode-share model, accessibility guarantee
+
+**Independent-Travel Opportunity**:
+A separate, evidence-bounded comparison of how an Alignment Option may support secondary-age or all-through secondary education access under declared measures. It does not claim that a route is safe, suitable or independently accessible.
+_Avoid_: school safety verdict, accessibility guarantee, demand score
+
+**Existing-Alignment Advantage**:
+A bounded selection advantage based on separately recorded recognised-corridor, reusable-asset or delivery evidence. Current route status alone does not establish condition, legal access, low cost or feasibility; declassified status alone receives no advantage.
+_Avoid_: existing-route preference, assumed cheapness, feasibility finding
+
+**Strategic Education Destination**:
+A college, university or other non-school education site admitted by a versioned local record as a strategic destination. It remains contextual evidence until that admission exists.
+_Avoid_: every education site, School Access Obligation, implied destination
+
+**Scenario Compilation**:
+One immutable compilation defined by an Area Definition, evidence snapshot, Criteria Set, Network Selection Profile and accepted decisions. It may be compared with other scenarios but does not itself create authority for a Reference SATN.
+_Avoid_: mutable scenario, adopted network, live policy view
+
+**Reference SATN**:
+The Scenario Compilation selected through the applicable governed human process as the clear default strategic network for review and publication. Other Scenario Compilations remain comparisons.
+_Avoid_: automatically adopted network, only possible network, final scheme
+
 **Network Gap**:
 An unresolved absence of a continuous, bidirectionally traversable connection with plausible intervention coverage. A Network Gap prevents a network being Complete.
 _Avoid_: visual gap, omitted link

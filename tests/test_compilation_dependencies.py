@@ -53,6 +53,22 @@ def test_manifest_is_explicit_complete_and_records_component_digests() -> None:
         )
 
 
+def test_network_selection_contract_is_a_controlled_compilation_component(
+    tmp_path: Path,
+) -> None:
+    root = copied_compiler_tree(tmp_path)
+    original = dependencies.compilation_dependency_manifest(package_root=root)
+    profile = root / "network_selection.py"
+    profile.write_bytes(profile.read_bytes() + b"\n# dependency-manifest regression probe\n")
+
+    changed = dependencies.compilation_dependency_manifest(package_root=root)
+
+    assert "satn/network_selection.py" in {
+        component["path"] for component in original["components"]
+    }
+    assert changed["sha256"] != original["sha256"]
+
+
 def test_compiler_semantic_module_changes_change_the_manifest_digest(tmp_path: Path) -> None:
     root = copied_compiler_tree(tmp_path)
     original = dependencies.compilation_dependency_manifest(package_root=root)
