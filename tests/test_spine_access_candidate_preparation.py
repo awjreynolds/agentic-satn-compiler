@@ -1,9 +1,10 @@
-"""Public compiler seam tests for alignment evidence preparation."""
+"""Public compiler seam tests for bounded Spine Access candidate preparation."""
 
 from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import FrozenInstanceError, replace
 from datetime import date
 from pathlib import Path
 
@@ -11,13 +12,13 @@ import geopandas as gpd
 import pytest
 from shapely.geometry import LineString, MultiLineString
 
-import satn.alignment_evidence_preparation as preparation
-from satn.alignment_evidence_preparation import prepare_alignment_evidence
+import satn.spine_access_candidate_preparation as preparation
 from satn.models import CouncilConfig, SourceConfig
 from satn.network_selection import NetworkSelectionProfile
 from satn.pipeline import compilation_governed_input_fingerprint
 from satn.psa_evidence_loaders import GovernedEvidenceLoadError
 from satn.routing import RoadGraph, RouteOption
+from satn.spine_access_candidate_preparation import prepare_spine_access_candidates
 
 
 def profile(*, include_b_road: bool = False, maximum_options: int = 5) -> NetworkSelectionProfile:
@@ -35,6 +36,10 @@ def profile(*, include_b_road: bool = False, maximum_options: int = 5) -> Networ
             "ambiguity": {"maximum_options_per_candidate_set": maximum_options},
         }
     )
+
+
+def empty_source_config() -> SourceConfig:
+    return SourceConfig(snapshot_dir=Path("snapshots"))
 
 
 def routing_graph(*, include_b_road: bool = False) -> RoadGraph:
@@ -126,6 +131,16 @@ def routing_graph(*, include_b_road: bool = False) -> RoadGraph:
                 },
             ]
         )
+    rows.extend(
+        {
+            **row,
+            "u": row["v"],
+            "v": row["u"],
+            "osmid": f"{row['osmid']}-reverse",
+            "geometry": LineString(list(reversed(row["geometry"].coords))),
+        }
+        for row in list(rows)
+    )
     return RoadGraph(gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:27700"))
 
 
@@ -242,8 +257,8 @@ def official_b_roads() -> gpd.GeoDataFrame:
     )
 
 
-def prepare_without_evidence() -> preparation.AlignmentEvidencePreparationResult:
-    return prepare_alignment_evidence(
+def prepare_without_evidence() -> preparation.SpineAccessCandidatePreparationResult:
+    return prepare_spine_access_candidates(
         profile(),
         road_graph=routing_graph(),
         spine_access_connections=connections(),
@@ -251,11 +266,8 @@ def prepare_without_evidence() -> preparation.AlignmentEvidencePreparationResult
         strategic_spines=spines(),
         context=current_asset_context(),
         official_road_classification=None,
-        configuration=None,
+        source_config=empty_source_config(),
         config_directory=Path.cwd(),
-        as_at=None,
-        school_register_max_age_days=None,
-        strategic_admissions_max_age_days=None,
     )
 
 
@@ -267,8 +279,8 @@ def test_prepares_finite_candidates_per_actual_community_connection_only() -> No
         "population-reach-evidence",
         "school-register-evidence",
     )
-    assert len(result.prepared_connections) == 1
-    prepared = result.prepared_connections[0]
+    assert len(result.prepared_spine_access_connections) == 1
+    prepared = result.prepared_spine_access_connections[0]
     assert prepared.access_connection_id == "access-connection-1"
     assert prepared.candidate_set.maximum_options == 5
     assert len(prepared.candidate_set.candidates) <= 5
@@ -278,7 +290,7 @@ def test_prepares_finite_candidates_per_actual_community_connection_only() -> No
 
 
 def test_maps_current_ncn_a_road_and_other_without_declassified_advantage() -> None:
-    prepared = prepare_without_evidence().prepared_connections[0]
+    prepared = prepare_without_evidence().prepared_spine_access_connections[0]
     classes = {candidate.source_class.value for candidate in prepared.candidate_set.candidates}
 
     assert classes == {
@@ -287,9 +299,9 @@ def test_maps_current_ncn_a_road_and_other_without_declassified_advantage() -> N
         "other-routable",
     }
     current = next(
-        item
-        for item in prepared.candidate_provenance
-        if item["source_class"] == "verified-existing-asset"
+        item.canonical()
+        for item in prepared.candidate_records
+        if item.candidate.source_class.value == "verified-existing-asset"
     )
     assert {
         evidence["evidence_id"] for evidence in current["current_asset_evidence"]
@@ -299,10 +311,42 @@ def test_maps_current_ncn_a_road_and_other_without_declassified_advantage() -> N
     assert prepared.strategic_provenance == (
         "{\"evidence_ids\":[\"original-evidence-7\"]}"
     )
+    result_scope = prepare_without_evidence().diagnostics["scope"]
+    assert result_scope == "spine-access-candidate-preparation"
+    assert all(
+        "selected" not in item["rationale"].lower()
+        and "preferred" not in item["rationale"].lower()
+        for item in prepared.candidate_generation_rationales
+    )
+
+
+def test_candidate_records_are_complete_immutable_pre_admission_evidence() -> None:
+    prepared = prepare_without_evidence().prepared_spine_access_connections[0]
+    rejected = next(
+        item
+        for item in prepared.candidate_records
+        if item.preparation_disposition.startswith("rejected-")
+    )
+    canonical = rejected.canonical()
+
+    assert canonical["candidate"]["geometry"]["coordinates"]
+    assert canonical["geometry_fingerprint"] == rejected.candidate.geometry.fingerprint
+    assert canonical["source_class"]
+    assert canonical["topology_state"]
+    assert canonical["endpoints"]
+    assert canonical["served_network_place_ids"]
+    assert canonical["served_access_obligation_ids"]
+    assert "served_strategic_destination_ids" in canonical
+    assert canonical["directness_m"] >= 0
+    assert canonical["rejection_reason"]
+    assert canonical["retained_candidate_id"]
+    assert canonical["connection"]["access_connection_id"] == "access-connection-1"
+    with pytest.raises(FrozenInstanceError):
+        rejected.preparation_disposition = "mutated"  # type: ignore[misc]
 
 
 def test_routing_deduplication_is_recorded_and_admission_enforces_profile_limit() -> None:
-    result = prepare_alignment_evidence(
+    result = prepare_spine_access_candidates(
         profile(maximum_options=2),
         road_graph=routing_graph(),
         spine_access_connections=connections(),
@@ -310,13 +354,10 @@ def test_routing_deduplication_is_recorded_and_admission_enforces_profile_limit(
         strategic_spines=spines(),
         context=current_asset_context(),
         official_road_classification=None,
-        configuration=None,
+        source_config=empty_source_config(),
         config_directory=Path.cwd(),
-        as_at=None,
-        school_register_max_age_days=None,
-        strategic_admissions_max_age_days=None,
     )
-    candidate_set = result.prepared_connections[0].candidate_set
+    candidate_set = result.prepared_spine_access_connections[0].candidate_set
 
     assert sum(item.disposition.value == "admitted" for item in candidate_set.admissions) == 2
     assert any(
@@ -369,7 +410,7 @@ def test_material_representative_prefers_current_asset_over_earlier_direct_route
     current = current_asset_context().iloc[[0]].copy()
     current.geometry = [geometry]
 
-    result = prepare_alignment_evidence(
+    result = prepare_spine_access_candidates(
         profile(),
         road_graph=routing_graph(),
         spine_access_connections=connections(),
@@ -377,30 +418,27 @@ def test_material_representative_prefers_current_asset_over_earlier_direct_route
         strategic_spines=spines(),
         context=current,
         official_road_classification=None,
-        configuration=None,
+        source_config=empty_source_config(),
         config_directory=Path.cwd(),
-        as_at=None,
-        school_register_max_age_days=None,
-        strategic_admissions_max_age_days=None,
     )
-    prepared = result.prepared_connections[0]
+    prepared = result.prepared_spine_access_connections[0]
 
     assert [item.source_class.value for item in prepared.candidate_set.candidates] == [
         "verified-existing-asset"
     ]
     rejected = next(
         item
-        for item in prepared.candidate_provenance
-        if item["preparation_disposition"].startswith("rejected-")
+        for item in prepared.candidate_records
+        if item.preparation_disposition.startswith("rejected-")
     )
     retained = next(
         item
-        for item in prepared.candidate_provenance
-        if item["preparation_disposition"] == "retained-representative"
+        for item in prepared.candidate_records
+        if item.preparation_disposition == "retained-representative"
     )
-    assert rejected["source_class"] == "other-routable"
-    assert retained["source_class"] == "verified-existing-asset"
-    assert rejected["retained_candidate_id"] == retained["candidate_id"]
+    assert rejected.candidate.source_class.value == "other-routable"
+    assert retained.candidate.source_class.value == "verified-existing-asset"
+    assert rejected.retained_candidate_id == retained.candidate.candidate_id
 
 
 def test_material_clustering_prevents_profile_limit_dangling_duplicate_crash(
@@ -461,7 +499,7 @@ def test_material_clustering_prevents_profile_limit_dangling_duplicate_crash(
         ),
     )
 
-    result = prepare_alignment_evidence(
+    result = prepare_spine_access_candidates(
         profile(maximum_options=1),
         road_graph=routing_graph(),
         spine_access_connections=connections(),
@@ -469,13 +507,10 @@ def test_material_clustering_prevents_profile_limit_dangling_duplicate_crash(
         strategic_spines=spines(),
         context=current_asset_context(),
         official_road_classification=None,
-        configuration=None,
+        source_config=empty_source_config(),
         config_directory=Path.cwd(),
-        as_at=None,
-        school_register_max_age_days=None,
-        strategic_admissions_max_age_days=None,
     )
-    candidate_set = result.prepared_connections[0].candidate_set
+    candidate_set = result.prepared_spine_access_connections[0].candidate_set
 
     assert len(candidate_set.candidates) == 2
     assert sum(item.disposition.value == "admitted" for item in candidate_set.admissions) == 1
@@ -486,10 +521,139 @@ def test_material_clustering_prevents_profile_limit_dangling_duplicate_crash(
     )
     retained = next(
         item
-        for item in result.prepared_connections[0].candidate_provenance
-        if item["candidate_id"] == issue.retained_candidate_id
+        for item in result.prepared_spine_access_connections[0].candidate_records
+        if item.candidate.candidate_id == issue.retained_candidate_id
     )
-    assert retained["source_class"] == "a-road-corridor"
+    assert retained.candidate.source_class.value == "a-road-corridor"
+
+
+def test_topology_unsatisfied_ncn_cannot_suppress_valid_direct_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    geometry = LineString([(400000, 170000), (401000, 170000)])
+    direct = RouteOption(
+        role="direct",
+        geometry=geometry,
+        length_km=1.0,
+        edge_ids=["direct"],
+        a_road_share=0.0,
+        ncn_share=0.0,
+        bidirectional=True,
+        reverse_length_km=1.0,
+        reverse_edge_ids=["direct"],
+        reverse_corridor_share=1.0,
+        impracticable_alongside=False,
+    )
+    invalid_ncn = RouteOption(
+        role="ncn-informed",
+        geometry=geometry,
+        length_km=1.0,
+        edge_ids=["ncn"],
+        a_road_share=0.0,
+        ncn_share=1.0,
+        bidirectional=False,
+        reverse_length_km=None,
+        reverse_edge_ids=[],
+        reverse_corridor_share=0.0,
+        impracticable_alongside=False,
+    )
+    monkeypatch.setattr(
+        preparation,
+        "choose_alignment",
+        lambda _graph, _start, _end: (
+            invalid_ncn,
+            [invalid_ncn, direct],
+            "legacy selection text must not escape",
+        ),
+    )
+    current = current_asset_context().iloc[[0]].copy()
+    current.geometry = [geometry]
+
+    result = prepare_spine_access_candidates(
+        profile(),
+        road_graph=routing_graph(),
+        spine_access_connections=connections(),
+        access_obligations=obligations(),
+        strategic_spines=spines(),
+        context=current,
+        official_road_classification=None,
+        source_config=empty_source_config(),
+        config_directory=Path.cwd(),
+    )
+    prepared = result.prepared_spine_access_connections[0]
+
+    assert [item.source_class.value for item in prepared.candidate_set.candidates] == [
+        "other-routable"
+    ]
+    invalid_record = next(
+        item
+        for item in prepared.candidate_records
+        if item.route_role == "ncn-informed"
+    )
+    assert invalid_record.preparation_disposition == "rejected-topology-unsatisfied"
+    assert invalid_record.rejection_reason == "topology-unsatisfied"
+    assert invalid_record.retained_candidate_id is None
+    assert any(
+        issue.reason == "topology-unsatisfied"
+        and issue.candidate_id == invalid_record.candidate.candidate_id
+        for issue in result.generation_issues
+    )
+
+
+def test_unknown_topology_never_beats_satisfied_material_candidate_by_precedence() -> None:
+    prepared = prepare_without_evidence().prepared_spine_access_connections[0]
+    satisfied_record = next(
+        item
+        for item in prepared.candidate_records
+        if item.route_role == "direct"
+        and item.candidate.topology_state == preparation.CriterionState.SATISFIED
+    )
+    unknown_payload = satisfied_record.candidate.model_dump(
+        mode="json",
+        exclude={"candidate_id"},
+    )
+    unknown_payload["source_class"] = "verified-existing-asset"
+    unknown_payload["topology_state"] = "unknown"
+    unknown_candidate = preparation.AlignmentCandidateInput.model_validate(
+        unknown_payload
+    )
+    unknown_record = replace(
+        satisfied_record,
+        candidate=unknown_candidate,
+        route_role="ncn-informed",
+        review_required=True,
+    )
+
+    admitted, records, issues = preparation._material_representatives(
+        profile(),
+        access_connection_id="access-connection-1",
+        generated=[
+            preparation._GeneratedCandidate(
+                candidate=unknown_candidate,
+                route_role="ncn-informed",
+                evidence_quality=1.0,
+                record=unknown_record,
+            ),
+            preparation._GeneratedCandidate(
+                candidate=satisfied_record.candidate,
+                route_role="direct",
+                evidence_quality=0.0,
+                record=satisfied_record,
+            ),
+        ],
+    )
+
+    assert admitted == (satisfied_record.candidate,)
+    rejected_unknown = next(
+        item for item in records if item.candidate.candidate_id == unknown_candidate.candidate_id
+    )
+    assert rejected_unknown.review_required is True
+    assert rejected_unknown.retained_candidate_id == satisfied_record.candidate.candidate_id
+    assert any(
+        issue.reason == "topology-unknown-review-required"
+        and issue.candidate_id == unknown_candidate.candidate_id
+        for issue in issues
+    )
 
 
 @pytest.mark.parametrize("parent_place_id", [None, float("nan"), ""])
@@ -502,7 +666,7 @@ def test_parent_endpoint_fallback_ignores_missing_pandas_values(
         parent_place_id
     )
 
-    result = prepare_alignment_evidence(
+    result = prepare_spine_access_candidates(
         profile(),
         road_graph=routing_graph(),
         spine_access_connections=frame,
@@ -510,13 +674,10 @@ def test_parent_endpoint_fallback_ignores_missing_pandas_values(
         strategic_spines=spines(),
         context=current_asset_context(),
         official_road_classification=None,
-        configuration=None,
+        source_config=empty_source_config(),
         config_directory=Path.cwd(),
-        as_at=None,
-        school_register_max_age_days=None,
-        strategic_admissions_max_age_days=None,
     )
-    candidate_set = result.prepared_connections[0].candidate_set
+    candidate_set = result.prepared_spine_access_connections[0].candidate_set
 
     assert candidate_set.endpoints == ("community-1", "strategic-spine-1")
     assert candidate_set.mandatory_network_place_ids == (
@@ -535,7 +696,7 @@ def test_parent_endpoint_falls_back_to_attachment_without_missing_hash() -> None
     mask = frame["obligation_kind"].eq("community")
     frame.loc[mask, ["parent_place_id", "parent_target_id"]] = None
 
-    result = prepare_alignment_evidence(
+    result = prepare_spine_access_candidates(
         profile(),
         road_graph=routing_graph(),
         spine_access_connections=frame,
@@ -543,21 +704,19 @@ def test_parent_endpoint_falls_back_to_attachment_without_missing_hash() -> None
         strategic_spines=spines(),
         context=current_asset_context(),
         official_road_classification=None,
-        configuration=None,
+        source_config=empty_source_config(),
         config_directory=Path.cwd(),
-        as_at=None,
-        school_register_max_age_days=None,
-        strategic_admissions_max_age_days=None,
     )
 
-    assert result.prepared_connections[0].candidate_set.endpoints == (
-        "community-1",
-        "target-node",
+    assert result.prepared_spine_access_connections == ()
+    assert any(
+        issue.reason == "missing-parent-network-place-endpoint"
+        for issue in result.generation_issues
     )
 
 
 def test_enabled_b_road_candidate_requires_and_retains_official_evidence() -> None:
-    result = prepare_alignment_evidence(
+    result = prepare_spine_access_candidates(
         profile(include_b_road=True),
         road_graph=routing_graph(include_b_road=True),
         spine_access_connections=connections(),
@@ -565,17 +724,14 @@ def test_enabled_b_road_candidate_requires_and_retains_official_evidence() -> No
         strategic_spines=spines(),
         context=current_asset_context(),
         official_road_classification=official_b_roads(),
-        configuration=None,
+        source_config=empty_source_config(),
         config_directory=Path.cwd(),
-        as_at=None,
-        school_register_max_age_days=None,
-        strategic_admissions_max_age_days=None,
     )
-    prepared = result.prepared_connections[0]
+    prepared = result.prepared_spine_access_connections[0]
     b_candidate = next(
-        item
-        for item in prepared.candidate_provenance
-        if item["source_class"] == "b-road-corridor"
+        item.canonical()
+        for item in prepared.candidate_records
+        if item.candidate.source_class.value == "b-road-corridor"
     )
 
     assert b_candidate["route_role"] == "b-road-corridor"
@@ -587,7 +743,7 @@ def test_enabled_b_road_candidate_requires_and_retains_official_evidence() -> No
 
 
 def test_disabled_b_road_profile_generates_no_b_candidate() -> None:
-    result = prepare_alignment_evidence(
+    result = prepare_spine_access_candidates(
         profile(),
         road_graph=routing_graph(include_b_road=True),
         spine_access_connections=connections(),
@@ -595,16 +751,13 @@ def test_disabled_b_road_profile_generates_no_b_candidate() -> None:
         strategic_spines=spines(),
         context=current_asset_context(),
         official_road_classification=official_b_roads(),
-        configuration=None,
+        source_config=empty_source_config(),
         config_directory=Path.cwd(),
-        as_at=None,
-        school_register_max_age_days=None,
-        strategic_admissions_max_age_days=None,
     )
 
     assert "b-road-corridor" not in {
-        item["source_class"]
-        for item in result.prepared_connections[0].candidate_provenance
+        item.candidate.source_class.value
+        for item in result.prepared_spine_access_connections[0].candidate_records
     }
 
 
@@ -637,7 +790,9 @@ def test_disconnected_multipart_route_is_an_explicit_generation_issue(
 
     result = prepare_without_evidence()
 
-    assert result.prepared_connections[0].candidate_set.candidates == ()
+    assert (
+        result.prepared_spine_access_connections[0].candidate_set.candidates == ()
+    )
     assert result.generation_issues[0].reason == "disconnected-multipart-route"
 
 
@@ -759,7 +914,7 @@ def test_declared_content_mismatch_fails_closed_instead_of_becoming_incomplete(
     configured.output_area_geometry.path.write_bytes(b"tampered")
 
     with pytest.raises(GovernedEvidenceLoadError, match="SHA-256 mismatch"):
-        prepare_alignment_evidence(
+        prepare_spine_access_candidates(
             profile(),
             road_graph=routing_graph(),
             spine_access_connections=connections(),
@@ -767,11 +922,8 @@ def test_declared_content_mismatch_fails_closed_instead_of_becoming_incomplete(
             strategic_spines=spines(),
             context=current_asset_context(),
             official_road_classification=None,
-            configuration={"population_reach_evidence": configured},
+            source_config=council.source,
             config_directory=tmp_path,
-            as_at=None,
-            school_register_max_age_days=None,
-            strategic_admissions_max_age_days=None,
         )
 
 

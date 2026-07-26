@@ -200,6 +200,10 @@ _Avoid_: nearest geometric point, destination, arbitrary junction
 The bounded connection from a rural Access Obligation to its nearest reachable Strategic Spine, Cross-Spine Connector or already-served Community with onward backbone access.
 _Avoid_: arbitrary point-to-point route, complete journey, spine segment
 
+**Spine Access Candidate Preparation**:
+The bounded generation and pre-admission audit of finite routing alternatives for an already-compiled Spine Access Connection. It does not create an Alignment Candidate Set for a strategic Community Connection, select a Preferred Strategic Alignment or change the compiled network.
+_Avoid_: Preferred Strategic Alignment evidence preparation, Community Connection selection, route decision
+
 **Spine Access Branch**:
 A recursively assembled chain or tree of Spine Access Connections grown outward from a Strategic Spine or Cross-Spine Connector through already-served Communities.
 _Avoid_: independent nearest-neighbour links, general-purpose mesh, disconnected feeder

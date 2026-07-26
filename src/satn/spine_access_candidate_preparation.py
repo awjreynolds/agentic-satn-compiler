@@ -1,10 +1,12 @@
-"""Prepare finite alignment candidates for the optional Wayfinding Pass.
+"""Prepare finite Spine Access candidates for the optional Wayfinding Pass.
 
 This module connects the existing Backbone-and-Access compiler to the approved
 alignment-selection domain without claiming that a selection has happened. It
 re-runs the existing deterministic route-option boundary for each compiled
-*community* access connection, admits only bounded material alternatives, and
-loads configured population and education evidence.
+Spine Access connection, admits only bounded material alternatives, and loads
+configured population and education inputs. It does not select strategic
+Community Connections or produce Preferred Strategic Alignments; a later
+package must address that wider scope.
 
 The local operator and their chosen input files are trusted. SHA-256 values in
 this module are reproducible content identities used for stale-input detection
@@ -19,7 +21,7 @@ import json
 import math
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
 
@@ -35,7 +37,9 @@ from satn.alignment_selection import (
     NetworkRole,
     admit_candidate_set,
 )
+from satn.evidence import corridor_overlap_share
 from satn.identifiers import stable_id
+from satn.models import SourceConfig
 from satn.network_selection import CandidateSourceClass, NetworkSelectionProfile
 from satn.psa_evidence_loaders import (
     EducationAccessEvidenceLoad,
@@ -87,19 +91,79 @@ class CandidatePreparationIssue:
         }
 
 
-@dataclass
+@dataclass(frozen=True)
 class _GeneratedCandidate:
-    """Internal candidate plus the exact provenance record retained on rejection."""
+    """Internal candidate plus its immutable pre-admission audit record."""
 
     candidate: AlignmentCandidateInput
     route_role: str
     evidence_quality: float
-    record: dict[str, object]
+    record: PreparedCandidateRecord
 
 
 @dataclass(frozen=True)
-class PreparedCommunityConnection:
-    """One actual Backbone Community Connection and its finite candidate set."""
+class PreparedCandidateRecord:
+    """Complete immutable record for one generated, rejected, or retained option."""
+
+    candidate: AlignmentCandidateInput
+    route_role: str
+    routing_edge_ids: tuple[str, ...]
+    generation_rationale: str
+    current_asset_share: float
+    current_asset_evidence_json: str
+    official_b_road_share: float
+    official_b_road_evidence_json: str
+    connection_json: str
+    strategic_spine_json: str
+    preparation_disposition: str = "generated"
+    rejection_reason: str | None = None
+    retained_candidate_id: str | None = None
+    review_required: bool = False
+
+    def canonical(self) -> dict[str, object]:
+        candidate = self.candidate.model_dump(mode="json")
+        candidate["geometry_fingerprint"] = self.candidate.geometry.fingerprint
+        candidate["geometry_equivalence_fingerprint"] = (
+            self.candidate.geometry.equivalence_fingerprint
+        )
+        return {
+            "candidate": candidate,
+            "candidate_id": self.candidate.candidate_id,
+            "route_role": self.route_role,
+            "source_class": self.candidate.source_class.value,
+            "topology_state": self.candidate.topology_state.value,
+            "endpoints": list(self.candidate.endpoints),
+            "served_network_place_ids": list(
+                self.candidate.served_network_place_ids
+            ),
+            "served_access_obligation_ids": list(
+                self.candidate.served_access_obligation_ids
+            ),
+            "served_strategic_destination_ids": list(
+                self.candidate.served_strategic_destination_ids
+            ),
+            "directness_m": self.candidate.directness_m,
+            "geometry_fingerprint": self.candidate.geometry.fingerprint,
+            "routing_edge_ids": list(self.routing_edge_ids),
+            "generation_rationale": self.generation_rationale,
+            "current_asset_share": self.current_asset_share,
+            "current_asset_evidence": json.loads(self.current_asset_evidence_json),
+            "official_b_road_share": self.official_b_road_share,
+            "official_b_road_evidence": json.loads(
+                self.official_b_road_evidence_json
+            ),
+            "connection": json.loads(self.connection_json),
+            "strategic_spine": json.loads(self.strategic_spine_json),
+            "preparation_disposition": self.preparation_disposition,
+            "rejection_reason": self.rejection_reason,
+            "retained_candidate_id": self.retained_candidate_id,
+            "review_required": self.review_required,
+        }
+
+
+@dataclass(frozen=True)
+class PreparedSpineAccessConnection:
+    """One bounded Spine Access connection and its finite candidate set."""
 
     access_connection_id: str
     candidate_set: AlignmentCandidateSet
@@ -107,8 +171,8 @@ class PreparedCommunityConnection:
     strategic_source_id: object
     strategic_evidence_id: object
     strategic_provenance: object
-    routing_reason: str
-    candidate_provenance: tuple[dict[str, object], ...]
+    candidate_generation_rationales: tuple[dict[str, str], ...]
+    candidate_records: tuple[PreparedCandidateRecord, ...]
 
     def canonical(self) -> dict[str, object]:
         return {
@@ -118,18 +182,20 @@ class PreparedCommunityConnection:
             "strategic_source_id": _json_safe(self.strategic_source_id),
             "strategic_evidence_id": _json_safe(self.strategic_evidence_id),
             "strategic_provenance": _json_safe(self.strategic_provenance),
-            "routing_reason": self.routing_reason,
-            "candidate_provenance": [_json_safe(item) for item in self.candidate_provenance],
+            "candidate_generation_rationales": [
+                dict(item) for item in self.candidate_generation_rationales
+            ],
+            "candidate_records": [item.canonical() for item in self.candidate_records],
         }
 
 
 @dataclass(frozen=True)
-class AlignmentEvidencePreparationResult:
-    """Honest preparation-only output of the optional compiler seam."""
+class SpineAccessCandidatePreparationResult:
+    """Honest Spine Access preparation-only output of the optional compiler seam."""
 
     profile_fingerprint: str
     status: str
-    prepared_connections: tuple[PreparedCommunityConnection, ...]
+    prepared_spine_access_connections: tuple[PreparedSpineAccessConnection, ...]
     generation_issues: tuple[CandidatePreparationIssue, ...]
     missing_inputs: tuple[str, ...]
     evidence_fingerprints: tuple[str, ...]
@@ -149,17 +215,20 @@ class AlignmentEvidencePreparationResult:
             "missing_inputs": list(self.missing_inputs),
             "evidence_fingerprints": list(self.evidence_fingerprints),
             "evidence_lineage": _json_safe(self.evidence_lineage),
-            "candidate_set_count": len(self.prepared_connections),
+            "candidate_set_count": len(self.prepared_spine_access_connections),
             "candidate_count": sum(
-                len(item.candidate_set.candidates) for item in self.prepared_connections
+                len(item.candidate_set.candidates)
+                for item in self.prepared_spine_access_connections
             ),
-            "prepared_connections": [item.canonical() for item in self.prepared_connections],
+            "prepared_spine_access_connections": [
+                item.canonical() for item in self.prepared_spine_access_connections
+            ],
             "generation_issues": [item.canonical() for item in self.generation_issues],
             "diagnostics": _json_safe(self.diagnostics),
         }
 
 
-def prepare_alignment_evidence(
+def prepare_spine_access_candidates(
     profile: NetworkSelectionProfile,
     *,
     road_graph: RoadGraph,
@@ -168,13 +237,10 @@ def prepare_alignment_evidence(
     strategic_spines: gpd.GeoDataFrame,
     context: gpd.GeoDataFrame,
     official_road_classification: gpd.GeoDataFrame | None,
-    configuration: Mapping[str, object] | None,
+    source_config: SourceConfig,
     config_directory: Path,
-    as_at: date | None,
-    school_register_max_age_days: int | None,
-    strategic_admissions_max_age_days: int | None,
-) -> AlignmentEvidencePreparationResult:
-    """Prepare community candidate sets and verify all declared evidence.
+) -> SpineAccessCandidatePreparationResult:
+    """Prepare bounded Spine Access candidate sets and verify declared inputs.
 
     A missing optional evidence declaration yields ``incomplete``. A declared
     file that is missing, malformed, stale, or whose bytes do not match its
@@ -183,7 +249,7 @@ def prepare_alignment_evidence(
     """
 
     profile = NetworkSelectionProfile.model_validate(profile.model_dump(mode="json"))
-    prepared_connections, issues = _prepare_community_candidate_sets(
+    prepared_spine_access_connections, issues = _prepare_spine_access_candidate_sets(
         profile,
         road_graph=road_graph,
         spine_access_connections=spine_access_connections,
@@ -195,10 +261,9 @@ def prepare_alignment_evidence(
     missing: list[str] = []
     population_evidence: PopulationReachEvidenceLoad | None = None
     education_evidence: EducationAccessEvidenceLoad | None = None
-    configuration = configuration or {}
-    population = configuration.get("population_reach_evidence")
-    schools = configuration.get("school_register_evidence")
-    admissions = configuration.get("strategic_education_destination_admissions")
+    population = source_config.population_reach_evidence
+    schools = source_config.school_register_evidence
+    admissions = source_config.strategic_education_destination_admissions
 
     if population is None:
         missing.append("population-reach-evidence")
@@ -211,32 +276,20 @@ def prepare_alignment_evidence(
     if schools is None:
         missing.append("school-register-evidence")
     else:
-        if as_at is None:
-            missing.append("network-selection-as-at")
-        if school_register_max_age_days is None:
-            missing.append("network-selection-school-register-max-age-days")
-        if admissions is not None and strategic_admissions_max_age_days is None:
-            missing.append("network-selection-strategic-admissions-max-age-days")
-        if (
-            as_at is not None
-            and school_register_max_age_days is not None
-            and (admissions is None or strategic_admissions_max_age_days is not None)
-        ):
-            education_evidence = load_education_access_evidence(
-                schools,
-                admissions,
-                base_directory=config_directory,
-                as_at=as_at,
-                school_register_max_age_days=school_register_max_age_days,
-                strategic_admissions_max_age_days=strategic_admissions_max_age_days,
-            )
-    if admissions is None and strategic_admissions_max_age_days is not None:
-        raise ValueError(
-            "strategic-admissions freshness cannot be configured without an artifact"
+        assert source_config.network_selection_as_at is not None
+        assert source_config.network_selection_school_register_max_age_days is not None
+        education_evidence = load_education_access_evidence(
+            schools,
+            admissions,
+            base_directory=config_directory,
+            as_at=source_config.network_selection_as_at,
+            school_register_max_age_days=(
+                source_config.network_selection_school_register_max_age_days
+            ),
+            strategic_admissions_max_age_days=(
+                source_config.network_selection_strategic_admissions_max_age_days
+            ),
         )
-    if admissions is not None and schools is None:
-        raise ValueError("strategic-admissions evidence requires school-register evidence")
-
     evidence_lineage = _evidence_lineage(population_evidence, education_evidence)
     evidence_fingerprints = _evidence_fingerprints(
         population_evidence,
@@ -251,9 +304,10 @@ def prepare_alignment_evidence(
         else "incomplete"
     )
     diagnostics = {
-        "candidate_set_count": len(prepared_connections),
+        "candidate_set_count": len(prepared_spine_access_connections),
         "candidate_count": sum(
-            len(item.candidate_set.candidates) for item in prepared_connections
+            len(item.candidate_set.candidates)
+            for item in prepared_spine_access_connections
         ),
         "community_connection_count": int(
             (
@@ -269,22 +323,26 @@ def prepare_alignment_evidence(
         "replay_directive": "recompile-whole-network-on-ledger-change",
         "selection_performed": False,
         "agent_runtime_invoked": False,
+        "scope": "spine-access-candidate-preparation",
+        "strategic_community_connection_scope": "not-implemented",
     }
     preparation_payload = {
         "contract": "satn-alignment-evidence-preparation/v1",
         "profile_fingerprint": profile.fingerprint,
         "status": status,
-        "prepared_connections": [item.canonical() for item in prepared_connections],
+        "prepared_spine_access_connections": [
+            item.canonical() for item in prepared_spine_access_connections
+        ],
         "generation_issues": [item.canonical() for item in issues],
         "missing_inputs": ordered_missing,
         "evidence_lineage": evidence_lineage,
         "evidence_fingerprints": evidence_fingerprints,
         "diagnostics": diagnostics,
     }
-    return AlignmentEvidencePreparationResult(
+    return SpineAccessCandidatePreparationResult(
         profile_fingerprint=profile.fingerprint,
         status=status,
-        prepared_connections=prepared_connections,
+        prepared_spine_access_connections=prepared_spine_access_connections,
         generation_issues=issues,
         missing_inputs=ordered_missing,
         evidence_fingerprints=evidence_fingerprints,
@@ -294,7 +352,7 @@ def prepare_alignment_evidence(
     )
 
 
-def _prepare_community_candidate_sets(
+def _prepare_spine_access_candidate_sets(
     profile: NetworkSelectionProfile,
     *,
     road_graph: RoadGraph,
@@ -304,7 +362,7 @@ def _prepare_community_candidate_sets(
     context: gpd.GeoDataFrame,
     official_road_classification: gpd.GeoDataFrame | None,
 ) -> tuple[
-    tuple[PreparedCommunityConnection, ...],
+    tuple[PreparedSpineAccessConnection, ...],
     tuple[CandidatePreparationIssue, ...],
 ]:
     if spine_access_connections.empty:
@@ -312,7 +370,7 @@ def _prepare_community_candidate_sets(
     community = spine_access_connections[
         spine_access_connections["obligation_kind"].eq("community")
     ].copy()
-    prepared: list[PreparedCommunityConnection] = []
+    prepared: list[PreparedSpineAccessConnection] = []
     issues: list[CandidatePreparationIssue] = []
     for _, connection in community.sort_values("access_connection_id").iterrows():
         access_connection_id = str(connection["access_connection_id"])
@@ -321,31 +379,61 @@ def _prepare_community_candidate_sets(
             connection.get("target_attachment_node"),
             connection.get("spine_attachment_node"),
         )
-        endpoint_left = _canonical_endpoint(
-            _first_present(connection.get("community_id"), connection.get("place_id")),
-            prefix="community-endpoint",
+        community_place_id = _first_present(
+            connection.get("community_id"),
+            connection.get("place_id"),
         )
-        endpoint_right = _canonical_endpoint(
-            _first_present(
-                connection.get("parent_place_id"),
-                connection.get("parent_target_id"),
-                connection.get("target_attachment_node"),
-                connection.get("spine_attachment_node"),
-            ),
-            prefix="network-endpoint",
+        parent_place_id = _first_present(
+            connection.get("parent_place_id"),
+            connection.get("parent_target_id"),
         )
-        if not start or not end or endpoint_left is None or endpoint_right is None:
+        if community_place_id is None:
             issues.append(
                 CandidatePreparationIssue(
                     access_connection_id=access_connection_id,
-                    reason="missing-connection-endpoint",
+                    reason="missing-community-network-place-endpoint",
                     detail=(
-                        "community/target routing attachments and both canonical "
-                        "connection endpoints are required"
+                        "Spine Access preparation requires a governed community "
+                        "Network Place identifier"
                     ),
                 )
             )
             continue
+        if parent_place_id is None:
+            issues.append(
+                CandidatePreparationIssue(
+                    access_connection_id=access_connection_id,
+                    reason="missing-parent-network-place-endpoint",
+                    detail=(
+                        "parent_place_id or parent_target_id is required; routing "
+                        "attachment node identifiers are not Network Places, so this "
+                        "preparation gap retains unresolved topology"
+                    ),
+                )
+            )
+            continue
+        if not start or not end:
+            issues.append(
+                CandidatePreparationIssue(
+                    access_connection_id=access_connection_id,
+                    reason="missing-routing-endpoint",
+                    detail=(
+                        "community and target routing attachment identifiers are "
+                        "required to generate candidate geometry"
+                    ),
+                )
+            )
+            continue
+        endpoint_left = _canonical_endpoint(
+            community_place_id,
+            prefix="community-endpoint",
+        )
+        endpoint_right = _canonical_endpoint(
+            parent_place_id,
+            prefix="network-endpoint",
+        )
+        assert endpoint_left is not None
+        assert endpoint_right is not None
         if endpoint_left == endpoint_right:
             issues.append(
                 CandidatePreparationIssue(
@@ -355,7 +443,11 @@ def _prepare_community_candidate_sets(
                 )
             )
             continue
-        _selected, options, routing_reason = choose_alignment(road_graph, start, end)
+        _ignored_choice, options, _ignored_selection_rationale = choose_alignment(
+            road_graph,
+            start,
+            end,
+        )
         if CandidateSourceClass.B_ROAD_CORRIDOR in profile.candidate_source_precedence:
             b_road_option = road_graph.option(start, end, "b-road-corridor")
             if b_road_option is not None:
@@ -365,7 +457,10 @@ def _prepare_community_candidate_sets(
                 CandidatePreparationIssue(
                     access_connection_id=access_connection_id,
                     reason="no-continuous-route",
-                    detail=routing_reason,
+                    detail=(
+                        "No continuous routable option could be generated for this "
+                        "Spine Access connection"
+                    ),
                 )
             )
         spine = _strategic_spine_row(strategic_spines, connection.get("spine_id"))
@@ -426,8 +521,10 @@ def _prepare_community_candidate_sets(
                 )
                 continue
             connection_payload = _connection_payload(connection)
+            generation_rationale = _candidate_generation_rationale(route_role)
             option_payload = {
                 "role": route_role,
+                "generation_rationale": generation_rationale,
                 "summary": option.summary(),
                 "edge_ids": list(option.edge_ids),
                 "geometry_wkb": option.geometry.wkb_hex,
@@ -472,22 +569,19 @@ def _prepare_community_candidate_sets(
                 served_access_obligation_ids=obligation_ids,
                 directness_m=float(option.length_km * 1000),
             )
-            record = {
-                "candidate_id": candidate.candidate_id,
-                "route_role": route_role,
-                "source_class": source_class.value,
-                "routing_edge_ids": list(option.edge_ids),
-                "current_asset_share": current_asset_share,
-                "current_asset_evidence": existing_rows,
-                "official_b_road_share": official_b_road_share,
-                "official_b_road_evidence": b_road_rows,
-                "strategic_source_id": strategic_payload["source_id"],
-                "strategic_evidence_id": strategic_payload["evidence_id"],
-                "strategic_provenance": strategic_payload["provenance"],
-                "evidence_fingerprint": candidate.evidence_fingerprints[0],
-                "preparation_disposition": "generated",
-                "retained_candidate_id": None,
-            }
+            record = PreparedCandidateRecord(
+                candidate=candidate,
+                route_role=route_role,
+                routing_edge_ids=tuple(str(item) for item in option.edge_ids),
+                generation_rationale=generation_rationale,
+                current_asset_share=current_asset_share,
+                current_asset_evidence_json=_canonical_json(existing_rows),
+                official_b_road_share=official_b_road_share,
+                official_b_road_evidence_json=_canonical_json(b_road_rows),
+                connection_json=_canonical_json(connection_payload),
+                strategic_spine_json=_canonical_json(strategic_payload),
+                review_required=candidate.topology_state == CriterionState.UNKNOWN,
+            )
             generated_candidates.append(
                 _GeneratedCandidate(
                     candidate=candidate,
@@ -511,16 +605,31 @@ def _prepare_community_candidate_sets(
             mandatory_access_obligation_ids=obligation_ids,
         )
         prepared.append(
-            PreparedCommunityConnection(
+            PreparedSpineAccessConnection(
                 access_connection_id=access_connection_id,
                 candidate_set=candidate_set,
                 root_spine_id=_text(connection.get("spine_id")) or "",
                 strategic_source_id=strategic_payload["source_id"],
                 strategic_evidence_id=strategic_payload["evidence_id"],
                 strategic_provenance=strategic_payload["provenance"],
-                routing_reason=routing_reason,
-                candidate_provenance=tuple(
-                    sorted(candidate_records, key=lambda item: str(item["candidate_id"]))
+                candidate_generation_rationales=tuple(
+                    {
+                        "route_role": item.route_role,
+                        "rationale": item.record.generation_rationale,
+                    }
+                    for item in sorted(
+                        generated_candidates,
+                        key=lambda candidate: (
+                            candidate.route_role,
+                            candidate.candidate.candidate_id,
+                        ),
+                    )
+                ),
+                candidate_records=tuple(
+                    sorted(
+                        candidate_records,
+                        key=lambda item: item.candidate.candidate_id,
+                    )
                 ),
             )
         )
@@ -549,7 +658,7 @@ def _material_representatives(
     generated: list[_GeneratedCandidate],
 ) -> tuple[
     tuple[AlignmentCandidateInput, ...],
-    list[dict[str, object]],
+    list[PreparedCandidateRecord],
     tuple[CandidatePreparationIssue, ...],
 ]:
     """Select one deterministic representative per material geometry cluster.
@@ -564,27 +673,61 @@ def _material_representatives(
         source_class: index
         for index, source_class in enumerate(profile.candidate_source_precedence)
     }
-    role_rank = {
-        "ncn-informed": 0,
-        "b-road-corridor": 1,
-        "strategic-spine": 2,
-        "direct": 3,
-        "low-traffic": 4,
+    topology_rank = {
+        CriterionState.SATISFIED: 0,
+        CriterionState.UNKNOWN: 1,
     }
+    issues: list[CandidatePreparationIssue] = []
+    eligible: list[_GeneratedCandidate] = []
+    records: dict[str, PreparedCandidateRecord] = {}
+    for item in generated:
+        candidate_id = item.candidate.candidate_id
+        if item.candidate.topology_state == CriterionState.UNSATISFIED:
+            records[candidate_id] = replace(
+                item.record,
+                preparation_disposition="rejected-topology-unsatisfied",
+                rejection_reason="topology-unsatisfied",
+            )
+            issues.append(
+                CandidatePreparationIssue(
+                    access_connection_id=access_connection_id,
+                    reason="topology-unsatisfied",
+                    detail=(
+                        f"{item.route_role} is not bidirectionally continuous and "
+                        "cannot enter candidate admission"
+                    ),
+                    route_role=item.route_role,
+                    candidate_id=candidate_id,
+                    source_class=item.candidate.source_class.value,
+                )
+            )
+            continue
+        eligible.append(item)
+        records[candidate_id] = item.record
+        if item.candidate.topology_state == CriterionState.UNKNOWN:
+            issues.append(
+                CandidatePreparationIssue(
+                    access_connection_id=access_connection_id,
+                    reason="topology-unknown-review-required",
+                    detail=(
+                        f"{item.route_role} retains Grey topology and requires "
+                        "review before it can displace a topologically satisfied option"
+                    ),
+                    route_role=item.route_role,
+                    candidate_id=candidate_id,
+                    source_class=item.candidate.source_class.value,
+                )
+            )
     ordered = sorted(
-        generated,
+        eligible,
         key=lambda item: (
+            topology_rank[item.candidate.topology_state],
             precedence[item.candidate.source_class],
             -item.evidence_quality,
-            0
-            if item.candidate.topology_state == CriterionState.SATISFIED
-            else 1,
-            role_rank.get(item.route_role, 99),
             item.candidate.candidate_id,
         ),
     )
     representatives: list[_GeneratedCandidate] = []
-    issues: list[CandidatePreparationIssue] = []
     for item in ordered:
         retained = next(
             (
@@ -597,7 +740,10 @@ def _material_representatives(
             None,
         )
         if retained is None:
-            item.record["preparation_disposition"] = "retained-representative"
+            records[item.candidate.candidate_id] = replace(
+                item.record,
+                preparation_disposition="retained-representative",
+            )
             representatives.append(item)
             continue
         exact = (
@@ -609,15 +755,20 @@ def _material_representatives(
             if exact
             else "materially-equivalent-routing-geometry"
         )
-        item.record["preparation_disposition"] = f"rejected-{reason}"
-        item.record["retained_candidate_id"] = retained.candidate.candidate_id
+        records[item.candidate.candidate_id] = replace(
+            item.record,
+            preparation_disposition=f"rejected-{reason}",
+            rejection_reason=reason,
+            retained_candidate_id=retained.candidate.candidate_id,
+        )
         issues.append(
             CandidatePreparationIssue(
                 access_connection_id=access_connection_id,
                 reason=reason,
                 detail=(
                     f"{item.route_role} was suppressed in favour of "
-                    f"{retained.route_role} under profile precedence and evidence quality"
+                    f"{retained.route_role} under topology eligibility, profile "
+                    "precedence, governed evidence quality, and stable identity"
                 ),
                 route_role=item.route_role,
                 candidate_id=item.candidate.candidate_id,
@@ -625,15 +776,24 @@ def _material_representatives(
                 source_class=item.candidate.source_class.value,
             )
         )
+    if any(
+        item.candidate.topology_state == CriterionState.SATISFIED
+        for item in representatives
+    ):
+        admissible_representatives: list[_GeneratedCandidate] = []
+        for item in representatives:
+            if item.candidate.topology_state != CriterionState.UNKNOWN:
+                admissible_representatives.append(item)
+                continue
+            records[item.candidate.candidate_id] = replace(
+                records[item.candidate.candidate_id],
+                preparation_disposition="rejected-topology-unknown-review-required",
+                rejection_reason="topology-unknown-review-required",
+            )
+        representatives = admissible_representatives
     return (
         tuple(item.candidate for item in representatives),
-        [
-            item.record
-            for item in sorted(
-                generated,
-                key=lambda candidate: candidate.candidate.candidate_id,
-            )
-        ],
+        [records[candidate_id] for candidate_id in sorted(records)],
         tuple(
             sorted(
                 issues,
@@ -763,11 +923,16 @@ def _official_b_road_evidence(
             }
             | {"geometry_wkb": original.geometry.wkb_hex}
         )
-        match_geometries.append(corridor)
-    if not match_geometries or route.length <= 0:
+        match_geometries.append(row.geometry)
+    if not match_geometries:
         return [], 0.0
-    corridor = gpd.GeoSeries(match_geometries, crs=27700).union_all()
-    share = min(1.0, float(route.intersection(corridor).length / route.length))
+    share = corridor_overlap_share(
+        geometry,
+        match_geometries,
+        route_crs=route_crs,
+        corridor_crs=projected.crs,
+        buffer_m=20,
+    )
     return matched, share
 
 
@@ -808,11 +973,16 @@ def _current_asset_evidence(
                 "geometry_wkb": original.geometry.wkb_hex,
             }
         )
-        match_geometries.append(row.geometry.buffer(20))
-    if not match_geometries or route.length <= 0:
+        match_geometries.append(row.geometry)
+    if not match_geometries:
         return [], 0.0
-    corridor = gpd.GeoSeries(match_geometries, crs=27700).union_all()
-    share = min(1.0, float(route.intersection(corridor).length / route.length))
+    share = corridor_overlap_share(
+        geometry,
+        match_geometries,
+        route_crs=route_crs,
+        corridor_crs=projected.crs,
+        buffer_m=20,
+    )
     return matched, share
 
 
@@ -907,6 +1077,36 @@ def _text(value: object) -> str | None:
 
 def _first_present(*values: object) -> str | None:
     return next((text for value in values if (text := _text(value)) is not None), None)
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(
+        _json_safe(value),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
+
+
+def _candidate_generation_rationale(route_role: str) -> str:
+    return {
+        "direct": "Generated as the shortest continuous routable baseline.",
+        "strategic-spine": (
+            "Generated by weighting A-road corridor edges to expose a direct "
+            "strategic-corridor alternative."
+        ),
+        "b-road-corridor": (
+            "Generated by weighting B-road edges, subject to governed official "
+            "road-classification evidence."
+        ),
+        "ncn-informed": (
+            "Generated by weighting edges associated with current cycle-route assets."
+        ),
+        "low-traffic": (
+            "Generated by weighting lower-traffic routable highway classes."
+        ),
+    }.get(route_role, "Generated as a deterministic routable alternative.")
 
 
 def _evidence_fingerprints(

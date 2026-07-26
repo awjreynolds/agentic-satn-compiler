@@ -125,7 +125,7 @@ def test_criteria_change_invalidates_all_reuse(tmp_path: Path) -> None:
     assert changed.run_id != original.run_id
 
 
-def test_alignment_preparation_fingerprint_directly_changes_final_run_id(
+def test_spine_access_preparation_fingerprint_directly_changes_final_run_id(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -141,19 +141,19 @@ def test_alignment_preparation_fingerprint_directly_changes_final_run_id(
         }
     )
     first = compile(config)
-    original_prepare = compiler_module.prepare_alignment_evidence
+    original_prepare = compiler_module.prepare_spine_access_candidates
 
     def changed_prepare(*args, **kwargs):
         prepared = original_prepare(*args, **kwargs)
         return replace(prepared, preparation_fingerprint="f" * 64)
 
-    monkeypatch.setattr(compiler_module, "prepare_alignment_evidence", changed_prepare)
+    monkeypatch.setattr(compiler_module, "prepare_spine_access_candidates", changed_prepare)
     config.compilation.full = True
     changed = compile(config)
 
-    assert first.metadata["alignment_evidence_preparation"][
+    assert first.metadata["spine_access_candidate_preparation"][
         "preparation_fingerprint"
-    ] != changed.metadata["alignment_evidence_preparation"][
+    ] != changed.metadata["spine_access_candidate_preparation"][
         "preparation_fingerprint"
     ]
     assert changed.run_id != first.run_id

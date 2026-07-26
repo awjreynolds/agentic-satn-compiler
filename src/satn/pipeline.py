@@ -221,9 +221,9 @@ def _compile(
             "schema_version": SCHEMA_VERSION,
             "criteria_version": council.compilation.criteria_version,
             "compilation_input_fingerprint": input_fingerprint,
-            "alignment_evidence_preparation_fingerprint": (
-                compiled.alignment_evidence_preparation.preparation_fingerprint
-                if compiled.alignment_evidence_preparation is not None
+            "spine_access_candidate_preparation_fingerprint": (
+                compiled.spine_access_candidate_preparation.preparation_fingerprint
+                if compiled.spine_access_candidate_preparation is not None
                 else None
             ),
             "snapshot_manifest": hashlib.sha256(
@@ -432,11 +432,11 @@ def _compile(
             "elevation_evidence_status": compiled.elevation_evidence_status,
             **(
                 {
-                    "alignment_evidence_preparation": (
-                        compiled.alignment_evidence_preparation.metadata()
+                    "spine_access_candidate_preparation": (
+                        compiled.spine_access_candidate_preparation.metadata()
                     )
                 }
-                if compiled.alignment_evidence_preparation is not None
+                if compiled.spine_access_candidate_preparation is not None
                 else {}
             ),
             "urban_spines": len(compiled.urban_spines),

@@ -16,10 +16,6 @@ import pandas as pd
 from shapely.geometry import MultiPoint
 
 from satn.agents import AgentDecisionResolver, AgentRuntimeSource, CompilationGate
-from satn.alignment_evidence_preparation import (
-    AlignmentEvidencePreparationResult,
-    prepare_alignment_evidence,
-)
 from satn.backbone import GAP_COLUMNS, assemble_backbone_outward
 from satn.cross_spine import CrossSpineProgress, resolve_cross_spine_assembly
 from satn.evidence import (
@@ -50,6 +46,10 @@ from satn.school_street import assess_school_street_candidates
 from satn.settlement import (
     assess_community_urban_eligibility,
     urban_settlement_form_profiles,
+)
+from satn.spine_access_candidate_preparation import (
+    SpineAccessCandidatePreparationResult,
+    prepare_spine_access_candidates,
 )
 from satn.topography import (
     GradientThresholds,
@@ -111,10 +111,12 @@ class CompiledNetwork:
     # the input fingerprint independently reproducible.
     decision_ledger_input: dict[str, object] = field(default_factory=dict)
     accepted_decisions: list[dict[str, str]] = field(default_factory=list)
-    # Optional Wayfinding Pass data.  It remains absent, rather than empty,
-    # for legacy compilations so their route and publication behaviour stays
-    # byte-compatible.
-    alignment_evidence_preparation: AlignmentEvidencePreparationResult | None = None
+    # Optional bounded Spine Access preparation. It remains absent, rather
+    # than empty, for legacy compilations so their route and publication
+    # behaviour stays byte-compatible.
+    spine_access_candidate_preparation: SpineAccessCandidatePreparationResult | None = (
+        None
+    )
 
     @property
     def connection_count(self) -> int:
@@ -333,11 +335,12 @@ def compile_network(
         maximum_sample_spacing_m=(config.compilation.topography.maximum_sample_spacing_m),
         minimum_sustained_spacing_m=(config.compilation.topography.minimum_sustained_spacing_m),
     )
-    alignment_evidence_preparation = None
+    spine_access_candidate_preparation = None
     if config.compilation.network_selection is not None:
-        # This seam prepares finite Community Connection candidates and strict
-        # evidence bindings. It deliberately does not select or mutate routes.
-        alignment_evidence_preparation = prepare_alignment_evidence(
+        # This seam prepares finite Spine Access candidates and strict input
+        # bindings. It does not select strategic Community Connections, choose
+        # a Preferred Strategic Alignment, or mutate compiled routes.
+        spine_access_candidate_preparation = prepare_spine_access_candidates(
             config.compilation.network_selection,
             road_graph=road_graph,
             spine_access_connections=spine_access_connections,
@@ -345,21 +348,8 @@ def compile_network(
             strategic_spines=strategic_spines,
             context=context,
             official_road_classification=official_road_classification,
-            configuration={
-                "population_reach_evidence": config.source.population_reach_evidence,
-                "school_register_evidence": config.source.school_register_evidence,
-                "strategic_education_destination_admissions": (
-                    config.source.strategic_education_destination_admissions
-                ),
-            },
+            source_config=config.source,
             config_directory=config.config_path.parent,
-            as_at=config.source.network_selection_as_at,
-            school_register_max_age_days=(
-                config.source.network_selection_school_register_max_age_days
-            ),
-            strategic_admissions_max_age_days=(
-                config.source.network_selection_strategic_admissions_max_age_days
-            ),
         )
     crossing_warnings = _backbone_crossing_warnings(
         spine_access_connections, branch_meeting_connections
@@ -593,15 +583,15 @@ def compile_network(
             "urban_a_road_spine_coverage": urban_a_road_coverage,
             **(
                 {
-                    "alignment_evidence_preparation": (
-                        alignment_evidence_preparation.diagnostics
+                    "spine_access_candidate_preparation": (
+                        spine_access_candidate_preparation.diagnostics
                     )
                 }
-                if alignment_evidence_preparation is not None
+                if spine_access_candidate_preparation is not None
                 else {}
             ),
         },
-        alignment_evidence_preparation=alignment_evidence_preparation,
+        spine_access_candidate_preparation=spine_access_candidate_preparation,
     )
     # ``compile_network`` is also a supported public entry point.  Its output
     # must therefore carry the same exact decision wire contract as the

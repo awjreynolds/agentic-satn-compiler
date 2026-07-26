@@ -262,9 +262,8 @@ class SourceConfig(BaseModel):
         default=None,
         exclude_if=lambda value: value is None,
         description=(
-            "Declared assessment date for governed Preferred Strategic Alignment "
-            "evidence. Required when network_selection uses currentness-sensitive "
-            "population or education artifacts."
+            "Declared assessment date for currentness-sensitive governed population "
+            "or education inputs used by optional network-selection preparation."
         ),
     )
     network_selection_school_register_max_age_days: int | None = Field(

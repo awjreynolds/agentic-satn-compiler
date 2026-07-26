@@ -48,6 +48,14 @@ an unconditional winner.
 Different declared profiles may generate comparable Scenario Compilations. The
 compiler does not silently choose which scenario becomes authoritative.
 
+The initial compiler integration is deliberately narrower than this complete
+decision. It performs **Spine Access Candidate Preparation** for already-compiled
+Spine Access Connections: it generates finite routing alternatives, rejects
+topologically invalid inputs before admission and publishes complete preparation
+records. It does not yet generate Alignment Candidate Sets for strategic
+Community Connections, run Preferred Strategic Alignment selection or alter the
+compiled network. That strategic-connection scope requires a later package.
+
 The following remain separate downstream LCWIP capabilities:
 
 - demand analysis, including commute, school-trip or mode-shift modelling;
@@ -128,4 +136,3 @@ compiler's governed evidence.
 
 Free-form geometry or policy would not be reproducible. Agents therefore select
 only compiler-authored finite actions against fingerprinted evidence.
-
