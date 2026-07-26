@@ -12,7 +12,9 @@ import pytest
 from shapely.geometry import LineString, Point
 
 from satn import compile
+from satn.agents import FakeAgentRuntime
 from satn.compilation_dependencies import compilation_dependency_manifest
+from satn.compiler import compile_network
 from satn.ea_elevation import (
     DTM_ATTRIBUTION,
     SAMPLE_LEDGER_FILENAME,
@@ -32,7 +34,17 @@ from satn.pipeline import (
     compilation_governed_input_fingerprint,
     decision_ledger_input_fingerprint,
 )
-from satn.publisher import _validate_ea_elevation_fixed_point, validate_publication
+from satn.publisher import (
+    EA_FIXED_POINT_CANDIDATE_DIRECTORY,
+    EA_FIXED_POINT_CANDIDATE_NETWORK,
+    EA_FIXED_POINT_CANDIDATE_STATUS,
+    _ea_fixed_point_candidate_path,
+    _retain_ea_fixed_point_candidate,
+    _validate_ea_elevation_fixed_point,
+    _write_geojson,
+    publish,
+    validate_publication,
+)
 from satn.sources import (
     EA_LIDAR_COVERAGE_ID,
     EA_LIDAR_DATASET_ID,
@@ -88,6 +100,13 @@ def _official_index(tmp_path: Path) -> tuple[Path, dict[str, object]]:
 
 
 PROJECT = Path(__file__).parents[1]
+
+
+def _publication_compiled(config: CouncilConfig):
+    """Build a compact deterministic candidate without any live EA acquisition."""
+    from test_backbone_assembly import parallel_spine_source
+
+    return compile_network(config, parallel_spine_source(), FakeAgentRuntime())
 
 
 @pytest.mark.parametrize("unsafe_name", ["../outside.geojson", "/tmp/outside.geojson"])
@@ -256,6 +275,9 @@ def _write_final_ea_snapshot(config: CouncilConfig, *, pre_elevation_network_sha
         "sample_ledger_sha256": digests[SAMPLE_LEDGER_FILENAME],
         "sample_route_path": EA_RETAINED_ROUTE_FILENAME,
         "sample_route_sha256": digests[EA_RETAINED_ROUTE_FILENAME],
+        "authority_boundaries_path": "ea-authority-boundaries.geojson",
+        "survey_index_path": "ea-survey-index.geojson",
+        "governed_input_fingerprint": "b" * 64,
     }
     acquisition_path = snapshot_path / "elevation-evidence.manifest.json"
     acquisition_path.write_text(json.dumps(acquisition, sort_keys=True) + "\n", encoding="utf-8")
@@ -811,6 +833,148 @@ def test_final_ea_fixed_point_allows_complete_immutable_snapshot(tmp_path: Path)
     _write_final_ea_snapshot(config, pre_elevation_network_sha256=fingerprint)
 
     _validate_ea_elevation_fixed_point(config, network)
+
+
+def test_ea_fixed_point_mismatch_retains_candidate_with_exact_status_and_keeps_output(
+    tmp_path: Path,
+) -> None:
+    config = copied_config(tmp_path)
+    config.publication.output_dir = tmp_path / "published"
+    snapshot(config)
+    compile(config)
+    published_bytes = {
+        path.relative_to(config.publication.output_dir): path.read_bytes()
+        for path in config.publication.output_dir.rglob("*")
+        if path.is_file()
+    }
+    compiled = _publication_compiled(config)
+    _final_ea_config(config, tmp_path)
+    expected = "0" * 64
+    _write_final_ea_snapshot(config, pre_elevation_network_sha256=expected)
+
+    with pytest.raises(ValueError, match=rf"expected={expected}.*retained candidate="):
+        publish(config, compiled, "run-ea-candidate")
+
+    candidate = _ea_fixed_point_candidate_path(config)
+    retained_network = candidate / EA_FIXED_POINT_CANDIDATE_NETWORK
+    status = json.loads((candidate / EA_FIXED_POINT_CANDIDATE_STATUS).read_text())
+    actual = eligible_route_fingerprint(gpd.read_file(retained_network))
+    assert {
+        path.relative_to(config.publication.output_dir): path.read_bytes()
+        for path in config.publication.output_dir.rglob("*")
+        if path.is_file()
+    } == published_bytes
+    assert status == {
+        "actual_eligible_route_fingerprint": actual,
+        "area_id": config.area_id,
+        "candidate_network_path": EA_FIXED_POINT_CANDIDATE_NETWORK,
+        "candidate_network_sha256": hashlib.sha256(retained_network.read_bytes()).hexdigest(),
+        "expected_eligible_route_fingerprint": expected,
+        "next_step_command": status["next_step_command"],
+        "run_id": "run-ea-candidate",
+        "schema_version": "ea-fixed-point-candidate/v1",
+        "snapshot_id": config.source.snapshot_id,
+        "status": "eligible-route-mismatch",
+        "timestamp": status["timestamp"],
+    }
+    assert status["next_step_command"].startswith(
+        "uv run python scripts/acquire_ea_elevation.py "
+    )
+    assert str(retained_network) in status["next_step_command"]
+    snapshot_dir = config.source.snapshot_dir / config.source.snapshot_id
+    assert str(snapshot_dir / "ea-authority-boundaries.geojson") in status["next_step_command"]
+    assert str(snapshot_dir / "ea-survey-index.geojson") in status["next_step_command"]
+    assert "b" * 64 in status["next_step_command"]
+    assert "--weca-preflight" in status["next_step_command"]
+
+
+def test_ea_fixed_point_candidate_replaces_stale_contents_and_stays_contained(
+    tmp_path: Path,
+) -> None:
+    config = _final_ea_config(copied_config(tmp_path), tmp_path)
+    config.council_id = "../outside-publication"
+    config.publication.output_dir = tmp_path / "published"
+    network = tmp_path / "candidate.geojson"
+    _final_eligible_network(network)
+    _write_final_ea_snapshot(config, pre_elevation_network_sha256="0" * 64)
+
+    candidate = _retain_ea_fixed_point_candidate(
+        config,
+        run_id="run-first",
+        network_path=network,
+        expected="1" * 64,
+        actual="2" * 64,
+    )
+    (candidate / "stale.txt").write_text("remove me", encoding="utf-8")
+    network.write_bytes(network.read_bytes() + b"\n")
+    _retain_ea_fixed_point_candidate(
+        config,
+        run_id="run-second",
+        network_path=network,
+        expected="3" * 64,
+        actual="4" * 64,
+    )
+
+    status = json.loads((candidate / EA_FIXED_POINT_CANDIDATE_STATUS).read_text())
+    assert {path.name for path in candidate.iterdir()} == {
+        EA_FIXED_POINT_CANDIDATE_NETWORK,
+        EA_FIXED_POINT_CANDIDATE_STATUS,
+    }
+    assert status["run_id"] == "run-second"
+    assert status["expected_eligible_route_fingerprint"] == "3" * 64
+    assert status["actual_eligible_route_fingerprint"] == "4" * 64
+    assert status["candidate_network_sha256"] == hashlib.sha256(network.read_bytes()).hexdigest()
+    assert candidate.parent.name == EA_FIXED_POINT_CANDIDATE_DIRECTORY
+    assert candidate.parent.parent == config.publication.output_dir.parent.resolve()
+    with pytest.raises(ValueError):
+        candidate.relative_to(config.publication.output_dir)
+
+
+def test_successful_publication_clears_stale_ea_fixed_point_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _final_ea_config(copied_config(tmp_path), tmp_path)
+    config.publication.output_dir = tmp_path / "published"
+    compiled = _publication_compiled(config)
+    rendered_network = tmp_path / "rendered-network.geojson"
+    _write_geojson(rendered_network, compiled)
+    expected = eligible_route_fingerprint(gpd.read_file(rendered_network))
+    _write_final_ea_snapshot(config, pre_elevation_network_sha256=expected)
+    _retain_ea_fixed_point_candidate(
+        config,
+        run_id="run-stale",
+        network_path=rendered_network,
+        expected="0" * 64,
+        actual=expected,
+    )
+    monkeypatch.setattr("satn.publisher._validate_artifacts", lambda *_args: None)
+
+    publish(config, compiled, "run-fixed-point-success")
+
+    assert not _ea_fixed_point_candidate_path(config).exists()
+
+
+def test_ea_fixed_point_does_not_retain_candidates_for_unrelated_failure(tmp_path: Path) -> None:
+    config = _final_ea_config(copied_config(tmp_path), tmp_path)
+    config.publication.output_dir = tmp_path / "published"
+    compiled = _publication_compiled(config)
+
+    with pytest.raises(ValueError, match=r"missing immutable snapshot\.json"):
+        publish(config, compiled, "run-unrelated-failure")
+
+    candidate_root = config.publication.output_dir.parent / EA_FIXED_POINT_CANDIDATE_DIRECTORY
+    assert not candidate_root.exists()
+
+
+def test_banes_ea_source_does_not_use_the_weca_candidate_protocol(tmp_path: Path) -> None:
+    config = CouncilConfig.from_yaml(PROJECT / "config" / "banes.yaml")
+    config.publication.output_dir = tmp_path / "published"
+    network = tmp_path / "network.geojson"
+    _final_eligible_network(network)
+
+    _validate_ea_elevation_fixed_point(config, network)
+
+    assert not (config.publication.output_dir.parent / EA_FIXED_POINT_CANDIDATE_DIRECTORY).exists()
 
 
 def test_final_ea_fixed_point_rejects_bootstrap_snapshot(tmp_path: Path) -> None:

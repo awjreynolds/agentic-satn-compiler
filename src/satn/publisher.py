@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import math
+import shlex
 import shutil
 import tempfile
 import zipfile
@@ -53,6 +54,24 @@ from satn.sources import (
 )
 
 LOGGER = logging.getLogger(__name__)
+
+EA_FIXED_POINT_CANDIDATE_SCHEMA_VERSION = "ea-fixed-point-candidate/v1"
+EA_FIXED_POINT_CANDIDATE_DIRECTORY = ".satn-ea-fixed-point-candidates"
+EA_FIXED_POINT_CANDIDATE_NETWORK = "network.geojson"
+EA_FIXED_POINT_CANDIDATE_STATUS = "status.json"
+
+
+class EAFixedPointMismatchError(ValueError):
+    """The sole EA fixed-point failure that can retain a candidate route network."""
+
+    def __init__(self, *, expected: str, actual: str) -> None:
+        self.expected = expected
+        self.actual = actual
+        super().__init__(
+            "EA elevation two-pass fixed point failed: final eligible routes differ from "
+            "the routes sampled before elevation acquisition "
+            f"(expected={expected}, actual={actual})"
+        )
 
 
 def publication_artifacts(output: Path) -> dict[str, Path]:
@@ -213,7 +232,22 @@ def publish(
     try:
         _write_geopackage(temporary / "network.gpkg", compiled)
         _write_geojson(temporary / "network.geojson", compiled)
-        _validate_ea_elevation_fixed_point(config, temporary / "network.geojson")
+        try:
+            _validate_ea_elevation_fixed_point(config, temporary / "network.geojson")
+        except EAFixedPointMismatchError as error:
+            try:
+                candidate = _retain_ea_fixed_point_candidate(
+                    config,
+                    run_id=run_id,
+                    network_path=temporary / "network.geojson",
+                    expected=error.expected,
+                    actual=error.actual,
+                )
+            except ValueError as retention_error:
+                raise ValueError(
+                    f"{error}; candidate retention failed: {retention_error}"
+                ) from retention_error
+            raise ValueError(f"{error}; retained candidate={candidate}") from error
         _write_json_records(temporary, config, compiled, run_id)
         _write_backbone_comparison(
             temporary / "backbone-comparison.json",
@@ -242,10 +276,160 @@ def publish(
             if backup.exists():
                 shutil.rmtree(backup)
             LOGGER.info("Publication atomically replaced output=%s", output)
+            _remove_ea_fixed_point_candidate(config)
     finally:
         if temporary.exists():
             shutil.rmtree(temporary)
     return publication_artifacts(output)
+
+
+def _ea_fixed_point_candidate_path(config: AreaConfig) -> Path:
+    """Return one containment-safe, deterministic candidate directory per Area Definition."""
+    output_parent = config.publication.output_dir.parent.resolve()
+    root = output_parent / EA_FIXED_POINT_CANDIDATE_DIRECTORY
+    if root.exists() and (not root.is_dir() or root.is_symlink()):
+        raise ValueError("EA fixed-point candidate root must be a regular directory")
+    root.mkdir(parents=True, exist_ok=True)
+    resolved_root = root.resolve()
+    if resolved_root.parent != output_parent:
+        raise ValueError("EA fixed-point candidate root escapes publication parent")
+    area_key = hashlib.sha256(config.area_id.encode("utf-8")).hexdigest()
+    candidate = resolved_root / area_key
+    if candidate.parent != resolved_root:
+        raise ValueError("EA fixed-point candidate path escapes candidate root")
+    return candidate
+
+
+def _ea_fixed_point_next_step(config: AreaConfig, candidate_network: Path) -> str:
+    """Record the governed acquisition command that consumes the retained routes."""
+    elevation = config.source.national_elevation
+    if elevation is None or elevation.path is None:
+        raise ValueError("EA fixed-point candidate has no local elevation output path")
+    snapshot = config.source.snapshot_dir / config.source.snapshot_id
+    try:
+        acquisition = json.loads(
+            (snapshot / "elevation-evidence.manifest.json").read_text(encoding="utf-8")
+        )
+        if not isinstance(acquisition, dict):
+            raise TypeError("acquisition manifest must be an object")
+        authority_name = acquisition["authority_boundaries_path"]
+        survey_name = acquisition["survey_index_path"]
+        governed_input = acquisition["governed_input_fingerprint"]
+        if (
+            not isinstance(authority_name, str)
+            or Path(authority_name).name != authority_name
+            or not isinstance(survey_name, str)
+            or Path(survey_name).name != survey_name
+            or not isinstance(governed_input, str)
+            or len(governed_input) != 64
+        ):
+            raise ValueError("invalid immutable acquisition context")
+    except (json.JSONDecodeError, KeyError, OSError, TypeError, ValueError) as error:
+        raise ValueError(
+            "EA fixed-point candidate cannot read governed acquisition context"
+        ) from error
+    cache_dir = elevation.path.parent / "ea-dtm-cache"
+    command = [
+        "uv",
+        "run",
+        "python",
+        "scripts/acquire_ea_elevation.py",
+        str(candidate_network),
+        str(elevation.path),
+        "--cache-dir",
+        str(cache_dir),
+        "--spacing-m",
+        "10",
+        "--authority-boundaries",
+        str(snapshot / authority_name),
+        "--survey-index",
+        str(snapshot / survey_name),
+        "--weca-preflight",
+        "--routing-buffer-m",
+        "15000",
+        "--governed-input-fingerprint",
+        governed_input,
+    ]
+    return " ".join(shlex.quote(part) for part in command)
+
+
+def _retain_ea_fixed_point_candidate(
+    config: AreaConfig,
+    *,
+    run_id: str,
+    network_path: Path,
+    expected: str,
+    actual: str,
+) -> Path:
+    """Atomically replace the sole retained candidate after an EA route mismatch."""
+    candidate = _ea_fixed_point_candidate_path(config)
+    root = candidate.parent
+    if candidate.exists() and (not candidate.is_dir() or candidate.is_symlink()):
+        raise ValueError("EA fixed-point candidate path must be a regular directory")
+    temporary = Path(tempfile.mkdtemp(prefix=f".{candidate.name}-", dir=root))
+    try:
+        retained_network = temporary / EA_FIXED_POINT_CANDIDATE_NETWORK
+        candidate_bytes = network_path.read_bytes()
+        retained_network.write_bytes(candidate_bytes)
+        candidate_digest = hashlib.sha256(candidate_bytes).hexdigest()
+        status = {
+            "schema_version": EA_FIXED_POINT_CANDIDATE_SCHEMA_VERSION,
+            "status": "eligible-route-mismatch",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "area_id": config.area_id,
+            "snapshot_id": config.source.snapshot_id,
+            "run_id": run_id,
+            "expected_eligible_route_fingerprint": expected,
+            "actual_eligible_route_fingerprint": actual,
+            "candidate_network_path": EA_FIXED_POINT_CANDIDATE_NETWORK,
+            "candidate_network_sha256": candidate_digest,
+            "next_step_command": _ea_fixed_point_next_step(
+                config, candidate / retained_network.name
+            ),
+        }
+        (temporary / EA_FIXED_POINT_CANDIDATE_STATUS).write_text(
+            json.dumps(status, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        backup = candidate.with_name(f".{candidate.name}-previous")
+        if backup.exists():
+            if not backup.is_dir() or backup.is_symlink():
+                raise ValueError("EA fixed-point candidate backup must be a regular directory")
+            shutil.rmtree(backup)
+        if candidate.exists():
+            candidate.replace(backup)
+        try:
+            temporary.replace(candidate)
+        except Exception:
+            if backup.exists() and not candidate.exists():
+                backup.replace(candidate)
+            raise
+        else:
+            if backup.exists():
+                shutil.rmtree(backup)
+    finally:
+        if temporary.exists():
+            shutil.rmtree(temporary)
+    LOGGER.info(
+        "EA fixed-point candidate retained path=%s expected=%s actual=%s",
+        candidate,
+        expected,
+        actual,
+    )
+    return candidate
+
+
+def _remove_ea_fixed_point_candidate(config: AreaConfig) -> None:
+    """Discard an obsolete candidate only after a complete atomic publication succeeds."""
+    root = config.publication.output_dir.parent.resolve() / EA_FIXED_POINT_CANDIDATE_DIRECTORY
+    if not root.exists():
+        return
+    candidate = _ea_fixed_point_candidate_path(config)
+    if not candidate.exists():
+        return
+    if not candidate.is_dir() or candidate.is_symlink():
+        raise ValueError("EA fixed-point candidate path must be a regular directory")
+    shutil.rmtree(candidate)
+    LOGGER.info("EA fixed-point candidate cleared after successful publication path=%s", candidate)
 
 
 def _validate_ea_elevation_fixed_point(config: AreaConfig, network_path: Path) -> None:
@@ -381,10 +565,7 @@ def _validate_ea_elevation_fixed_point(config: AreaConfig, network_path: Path) -
     except (OSError, ValueError) as error:
         raise ValueError("EA elevation fixed-point validation cannot read final routes") from error
     if expected != actual:
-        raise ValueError(
-            "EA elevation two-pass fixed point failed: final eligible routes differ from "
-            "the routes sampled before elevation acquisition"
-        )
+        raise EAFixedPointMismatchError(expected=expected, actual=actual)
 
 
 def _metadata_frame(crs: object) -> gpd.GeoDataFrame:
