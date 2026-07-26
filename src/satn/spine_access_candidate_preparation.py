@@ -52,6 +52,7 @@ from satn.routing import RoadGraph, RouteOption, choose_alignment
 _CANONICAL_ID = re.compile(r"^[a-z0-9][a-z0-9._:-]*$")
 _CURRENT_ASSET_TYPES = frozenset({"ncn-route", "greenway-cycleway"})
 _CURRENT_ASSET_ROLES = frozenset({"established-route", "greenway-cycleway"})
+_PREPARATION_CONTRACT = "satn-spine-access-candidate-preparation/v1"
 
 
 def _fingerprint(value: object) -> str:
@@ -99,6 +100,7 @@ class _GeneratedCandidate:
     route_role: str
     evidence_quality: float
     record: PreparedCandidateRecord
+    pre_admission_rejection_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -193,6 +195,7 @@ class PreparedSpineAccessConnection:
 class SpineAccessCandidatePreparationResult:
     """Honest Spine Access preparation-only output of the optional compiler seam."""
 
+    contract: str
     profile_fingerprint: str
     status: str
     prepared_spine_access_connections: tuple[PreparedSpineAccessConnection, ...]
@@ -209,6 +212,7 @@ class SpineAccessCandidatePreparationResult:
 
     def metadata(self) -> dict[str, object]:
         return {
+            "contract": self.contract,
             "profile_fingerprint": self.profile_fingerprint,
             "status": self.status,
             "preparation_fingerprint": self.preparation_fingerprint,
@@ -309,7 +313,7 @@ def prepare_spine_access_candidates(
             len(item.candidate_set.candidates)
             for item in prepared_spine_access_connections
         ),
-        "community_connection_count": int(
+        "spine_access_connection_count": int(
             (
                 spine_access_connections.get(
                     "obligation_kind",
@@ -327,7 +331,7 @@ def prepare_spine_access_candidates(
         "strategic_community_connection_scope": "not-implemented",
     }
     preparation_payload = {
-        "contract": "satn-alignment-evidence-preparation/v1",
+        "contract": _PREPARATION_CONTRACT,
         "profile_fingerprint": profile.fingerprint,
         "status": status,
         "prepared_spine_access_connections": [
@@ -340,6 +344,7 @@ def prepare_spine_access_candidates(
         "diagnostics": diagnostics,
     }
     return SpineAccessCandidatePreparationResult(
+        contract=_PREPARATION_CONTRACT,
         profile_fingerprint=profile.fingerprint,
         status=status,
         prepared_spine_access_connections=prepared_spine_access_connections,
@@ -504,22 +509,10 @@ def _prepare_spine_access_candidate_sets(
                     in profile.candidate_source_precedence
                 ),
             )
-            if (
+            b_road_evidence_unverified = (
                 route_role == "b-road-corridor"
                 and source_class != CandidateSourceClass.B_ROAD_CORRIDOR
-            ):
-                issues.append(
-                    CandidatePreparationIssue(
-                        access_connection_id=access_connection_id,
-                        reason="b-road-evidence-unverified",
-                        detail=(
-                            "the routed option lacks matching governed official "
-                            "B-road classification evidence"
-                        ),
-                        route_role=route_role,
-                    )
-                )
-                continue
+            )
             connection_payload = _connection_payload(connection)
             generation_rationale = _candidate_generation_rationale(route_role)
             option_payload = {
@@ -588,6 +581,11 @@ def _prepare_spine_access_candidate_sets(
                     route_role=route_role,
                     evidence_quality=max(current_asset_share, official_b_road_share),
                     record=record,
+                    pre_admission_rejection_reason=(
+                        "b-road-evidence-unverified"
+                        if b_road_evidence_unverified
+                        else None
+                    ),
                 )
             )
         candidate_inputs, candidate_records, material_issues = _material_representatives(
@@ -682,6 +680,27 @@ def _material_representatives(
     records: dict[str, PreparedCandidateRecord] = {}
     for item in generated:
         candidate_id = item.candidate.candidate_id
+        if item.pre_admission_rejection_reason is not None:
+            reason = item.pre_admission_rejection_reason
+            records[candidate_id] = replace(
+                item.record,
+                preparation_disposition=f"rejected-{reason}",
+                rejection_reason=reason,
+            )
+            issues.append(
+                CandidatePreparationIssue(
+                    access_connection_id=access_connection_id,
+                    reason=reason,
+                    detail=(
+                        "the routed B-road option lacks matching governed official "
+                        "B-road classification evidence and cannot enter admission"
+                    ),
+                    route_role=item.route_role,
+                    candidate_id=candidate_id,
+                    source_class=item.candidate.source_class.value,
+                )
+            )
+            continue
         if item.candidate.topology_state == CriterionState.UNSATISFIED:
             records[candidate_id] = replace(
                 item.record,

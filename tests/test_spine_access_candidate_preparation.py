@@ -287,6 +287,10 @@ def test_prepares_finite_candidates_per_actual_community_connection_only() -> No
     assert result.diagnostics["school_branch_candidates_generated"] == 0
     assert result.diagnostics["selection_performed"] is False
     assert result.diagnostics["agent_runtime_invoked"] is False
+    assert result.diagnostics["spine_access_connection_count"] == 1
+    assert "community_connection_count" not in result.diagnostics
+    assert result.contract == "satn-spine-access-candidate-preparation/v1"
+    assert result.metadata()["contract"] == result.contract
 
 
 def test_maps_current_ncn_a_road_and_other_without_declassified_advantage() -> None:
@@ -740,6 +744,49 @@ def test_enabled_b_road_candidate_requires_and_retains_official_evidence() -> No
         item["official_feature_id"]
         for item in b_candidate["official_b_road_evidence"]
     } == {"official-b3116"}
+
+
+def test_unverified_b_road_is_a_complete_immutable_rejected_record() -> None:
+    result = prepare_spine_access_candidates(
+        profile(include_b_road=True),
+        road_graph=routing_graph(include_b_road=True),
+        spine_access_connections=connections(),
+        access_obligations=obligations(),
+        strategic_spines=spines(),
+        context=current_asset_context(),
+        official_road_classification=None,
+        source_config=empty_source_config(),
+        config_directory=Path.cwd(),
+    )
+    prepared = result.prepared_spine_access_connections[0]
+    rejected = next(
+        item for item in prepared.candidate_records if item.route_role == "b-road-corridor"
+    )
+    canonical = rejected.canonical()
+
+    assert rejected.preparation_disposition == "rejected-b-road-evidence-unverified"
+    assert rejected.rejection_reason == "b-road-evidence-unverified"
+    assert rejected.candidate.candidate_id not in {
+        item.candidate_id for item in prepared.candidate_set.candidates
+    }
+    assert canonical["candidate"]["geometry"]["coordinates"]
+    assert canonical["geometry_fingerprint"]
+    assert canonical["source_class"] == "other-routable"
+    assert canonical["topology_state"] == "satisfied"
+    assert canonical["endpoints"] == ["community-1", "strategic-spine-1"]
+    assert canonical["served_network_place_ids"] == canonical["endpoints"]
+    assert canonical["served_access_obligation_ids"] == ["access-obligation-1"]
+    assert canonical["served_strategic_destination_ids"] == []
+    assert canonical["directness_m"] > 0
+    assert canonical["generation_rationale"]
+    assert canonical["connection"]["access_connection_id"] == "access-connection-1"
+    issue = next(
+        item
+        for item in result.generation_issues
+        if item.reason == "b-road-evidence-unverified"
+    )
+    assert issue.candidate_id == rejected.candidate.candidate_id
+    assert issue.source_class == "other-routable"
 
 
 def test_disabled_b_road_profile_generates_no_b_candidate() -> None:

@@ -851,7 +851,7 @@ def compilation_governed_input_fingerprint(
 
 
 def _network_selection_governed_paths(council: AreaConfig) -> tuple[Path, ...]:
-    """Return exact PSA artifact paths only when the optional pass is enabled."""
+    """Return governed alignment-evidence paths when the optional pass is enabled."""
     if council.compilation.network_selection is None:
         return ()
     paths: list[Path] = []
