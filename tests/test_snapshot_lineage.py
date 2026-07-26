@@ -237,7 +237,7 @@ def test_weca_final_snapshot_is_distinct_and_benchmark_fixture_is_byte_pinned() 
 
     assert hashlib.sha256(benchmark_path.read_bytes()).hexdigest() == WECA_BENCHMARK_SHA256
     assert benchmark.source.snapshot_id == bootstrap.source.snapshot_id == "weca-osm-current"
-    assert final.source.snapshot_id == "weca-elevation-2026-07-25"
+    assert final.source.snapshot_id == "weca-elevation-2026-07-26-v2"
     assert final.source.snapshot_id != bootstrap.source.snapshot_id
     assert final.source.retained_core_source == RetainedCoreSourceConfig(
         snapshot_id="weca-osm-current",
