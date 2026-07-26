@@ -3740,6 +3740,18 @@ class RuntimeAttemptOutcome(StrEnum):
     PROVIDER_REJECTION = "provider-rejection"
 
 
+def _review_run_config_fingerprint(
+    deadline_seconds: float,
+    maximum_attempts: int,
+) -> str:
+    return _fingerprint(
+        {
+            "deadline_seconds": deadline_seconds,
+            "maximum_attempts": maximum_attempts,
+        }
+    )
+
+
 class RuntimeInvocationRecord(BaseModel):
     """Typed local record of a provider failure in one bounded review run."""
 
@@ -3747,6 +3759,9 @@ class RuntimeInvocationRecord(BaseModel):
 
     invocation_id: str = Field(pattern=_ID.pattern)
     review_run_id: str = Field(pattern=r"^review-run-[0-9a-f]{20}$")
+    run_instance_id: str = Field(pattern=_ID.pattern)
+    run_scope_fingerprint: str = Field(pattern=_SHA256.pattern)
+    run_config_fingerprint: str = Field(pattern=_SHA256.pattern)
     attempt_number: int = Field(ge=1, strict=True)
     maximum_attempts: int = Field(default=3, ge=1, le=10, strict=True)
     deadline_seconds: float = Field(default=30.0, gt=0, le=300)
@@ -3767,11 +3782,49 @@ class RuntimeInvocationRecord(BaseModel):
             raise ValueError("runtime invocation exceeds the review run attempt limit")
         if self.completed_at_ms < self.started_at_ms:
             raise ValueError("runtime invocation record is not timed")
+        if self.run_config_fingerprint != _review_run_config_fingerprint(
+            self.deadline_seconds,
+            self.maximum_attempts,
+        ):
+            raise ValueError("runtime invocation record run config fingerprint is stale")
         fingerprint = _fingerprint(self.model_dump(mode="json", exclude={"receipt_fingerprint"}))
         if self.receipt_fingerprint and self.receipt_fingerprint != fingerprint:
             raise ValueError("runtime invocation record fingerprint is stale")
         object.__setattr__(self, "receipt_fingerprint", fingerprint)
         return self
+
+
+class ReviewRunLedgerProvenance(BaseModel):
+    """Immutable outer compile-run provenance retained with runtime attempts."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    review_run_id: str = Field(pattern=r"^review-run-[0-9a-f]{20}$")
+    run_instance_id: str = Field(pattern=_ID.pattern)
+    run_scope_fingerprint: str = Field(pattern=_SHA256.pattern)
+    run_config_fingerprint: str = Field(pattern=_SHA256.pattern)
+    deadline_seconds: float = Field(gt=0, le=300)
+    maximum_attempts: int = Field(ge=1, le=10, strict=True)
+
+    @model_validator(mode="after")
+    def bind_provenance(self) -> Self:
+        if self.run_config_fingerprint != _review_run_config_fingerprint(
+            self.deadline_seconds,
+            self.maximum_attempts,
+        ):
+            raise ValueError("review run ledger provenance config fingerprint is stale")
+        return self
+
+    @classmethod
+    def from_invocation(cls, record: RuntimeInvocationRecord) -> Self:
+        return cls(
+            review_run_id=record.review_run_id,
+            run_instance_id=record.run_instance_id,
+            run_scope_fingerprint=record.run_scope_fingerprint,
+            run_config_fingerprint=record.run_config_fingerprint,
+            deadline_seconds=record.deadline_seconds,
+            maximum_attempts=record.maximum_attempts,
+        )
 
 
 class RuntimeDecisionAttempt(BaseModel):
@@ -4128,6 +4181,7 @@ class ScenarioDecisionRecord(BaseModel):
     accepted_envelopes: tuple[AcceptedDecisionEnvelope, ...] = ()
     revision_records: tuple[DecisionRevisionRecord, ...] = ()
     runtime_attempts: tuple[RuntimeDecisionAttempt, ...] = ()
+    review_run_provenance: tuple[ReviewRunLedgerProvenance, ...] = ()
     blocking_challenge_fingerprints: tuple[str, ...] = ()
     record_fingerprint: str = ""
 
@@ -4182,6 +4236,21 @@ class ScenarioDecisionRecord(BaseModel):
             raise ValueError(
                 "runtime invocation records must have unique (review_run_id, attempt_number)"
             )
+        expected_run_provenance = tuple(
+            sorted(
+                {
+                    ReviewRunLedgerProvenance.from_invocation(item.invocation_record)
+                    for item in attempts
+                    if item.invocation_record is not None
+                },
+                key=lambda item: item.review_run_id,
+            )
+        )
+        if (
+            "review_run_provenance" in self.model_fields_set
+            and self.review_run_provenance != expected_run_provenance
+        ):
+            raise ValueError("review run provenance is not runtime-ledger-derived")
         if set(request_ids) & {item.request.request_id for item in revisions}:
             raise ValueError("one request cannot appear in both accepted and revision records")
         known_challenges = {
@@ -4249,6 +4318,7 @@ class ScenarioDecisionRecord(BaseModel):
         object.__setattr__(self, "accepted_envelopes", envelopes)
         object.__setattr__(self, "revision_records", revisions)
         object.__setattr__(self, "runtime_attempts", attempts)
+        object.__setattr__(self, "review_run_provenance", expected_run_provenance)
         object.__setattr__(
             self,
             "blocking_challenge_fingerprints",
@@ -5066,6 +5136,7 @@ class ReviewRun(BaseModel):
     prior_orchestration_fingerprint: str = ""
     deadline_seconds: float = Field(default=30.0, gt=0, le=300)
     maximum_attempts: int = Field(default=3, ge=1, le=10, strict=True)
+    run_config_fingerprint: str = ""
     run_fingerprint: str = ""
 
     @model_validator(mode="after")
@@ -5075,6 +5146,13 @@ class ReviewRun(BaseModel):
             and _SHA256.fullmatch(self.prior_orchestration_fingerprint) is None
         ):
             raise ValueError("review run prior orchestration fingerprint is malformed")
+        config_fingerprint = _review_run_config_fingerprint(
+            self.deadline_seconds,
+            self.maximum_attempts,
+        )
+        if self.run_config_fingerprint and self.run_config_fingerprint != config_fingerprint:
+            raise ValueError("review run config fingerprint is stale")
+        object.__setattr__(self, "run_config_fingerprint", config_fingerprint)
         payload = self.model_dump(mode="json", exclude={"run_id", "run_fingerprint"})
         run_id = _stable_id("review-run", payload)
         if self.run_id and self.run_id != run_id:
@@ -5121,6 +5199,24 @@ class ScenarioReviewOrchestration(BaseModel):
         expected_scope = review_session_scope_fingerprint(scenario, dependencies)
         if run.run_scope_fingerprint != expected_scope:
             raise ValueError("review run is scoped to another scenario")
+        retained_instances = tuple(
+            item
+            for item in scenario.decision_record.review_run_provenance
+            if item.run_instance_id == run.run_instance_id
+        )
+        if retained_instances:
+            if any(
+                item.run_scope_fingerprint != run.run_scope_fingerprint
+                or item.run_config_fingerprint != run.run_config_fingerprint
+                for item in retained_instances
+            ):
+                raise ValueError(
+                    "retained run_instance_id has different immutable scope or configuration"
+                )
+            raise ValueError(
+                "retained runtime ledger already owns run_instance_id; "
+                "use an unseen instance for replay"
+            )
         prior = (
             ScenarioReviewOrchestration.model_validate(
                 self.prior_orchestration.model_dump(mode="python")
@@ -5220,6 +5316,11 @@ class ScenarioReviewOrchestration(BaseModel):
                 attempt.invocation_record is not None
                 and (
                     attempt.invocation_record.review_run_id != prior.review_run.run_id
+                    or attempt.invocation_record.run_instance_id != prior.review_run.run_instance_id
+                    or attempt.invocation_record.run_scope_fingerprint
+                    != prior.review_run.run_scope_fingerprint
+                    or attempt.invocation_record.run_config_fingerprint
+                    != prior.review_run.run_config_fingerprint
                     or attempt.invocation_record.maximum_attempts
                     != prior.review_run.maximum_attempts
                     or attempt.invocation_record.deadline_seconds

@@ -39,6 +39,7 @@ from satn.alignment_selection import (
     PopulationCriterionSummary,
     PreferredStrategicAlignment,
     ReferenceSATNSelection,
+    ReviewRunLedgerProvenance,
     RuntimeDecisionAttempt,
     RuntimeInvocationRecord,
     ScenarioCompilation,
@@ -86,7 +87,7 @@ from satn.existing_alignment import (
     compare_near_equivalent_existing_alignments,
     evaluate_existing_alignment_advantage,
 )
-from satn.models import AccessPointStatus
+from satn.models import AccessPointStatus, AgentConfig
 from satn.network_selection import NetworkSelectionProfile
 from satn.population_reach import (
     CURRENT_DEVELOPMENT_EVIDENCE_AVAILABLE,
@@ -2803,6 +2804,9 @@ def test_timeout_is_a_counted_frontier_attempt_and_empty_replay_cannot_advance()
         invocation_record=RuntimeInvocationRecord(
             invocation_id=f"timeout-{first.review_run.run_id[-12:]}",
             review_run_id=first.review_run.run_id,
+            run_instance_id=first.review_run.run_instance_id,
+            run_scope_fingerprint=first.review_run.run_scope_fingerprint,
+            run_config_fingerprint=first.review_run.run_config_fingerprint,
             attempt_number=1,
             maximum_attempts=first.review_run.maximum_attempts,
             deadline_seconds=first.review_run.deadline_seconds,
@@ -2870,6 +2874,9 @@ def test_review_run_instances_reset_attempt_numbers_without_duplicate_pairs() ->
             invocation_record=RuntimeInvocationRecord(
                 invocation_id=f"timeout-{orchestration.review_run.run_id[-12:]}",
                 review_run_id=orchestration.review_run.run_id,
+                run_instance_id=orchestration.review_run.run_instance_id,
+                run_scope_fingerprint=orchestration.review_run.run_scope_fingerprint,
+                run_config_fingerprint=orchestration.review_run.run_config_fingerprint,
                 attempt_number=1,
                 maximum_attempts=orchestration.review_run.maximum_attempts,
                 deadline_seconds=orchestration.review_run.deadline_seconds,
@@ -2890,6 +2897,22 @@ def test_review_run_instances_reset_attempt_numbers_without_duplicate_pairs() ->
             runtime_attempts=(first_attempt,),
         ),
     )
+    assert first_ledger.decision_record.review_run_provenance == (
+        ReviewRunLedgerProvenance.from_invocation(first_attempt.invocation_record),
+    )
+    with pytest.raises(ValueError, match="already owns run_instance_id"):
+        orchestrate_scenario_review(
+            first_ledger,
+            dependencies=dependencies,
+            run_instance_id="run-instance-a",
+        )
+    with pytest.raises(ValueError, match="different immutable scope or configuration"):
+        orchestrate_scenario_review(
+            first_ledger,
+            dependencies=dependencies,
+            run_instance_id="run-instance-a",
+            agent_config=AgentConfig(deadline_seconds=31),
+        )
     second = orchestrate_scenario_review(
         first_ledger,
         dependencies=dependencies,
