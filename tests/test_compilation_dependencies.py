@@ -33,6 +33,7 @@ def test_manifest_is_explicit_complete_and_records_component_digests() -> None:
         "satn/sources.py",
         "satn/models.py",
         "satn/ea_elevation.py",
+        "satn/population_reach.py",
         "runtime-distribution/geopandas",
         "runtime-distribution/httpx",
         "runtime-distribution/networkx",
@@ -43,6 +44,13 @@ def test_manifest_is_explicit_complete_and_records_component_digests() -> None:
     assert "satn/publisher.py" not in components
     assert "satn/pages_packaging.py" not in components
     assert "satn/assets/review-map.js" not in components
+    population_component = next(
+        component
+        for component in manifest["components"]
+        if component["path"] == "satn/population_reach.py"
+    )
+    assert population_component["kind"] == "module"
+    assert population_component["reason"] == "governed Population Reach evidence assessment"
     assert all(not path.startswith("src/") for path in components)
     runtime_components = {
         component["path"]: component for component in manifest["components"]
@@ -80,6 +88,7 @@ def test_compiler_semantic_module_changes_change_the_manifest_digest(tmp_path: P
         "sources.py",
         "models.py",
         "ea_elevation.py",
+        "population_reach.py",
     ):
         path = root / relative_path
         original_bytes = path.read_bytes()
