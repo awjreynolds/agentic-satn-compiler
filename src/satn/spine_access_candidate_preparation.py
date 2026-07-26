@@ -2,11 +2,12 @@
 
 This module connects the existing Backbone-and-Access compiler to the approved
 alignment-selection domain without claiming that a selection has happened. It
-re-runs the existing deterministic route-option boundary for each compiled
-Spine Access connection, admits only bounded material alternatives, and loads
-configured population and education inputs. It does not select strategic
-Community Connections or produce Preferred Strategic Alignments; a separate
-scenario bridge may consume only provenance-proven chained Community rows.
+re-runs the existing deterministic route-option boundary only for compiled
+chained Community-to-Community Spine Access connections, admits bounded material
+alternatives, and loads configured population and education inputs. Direct
+Strategic Spine attachments are retained in the disposition roster as explicitly
+out of scope rather than silently analysed. This module does not select strategic
+Community Connections or produce Preferred Strategic Alignments.
 
 The local operator and their chosen input files are trusted. SHA-256 values in
 this module are reproducible content identities used for stale-input detection

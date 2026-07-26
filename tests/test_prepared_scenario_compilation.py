@@ -35,6 +35,7 @@ from satn.alignment_selection import (
 from satn.education_access import assess_education_access
 from satn.scenario_compilation import (
     PreparedCandidateCriteria,
+    PreparedCriteriaLineage,
     PreparedScenarioCompilationInput,
     compile_prepared_scenario,
     prepared_network_geometry_source_fingerprint,
@@ -377,8 +378,17 @@ def request(
 def packet(
     prepared: PreparedSpineAccessConnection,
     criterion: CandidateCriteria | CandidateSetGapEvidence,
+    *,
+    source_preparation: SpineAccessCandidatePreparationResult | None = None,
 ) -> PreparedCandidateCriteria:
-    return PreparedCandidateCriteria(prepared.access_connection_id, criterion)
+    source_preparation = source_preparation or preparation(prepared)
+    return PreparedCandidateCriteria(
+        access_connection_id=prepared.access_connection_id,
+        criteria=criterion,
+        preparation_lineage=PreparedCriteriaLineage.from_preparation(
+            source_preparation
+        ),
+    )
 
 
 def test_profile_disabled_is_a_no_op_artifact() -> None:
@@ -488,12 +498,21 @@ def test_gap_only_candidate_sets_remain_review_required(
 def test_clear_and_multi_set_compilations_use_exact_source_bindings() -> None:
     first = connection("one", selection_profile=profile(review_when=[]))
     second = connection("two", selection_profile=first.candidate_set.profile)
+    prepared = preparation(first, second)
     result = compile_prepared_scenario(
-        preparation(first, second),
+        prepared,
         request(
             (
-                packet(first, bound_criteria(first)),
-                packet(second, bound_criteria(second)),
+                packet(
+                    first,
+                    bound_criteria(first),
+                    source_preparation=prepared,
+                ),
+                packet(
+                    second,
+                    bound_criteria(second),
+                    source_preparation=prepared,
+                ),
             )
         ),
     )
@@ -503,6 +522,228 @@ def test_clear_and_multi_set_compilations_use_exact_source_bindings() -> None:
     assert len(result.scenario.selections) == 2
     assert result.review_orchestration is None
     assert result.diagnostics["agent_runtime_constructed"] is False
+
+
+@pytest.mark.parametrize("extra_assessment_id", ["000-extra", "zzz-extra"])
+def test_extra_population_binding_is_rejected_regardless_of_sort_order(
+    extra_assessment_id: str,
+) -> None:
+    item = connection(gap="no-options")
+    prepared = preparation(item)
+    exact = gap_evidence(item)
+    referenced = exact.evidence_snapshot.assessment(
+        AssessmentKind.POPULATION_REACH
+    )
+    assert referenced is not None
+    extra = referenced.model_copy(
+        update={"assessment_id": extra_assessment_id}
+    )
+    snapshot = GovernedEvidenceSnapshot(
+        snapshot_id=f"extra-population-{extra_assessment_id}",
+        assessments=(*exact.evidence_snapshot.assessments, extra),
+    )
+    population_ids = tuple(
+        binding.assessment_id
+        for binding in snapshot.assessments
+        if binding.kind == AssessmentKind.POPULATION_REACH
+    )
+    if extra_assessment_id.startswith("000"):
+        assert population_ids == (extra_assessment_id, referenced.assessment_id)
+    else:
+        assert population_ids == (referenced.assessment_id, extra_assessment_id)
+    forged_payload = exact.model_dump(
+        mode="python",
+        exclude={"criteria_fingerprint"},
+    )
+    forged_payload["evidence_snapshot"] = snapshot
+    forged = CandidateSetGapEvidence.model_validate(forged_payload)
+
+    with pytest.raises(ValueError, match="exactly one binding"):
+        compile_prepared_scenario(
+            prepared,
+            request(
+                (
+                    packet(
+                        item,
+                        forged,
+                        source_preparation=prepared,
+                    ),
+                )
+            ),
+        )
+
+
+def test_existing_alignment_binding_is_rejected_without_matching_section() -> None:
+    item = connection()
+    prepared = preparation(item)
+    exact = bound_criteria(item)
+    extra = GovernedAssessmentBinding(
+        kind=AssessmentKind.EXISTING_ALIGNMENT,
+        assessment_id="foreign-existing-alignment",
+        assessment_content_sha256=hashlib.sha256(
+            b"foreign-existing-assessment"
+        ).hexdigest(),
+        source_content_sha256=hashlib.sha256(
+            b"foreign-existing-source"
+        ).hexdigest(),
+        method_version="existing-alignment/v1",
+    )
+    snapshot = GovernedEvidenceSnapshot(
+        snapshot_id="extra-existing-alignment",
+        assessments=(*exact.evidence_snapshot.assessments, extra),
+    )
+    forged = CandidateCriteria(
+        evidence_snapshot=snapshot,
+        population=exact.population.model_copy(
+            update={
+                "scenario_evidence_snapshot_fingerprint": (
+                    snapshot.snapshot_fingerprint
+                )
+            }
+        ),
+        education=exact.education.model_copy(
+            update={
+                "scenario_evidence_snapshot_fingerprint": (
+                    snapshot.snapshot_fingerprint
+                )
+            }
+        ),
+        existing_alignment=None,
+        directness=exact.directness,
+        gradient=exact.gradient,
+        uncertainty=exact.uncertainty,
+    )
+
+    with pytest.raises(ValueError, match="no foreign bindings"):
+        compile_prepared_scenario(
+            prepared,
+            request(
+                (
+                    packet(
+                        item,
+                        forged,
+                        source_preparation=prepared,
+                    ),
+                )
+            ),
+        )
+
+
+@pytest.mark.parametrize("mutation", ["education-raw", "population-raw"])
+def test_original_criteria_packet_rejects_refingerprinted_raw_lineage_changes(
+    mutation: str,
+) -> None:
+    item = connection()
+    original = preparation(item)
+    exact_packet = packet(
+        item,
+        bound_criteria(item),
+        source_preparation=original,
+    )
+    lineage = json.loads(json.dumps(original.evidence_lineage))
+    replacements: dict[str, str] = {}
+    if mutation == "education-raw":
+        education = lineage["education"]
+        old_governed = education["governed_source_fingerprint"]
+        old_register = education["school_register_lineage"]["content_sha256"]
+        new_governed = hashlib.sha256(b"changed-education-governed").hexdigest()
+        new_register = hashlib.sha256(b"changed-education-register").hexdigest()
+        education["governed_source_fingerprint"] = new_governed
+        education["school_register_lineage"]["content_sha256"] = new_register
+        replacements = {
+            old_governed: new_governed,
+            old_register: new_register,
+        }
+    else:
+        population = lineage["population"]
+        old_frame = population["frame_content_sha256"]
+        old_artifact = population["artifact_lineage"][0]["content_sha256"]
+        new_frame = hashlib.sha256(b"changed-population-frame").hexdigest()
+        new_artifact = hashlib.sha256(b"changed-population-artifact").hexdigest()
+        population["frame_content_sha256"] = new_frame
+        population["artifact_lineage"][0]["content_sha256"] = new_artifact
+        replacements = {
+            old_frame: new_frame,
+            old_artifact: new_artifact,
+        }
+    changed_fingerprints = tuple(
+        sorted(
+            replacements.get(value, value)
+            for value in original.evidence_fingerprints
+        )
+    )
+    unbound = replace(
+        original,
+        evidence_lineage=lineage,
+        evidence_fingerprints=changed_fingerprints,
+        preparation_fingerprint="0" * 64,
+    )
+    changed = replace(
+        unbound,
+        preparation_fingerprint=canonical_hash(unbound.canonical_payload()),
+    )
+
+    original_lineage = exact_packet.preparation_lineage
+    current_lineage = PreparedCriteriaLineage.from_preparation(changed)
+    stale_variants = (
+        original_lineage,
+        replace(
+            original_lineage,
+            preparation_fingerprint=changed.preparation_fingerprint,
+        ),
+        PreparedCriteriaLineage(
+            preparation_fingerprint=changed.preparation_fingerprint,
+            evidence_fingerprints=current_lineage.evidence_fingerprints,
+            evidence_lineage=original_lineage.evidence_lineage,
+            evidence_lineage_fingerprint=(
+                original_lineage.evidence_lineage_fingerprint
+            ),
+        ),
+        PreparedCriteriaLineage(
+            preparation_fingerprint=changed.preparation_fingerprint,
+            evidence_fingerprints=original_lineage.evidence_fingerprints,
+            evidence_lineage=current_lineage.evidence_lineage,
+            evidence_lineage_fingerprint=(
+                current_lineage.evidence_lineage_fingerprint
+            ),
+        ),
+    )
+    for stale_lineage in stale_variants:
+        stale_packet = PreparedCandidateCriteria(
+            access_connection_id=item.access_connection_id,
+            criteria=exact_packet.criteria,
+            preparation_lineage=stale_lineage,
+        )
+        with pytest.raises(
+            ValueError,
+            match="exact preparation and raw evidence lineage",
+        ):
+            compile_prepared_scenario(
+                changed,
+                request((stale_packet,)),
+            )
+
+
+def test_criteria_preparation_lineage_is_self_validating_and_deeply_immutable() -> None:
+    item = connection()
+    prepared = preparation(item)
+    lineage = PreparedCriteriaLineage.from_preparation(prepared)
+
+    assert isinstance(lineage.evidence_lineage, MappingProxyType)
+    population = lineage.evidence_lineage["population"]
+    assert isinstance(population, MappingProxyType)
+    with pytest.raises(TypeError):
+        population["frame_content_sha256"] = "0" * 64  # type: ignore[index]
+    detached = lineage.canonical()
+    detached_lineage = detached["evidence_lineage"]
+    assert isinstance(detached_lineage, dict)
+    detached_lineage["population"]["frame_content_sha256"] = "0" * 64
+    assert (
+        lineage.evidence_lineage["population"]["frame_content_sha256"]
+        == POPULATION_FRAME
+    )
+    with pytest.raises(ValueError, match="lineage fingerprint is stale"):
+        replace(lineage, evidence_lineage_fingerprint="0" * 64)
 
 
 def test_forged_criterion_source_hash_fails_closed() -> None:

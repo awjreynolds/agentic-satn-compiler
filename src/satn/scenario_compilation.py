@@ -46,7 +46,7 @@ from satn.spine_access_candidate_preparation import (
     SpineAccessCandidatePreparationResult,
 )
 
-_CONTRACT = "satn-prepared-scenario-compilation/v2"
+_CONTRACT = "satn-prepared-scenario-compilation/v3"
 _NETWORK_GEOMETRY_BINDING = "satn-prepared-network-geometry-source/v1"
 _TOPOGRAPHY_BINDING = "satn-prepared-topography-source/v1"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -88,11 +88,65 @@ def _thaw(value: object) -> object:
 
 
 @dataclass(frozen=True)
+class PreparedCriteriaLineage:
+    """Immutable raw-input identity captured when criterion evidence was built."""
+
+    preparation_fingerprint: str
+    evidence_fingerprints: tuple[str, ...]
+    evidence_lineage: Mapping[str, object]
+    evidence_lineage_fingerprint: str
+
+    @classmethod
+    def from_preparation(
+        cls,
+        preparation: SpineAccessCandidatePreparationResult,
+    ) -> PreparedCriteriaLineage:
+        lineage = _freeze(preparation.evidence_lineage)
+        assert isinstance(lineage, Mapping)
+        return cls(
+            preparation_fingerprint=preparation.preparation_fingerprint,
+            evidence_fingerprints=preparation.evidence_fingerprints,
+            evidence_lineage=lineage,
+            evidence_lineage_fingerprint=_fingerprint(_thaw(lineage)),
+        )
+
+    def __post_init__(self) -> None:
+        if _SHA256.fullmatch(self.preparation_fingerprint) is None:
+            raise ValueError("criteria preparation fingerprint must be lowercase SHA-256")
+        fingerprints = tuple(sorted(self.evidence_fingerprints))
+        if (
+            not fingerprints
+            or len(set(fingerprints)) != len(fingerprints)
+            or any(_SHA256.fullmatch(item) is None for item in fingerprints)
+        ):
+            raise ValueError(
+                "criteria preparation evidence fingerprints must be unique SHA-256"
+            )
+        lineage = _freeze(self.evidence_lineage)
+        if not isinstance(lineage, Mapping) or not lineage:
+            raise ValueError("criteria preparation evidence lineage must be nonempty")
+        expected = _fingerprint(_thaw(lineage))
+        if self.evidence_lineage_fingerprint != expected:
+            raise ValueError("criteria preparation evidence lineage fingerprint is stale")
+        object.__setattr__(self, "evidence_fingerprints", fingerprints)
+        object.__setattr__(self, "evidence_lineage", lineage)
+
+    def canonical(self) -> dict[str, object]:
+        return {
+            "preparation_fingerprint": self.preparation_fingerprint,
+            "evidence_fingerprints": list(self.evidence_fingerprints),
+            "evidence_lineage": _thaw(self.evidence_lineage),
+            "evidence_lineage_fingerprint": self.evidence_lineage_fingerprint,
+        }
+
+
+@dataclass(frozen=True)
 class PreparedCandidateCriteria:
-    """Exact criterion or gap packet for one prepared candidate set."""
+    """Exact criterion/gap plus raw preparation identity captured at derivation."""
 
     access_connection_id: str
     criteria: CandidateCriteria | CandidateSetGapEvidence
+    preparation_lineage: PreparedCriteriaLineage
 
     def __post_init__(self) -> None:
         if (
@@ -115,6 +169,12 @@ class PreparedCandidateCriteria:
                 "criteria must be an exact CandidateCriteria or CandidateSetGapEvidence"
             )
         object.__setattr__(self, "criteria", validated)
+        if not isinstance(self.preparation_lineage, PreparedCriteriaLineage):
+            raise ValueError(
+                "criteria packet requires exact frozen preparation lineage"
+            )
+        lineage = PreparedCriteriaLineage(**self.preparation_lineage.canonical())
+        object.__setattr__(self, "preparation_lineage", lineage)
 
 
 @dataclass(frozen=True)
@@ -135,7 +195,19 @@ class PreparedScenarioCompilationInput:
             or self.review_run_instance_id.strip() != self.review_run_instance_id
         ):
             raise ValueError("review_run_instance_id must be canonical")
-        criteria = tuple(sorted(self.criteria, key=lambda item: item.access_connection_id))
+        criteria = tuple(
+            sorted(
+                (
+                    PreparedCandidateCriteria(
+                        access_connection_id=item.access_connection_id,
+                        criteria=item.criteria,
+                        preparation_lineage=item.preparation_lineage,
+                    )
+                    for item in self.criteria
+                ),
+                key=lambda item: item.access_connection_id,
+            )
+        )
         if len({item.access_connection_id for item in criteria}) != len(criteria):
             raise ValueError("at most one criteria record is allowed per connection")
         object.__setattr__(self, "criteria", criteria)
@@ -288,6 +360,9 @@ def compile_prepared_scenario(
         )
 
     _validate_preparation_identity(preparation)
+    for packet in request.criteria:
+        _validate_packet_preparation_lineage(preparation, packet)
+        _validate_criterion_snapshot(packet.criteria)
     prepared = tuple(
         sorted(
             preparation.prepared_spine_access_connections,
@@ -435,6 +510,17 @@ def compile_prepared_scenario(
     )
 
 
+def _validate_packet_preparation_lineage(
+    preparation: SpineAccessCandidatePreparationResult,
+    packet: PreparedCandidateCriteria,
+) -> None:
+    expected = PreparedCriteriaLineage.from_preparation(preparation)
+    if packet.preparation_lineage.canonical() != expected.canonical():
+        raise ValueError(
+            "criteria packet is stale for the exact preparation and raw evidence lineage"
+        )
+
+
 def _validate_preparation_identity(
     preparation: SpineAccessCandidatePreparationResult,
 ) -> None:
@@ -505,6 +591,35 @@ def _validate_preparation_identity(
         ):
             raise ValueError("prepared evidence fingerprints are empty, foreign or stale")
         _criterion_source_lineage(preparation)
+
+
+def _validate_criterion_snapshot(
+    criterion: CandidateCriteria | CandidateSetGapEvidence,
+) -> None:
+    expected = {
+        AssessmentKind.POPULATION_REACH: 1,
+        AssessmentKind.EDUCATION_ACCESS: 1,
+        AssessmentKind.NETWORK_GEOMETRY: 1,
+        AssessmentKind.TOPOGRAPHY: 1,
+    }
+    if isinstance(criterion, CandidateCriteria) and criterion.existing_alignment is not None:
+        expected[AssessmentKind.EXISTING_ALIGNMENT] = 1
+    actual = {
+        kind: sum(
+            binding.kind == kind
+            for binding in criterion.evidence_snapshot.assessments
+        )
+        for kind in AssessmentKind
+    }
+    expected_with_zeros = {
+        kind: expected.get(kind, 0)
+        for kind in AssessmentKind
+    }
+    if actual != expected_with_zeros:
+        raise ValueError(
+            "criterion evidence snapshot must contain exactly one binding for "
+            "each required assessment kind and no foreign bindings"
+        )
 
 
 def _validate_promoted_candidate_sets(

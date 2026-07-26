@@ -201,7 +201,7 @@ The bounded connection from a rural Access Obligation to its nearest reachable S
 _Avoid_: arbitrary point-to-point route, complete journey, spine segment
 
 **Spine Access Candidate Preparation**:
-The bounded generation, disposition roster and pre-admission audit of finite routing alternatives for already-compiled Spine Access Connections. Its evidence may support a Community Connection only for a child-to-parent Community link; a direct Strategic Spine attachment remains Spine Access, and an unresolved row remains an explicit preparation gap.
+The bounded generation and pre-admission audit of finite routing alternatives for already-compiled chained Community-to-Community Spine Access Connections, together with an exhaustive disposition roster. A direct Strategic Spine attachment remains Spine Access and is retained as explicitly out of scope rather than analysed as a two-place alternative; an unresolved row remains an explicit preparation gap.
 _Avoid_: Preferred Strategic Alignment evidence preparation, Community Connection selection, route decision
 
 **Spine Access Branch**:
