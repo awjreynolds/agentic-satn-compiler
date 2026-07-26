@@ -59,6 +59,10 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
     ),
     "satn/pipeline.py": ("module", "compilation orchestration and reuse binding"),
     "satn/population_reach.py": ("module", "governed Population Reach evidence assessment"),
+    "satn/psa_evidence_loaders.py": (
+        "module",
+        "strict governed Preferred Strategic Alignment evidence loading",
+    ),
     "satn/routing.py": ("module", "routable network and route selection"),
     "satn/school_street.py": ("module", "school-street assessment"),
     "satn/settlement.py": ("module", "settlement and urban eligibility"),
