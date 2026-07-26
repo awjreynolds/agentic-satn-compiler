@@ -82,12 +82,17 @@ _SUPPORTED_CRS: Final = frozenset({"EPSG:4326", "EPSG:27700"})
 _GEOJSON_ROOT_KEYS: Final = frozenset({"type", "crs", "features"})
 _REGISTER_SCHEMA: Final = "satn-school-register/v1"
 _ADMISSIONS_SCHEMA: Final = "satn-strategic-education-destination-admission/v1"
-_PWC_ASSOCIATION_RULE_VERSION: Final = "satn-oa-pwc-association/v2"
+_PWC_ASSOCIATION_RULE_VERSION: Final = "satn-oa-pwc-association/v3"
 _PWC_ASSOCIATION_RULE: Final = (
     "reject any cross-OA cover; otherwise accept nominal OA cover, or accept "
-    "only within the declared metre tolerance when the nominal OA is uniquely nearest"
+    "only within the declared metre tolerance when the nominal OA is uniquely nearest; "
+    "declared tolerance must not exceed the governed locality ceiling"
 )
 _PWC_NEAREST_TIE_TOLERANCE_M: Final = 0.001
+# This is a geometry-association safety limit, not an evidence-freshness rule.
+# Five kilometres permits exceptional multipart/local displacement while
+# preventing a caller from redefining an OA association at regional scale.
+_PWC_OUTSIDE_TOLERANCE_MAX_M: Final = 5_000.0
 _DESTINATION_TYPES: Final = frozenset({"college", "university", "other-non-school-education"})
 
 type JSONValue = dict[str, object] | list[object] | str | int | float | bool | None
@@ -342,6 +347,46 @@ class _PopulationReachBoundRecord:
 
 
 @dataclass(frozen=True)
+class _PopulationReachRouteInput:
+    """One immutable compiler-consumed route row."""
+
+    option_id: str
+    geometry_wkb: bytes
+
+    def __post_init__(self) -> None:
+        if type(self.option_id) is not str:
+            raise GovernedEvidenceLoadError("bound route option ID must be a string")
+        _bound_wkb_geometry(
+            self.geometry_wkb,
+            label="bound route option",
+            geometry_types={"LineString", "MultiLineString"},
+        )
+
+    def canonical(self) -> dict[str, object]:
+        return {
+            "option_id": self.option_id,
+            "geometry_wkb": self.geometry_wkb.hex(),
+        }
+
+
+@dataclass(frozen=True)
+class _PopulationReachAreaInput:
+    """One immutable compiler-consumed area-definition row."""
+
+    geometry_wkb: bytes
+
+    def __post_init__(self) -> None:
+        _bound_wkb_geometry(
+            self.geometry_wkb,
+            label="bound area definition",
+            geometry_types={"Polygon", "MultiPolygon"},
+        )
+
+    def canonical(self) -> dict[str, object]:
+        return {"geometry_wkb": self.geometry_wkb.hex()}
+
+
+@dataclass(frozen=True)
 class PopulationReachEvidenceLoad:
     """Immutable OA evidence bound to exact raw and canonical frame identities."""
 
@@ -441,36 +486,67 @@ class GovernedEducationAccessAssessment:
 
 @dataclass(frozen=True)
 class GovernedPopulationReachAssessment:
-    """Population assessment retaining structured artifact provenance."""
+    """Population assessment exactly rederived from immutable governed inputs."""
 
     assessment: PopulationReachAssessment
-    artifact_lineage: tuple[GovernedArtifactLineage, ...]
-    frame_content_sha256: str
-    pwc_outside_tolerance_m: float
+    source_evidence: PopulationReachEvidenceLoad
+    route_options_crs: str
+    route_options: tuple[_PopulationReachRouteInput, ...]
+    area_definition_crs: str
+    area_definition: tuple[_PopulationReachAreaInput, ...]
+    profile: PopulationReachProfile
     governed_input_fingerprint: str
 
     def __post_init__(self) -> None:
-        expected_source = _population_source(
-            self.artifact_lineage,
-            self.frame_content_sha256,
-            self.pwc_outside_tolerance_m,
+        source_frame = _verified_population_frame(self.source_evidence)
+        profile = _revalidated_population_profile(self.profile)
+        route_frame = _population_route_input_frame(
+            self.route_options,
+            crs=self.route_options_crs,
+            columns=self.source_evidence.columns,
         )
-        if self.assessment.source != expected_source:
+        area_frame = _population_area_input_frame(
+            self.area_definition,
+            crs=self.area_definition_crs,
+        )
+        expected_assessment = compile_population_reach(
+            route_frame,
+            source_frame,
+            area_frame,
+            source=self.source_evidence.source,
+            profile=profile,
+            columns=self.source_evidence.columns,
+        )
+        if (
+            type(self.assessment) is not PopulationReachAssessment
+            or self.assessment != expected_assessment
+        ):
             raise GovernedEvidenceLoadError(
-                "governed population assessment source binding mismatch"
+                "governed population assessment differs from exact rederivation"
             )
-        expected = canonical_sha256(
-            {
-                "schema": "satn-governed-population-assessment-binding/v1",
-                "assessment": self.assessment.canonical(),
-                "artifacts": [item.canonical() for item in self.artifact_lineage],
-                "frame_content_sha256": self.frame_content_sha256,
-                "pwc_association_rule_version": _PWC_ASSOCIATION_RULE_VERSION,
-                "pwc_outside_tolerance_m": self.pwc_outside_tolerance_m,
-            }
+        expected = _governed_population_assessment_fingerprint(
+            expected_assessment,
+            self.source_evidence,
+            route_options_crs=self.route_options_crs,
+            route_options=self.route_options,
+            area_definition_crs=self.area_definition_crs,
+            area_definition=self.area_definition,
+            profile=profile,
         )
         if self.governed_input_fingerprint != expected:
             raise GovernedEvidenceLoadError("governed population assessment fingerprint mismatch")
+
+    @property
+    def artifact_lineage(self) -> tuple[GovernedArtifactLineage, ...]:
+        return self.source_evidence.artifact_lineage
+
+    @property
+    def frame_content_sha256(self) -> str:
+        return self.source_evidence.frame_content_sha256
+
+    @property
+    def pwc_outside_tolerance_m(self) -> float:
+        return self.source_evidence.pwc_outside_tolerance_m
 
 
 def load_population_reach_evidence(
@@ -484,7 +560,7 @@ def load_population_reach_evidence(
     if evidence is None:
         return None
     base = _required_base_directory(base_directory)
-    association_tolerance = _required_nonnegative_finite_distance(
+    association_tolerance = _required_pwc_association_tolerance(
         pwc_outside_tolerance_m,
         label="pwc_outside_tolerance_m",
     )
@@ -569,31 +645,219 @@ def compile_population_reach_from_evidence(
         raise GovernedEvidenceLoadError(
             "population reach compilation requires a bound evidence load"
         )
-    frame = _verified_population_frame(evidence)
-    assessment = compile_population_reach(
+    (
+        route_options_crs,
+        bound_route_options,
+        area_definition_crs,
+        bound_area_definition,
+    ) = _bind_population_spatial_inputs(
         route_options,
-        frame,
         area_definition,
-        source=evidence.source,
-        profile=profile,
         columns=evidence.columns,
     )
-    fingerprint = canonical_sha256(
-        {
-            "schema": "satn-governed-population-assessment-binding/v1",
-            "assessment": assessment.canonical(),
-            "artifacts": [item.canonical() for item in evidence.artifact_lineage],
-            "frame_content_sha256": evidence.frame_content_sha256,
-            "pwc_association_rule_version": _PWC_ASSOCIATION_RULE_VERSION,
-            "pwc_outside_tolerance_m": evidence.pwc_outside_tolerance_m,
-        }
+    frame = _verified_population_frame(evidence)
+    compiled_profile = _revalidated_population_profile(
+        profile or PopulationReachProfile()
+    )
+    assessment = compile_population_reach(
+        _population_route_input_frame(
+            bound_route_options,
+            crs=route_options_crs,
+            columns=evidence.columns,
+        ),
+        frame,
+        _population_area_input_frame(
+            bound_area_definition,
+            crs=area_definition_crs,
+        ),
+        source=evidence.source,
+        profile=compiled_profile,
+        columns=evidence.columns,
+    )
+    fingerprint = _governed_population_assessment_fingerprint(
+        assessment,
+        evidence,
+        route_options_crs=route_options_crs,
+        route_options=bound_route_options,
+        area_definition_crs=area_definition_crs,
+        area_definition=bound_area_definition,
+        profile=compiled_profile,
     )
     return GovernedPopulationReachAssessment(
         assessment=assessment,
-        artifact_lineage=evidence.artifact_lineage,
-        frame_content_sha256=evidence.frame_content_sha256,
-        pwc_outside_tolerance_m=evidence.pwc_outside_tolerance_m,
+        source_evidence=evidence,
+        route_options_crs=route_options_crs,
+        route_options=bound_route_options,
+        area_definition_crs=area_definition_crs,
+        area_definition=bound_area_definition,
+        profile=compiled_profile,
         governed_input_fingerprint=fingerprint,
+    )
+
+
+def _bind_population_spatial_inputs(
+    route_options: gpd.GeoDataFrame,
+    area_definition: gpd.GeoDataFrame,
+    *,
+    columns: PopulationReachColumns,
+) -> tuple[
+    str,
+    tuple[_PopulationReachRouteInput, ...],
+    str,
+    tuple[_PopulationReachAreaInput, ...],
+]:
+    """Copy only compiler-consumed spatial inputs into immutable records."""
+
+    if (
+        not isinstance(route_options, gpd.GeoDataFrame)
+        or route_options.empty
+        or route_options.crs is None
+        or columns.option_id not in route_options.columns
+    ):
+        raise GovernedEvidenceLoadError(
+            "route options require a non-empty GeoDataFrame, CRS, and option ID column"
+        )
+    if (
+        not isinstance(area_definition, gpd.GeoDataFrame)
+        or area_definition.empty
+        or area_definition.crs is None
+    ):
+        raise GovernedEvidenceLoadError(
+            "area definition requires a non-empty GeoDataFrame and CRS"
+        )
+    try:
+        route_crs = route_options.crs.to_wkt()
+        area_crs = area_definition.crs.to_wkt()
+        routes = tuple(
+            _PopulationReachRouteInput(
+                option_id=option_id,
+                geometry_wkb=bytes(geometry.wkb),
+            )
+            for option_id, geometry in zip(
+                route_options[columns.option_id],
+                route_options.geometry,
+                strict=True,
+            )
+        )
+        areas = tuple(
+            _PopulationReachAreaInput(geometry_wkb=bytes(geometry.wkb))
+            for geometry in area_definition.geometry
+        )
+    except GovernedEvidenceLoadError:
+        raise
+    except Exception as error:
+        raise GovernedEvidenceLoadError(
+            "population reach spatial inputs cannot be immutably bound"
+        ) from error
+    return route_crs, routes, area_crs, areas
+
+
+def _population_route_input_frame(
+    records: tuple[_PopulationReachRouteInput, ...],
+    *,
+    crs: str,
+    columns: PopulationReachColumns,
+) -> gpd.GeoDataFrame:
+    if not records:
+        raise GovernedEvidenceLoadError("bound route options must not be empty")
+    return gpd.GeoDataFrame(
+        [
+            {
+                columns.option_id: record.option_id,
+                "geometry": _bound_wkb_geometry(
+                    record.geometry_wkb,
+                    label="bound route option",
+                    geometry_types={"LineString", "MultiLineString"},
+                ),
+            }
+            for record in records
+        ],
+        geometry="geometry",
+        crs=crs,
+    )
+
+
+def _population_area_input_frame(
+    records: tuple[_PopulationReachAreaInput, ...],
+    *,
+    crs: str,
+) -> gpd.GeoDataFrame:
+    if not records:
+        raise GovernedEvidenceLoadError("bound area definition must not be empty")
+    return gpd.GeoDataFrame(
+        [
+            {
+                "geometry": _bound_wkb_geometry(
+                    record.geometry_wkb,
+                    label="bound area definition",
+                    geometry_types={"Polygon", "MultiPolygon"},
+                )
+            }
+            for record in records
+        ],
+        geometry="geometry",
+        crs=crs,
+    )
+
+
+def _revalidated_population_profile(
+    profile: PopulationReachProfile,
+) -> PopulationReachProfile:
+    if not isinstance(profile, PopulationReachProfile):
+        raise GovernedEvidenceLoadError(
+            "governed population assessment requires a PopulationReachProfile"
+        )
+    try:
+        return PopulationReachProfile(
+            corridor_distances_m=tuple(profile.corridor_distances_m),
+            comparison_tolerance_residents=profile.comparison_tolerance_residents,
+            comparison_tolerance_percent=profile.comparison_tolerance_percent,
+            borderline_distance_tolerance_m=profile.borderline_distance_tolerance_m,
+        )
+    except Exception as error:
+        raise GovernedEvidenceLoadError(
+            "governed population profile fails exact revalidation"
+        ) from error
+
+
+def _governed_population_assessment_fingerprint(
+    assessment: PopulationReachAssessment,
+    evidence: PopulationReachEvidenceLoad,
+    *,
+    route_options_crs: str,
+    route_options: tuple[_PopulationReachRouteInput, ...],
+    area_definition_crs: str,
+    area_definition: tuple[_PopulationReachAreaInput, ...],
+    profile: PopulationReachProfile,
+) -> str:
+    return canonical_sha256(
+        {
+            "schema": "satn-governed-population-assessment-binding/v2",
+            "assessment": assessment.canonical(),
+            "population_source": evidence.source.canonical(),
+            "artifacts": [item.canonical() for item in evidence.artifact_lineage],
+            "frame_content_sha256": evidence.frame_content_sha256,
+            "columns": {
+                "oa_id": evidence.columns.oa_id,
+                "usual_residents": evidence.columns.usual_residents,
+                "population_weighted_centroid": (
+                    evidence.columns.population_weighted_centroid
+                ),
+                "option_id": evidence.columns.option_id,
+            },
+            "pwc_association_rule_version": _PWC_ASSOCIATION_RULE_VERSION,
+            "pwc_outside_tolerance_m": evidence.pwc_outside_tolerance_m,
+            "pwc_outside_tolerance_max_m": _PWC_OUTSIDE_TOLERANCE_MAX_M,
+            "route_options": {
+                "crs": route_options_crs,
+                "records": [item.canonical() for item in route_options],
+            },
+            "area_definition": {
+                "crs": area_definition_crs,
+                "records": [item.canonical() for item in area_definition],
+            },
+            "profile": profile.canonical(),
+        }
     )
 
 
@@ -1124,6 +1388,10 @@ def _validate_pwc_associations(
 ) -> None:
     """Apply the versioned bounded OA/PWC association rule."""
 
+    governed_tolerance_m = _required_pwc_association_tolerance(
+        outside_tolerance_m,
+        label="PWC association outside tolerance",
+    )
     oa_ids = tuple(sorted(geometries))
     try:
         projected_geometries = gpd.GeoSeries(
@@ -1168,13 +1436,13 @@ def _validate_pwc_associations(
             for candidate_id, distance_m in distances.items()
             if abs(distance_m - nearest_distance) <= _PWC_NEAREST_TIE_TOLERANCE_M
         }
-        if nominal_distance <= outside_tolerance_m and nearest_ids == {oa_id}:
+        if nominal_distance <= governed_tolerance_m and nearest_ids == {oa_id}:
             continue
         raise GovernedEvidenceLoadError(
             f"population-weighted centroid for {oa_id!r} fails "
             f"{_PWC_ASSOCIATION_RULE_VERSION}: nominal distance "
             f"{nominal_distance:.3f}m, declared tolerance "
-            f"{outside_tolerance_m:.3f}m, nearest OA IDs "
+            f"{governed_tolerance_m:.3f}m, nearest OA IDs "
             f"{', '.join(sorted(nearest_ids))}"
         )
 
@@ -1500,6 +1768,7 @@ def _population_frame_fingerprint(
             "pwc_association_rule_version": _PWC_ASSOCIATION_RULE_VERSION,
             "pwc_association_rule": _PWC_ASSOCIATION_RULE,
             "pwc_outside_tolerance_m": pwc_outside_tolerance_m,
+            "pwc_outside_tolerance_max_m": _PWC_OUTSIDE_TOLERANCE_MAX_M,
             "records": [record.canonical() for record in records],
         }
     )
@@ -1517,6 +1786,7 @@ def _population_source(
             "frame_content_sha256": frame_content_sha256,
             "pwc_association_rule_version": _PWC_ASSOCIATION_RULE_VERSION,
             "pwc_outside_tolerance_m": pwc_outside_tolerance_m,
+            "pwc_outside_tolerance_max_m": _PWC_OUTSIDE_TOLERANCE_MAX_M,
         }
     )
     return PopulationReachSource(
@@ -1529,7 +1799,8 @@ def _population_source(
             "whole-OA resident counts are not demand or accessibility evidence",
             f"PWC association rule {_PWC_ASSOCIATION_RULE_VERSION}: "
             f"{_PWC_ASSOCIATION_RULE}; outside tolerance "
-            f"{pwc_outside_tolerance_m} metres",
+            f"{pwc_outside_tolerance_m} metres (governed maximum "
+            f"{_PWC_OUTSIDE_TOLERANCE_MAX_M} metres)",
         ),
         transformation_lineage=(
             *(f"{item.source_id}:{item.content_sha256}:{item.redistribution}" for item in lineages),
@@ -1548,7 +1819,7 @@ def _verified_population_frame(
         raise GovernedEvidenceLoadError("bound population evidence has unsupported CRS")
     if not evidence._records:
         raise GovernedEvidenceLoadError("bound population evidence must contain records")
-    association_tolerance = _required_nonnegative_finite_distance(
+    association_tolerance = _required_pwc_association_tolerance(
         evidence.pwc_outside_tolerance_m,
         label="bound pwc_outside_tolerance_m",
     )
@@ -1862,7 +2133,7 @@ def _required_freshness_window(value: int | None, *, label: str) -> int:
     return value
 
 
-def _required_nonnegative_finite_distance(
+def _required_pwc_association_tolerance(
     value: float | None,
     *,
     label: str,
@@ -1875,6 +2146,11 @@ def _required_nonnegative_finite_distance(
     if not math.isfinite(distance) or distance < 0:
         raise GovernedEvidenceLoadError(
             f"{label} must be an explicitly declared finite non-negative metre value"
+        )
+    if distance > _PWC_OUTSIDE_TOLERANCE_MAX_M:
+        raise GovernedEvidenceLoadError(
+            f"{label} exceeds governed locality ceiling "
+            f"{_PWC_OUTSIDE_TOLERANCE_MAX_M:g} metres"
         )
     return 0.0 if distance == 0 else distance
 

@@ -23,6 +23,7 @@ from satn.network_selection import (
 from satn.psa_evidence_loaders import (
     GovernedEducationAccessAssessment,
     GovernedEvidenceLoadError,
+    _governed_population_assessment_fingerprint,
     assess_education_access_from_evidence,
     compile_population_reach_from_evidence,
     load_education_access_evidence,
@@ -474,6 +475,85 @@ def test_population_frame_mutation_cannot_escape_bound_compile_adapter(
     )
 
 
+@pytest.mark.parametrize("deleted_field", ["records", "summaries", "sensitivities"])
+def test_governed_population_assessment_exactly_rederives_all_outputs(
+    tmp_path: Path,
+    deleted_field: str,
+) -> None:
+    loaded = load_population_reach_evidence(
+        population_config(tmp_path),
+        base_directory=tmp_path,
+        pwc_outside_tolerance_m=0,
+    )
+    assert loaded is not None
+    routes = gpd.GeoDataFrame(
+        [
+            {
+                "option_id": "option-a",
+                "geometry": LineString(
+                    [(399900, 150050), (400200, 150050)]
+                ),
+            }
+        ],
+        geometry="geometry",
+        crs="EPSG:27700",
+    )
+    area = gpd.GeoDataFrame(
+        [
+            {
+                "geometry": Polygon(
+                    [
+                        (399800, 149900),
+                        (400300, 149900),
+                        (400300, 150200),
+                        (399800, 149900),
+                    ]
+                )
+            }
+        ],
+        geometry="geometry",
+        crs="EPSG:27700",
+    )
+    governed = compile_population_reach_from_evidence(
+        loaded,
+        routes,
+        area,
+    )
+    original_outputs = getattr(governed.assessment, deleted_field)
+    assert original_outputs
+    tampered = replace(
+        governed.assessment,
+        **{deleted_field: original_outputs[:-1]},
+    )
+    tampered_without_id = tampered.canonical()
+    tampered_without_id.pop("assessment_id")
+    tampered = replace(
+        tampered,
+        assessment_id=(
+            "population-reach-v1-"
+            f"{canonical_sha256(tampered_without_id)[:16]}"
+        ),
+    )
+    attacker_recomputed_fingerprint = (
+        _governed_population_assessment_fingerprint(
+            tampered,
+            governed.source_evidence,
+            route_options_crs=governed.route_options_crs,
+            route_options=governed.route_options,
+            area_definition_crs=governed.area_definition_crs,
+            area_definition=governed.area_definition,
+            profile=governed.profile,
+        )
+    )
+
+    with pytest.raises(GovernedEvidenceLoadError, match="exact rederivation"):
+        replace(
+            governed,
+            assessment=tampered,
+            governed_input_fingerprint=attacker_recomputed_fingerprint,
+        )
+
+
 def test_rejects_far_and_swapped_population_weighted_centroids(
     tmp_path: Path,
 ) -> None:
@@ -498,6 +578,13 @@ def test_rejects_far_and_swapped_population_weighted_centroids(
             changed,
             base_directory=tmp_path,
             pwc_outside_tolerance_m=100,
+        )
+
+    with pytest.raises(GovernedEvidenceLoadError, match="locality ceiling"):
+        load_population_reach_evidence(
+            changed,
+            base_directory=tmp_path,
+            pwc_outside_tolerance_m=1_000_000,
         )
 
     geometry_payload = {
