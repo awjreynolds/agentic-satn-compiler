@@ -67,9 +67,9 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
         "module",
         "strict governed Preferred Strategic Alignment evidence loading",
     ),
-    "satn/preferred_alignment_pipeline.py": (
+    "satn/alignment_evidence_preparation.py": (
         "module",
-        "optional Preferred Strategic Alignment compiler evidence adapter",
+        "optional Preferred Strategic Alignment evidence preparation adapter",
     ),
     "satn/routing.py": ("module", "routable network and route selection"),
     "satn/school_street.py": ("module", "school-street assessment"),

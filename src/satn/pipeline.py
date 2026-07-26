@@ -427,22 +427,11 @@ def _compile(
             "elevation_evidence_status": compiled.elevation_evidence_status,
             **(
                 {
-                    "preferred_alignment": {
-                        "profile_fingerprint": (
-                            compiled.preferred_alignment.profile_fingerprint
-                        ),
-                        "activation": compiled.preferred_alignment.activation,
-                        "missing_inputs": list(compiled.preferred_alignment.missing_inputs),
-                        "evidence_fingerprints": list(
-                            compiled.preferred_alignment.evidence_fingerprints
-                        ),
-                        "candidate_option_count": len(
-                            compiled.preferred_alignment.candidate_options
-                        ),
-                        "diagnostics": compiled.preferred_alignment.diagnostics,
-                    }
+                    "alignment_evidence_preparation": (
+                        compiled.alignment_evidence_preparation.metadata()
+                    )
                 }
-                if compiled.preferred_alignment is not None
+                if compiled.alignment_evidence_preparation is not None
                 else {}
             ),
             "urban_spines": len(compiled.urban_spines),
@@ -808,6 +797,7 @@ def compilation_governed_input_fingerprint(
     # The superseded comparison is explanatory, never a correctness input. Its path is
     # governed by configuration, but promoting this run to that path must not invalidate
     # reuse of the authoritative network it just produced.
+    network_selection_paths = _network_selection_governed_paths(council)
     governed_paths = [
         council.atm.path,
         (
@@ -825,7 +815,17 @@ def compilation_governed_input_fingerprint(
             if council.source.national_elevation is not None
             else None
         ),
+        *network_selection_paths,
     ]
+    missing_paths = sorted(
+        str(path)
+        for path in network_selection_paths
+        if not path.is_file()
+    )
+    if missing_paths:
+        raise ValueError(
+            "configured governed input file is missing: " + ", ".join(missing_paths)
+        )
     manifest = dependency_manifest or compilation_dependency_manifest()
     payload = {
         "schema_version": SCHEMA_VERSION,
@@ -843,6 +843,29 @@ def compilation_governed_input_fingerprint(
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+
+
+def _network_selection_governed_paths(council: AreaConfig) -> tuple[Path, ...]:
+    """Return exact PSA artifact paths only when the optional pass is enabled."""
+    if council.compilation.network_selection is None:
+        return ()
+    paths: list[Path] = []
+    population = council.source.population_reach_evidence
+    if population is not None:
+        paths.extend(
+            [
+                population.output_area_geometry.path,
+                population.population_weighted_centroids.path,
+                population.usual_resident_counts.path,
+            ]
+        )
+    school_register = council.source.school_register_evidence
+    if school_register is not None:
+        paths.append(school_register.school_register.path)
+    admissions = council.source.strategic_education_destination_admissions
+    if admissions is not None:
+        paths.append(admissions.admissions.path)
+    return tuple(paths)
 
 
 def snapshot_manifest_sha256(council: AreaConfig) -> str:

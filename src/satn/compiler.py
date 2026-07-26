@@ -16,6 +16,10 @@ import pandas as pd
 from shapely.geometry import MultiPoint
 
 from satn.agents import AgentDecisionResolver, AgentRuntimeSource, CompilationGate
+from satn.alignment_evidence_preparation import (
+    AlignmentEvidencePreparationResult,
+    prepare_alignment_evidence,
+)
 from satn.backbone import GAP_COLUMNS, assemble_backbone_outward
 from satn.cross_spine import CrossSpineProgress, resolve_cross_spine_assembly
 from satn.evidence import (
@@ -40,10 +44,6 @@ from satn.models import (
     NetworkScope,
     TrafficLight,
     UrbanClassificationStatus,
-)
-from satn.preferred_alignment_pipeline import (
-    PreferredAlignmentPipelineResult,
-    compile_preferred_alignment_pipeline,
 )
 from satn.routing import RoadGraph
 from satn.school_street import assess_school_street_candidates
@@ -114,7 +114,7 @@ class CompiledNetwork:
     # Optional Wayfinding Pass data.  It remains absent, rather than empty,
     # for legacy compilations so their route and publication behaviour stays
     # byte-compatible.
-    preferred_alignment: PreferredAlignmentPipelineResult | None = None
+    alignment_evidence_preparation: AlignmentEvidencePreparationResult | None = None
 
     @property
     def connection_count(self) -> int:
@@ -333,24 +333,24 @@ def compile_network(
         maximum_sample_spacing_m=(config.compilation.topography.maximum_sample_spacing_m),
         minimum_sustained_spacing_m=(config.compilation.topography.minimum_sustained_spacing_m),
     )
-    preferred_alignment = None
+    alignment_evidence_preparation = None
     if config.compilation.network_selection is not None:
-        # The adapter owns PSA evidence loading.  It is deliberately reached
-        # after the backbone is stable and never feeds back into legacy route
-        # selection until it has a complete governed evidence basis.
-        preferred_alignment = compile_preferred_alignment_pipeline(
+        # This seam prepares finite Community Connection candidates and strict
+        # evidence bindings. It deliberately does not select or mutate routes.
+        alignment_evidence_preparation = prepare_alignment_evidence(
             config.compilation.network_selection,
-            source={
-                **source,
-                "_network_selection_configuration": {
-                    "population_reach_evidence": config.source.population_reach_evidence,
-                    "school_register_evidence": config.source.school_register_evidence,
-                    "strategic_education_destination_admissions": (
-                        config.source.strategic_education_destination_admissions
-                    ),
-                },
-            },
+            road_graph=road_graph,
+            spine_access_connections=spine_access_connections,
+            access_obligations=access_obligations,
             strategic_spines=strategic_spines,
+            context=context,
+            configuration={
+                "population_reach_evidence": config.source.population_reach_evidence,
+                "school_register_evidence": config.source.school_register_evidence,
+                "strategic_education_destination_admissions": (
+                    config.source.strategic_education_destination_admissions
+                ),
+            },
             config_directory=config.config_path.parent,
             as_at=config.source.network_selection_as_at,
             school_register_max_age_days=(
@@ -591,12 +591,16 @@ def compile_network(
             "urban_settlement_form_profiles": urban_settlement_form_profiles(communities),
             "urban_a_road_spine_coverage": urban_a_road_coverage,
             **(
-                {"preferred_alignment": preferred_alignment.diagnostics}
-                if preferred_alignment is not None
+                {
+                    "alignment_evidence_preparation": (
+                        alignment_evidence_preparation.diagnostics
+                    )
+                }
+                if alignment_evidence_preparation is not None
                 else {}
             ),
         },
-        preferred_alignment=preferred_alignment,
+        alignment_evidence_preparation=alignment_evidence_preparation,
     )
     # ``compile_network`` is also a supported public entry point.  Its output
     # must therefore carry the same exact decision wire contract as the

@@ -285,6 +285,9 @@ def test_profile_and_governed_evidence_parse_through_the_existing_area_config_se
                 "strategic_education_destination_admissions": {
                     "admissions": artifact("education-admissions").model_dump(mode="json")
                 },
+                "network_selection_as_at": "2026-07-26",
+                "network_selection_school_register_max_age_days": 365,
+                "network_selection_strategic_admissions_max_age_days": 365,
             },
             "compilation": {"network_selection": profile_payload()},
             "publication": {"output_dir": "output", "title": "Test"},

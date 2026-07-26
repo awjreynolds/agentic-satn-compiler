@@ -300,6 +300,51 @@ class SourceConfig(BaseModel):
             and self.retained_core_source.snapshot_id == self.snapshot_id
         ):
             raise ValueError("retained-core source snapshot must differ from target snapshot")
+        if (
+            self.school_register_evidence is None
+            and self.network_selection_school_register_max_age_days is not None
+        ):
+            raise ValueError(
+                "school-register freshness requires a school-register evidence artifact"
+            )
+        if (
+            self.school_register_evidence is not None
+            and self.network_selection_school_register_max_age_days is None
+        ):
+            raise ValueError(
+                "school-register evidence requires a declared freshness window"
+            )
+        if (
+            self.strategic_education_destination_admissions is None
+            and self.network_selection_strategic_admissions_max_age_days is not None
+        ):
+            raise ValueError(
+                "strategic-admissions freshness requires an admissions artifact"
+            )
+        if (
+            self.strategic_education_destination_admissions is not None
+            and self.network_selection_strategic_admissions_max_age_days is None
+        ):
+            raise ValueError(
+                "strategic-admissions evidence requires a declared freshness window"
+            )
+        if (
+            self.strategic_education_destination_admissions is not None
+            and self.school_register_evidence is None
+        ):
+            raise ValueError(
+                "strategic-admissions evidence requires school-register evidence"
+            )
+        if (
+            self.network_selection_as_at is None
+            and (
+                self.school_register_evidence is not None
+                or self.strategic_education_destination_admissions is not None
+            )
+        ):
+            raise ValueError(
+                "current education evidence requires network_selection_as_at"
+            )
         return self
 
     @property
