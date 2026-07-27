@@ -26,17 +26,21 @@ The compiler prepares two sibling units:
    and finite current RoadGraph options between their exact nodes.  It compares
    alternatives with the same role and endpoint obligations.
 2. `STRATEGIC_DESTINATION_ACCESS` exists only for a current, explicit governed
-   admission whose `site_id`, access-point evidence identifiers, current site
-   geometry and RoadGraph attachment all agree.  It has only that destination
-   obligation and is complementary to, never a substitute for, the interurban
-   unit.
+   admission whose record/version, `site_id`, access-point evidence identifiers,
+   current site geometry, explicit graph node, exact incident forward/reverse
+   edges and content binding all agree.  It has one anchor Network Place and
+   only the admitted destination as its Strategic Destination obligation.  A
+   canonical surrogate is used solely for `AlignmentCandidateSet` endpoint
+   mechanics; it is never published as a Network Place.
 
 Both units retain forward and reverse graph edges, canonical geometry, source
 and evidence identifiers, deterministic content identities and a physical-
-alignment registry.  The registry emits each exact authoritative geometry once
-while retaining all logical-role memberships.  Missing or mismatched destination
-geometry becomes an explicit typed preparation issue; no service conclusion is
-inferred.
+alignment registry.  Exact duplicate route outputs are collapsed before
+admission while all generating strategies remain provenance.  The registry
+owns and emits each canonical authoritative geometry once while retaining all
+logical-role and candidate memberships.  Missing, offset or mismatched
+destination geometry becomes an explicit typed preparation issue; no service
+conclusion is inferred.
 
 The sibling module does not change `SpineAccessCandidatePreparationResult`,
 does not promote its direct-spine rows, and has no selection, agent, Reference

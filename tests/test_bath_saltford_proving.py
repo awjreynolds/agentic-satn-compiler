@@ -21,7 +21,6 @@ from satn.education_access import (
     ConnectorContinuity,
     MeasuredDistance,
     SchoolAccessEvidence,
-    StrategicEducationDestinationEvidence,
 )
 from satn.population_reach import compile_population_reach
 from satn.psa_evidence_loaders import (
@@ -62,23 +61,6 @@ def _access(option_id: str, school_id: str) -> SchoolAccessEvidence:
         destination_distance=MeasuredDistance(distance_m=800),
         access_evidence_ids=(f"{option_id}-{school_id}-entrance",),
         support_evidence_ids=(f"{option_id}-{school_id}-continuity",),
-    )
-
-
-def _destination(option_id: str) -> StrategicEducationDestinationEvidence:
-    return StrategicEducationDestinationEvidence(
-        option_id=option_id,
-        strategic_destination_id="bath-spa-university",
-        connector_distance=MeasuredDistance(distance_m=150),
-        connector_continuity=(
-            ConnectorContinuity.CONTINUOUS
-            if option_id == "railway-path"
-            else ConnectorContinuity.UNKNOWN
-        ),
-        access_point_status=AccessPointStatus.MAPPED,
-        destination_distance=MeasuredDistance(distance_m=750),
-        access_evidence_ids=(f"{option_id}-bath-spa-entrance",),
-        support_evidence_ids=(f"{option_id}-bath-spa-corridor",),
     )
 
 
@@ -133,21 +115,25 @@ def test_bath_saltford_fixture_records_evidence_then_exposes_current_psa_boundar
             _access("a4-corridor", "bath-edge-primary"),
             _access("railway-path", "saltford-secondary"),
             _access("railway-path", "bath-edge-primary"),
-            _destination("a4-corridor"),
-            _destination("railway-path"),
         ),
     ).assessment
     destination_ids = {
         item.strategic_destination_id for item in assessed.strategic_education_destinations
     }
     assert destination_ids == {"bath-spa-university"}
-    assert any(
-        item.option_id == "a4-corridor" and item.strategic_destination_id == "bath-spa-university"
+    # The raw education adapter receives no caller-created destination access
+    # assertion. Both comparison labels therefore retain an explicit gap until
+    # the compiler derives an exact, role-typed current-graph relationship.
+    assert {
+        (item.option_id, item.strategic_destination_id)
         for item in assessed.network_gaps
         if item.gap_kind == "strategic-education-destination"
-    )
-    assert any(
-        item.option_id == "railway-path" and item.status.value.endswith("served")
+    } == {
+        ("a4-corridor", "bath-spa-university"),
+        ("railway-path", "bath-spa-university"),
+    }
+    assert all(
+        item.status.value == "network-gap"
         for item in assessed.strategic_education_destination_access
     )
     # No independent-travel evidence was supplied.  That remains a bounded
@@ -174,11 +160,37 @@ def test_bath_saltford_fixture_records_evidence_then_exposes_current_psa_boundar
         "interurban-spine",
         "strategic-destination-access",
     }
+    units = {item.unit_role.value: item for item in strategic.units}
+    interurban = units["interurban-spine"]
+    destination = units["strategic-destination-access"]
+    railway = next(
+        record
+        for record in interurban.candidate_records
+        if record.candidate.source_class.value == "verified-existing-asset"
+    )
+    assert railway.routing_edge_ids == (
+        "railway-west-reverse",
+        "railway-east-reverse",
+    )
+    assert railway.reverse_routing_edge_ids == (
+        "railway-east-forward",
+        "railway-west-forward",
+    )
+    assert not railway.candidate.served_strategic_destination_ids
+    assert destination.candidate_records[0].routing_edge_ids == (
+        "a4-campus-forward",
+    )
+    assert destination.candidate_records[0].reverse_routing_edge_ids == (
+        "a4-campus-reverse",
+    )
+    assert destination.candidate_records[0].candidate.served_strategic_destination_ids == (
+        "bath-spa-university",
+    )
     assert time.perf_counter() - started > 0
 
     result = json.loads(RESULT.read_text(encoding="utf-8"))
     assert result["status"] == "strategic-corridor-preparation-proven-reference-replay-blocked"
-    assert result["benchmark"]["candidate_count"] == 8
+    assert result["benchmark"]["candidate_count"] == 3
     assert (
         result["implementation_gap"]["id"]
         == "strategic-corridor-reference-replay-and-publication"

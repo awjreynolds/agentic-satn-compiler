@@ -45,6 +45,9 @@ from satn.psa_evidence_loaders import (
 from satn.routing import RoadGraph, RouteOption, choose_alignment
 
 STRATEGIC_CORRIDOR_PREPARATION_CONTRACT = "satn-strategic-corridor-preparation/v1"
+STRATEGIC_DESTINATION_GRAPH_BINDING_CONTRACT = (
+    "satn-strategic-destination-graph-binding/v1"
+)
 _ID = re.compile(r"^[a-z0-9][a-z0-9._:-]*$")
 
 
@@ -104,16 +107,59 @@ class PhysicalAlignment:
     """One authoritative geometry shared by one or more logical candidate roles."""
 
     physical_alignment_id: str
+    geometry: CanonicalLineString
     geometry_fingerprint: str
     candidate_ids: tuple[str, ...]
     role_memberships: tuple[str, ...]
 
+    def __post_init__(self) -> None:
+        if self.geometry_fingerprint != self.geometry.fingerprint:
+            raise ValueError("physical alignment geometry fingerprint is stale")
+
     def canonical(self) -> dict[str, object]:
         return {
             "physical_alignment_id": self.physical_alignment_id,
+            "geometry": self.geometry.model_dump(mode="json"),
             "geometry_fingerprint": self.geometry_fingerprint,
             "candidate_ids": list(self.candidate_ids),
             "role_memberships": list(self.role_memberships),
+        }
+
+
+@dataclass(frozen=True)
+class StrategicCorridorEndpointBinding:
+    """Typed obligations behind candidate mechanics.
+
+    ``AlignmentCandidateSet`` requires two mechanical endpoints.  A Strategic
+    Education Destination is not a Network Place, so a stable surrogate is
+    used only for those mechanics while this binding preserves the exact
+    Network Place and Strategic Destination obligations.
+    """
+
+    candidate_endpoints: tuple[str, str]
+    routing_node_ids: tuple[str, str]
+    network_place_ids: tuple[str, ...]
+    strategic_destination_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if (
+            len(self.candidate_endpoints) != 2
+            or self.candidate_endpoints != tuple(sorted(set(self.candidate_endpoints)))
+            or len(self.routing_node_ids) != 2
+            or any(not item or item.strip() != item for item in self.routing_node_ids)
+            or self.network_place_ids
+            != tuple(sorted(set(self.network_place_ids)))
+            or self.strategic_destination_ids
+            != tuple(sorted(set(self.strategic_destination_ids)))
+        ):
+            raise ValueError("strategic corridor endpoint binding is not canonical")
+
+    def canonical(self) -> dict[str, object]:
+        return {
+            "candidate_endpoints": list(self.candidate_endpoints),
+            "routing_node_ids": list(self.routing_node_ids),
+            "network_place_ids": list(self.network_place_ids),
+            "strategic_destination_ids": list(self.strategic_destination_ids),
         }
 
 
@@ -123,26 +169,26 @@ class StrategicCorridorCandidateRecord:
 
     candidate: AlignmentCandidateInput
     physical_alignment_id: str
-    route_role: str
     routing_start_node_id: str
     routing_end_node_id: str
     routing_edge_ids: tuple[str, ...]
     reverse_routing_edge_ids: tuple[str, ...]
     source_ids: tuple[str, ...]
     evidence_ids: tuple[str, ...]
+    generation_strategies: tuple[str, ...]
     generation_rationale: str
 
     def canonical(self) -> dict[str, object]:
         return {
             "candidate": self.candidate.model_dump(mode="json"),
             "physical_alignment_id": self.physical_alignment_id,
-            "route_role": self.route_role,
             "routing_start_node_id": self.routing_start_node_id,
             "routing_end_node_id": self.routing_end_node_id,
             "routing_edge_ids": list(self.routing_edge_ids),
             "reverse_routing_edge_ids": list(self.reverse_routing_edge_ids),
             "source_ids": list(self.source_ids),
             "evidence_ids": list(self.evidence_ids),
+            "generation_strategies": list(self.generation_strategies),
             "generation_rationale": self.generation_rationale,
         }
 
@@ -154,6 +200,7 @@ class PreparedStrategicCorridorUnit:
     unit_id: str
     unit_role: StrategicCorridorUnitRole
     candidate_set: AlignmentCandidateSet
+    endpoint_binding: StrategicCorridorEndpointBinding
     anchor_connection_ids: tuple[str, ...]
     routing_start_node_id: str
     routing_end_node_id: str
@@ -162,11 +209,52 @@ class PreparedStrategicCorridorUnit:
     access_point_evidence_ids: tuple[str, ...]
     candidate_records: tuple[StrategicCorridorCandidateRecord, ...]
 
+    def __post_init__(self) -> None:
+        binding = self.endpoint_binding
+        if (
+            self.candidate_set.endpoints != binding.candidate_endpoints
+            or self.candidate_set.mandatory_network_place_ids
+            != binding.network_place_ids
+            or self.candidate_set.mandatory_strategic_destination_ids
+            != binding.strategic_destination_ids
+            or (
+                self.routing_start_node_id,
+                self.routing_end_node_id,
+            )
+            != binding.routing_node_ids
+        ):
+            raise ValueError("strategic corridor unit endpoint binding is stale")
+        if any(
+            candidate.served_network_place_ids != binding.network_place_ids
+            or candidate.served_strategic_destination_ids
+            != binding.strategic_destination_ids
+            for candidate in self.candidate_set.candidates
+        ):
+            raise ValueError("strategic corridor candidate obligations are not exact")
+        if self.unit_role is StrategicCorridorUnitRole.INTERURBAN_SPINE:
+            if (
+                len(binding.network_place_ids) != 2
+                or binding.strategic_destination_ids
+                or self.strategic_destination_id is not None
+            ):
+                raise ValueError("interurban unit requires exactly two Network Places")
+        elif (
+            len(binding.network_place_ids) != 1
+            or len(binding.strategic_destination_ids) != 1
+            or (self.strategic_destination_id,)
+            != binding.strategic_destination_ids
+            or self.strategic_destination_id in binding.candidate_endpoints
+        ):
+            raise ValueError(
+                "destination unit requires one Network Place and one typed destination"
+            )
+
     def canonical(self) -> dict[str, object]:
         return {
             "unit_id": self.unit_id,
             "unit_role": self.unit_role.value,
             "candidate_set": self.candidate_set.model_dump(mode="json"),
+            "endpoint_binding": self.endpoint_binding.canonical(),
             "anchor_connection_ids": list(self.anchor_connection_ids),
             "routing_start_node_id": self.routing_start_node_id,
             "routing_end_node_id": self.routing_end_node_id,
@@ -385,6 +473,7 @@ def _interurban_units(
                 graph,
                 unit_role=StrategicCorridorUnitRole.INTERURBAN_SPINE,
                 endpoints=(left["place_id"], right["place_id"]),
+                network_place_ids=(left["place_id"], right["place_id"]),
                 start_node=start,
                 end_node=end,
                 source_ids=tuple(sorted({left["source_id"], right["source_id"]})),
@@ -406,6 +495,14 @@ def _interurban_units(
                     unit_id=unit_id,
                     unit_role=StrategicCorridorUnitRole.INTERURBAN_SPINE,
                     candidate_set=candidate_set,
+                    endpoint_binding=StrategicCorridorEndpointBinding(
+                        candidate_endpoints=candidate_set.endpoints,
+                        routing_node_ids=(start, end),
+                        network_place_ids=tuple(
+                            sorted((left["place_id"], right["place_id"]))
+                        ),
+                        strategic_destination_ids=(),
+                    ),
                     anchor_connection_ids=tuple(
                         sorted((left["access_connection_id"], right["access_connection_id"]))
                     ),
@@ -449,15 +546,15 @@ def _destination_units(
                 )
             )
             continue
-        site_nodes = graph.nodes_on_geometry(site["geometry"], tolerance_m=20)
-        if not site_nodes:
+        destination_node = _current_graph_destination_node(graph, site)
+        if destination_node is None:
             issues.append(
                 StrategicCorridorIssue(
                     StrategicCorridorUnitRole.STRATEGIC_DESTINATION_ACCESS,
-                    "destination-access-geometry-not-attached-to-current-road-graph",
+                    "destination-access-geometry-not-exactly-bound-to-current-road-graph",
                     (
-                        "governed destination access geometry has no exact current "
-                        "RoadGraph attachment"
+                        "governed destination access geometry, node, incident edges "
+                        "or content identity do not exactly match the current RoadGraph"
                     ),
                     strategic_destination_id=destination_id,
                     site_id=admission.site_id,
@@ -475,7 +572,6 @@ def _destination_units(
                 )
             )
             continue
-        destination_node = site_nodes[0][0]
         anchor = _nearest_anchor(graph, site["geometry"], anchors)
         if anchor is None or anchor["routing_node"] == destination_node:
             issues.append(
@@ -491,11 +587,21 @@ def _destination_units(
                 )
             )
             continue
+        destination_endpoint = _stable_id(
+            "destination-endpoint",
+            {
+                "strategic_destination_id": destination_id,
+                "site_id": admission.site_id,
+                "graph_node_id": destination_node,
+                "access_point_evidence_ids": list(site["access_ids"]),
+            },
+        )
         candidate_set, records = _candidate_set(
             profile,
             graph,
             unit_role=StrategicCorridorUnitRole.STRATEGIC_DESTINATION_ACCESS,
-            endpoints=(anchor["place_id"], destination_id),
+            endpoints=(anchor["place_id"], destination_endpoint),
+            network_place_ids=(anchor["place_id"],),
             start_node=anchor["routing_node"],
             end_node=destination_node,
             source_ids=tuple(sorted({anchor["source_id"], site["source_id"]})),
@@ -517,6 +623,12 @@ def _destination_units(
                 unit_id=unit_id,
                 unit_role=StrategicCorridorUnitRole.STRATEGIC_DESTINATION_ACCESS,
                 candidate_set=candidate_set,
+                endpoint_binding=StrategicCorridorEndpointBinding(
+                    candidate_endpoints=candidate_set.endpoints,
+                    routing_node_ids=(anchor["routing_node"], destination_node),
+                    network_place_ids=(anchor["place_id"],),
+                    strategic_destination_ids=(destination_id,),
+                ),
                 anchor_connection_ids=(anchor["access_connection_id"],),
                 routing_start_node_id=anchor["routing_node"],
                 routing_end_node_id=destination_node,
@@ -535,6 +647,7 @@ def _candidate_set(
     *,
     unit_role: StrategicCorridorUnitRole,
     endpoints: tuple[str, str],
+    network_place_ids: tuple[str, ...],
     start_node: str,
     end_node: str,
     source_ids: tuple[str, ...],
@@ -543,16 +656,58 @@ def _candidate_set(
     strategic_destination_id: str | None,
 ) -> tuple[AlignmentCandidateSet, tuple[StrategicCorridorCandidateRecord, ...]]:
     _selected, options, _rationale = choose_alignment(graph, start_node, end_node)
-    candidates: list[AlignmentCandidateInput] = []
-    raw: list[tuple[AlignmentCandidateInput, RouteOption]] = []
+    strategic_destination_ids = (
+        (strategic_destination_id,) if strategic_destination_id is not None else ()
+    )
+    generated: dict[tuple[object, ...], dict[str, object]] = {}
     for option in options:
         geometry = _canonical_geometry(option.geometry, graph.crs)
         if geometry is None:
             continue
         source_class = _source_class(option, graph, context)
+        key = (
+            unit_role.value,
+            tuple(sorted(endpoints)),
+            tuple(sorted(network_place_ids)),
+            strategic_destination_ids,
+            tuple(option.edge_ids),
+            tuple(option.reverse_edge_ids),
+            geometry.fingerprint,
+            source_class.value,
+        )
+        entry = generated.setdefault(
+            key,
+            {
+                "option": option,
+                "geometry": geometry,
+                "source_class": source_class,
+                "strategies": set(),
+            },
+        )
+        strategies = entry["strategies"]
+        assert isinstance(strategies, set)
+        strategies.add(str(option.role))
+
+    candidates: list[AlignmentCandidateInput] = []
+    raw: list[
+        tuple[
+            AlignmentCandidateInput,
+            RouteOption,
+            tuple[str, ...],
+        ]
+    ] = []
+    for key in sorted(generated, key=repr):
+        entry = generated[key]
+        option = entry["option"]
+        geometry = entry["geometry"]
+        source_class = entry["source_class"]
+        strategies = tuple(sorted(entry["strategies"]))
+        assert isinstance(option, RouteOption)
+        assert isinstance(geometry, CanonicalLineString)
+        assert isinstance(source_class, CandidateSourceClass)
         payload = {
             "unit_role": unit_role.value,
-            "route_role": option.role,
+            "generation_strategies": list(strategies),
             "start": start_node,
             "end": end_node,
             "edge_ids": option.edge_ids,
@@ -573,23 +728,19 @@ def _candidate_set(
                 if option.bidirectional
                 else CriterionState.UNSATISFIED
             ),
-            served_network_place_ids=tuple(sorted(endpoints)),
-            served_strategic_destination_ids=(
-                (strategic_destination_id,) if strategic_destination_id is not None else ()
-            ),
+            served_network_place_ids=tuple(sorted(network_place_ids)),
+            served_strategic_destination_ids=strategic_destination_ids,
             directness_m=float(option.length_km * 1000),
         )
         candidates.append(candidate)
-        raw.append((candidate, option))
+        raw.append((candidate, option, strategies))
     candidate_set = admit_candidate_set(
         profile,
         network_role=unit_role.network_role,
         endpoints=endpoints,
         candidates=tuple(candidates),
-        mandatory_network_place_ids=tuple(sorted(endpoints)),
-        mandatory_strategic_destination_ids=(
-            (strategic_destination_id,) if strategic_destination_id is not None else ()
-        ),
+        mandatory_network_place_ids=tuple(sorted(network_place_ids)),
+        mandatory_strategic_destination_ids=strategic_destination_ids,
     )
     admitted = {item.candidate_id for item in candidate_set.admitted_candidates}
     records = tuple(
@@ -600,19 +751,25 @@ def _candidate_set(
                     physical_alignment_id=_stable_id(
                         "physical-alignment", candidate.geometry_fingerprint
                     ),
-                    route_role=option.role,
                     routing_start_node_id=start_node,
                     routing_end_node_id=end_node,
                     routing_edge_ids=tuple(option.edge_ids),
                     reverse_routing_edge_ids=tuple(option.reverse_edge_ids),
                     source_ids=tuple(sorted({*source_ids, *option.edge_ids})),
                     evidence_ids=evidence_ids,
+                    generation_strategies=strategies,
                     generation_rationale=(
-                        "retained finite candidate" if candidate.candidate_id in admitted
-                        else "generated finite candidate retained only in admission provenance"
+                        "retained exact physical route generated by "
+                        + ", ".join(strategies)
+                        if candidate.candidate_id in admitted
+                        else (
+                            "exact physical route generated by "
+                            + ", ".join(strategies)
+                            + " retained only in admission provenance"
+                        )
                     ),
                 )
-                for candidate, option in raw
+                for candidate, option, strategies in raw
             ),
             key=lambda item: item.candidate.candidate_id,
         )
@@ -673,7 +830,17 @@ def _governed_destination_site(
     context: gpd.GeoDataFrame,
     admission: object,
 ) -> dict[str, object] | None:
-    required = {"site_id", "access_point_evidence_ids", "source_id", "evidence_id"}
+    required = {
+        "site_id",
+        "access_point_evidence_ids",
+        "source_id",
+        "evidence_id",
+        "admission_record_id",
+        "admission_record_version",
+        "access_point_graph_node_id",
+        "access_point_graph_edge_ids",
+        "access_point_graph_binding_sha256",
+    }
     if context.empty or not required.issubset(context.columns):
         return None
     site_id = str(admission.site_id)
@@ -683,13 +850,21 @@ def _governed_destination_site(
     for _, row in rows.iterrows():
         geometry = row.geometry
         row_access_ids = _identifier_sequence(row.get("access_point_evidence_ids"))
+        graph_edge_ids = _identifier_sequence(row.get("access_point_graph_edge_ids"))
+        graph_node_id = _text(row.get("access_point_graph_node_id"))
+        graph_binding_sha256 = _text(row.get("access_point_graph_binding_sha256"))
         if (
             not isinstance(geometry, Point)
             or geometry.is_empty
             or row_access_ids != access_ids
+            or _text(row.get("admission_record_id")) != admission.record_id
+            or _text(row.get("admission_record_version")) != admission.record_version
             or _text(row.get("site_status")) != "current"
             or not _text(row.get("source_id"))
             or not _text(row.get("evidence_id"))
+            or not graph_node_id
+            or not graph_edge_ids
+            or re.fullmatch(r"[0-9a-f]{64}", graph_binding_sha256) is None
         ):
             continue
         matches.append(
@@ -698,9 +873,61 @@ def _governed_destination_site(
                 "access_ids": row_access_ids,
                 "source_id": _text(row.get("source_id")),
                 "evidence_id": _text(row.get("evidence_id")),
+                "site_id": site_id,
+                "admission_record_id": _text(row.get("admission_record_id")),
+                "admission_record_version": _text(
+                    row.get("admission_record_version")
+                ),
+                "graph_node_id": graph_node_id,
+                "graph_edge_ids": graph_edge_ids,
+                "graph_binding_sha256": graph_binding_sha256,
             }
         )
     return matches[0] if len(matches) == 1 else None
+
+
+def _current_graph_destination_node(
+    graph: RoadGraph,
+    site: dict[str, object],
+) -> str | None:
+    """Resolve only an exact, content-bound current graph access point."""
+
+    geometry = site.get("geometry")
+    node_id = site.get("graph_node_id")
+    expected_edge_ids = site.get("graph_edge_ids")
+    if (
+        not isinstance(geometry, Point)
+        or not isinstance(node_id, str)
+        or not isinstance(expected_edge_ids, tuple)
+    ):
+        return None
+    node_point = graph.node_points.get(node_id)
+    if node_point is None or not node_point.equals_exact(geometry, tolerance=0.0):
+        return None
+    actual_edge_ids = tuple(
+        sorted(
+            {
+                str(edge.get("edge_id"))
+                for left, right, edge in graph.graph.edges(data=True)
+                if node_id in {str(left), str(right)} and _text(edge.get("edge_id"))
+            }
+        )
+    )
+    if actual_edge_ids != expected_edge_ids:
+        return None
+    payload = {
+        "contract": STRATEGIC_DESTINATION_GRAPH_BINDING_CONTRACT,
+        "site_id": site["site_id"],
+        "admission_record_id": site["admission_record_id"],
+        "admission_record_version": site["admission_record_version"],
+        "access_point_evidence_ids": list(site["access_ids"]),
+        "source_id": site["source_id"],
+        "evidence_id": site["evidence_id"],
+        "graph_node_id": node_id,
+        "graph_edge_ids": list(actual_edge_ids),
+        "geometry_wkb": geometry.wkb_hex,
+    }
+    return node_id if site.get("graph_binding_sha256") == _fingerprint(payload) else None
 
 
 def _nearest_anchor(
@@ -763,30 +990,48 @@ def _source_class(
 def _physical_alignments(
     units: tuple[PreparedStrategicCorridorUnit, ...],
 ) -> tuple[PhysicalAlignment, ...]:
-    memberships: dict[str, dict[str, set[str]]] = {}
+    memberships: dict[str, dict[str, object]] = {}
     for unit in units:
         for record in unit.candidate_records:
             entry = memberships.setdefault(
                 record.physical_alignment_id,
                 {
-                    "geometry": {record.candidate.geometry_fingerprint},
+                    "geometry": record.candidate.geometry,
+                    "geometry_fingerprints": {
+                        record.candidate.geometry_fingerprint
+                    },
                     "candidates": set(),
                     "roles": set(),
                 },
             )
-            entry["geometry"].add(record.candidate.geometry_fingerprint)
-            entry["candidates"].add(record.candidate.candidate_id)
-            entry["roles"].add(unit.unit_role.value)
+            fingerprints = entry["geometry_fingerprints"]
+            candidates = entry["candidates"]
+            roles = entry["roles"]
+            assert isinstance(fingerprints, set)
+            assert isinstance(candidates, set)
+            assert isinstance(roles, set)
+            fingerprints.add(record.candidate.geometry_fingerprint)
+            candidates.add(record.candidate.candidate_id)
+            roles.add(unit.unit_role.value)
     output: list[PhysicalAlignment] = []
     for identifier, entry in memberships.items():
-        if len(entry["geometry"]) != 1:
+        fingerprints = entry["geometry_fingerprints"]
+        candidates = entry["candidates"]
+        roles = entry["roles"]
+        geometry = entry["geometry"]
+        assert isinstance(fingerprints, set)
+        assert isinstance(candidates, set)
+        assert isinstance(roles, set)
+        assert isinstance(geometry, CanonicalLineString)
+        if len(fingerprints) != 1:
             raise ValueError("physical alignment identity must resolve one authoritative geometry")
         output.append(
             PhysicalAlignment(
                 physical_alignment_id=identifier,
-                geometry_fingerprint=next(iter(entry["geometry"])),
-                candidate_ids=tuple(sorted(entry["candidates"])),
-                role_memberships=tuple(sorted(entry["roles"])),
+                geometry=geometry,
+                geometry_fingerprint=next(iter(fingerprints)),
+                candidate_ids=tuple(sorted(candidates)),
+                role_memberships=tuple(sorted(roles)),
             )
         )
     return tuple(sorted(output, key=lambda item: item.physical_alignment_id))
