@@ -892,7 +892,7 @@ def _root_candidates(
     nearest = candidates[0][0]
     raise CrossSpineRouteRefinementRequired(
         "named Strategic Spine is beyond bounded source-alignment closure: "
-        f"{nearest:.1f} m exceeds {PUBLIC_ROUTE_TERMINUS_CLOSURE_MAX_M:.1f} m"
+        f"{nearest:.3f} m exceeds {PUBLIC_ROUTE_TERMINUS_CLOSURE_MAX_M:.3f} m"
     )
 
 

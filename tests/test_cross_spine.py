@@ -220,6 +220,46 @@ def test_assembly_enforces_named_root_closure_budget_and_reconciles_agent_audit(
     assert [reference.feature_id for reference in record.derived_features] == ["needs-refinement"]
 
 
+@pytest.mark.parametrize(
+    ("closure_m", "expected_valid"),
+    [(100.0, True), (100.001, False), (115.9, False)],
+)
+def test_named_root_closure_budget_reports_exact_cutoff_and_observed_excess(
+    closure_m: float,
+    expected_valid: bool,
+) -> None:
+    connectors = gpd.GeoDataFrame(
+        [_connector("closure-budget", LineString([(0, 0), (100, 0)]))],
+        crs=27700,
+    )
+    roots = _roots(
+        LineString([(-closure_m, -10), (-closure_m, 10)]),
+        LineString([(100, -10), (100, 10)]),
+    )
+
+    result = resolve_cross_spine_assembly(connectors, roots)
+
+    if expected_valid:
+        assert result.route_refinement_findings.empty
+        connector = result.valid_connectors.iloc[0]
+        provenance = json.loads(connector["provenance"])
+        assert provenance["named_root_traversal"]["from_root_distance_m"] == 100.0
+        assert provenance["terminus_closures"] == [
+            {"distance_m": 100.0, "target_id": "left-primary"}
+        ]
+        return
+
+    assert result.valid_connectors.empty
+    finding = result.route_refinement_findings.iloc[0]
+    assert finding["classification"] == "network-gap"
+    assert finding["criterion_endpoints"] == TrafficLight.RED.value
+    assert "named Strategic Spine left-primary" in finding["selection_reason"]
+    assert (
+        f"{closure_m:.3f} m exceeds 100.000 m"
+        in finding["selection_reason"]
+    )
+
+
 def test_assembly_rejects_a_cross_spine_reference_from_a_nonaccepted_record() -> None:
     connectors = gpd.GeoDataFrame(
         [_connector("nonaccepted", LineString([(0, 0), (100, 0)]))], crs=27700
