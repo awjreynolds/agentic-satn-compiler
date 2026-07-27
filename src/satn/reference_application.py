@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from collections.abc import Mapping
 from typing import Literal, Self
@@ -37,6 +38,22 @@ from satn.spine_access_candidate_preparation import (
 
 REFERENCE_APPLICATION_CONTRACT = "satn-reference-application-plan/v1"
 REFERENCE_PUBLICATION_CONTRACT = "satn-reference-satn-publication/v1"
+REFERENCE_SELECTED_ALIGNMENT_OPTION_FIELDS = frozenset(
+    {
+        "role",
+        "length_km",
+        "a_road_share",
+        "ncn_share",
+        "bidirectional",
+        "reverse_length_km",
+        "reverse_edge_ids",
+        "reverse_corridor_share",
+        "impracticable_alongside",
+        "selected",
+        "reference_selection_scope",
+        "topography",
+    }
+)
 _PREPARATION_CONTRACT = "satn-spine-access-candidate-preparation/v1"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _CONNECTION_ID = re.compile(r"^connection-[0-9a-f]{20}$")
@@ -500,6 +517,33 @@ def _validate_publication_diagnostics(
     for field, value in expected.items():
         if diagnostics.get(field) != value:
             raise ValueError(f"Reference publication diagnostics are stale for {field}")
+    selected_options = diagnostics.get("selected_alignment_options")
+    published_distances = diagnostics.get("published_distances_km")
+    if (
+        not isinstance(selected_options, dict)
+        or set(selected_options) != set(expected_selected)
+        or not isinstance(published_distances, dict)
+        or set(published_distances) != set(expected_selected)
+    ):
+        raise ValueError("Reference publication diagnostics omit selected route evidence")
+    for logical_id, binding in {
+        binding.logical_connection_id: binding for binding in plan.candidate_bindings
+    }.items():
+        option = selected_options[logical_id]
+        distance = published_distances[logical_id]
+        if (
+            not isinstance(option, dict)
+            or set(option) != REFERENCE_SELECTED_ALIGNMENT_OPTION_FIELDS
+            or option.get("selected") is not True
+            or option.get("role") != binding.route_role
+            or option.get("reverse_edge_ids") != list(binding.reverse_routing_edge_ids)
+            or isinstance(distance, bool)
+            or not isinstance(distance, (int, float))
+            or not math.isfinite(float(distance))
+        ):
+            raise ValueError(
+                f"Reference publication diagnostics are stale for selected route {logical_id}"
+            )
 
 
 def build_reference_satn_publication_record(

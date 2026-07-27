@@ -29,6 +29,7 @@ from satn.models import (
     TrafficLight,
 )
 from satn.reference_application import (
+    REFERENCE_SELECTED_ALIGNMENT_OPTION_FIELDS,
     ReferenceApplicationCandidateBinding,
     ReferenceApplicationPlan,
 )
@@ -295,6 +296,10 @@ class _ReferenceReplayState:
     plan: ReferenceApplicationPlan
     bindings_by_child: dict[str, ReferenceApplicationCandidateBinding]
     consumed: dict[str, str] = field(default_factory=dict)
+    selected_alignment_options: dict[str, dict[str, object]] = field(
+        default_factory=dict
+    )
+    published_distances_km: dict[str, float] = field(default_factory=dict)
 
     @classmethod
     def create(cls, plan: ReferenceApplicationPlan) -> _ReferenceReplayState:
@@ -315,6 +320,9 @@ class _ReferenceReplayState:
         self,
         binding: ReferenceApplicationCandidateBinding,
         regenerated_access_connection_id: str,
+        *,
+        selected_alignment_option: dict[str, object],
+        published_distance_km: object,
     ) -> None:
         if binding.logical_connection_id in self.consumed:
             raise ValueError(
@@ -322,6 +330,29 @@ class _ReferenceReplayState:
                 f"{binding.logical_connection_id}"
             )
         self.consumed[binding.logical_connection_id] = regenerated_access_connection_id
+        if (
+            set(selected_alignment_option)
+            != REFERENCE_SELECTED_ALIGNMENT_OPTION_FIELDS
+            or selected_alignment_option.get("selected") is not True
+            or isinstance(published_distance_km, bool)
+            or not isinstance(published_distance_km, (int, float))
+            or not math.isfinite(float(published_distance_km))
+        ):
+            raise ValueError(
+                "Reference application replay selected route evidence is incomplete"
+            )
+        self.selected_alignment_options[binding.logical_connection_id] = json.loads(
+            json.dumps(
+                selected_alignment_option,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            )
+        )
+        self.published_distances_km[binding.logical_connection_id] = float(
+            published_distance_km
+        )
 
     def finalise(self, unserved: set[str]) -> None:
         expected = set(self.bindings_by_child)
@@ -332,10 +363,22 @@ class _ReferenceReplayState:
         consumed_logical_ids = set(self.consumed)
         unconsumed = sorted(expected_logical_ids - consumed_logical_ids)
         foreign = sorted(consumed_logical_ids - expected_logical_ids)
-        if missing or unconsumed or foreign:
+        option_ids = set(self.selected_alignment_options)
+        distance_ids = set(self.published_distances_km)
+        missing_evidence = sorted(
+            (expected_logical_ids - option_ids)
+            | (expected_logical_ids - distance_ids)
+        )
+        foreign_evidence = sorted(
+            (option_ids - expected_logical_ids)
+            | (distance_ids - expected_logical_ids)
+        )
+        if missing or unconsumed or foreign or missing_evidence or foreign_evidence:
             raise ValueError(
                 "Reference application replay did not consume every planned Community binding "
                 f"(missing_communities={missing}, unconsumed={unconsumed}, foreign={foreign}); "
+                f"route_evidence_missing={missing_evidence}, "
+                f"route_evidence_foreign={foreign_evidence}; "
                 "the plan may contain a missing parent, duplicate child, or dependency cycle"
             )
 
@@ -364,6 +407,14 @@ class _ReferenceReplayState:
             },
             "binding_fingerprints": {
                 logical_id: binding_by_logical_id[logical_id].binding_fingerprint
+                for logical_id in logical_ids
+            },
+            "selected_alignment_options": {
+                logical_id: self.selected_alignment_options[logical_id]
+                for logical_id in logical_ids
+            },
+            "published_distances_km": {
+                logical_id: self.published_distances_km[logical_id]
                 for logical_id in logical_ids
             },
             "application_stage": "compiler-only",
@@ -733,9 +784,10 @@ def _assemble_backbone_outward(
         if binding is not None:
             selected = _reference_selected_candidate(selected, binding, graph)
         row = _connection_row(selected, graph, obligation_kind="community")
+        reference_application: dict[str, object] | None = None
         if binding is not None:
             assert reference_replay is not None
-            _apply_reference_selection_provenance(
+            reference_application = _apply_reference_selection_provenance(
                 row,
                 binding,
                 selected,
@@ -773,7 +825,17 @@ def _assemble_backbone_outward(
             rejected.outcome_reason = "A different governed frontier attachment was accepted."
         rows.append(row)
         if binding is not None:
-            reference_replay.record_consumed(binding, str(row["access_connection_id"]))
+            assert reference_application is not None
+            reference_replay.record_consumed(
+                binding,
+                str(row["access_connection_id"]),
+                selected_alignment_option=dict(
+                    reference_application["selected_alignment_option"]
+                ),
+                published_distance_km=reference_application[
+                    "published_distance_km"
+                ],
+            )
         del unserved[place_id]
         served_count = total_communities - len(unserved)
         LOGGER.debug(
@@ -1360,7 +1422,7 @@ def _apply_reference_selection_provenance(
     binding: ReferenceApplicationCandidateBinding,
     candidate: _Candidate,
     plan_fingerprint: str,
-) -> None:
+) -> dict[str, object]:
     """Make the Reference decision explicit without changing default row construction."""
 
     comparison = candidate.topography
@@ -1378,9 +1440,13 @@ def _apply_reference_selection_provenance(
         f"{comparison_status} recommended {recommendation}; governed Reference candidate "
         f"{binding.selected_candidate_id} remains authoritative for this replay."
     )
-    _apply_reference_alignment_options(row, binding, candidate.option)
+    selected_alignment_option = _apply_reference_alignment_options(
+        row,
+        binding,
+        candidate.option,
+    )
     provenance = json.loads(str(row["provenance"]))
-    provenance["reference_application"] = {
+    reference_application = {
         "plan_fingerprint": plan_fingerprint,
         "binding_fingerprint": binding.binding_fingerprint,
         "logical_connection_id": binding.logical_connection_id,
@@ -1388,17 +1454,22 @@ def _apply_reference_selection_provenance(
         "selected_route_role": binding.route_role,
         "routing_edge_ids": list(candidate.option.edge_ids),
         "reverse_routing_edge_ids": list(candidate.option.reverse_edge_ids),
+        "geometry_fingerprint": binding.geometry_fingerprint,
+        "selected_alignment_option": selected_alignment_option,
+        "published_distance_km": row["distance_km"],
         "deterministic_topography_status": comparison_status,
         "deterministic_recommended_role": recommendation,
     }
+    provenance["reference_application"] = reference_application
     row["provenance"] = json.dumps(provenance, sort_keys=True)
+    return reference_application
 
 
 def _apply_reference_alignment_options(
     row: dict[str, object],
     binding: ReferenceApplicationCandidateBinding,
     adopted: RouteOption,
-) -> None:
+) -> dict[str, object]:
     """Mark the adopted option without widening deterministic topography assessments."""
 
     raw = row.get("alignment_options")
@@ -1414,6 +1485,7 @@ def _apply_reference_alignment_options(
         if selected:
             found = True
             item["reference_selection_scope"] = "within-deterministic-comparison"
+            item.setdefault("topography", None)
     if not found:
         options.append(
             adopted.summary()
@@ -1423,7 +1495,28 @@ def _apply_reference_alignment_options(
                 "topography": None,
             }
         )
+    selected_options = [
+        item
+        for item in options
+        if isinstance(item, dict) and item.get("selected") is True
+    ]
+    if (
+        len(selected_options) != 1
+        or set(selected_options[0]) != REFERENCE_SELECTED_ALIGNMENT_OPTION_FIELDS
+    ):
+        raise ValueError(
+            "Reference application selected alignment option is not canonical"
+        )
     row["alignment_options"] = json.dumps(options, sort_keys=True)
+    return json.loads(
+        json.dumps(
+            selected_options[0],
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+    )
 
 
 def _candidate(

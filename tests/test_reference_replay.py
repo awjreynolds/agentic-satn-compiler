@@ -560,17 +560,26 @@ def test_replay_applies_exact_route_only_after_its_parent_frontier_exists() -> N
     child = assembly.connections.set_index("place_id").loc["child"]
     child_obligation = assembly.obligations.set_index("place_id").loc["child"]
     child_branch = assembly.branches.set_index("branch_id").loc[child["branch_id"]]
+    selected_option = next(
+        option
+        for option in json.loads(child["alignment_options"])
+        if option["selected"] is True
+    )
+    logical_id = plan.candidate_bindings[0].logical_connection_id
     assert child["parent_place_id"] == "parent"
     assert json.loads(child["provenance"])["reference_application"] == {
         "binding_fingerprint": plan.candidate_bindings[0].binding_fingerprint,
         "deterministic_recommended_role": "not-evaluated",
         "deterministic_topography_status": "not-evaluated",
-        "logical_connection_id": plan.candidate_bindings[0].logical_connection_id,
+        "logical_connection_id": logical_id,
         "plan_fingerprint": plan.plan_fingerprint,
         "selected_candidate_id": plan.candidate_bindings[0].selected_candidate_id,
         "selected_route_role": "ncn-informed",
         "routing_edge_ids": ["child-parent"],
         "reverse_routing_edge_ids": ["parent-child"],
+        "geometry_fingerprint": plan.candidate_bindings[0].geometry_fingerprint,
+        "selected_alignment_option": selected_option,
+        "published_distance_km": child["distance_km"],
     }
     assert assembly.compilation_diagnostics["reference_application"] == {
         "contract": "satn-reference-application-plan/v1",
@@ -578,20 +587,18 @@ def test_replay_applies_exact_route_only_after_its_parent_frontier_exists() -> N
         "status": "applied",
         "expected_count": 1,
         "applied_count": 1,
-        "logical_connection_ids": [plan.candidate_bindings[0].logical_connection_id],
+        "logical_connection_ids": [logical_id],
         "source_to_regenerated_access_connection_ids": {
             "old-parent-child-access-id": child["access_connection_id"]
         },
         "selected_candidate_ids": {
-            plan.candidate_bindings[0].logical_connection_id: (
-                plan.candidate_bindings[0].selected_candidate_id
-            )
+            logical_id: plan.candidate_bindings[0].selected_candidate_id
         },
         "binding_fingerprints": {
-            plan.candidate_bindings[0].logical_connection_id: (
-                plan.candidate_bindings[0].binding_fingerprint
-            )
+            logical_id: plan.candidate_bindings[0].binding_fingerprint
         },
+        "selected_alignment_options": {logical_id: selected_option},
+        "published_distances_km": {logical_id: child["distance_km"]},
         "application_stage": "compiler-only",
         "publication_created": False,
         "publication_authority": "none",

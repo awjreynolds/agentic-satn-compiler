@@ -287,6 +287,12 @@ def test_publisher_rejects_mutated_final_reference_route_rows_before_serializati
         "reverse-edges",
         "option-reverse-edges",
         "option-directness",
+        "option-bidirectional",
+        "option-reverse-length",
+        "option-extra-forward-edges",
+        "row-distance",
+        "row-and-provenance-option",
+        "row-and-provenance-distance",
     ):
         rows = original.copy(deep=True)
         if mutation == "geometry":
@@ -300,6 +306,14 @@ def test_publisher_rejects_mutated_final_reference_route_rows_before_serializati
             rows.at[index, "target_attachment_node"] = "forged-target-node"
         elif mutation == "row-role":
             rows.at[index, "topography_selected_role"] = "forged-route-role"
+        elif mutation == "row-distance":
+            rows.at[index, "distance_km"] = float(rows.at[index, "distance_km"]) + 1
+        elif mutation == "row-and-provenance-distance":
+            forged_distance = float(rows.at[index, "distance_km"]) + 1
+            rows.at[index, "distance_km"] = forged_distance
+            provenance = json.loads(str(rows.at[index, "provenance"]))
+            provenance["reference_application"]["published_distance_km"] = forged_distance
+            rows.at[index, "provenance"] = json.dumps(provenance, sort_keys=True)
         elif mutation in {
             "provenance-role",
             "forward-edges",
@@ -319,8 +333,22 @@ def test_publisher_rejects_mutated_final_reference_route_rows_before_serializati
             selected = next(option for option in options if option.get("selected") is True)
             if mutation == "option-reverse-edges":
                 selected["reverse_edge_ids"] = ["forged-reverse-edge"]
-            else:
+            elif mutation == "option-directness":
                 selected["length_km"] = float(selected["length_km"]) + 0.001
+            elif mutation == "option-bidirectional":
+                selected["bidirectional"] = False
+            elif mutation == "option-reverse-length":
+                selected["reverse_length_km"] = 999
+            elif mutation == "option-extra-forward-edges":
+                selected["edge_ids"] = ["forged-forward-edge"]
+            else:
+                selected["bidirectional"] = False
+                provenance = json.loads(str(rows.at[index, "provenance"]))
+                provenance["reference_application"]["selected_alignment_option"] = selected.copy()
+                rows.at[index, "provenance"] = json.dumps(
+                    provenance,
+                    sort_keys=True,
+                )
             rows.at[index, "alignment_options"] = json.dumps(options, sort_keys=True)
         compiled.spine_access_connections = rows
 

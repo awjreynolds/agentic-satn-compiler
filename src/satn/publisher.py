@@ -51,6 +51,7 @@ from satn.models import (
     canonical_decision_ledger_payload,
 )
 from satn.reference_application import (
+    REFERENCE_SELECTED_ALIGNMENT_OPTION_FIELDS,
     ReferenceApplicationPlan,
     ReferenceSATNPublicationRecord,
 )
@@ -405,6 +406,15 @@ def _validated_reference_publication(
         raise ValueError(
             "Compiled Reference application rows are missing or contain foreign bindings"
         )
+    diagnostic_options = actual_diagnostics.get("selected_alignment_options")
+    diagnostic_distances = actual_diagnostics.get("published_distances_km")
+    if (
+        not isinstance(diagnostic_options, dict)
+        or set(diagnostic_options) != set(bindings)
+        or not isinstance(diagnostic_distances, dict)
+        or set(diagnostic_distances) != set(bindings)
+    ):
+        raise ValueError("Compiled Reference diagnostics omit canonical selected route evidence")
 
     source_to_regenerated: dict[str, str] = {}
     for logical_id, binding in bindings.items():
@@ -417,6 +427,7 @@ def _validated_reference_publication(
             "selected_route_role": binding.route_role,
             "routing_edge_ids": list(binding.routing_edge_ids),
             "reverse_routing_edge_ids": list(binding.reverse_routing_edge_ids),
+            "geometry_fingerprint": binding.geometry_fingerprint,
         }
         for field, expected in expected_application.items():
             if application.get(field) != expected:
@@ -444,10 +455,18 @@ def _validated_reference_publication(
             if isinstance(option, dict) and option.get("selected") is True
         ]
         selected_candidate = selected_candidates.get(binding.selected_candidate_id)
+        diagnostic_option = diagnostic_options[logical_id]
+        diagnostic_distance = diagnostic_distances[logical_id]
         if selected_candidate is None:
             raise ValueError("Compiled Reference binding has no selected Scenario candidate")
         if (
             len(selected_options) != 1
+            or not isinstance(diagnostic_option, dict)
+            or set(diagnostic_option) != REFERENCE_SELECTED_ALIGNMENT_OPTION_FIELDS
+            or selected_options[0] != diagnostic_option
+            or application.get("selected_alignment_option") != diagnostic_option
+            or row.distance_km != diagnostic_distance
+            or application.get("published_distance_km") != diagnostic_distance
             or selected_options[0].get("role") != binding.route_role
             or selected_options[0].get("reverse_edge_ids") != list(binding.reverse_routing_edge_ids)
             or selected_options[0].get("length_km")
