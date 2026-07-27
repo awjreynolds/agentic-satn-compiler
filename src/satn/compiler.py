@@ -16,7 +16,7 @@ import pandas as pd
 from shapely.geometry import MultiPoint
 
 from satn.agents import AgentDecisionResolver, AgentRuntimeSource, CompilationGate
-from satn.backbone import GAP_COLUMNS, assemble_backbone_outward
+from satn.backbone import GAP_COLUMNS, _assemble_backbone_outward
 from satn.cross_spine import CrossSpineProgress, resolve_cross_spine_assembly
 from satn.evidence import (
     PUBLIC_CYCLE_ROUTE_TYPES,
@@ -41,10 +41,7 @@ from satn.models import (
     TrafficLight,
     UrbanClassificationStatus,
 )
-from satn.reference_application import (
-    ValidatedReferenceApplication,
-    validate_reference_application_for_use,
-)
+from satn.reference_application import ReferenceApplicationPlan
 from satn.routing import RoadGraph
 from satn.school_street import assess_school_street_candidates
 from satn.settlement import (
@@ -146,14 +143,56 @@ def compile_network(
     decision_resolver: AgentDecisionResolver | None = None,
     heartbeat: StageHeartbeat | None = None,
     cross_spine_progress: CrossSpineProgress | None = None,
-    validated_reference_application: ValidatedReferenceApplication | None = None,
 ) -> CompiledNetwork:
-    if validated_reference_application is not None:
-        validate_reference_application_for_use(
-            validated_reference_application,
-            config,
-            governed_input_fingerprint,
-        )
+    """Compile the ordinary current-input network with no Reference replay input."""
+
+    return _compile_network(
+        config,
+        source,
+        runtime,
+        governed_input_fingerprint=governed_input_fingerprint,
+        decision_resolver=decision_resolver,
+        heartbeat=heartbeat,
+        cross_spine_progress=cross_spine_progress,
+    )
+
+
+def _compile_network_with_reference(
+    config: AreaConfig,
+    source: dict[str, gpd.GeoDataFrame],
+    runtime: AgentRuntimeSource,
+    reference_application_plan: ReferenceApplicationPlan,
+    *,
+    governed_input_fingerprint: str,
+    decision_resolver: AgentDecisionResolver,
+    heartbeat: StageHeartbeat | None = None,
+    cross_spine_progress: CrossSpineProgress | None = None,
+) -> CompiledNetwork:
+    """Private replay seam reachable only after pipeline-owned baseline validation."""
+
+    return _compile_network(
+        config,
+        source,
+        runtime,
+        governed_input_fingerprint=governed_input_fingerprint,
+        decision_resolver=decision_resolver,
+        heartbeat=heartbeat,
+        cross_spine_progress=cross_spine_progress,
+        reference_application_plan=reference_application_plan,
+    )
+
+
+def _compile_network(
+    config: AreaConfig,
+    source: dict[str, gpd.GeoDataFrame],
+    runtime: AgentRuntimeSource,
+    *,
+    governed_input_fingerprint: str = "",
+    decision_resolver: AgentDecisionResolver | None = None,
+    heartbeat: StageHeartbeat | None = None,
+    cross_spine_progress: CrossSpineProgress | None = None,
+    reference_application_plan: ReferenceApplicationPlan | None = None,
+) -> CompiledNetwork:
     places = source["places"].copy().sort_values("place_id").reset_index(drop=True)
     context = source.get("context", empty_context(source["network"].crs)).copy()
     communities = places[places["kind"] == "community"].copy()
@@ -192,7 +231,7 @@ def compile_network(
     strategic_spines = _strategic_spines(context)
     rural_communities = _rural_communities(communities)
     rural_schools = _rural_schools(context)
-    backbone = assemble_backbone_outward(
+    backbone = _assemble_backbone_outward(
         rural_communities,
         rural_schools,
         gateways,
@@ -202,9 +241,7 @@ def compile_network(
         config.compilation.max_connection_km,
         source.get("elevation_evidence", empty_elevation_evidence(road_graph.crs)),
         config.compilation.topography,
-        validated_reference_application=validated_reference_application,
-        area_config=config,
-        governed_input_fingerprint=governed_input_fingerprint,
+        reference_application_plan=reference_application_plan,
     )
     spine_access_connections = backbone.connections
     access_obligations = backbone.obligations

@@ -9,16 +9,20 @@ import time
 from collections import Counter
 from pathlib import Path
 
+import geopandas as gpd
+
 from satn.agents import (
     AgentCompilationTerminated,
     AgentDecisionRequired,
     AgentDecisionResolver,
     AgentRuntimeProvider,
+    AgentRuntimeSource,
     runtime_for,
 )
+from satn.alignment_selection import ReferenceSATNSelection
 from satn.atm import compare_atm, load_atm
 from satn.compilation_dependencies import compilation_dependency_manifest
-from satn.compiler import compile_network
+from satn.compiler import CompiledNetwork, _compile_network_with_reference, compile_network
 from satn.constants import SCHEMA_VERSION
 from satn.heartbeat import StageHeartbeat
 from satn.models import (
@@ -38,8 +42,10 @@ from satn.publisher import (
     publish,
     validate_publication,
 )
+from satn.reference_application import _build_reference_application_plan_for_current_baseline
 from satn.runtime_governance import incomplete_runtime_governance
 from satn.sources import load_snapshot
+from satn.spine_access_candidate_preparation import SpineAccessCandidatePreparationResult
 
 LOGGER = logging.getLogger(__name__)
 
@@ -64,6 +70,100 @@ def compile(
         },
     ) as heartbeat:
         return _compile(council, decision_ledger=decision_ledger, heartbeat=heartbeat)
+
+
+def compile_reference_network(
+    config: AreaConfig | str | Path,
+    runtime: AgentRuntimeSource,
+    reference: ReferenceSATNSelection,
+    source_preparation: SpineAccessCandidatePreparationResult,
+    *,
+    decision_ledger: AgentDecisionLedger | str | Path | None = None,
+    heartbeat: StageHeartbeat | None = None,
+) -> CompiledNetwork:
+    """Recompile one human-adopted Reference through a fresh current baseline.
+
+    Baseline decisions must already exist in the supplied canonical ledger, so
+    validation cannot consume or duplicate direct-runtime responses.  Runtime
+    remains available only to the fresh final compilation for genuinely new
+    downstream decisions.
+    """
+
+    council = (
+        config
+        if isinstance(config, (AreaDefinition, CouncilConfig))
+        else AreaDefinition.from_yaml(config)
+    )
+    ledger = _load_decision_ledger(decision_ledger)
+    dependency_manifest = compilation_dependency_manifest()
+    governed_input_fingerprint = compilation_governed_input_fingerprint(
+        council,
+        dependency_manifest=dependency_manifest,
+    )
+    source = load_snapshot(council)
+    baseline_resolver = AgentDecisionResolver(ledger, governed_input_fingerprint)
+    baseline = compile_network(
+        council,
+        _copy_compilation_source(source),
+        None,
+        governed_input_fingerprint=governed_input_fingerprint,
+        decision_resolver=baseline_resolver,
+        heartbeat=heartbeat,
+    )
+    unconsumed_baseline = {
+        response.request_id for response in ledger.responses
+    } - baseline_resolver.consumed_request_ids
+    if unconsumed_baseline:
+        raise ValueError(
+            "decision ledger contains responses that do not belong to the fresh "
+            "Reference baseline: " + ", ".join(sorted(unconsumed_baseline))
+        )
+    current_preparation = baseline.spine_access_candidate_preparation
+    if current_preparation is None:
+        raise ValueError(
+            "Reference compilation requires current network_selection candidate preparation"
+        )
+    plan = _build_reference_application_plan_for_current_baseline(
+        reference,
+        source_preparation,
+        current_preparation,
+        council,
+    )
+    final_resolver = AgentDecisionResolver(ledger, governed_input_fingerprint)
+    compiled = _compile_network_with_reference(
+        council,
+        _copy_compilation_source(source),
+        runtime,
+        plan,
+        governed_input_fingerprint=governed_input_fingerprint,
+        decision_resolver=final_resolver,
+        heartbeat=heartbeat,
+    )
+    unconsumed_final = {
+        response.request_id for response in ledger.responses
+    } - final_resolver.consumed_request_ids
+    if unconsumed_final:
+        raise ValueError(
+            "decision ledger contains responses that do not belong to the fresh "
+            "Reference compilation: " + ", ".join(sorted(unconsumed_final))
+        )
+    compiled.compilation_input_fingerprint = decision_ledger_input_fingerprint(
+        governed_input_fingerprint,
+        ledger,
+    )
+    compiled.governed_input_fingerprint = governed_input_fingerprint
+    compiled.snapshot_manifest_sha256 = snapshot_manifest_sha256(council)
+    compiled.area_definition_sha256 = area_definition_sha256(council)
+    compiled.compilation_dependency_manifest = dependency_manifest
+    return compiled
+
+
+def _copy_compilation_source(
+    source: dict[str, gpd.GeoDataFrame],
+) -> dict[str, gpd.GeoDataFrame]:
+    """Give baseline and final compilation independent current-input frames."""
+
+    return {name: frame.copy(deep=True) for name, frame in source.items()}
 
 
 def _compile(

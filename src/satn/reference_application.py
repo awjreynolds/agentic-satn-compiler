@@ -36,7 +36,6 @@ from satn.spine_access_candidate_preparation import (
 )
 
 REFERENCE_APPLICATION_CONTRACT = "satn-reference-application-plan/v1"
-VALIDATED_REFERENCE_APPLICATION_CONTRACT = "satn-validated-reference-application/v1"
 _PREPARATION_CONTRACT = "satn-spine-access-candidate-preparation/v1"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _CONNECTION_ID = re.compile(r"^connection-[0-9a-f]{20}$")
@@ -203,56 +202,14 @@ class ReferenceApplicationPlan(BaseModel):
         return self
 
 
-class ValidatedReferenceApplication(BaseModel):
-    """Compiler-owned authority to replay one exact plan against live local inputs."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    contract: Literal["satn-validated-reference-application/v1"] = (
-        VALIDATED_REFERENCE_APPLICATION_CONTRACT
-    )
-    plan: ReferenceApplicationPlan
-    area_definition_sha256: str = Field(pattern=_SHA256.pattern)
-    profile_fingerprint: str = Field(pattern=_SHA256.pattern)
-    baseline_preparation_fingerprint: str = Field(pattern=_SHA256.pattern)
-    baseline_evidence_fingerprints: tuple[str, ...] = Field(min_length=1)
-    governed_input_fingerprint: str = Field(pattern=_SHA256.pattern)
-    publication_created: Literal[False] = False
-    publication_authority: Literal["none"] = "none"
-    context_fingerprint: str = ""
-
-    @model_validator(mode="after")
-    def bind_context(self) -> Self:
-        payload = self.model_dump(mode="json", exclude={"context_fingerprint"})
-        expected = _fingerprint(payload)
-        if self.context_fingerprint and self.context_fingerprint != expected:
-            raise ValueError("Validated Reference application context is stale")
-        if (
-            self.plan.scenario_area_fingerprint != self.area_definition_sha256
-            or self.plan.profile_fingerprint != self.profile_fingerprint
-            or self.plan.preparation_fingerprint != self.baseline_preparation_fingerprint
-            or self.plan.preparation_evidence_fingerprints
-            != self.baseline_evidence_fingerprints
-        ):
-            raise ValueError("Validated Reference application context lineage is inconsistent")
-        object.__setattr__(self, "context_fingerprint", expected)
-        return self
-
-
-def build_validated_reference_application(
+def _build_reference_application_plan_for_current_baseline(
     reference: ReferenceSATNSelection,
     source_preparation: SpineAccessCandidatePreparationResult,
     current_baseline_preparation: SpineAccessCandidatePreparationResult,
     config: AreaConfig,
-    governed_input_fingerprint: str,
-) -> ValidatedReferenceApplication:
-    """Validate live local compiler inputs before granting replay authority."""
+) -> ReferenceApplicationPlan:
+    """Bind a Reference only after a fresh current-input baseline compilation."""
 
-    if _SHA256.fullmatch(governed_input_fingerprint) is None:
-        raise ValueError(
-            "Validated Reference application requires a non-empty canonical governed "
-            "input SHA-256"
-        )
     plan = build_reference_application_plan(reference, source_preparation)
     _validate_preparation(reference, current_baseline_preparation)
     _validate_preparation_lineage(reference, current_baseline_preparation)
@@ -269,7 +226,7 @@ def build_validated_reference_application(
         != source_preparation.profile_fingerprint
     ):
         raise ValueError(
-            "Validated Reference application current baseline preparation does not "
+            "Reference compilation current baseline preparation does not "
             "exactly match its source preparation"
         )
     area_sha256 = _actual_area_definition_sha256(config)
@@ -284,43 +241,10 @@ def build_validated_reference_application(
         or profile_fingerprint != source_preparation.profile_fingerprint
     ):
         raise ValueError(
-            "Validated Reference application profile does not match current configuration, "
+            "Reference compilation profile does not match current configuration, "
             "plan and preparation"
         )
-    return ValidatedReferenceApplication(
-        plan=plan,
-        area_definition_sha256=area_sha256,
-        profile_fingerprint=profile_fingerprint,
-        baseline_preparation_fingerprint=current_baseline_preparation.preparation_fingerprint,
-        baseline_evidence_fingerprints=tuple(
-            current_baseline_preparation.evidence_fingerprints
-        ),
-        governed_input_fingerprint=governed_input_fingerprint,
-    )
-
-
-def validate_reference_application_for_use(
-    context: ValidatedReferenceApplication,
-    config: AreaConfig,
-    governed_input_fingerprint: str,
-) -> ReferenceApplicationPlan:
-    """Re-open live inputs so a stale validated context cannot acquire authority."""
-
-    if not isinstance(context, ValidatedReferenceApplication):
-        raise TypeError("compiler replay requires a ValidatedReferenceApplication context")
-    context = ValidatedReferenceApplication.model_validate(
-        context.model_dump(mode="python")
-    )
-    if _actual_area_definition_sha256(config) != context.area_definition_sha256:
-        raise ValueError("Validated Reference application Area Definition changed before use")
-    if _current_profile_fingerprint(config) != context.profile_fingerprint:
-        raise ValueError("Validated Reference application profile changed before use")
-    if (
-        _SHA256.fullmatch(governed_input_fingerprint) is None
-        or governed_input_fingerprint != context.governed_input_fingerprint
-    ):
-        raise ValueError("Validated Reference application governed input changed before use")
-    return context.plan
+    return plan
 
 
 def _actual_area_definition_sha256(config: AreaConfig) -> str:
@@ -328,7 +252,7 @@ def _actual_area_definition_sha256(config: AreaConfig) -> str:
     try:
         payload = path.read_bytes()
     except OSError as error:
-        raise ValueError("Validated Reference application cannot open Area Definition") from error
+        raise ValueError("Reference compilation cannot open Area Definition") from error
     return hashlib.sha256(payload).hexdigest()
 
 
@@ -336,7 +260,7 @@ def _current_profile_fingerprint(config: AreaConfig) -> str:
     compilation = getattr(config, "compilation", None)
     profile = getattr(compilation, "network_selection", None)
     if profile is None:
-        raise ValueError("Validated Reference application requires current network_selection")
+        raise ValueError("Reference compilation requires current network_selection")
     return str(profile.fingerprint)
 
 

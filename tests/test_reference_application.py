@@ -36,10 +36,9 @@ from test_prepared_scenario_compilation import (
 from satn.models import CouncilConfig
 from satn.reference_application import (
     ReferenceApplicationPlan,
+    _build_reference_application_plan_for_current_baseline,
     _validate_replay_endpoints,
     build_reference_application_plan,
-    build_validated_reference_application,
-    validate_reference_application_for_use,
 )
 from satn.scenario_compilation import compile_prepared_scenario
 from satn.spine_access_candidate_preparation import PreparedCandidateRecord
@@ -82,24 +81,36 @@ def retained_prepared_connection(label: str = "one"):
     return replace(item, candidate_records=(record,))
 
 
-def adopted_reference(item=None):
+def adopted_reference(item=None, *, source_preparation=None):
     item = item or retained_prepared_connection()
-    prepared = preparation(item)
-    gradient = {
-        candidate.candidate_id: (
-            "unknown" if candidate.maximum_gradient_pct is None else "satisfied"
-        )
-        for candidate in item.candidate_set.admitted_candidates
-    }
+    prepared = source_preparation or preparation(item)
+    prepared_items = (
+        prepared.prepared_spine_access_connections
+        if source_preparation is not None
+        else (item,)
+    )
     result = compile_prepared_scenario(
         prepared,
         request(
-            (
+            tuple(
                 packet(
-                    item,
-                    bound_criteria(item, gradient=gradient),
+                    prepared_item,
+                    bound_criteria(
+                        prepared_item,
+                        gradient={
+                            candidate.candidate_id: (
+                                "unknown"
+                                if candidate.maximum_gradient_pct is None
+                                else "satisfied"
+                            )
+                            for candidate in (
+                                prepared_item.candidate_set.admitted_candidates
+                            )
+                        },
+                    ),
                     source_preparation=prepared,
-                ),
+                )
+                for prepared_item in prepared_items
             )
         ),
     )
@@ -259,65 +270,59 @@ def test_builder_cannot_accept_or_emit_unverified_external_identity_claims() -> 
     assert "governed_input_fingerprint" not in payload
 
 
-def test_builds_compiler_owned_context_from_exact_live_inputs(tmp_path: Path) -> None:
+def test_builds_plan_only_after_exact_current_baseline_validation(tmp_path: Path) -> None:
     reference, prepared = adopted_reference()
     config = current_config(tmp_path)
     reference = reference_for_area(reference, config)
 
-    context = build_validated_reference_application(
+    plan = _build_reference_application_plan_for_current_baseline(
         reference,
         prepared,
         prepared,
         config,
-        "a" * 64,
     )
 
-    assert context.plan == build(reference, prepared)
-    assert context.area_definition_sha256 == hashlib.sha256(
+    assert plan == build(reference, prepared)
+    assert plan.scenario_area_fingerprint == hashlib.sha256(
         config.config_path.read_bytes()
     ).hexdigest()
-    assert context.profile_fingerprint == config.compilation.network_selection_fingerprint
-    assert context.baseline_preparation_fingerprint == prepared.preparation_fingerprint
-    assert context.governed_input_fingerprint == "a" * 64
-    assert context.publication_created is False
-    assert context.publication_authority == "none"
-    assert validate_reference_application_for_use(context, config, "a" * 64) == context.plan
+    assert plan.profile_fingerprint == config.compilation.network_selection_fingerprint
+    assert plan.publication_created is False
 
 
-def test_validated_context_fails_closed_for_live_input_mismatch_and_tampering(
+def test_current_baseline_validation_fails_closed_for_input_mismatch(
     tmp_path: Path,
 ) -> None:
     reference, prepared = adopted_reference()
     config = current_config(tmp_path)
     reference = reference_for_area(reference, config)
 
-    with pytest.raises(ValueError, match="canonical governed input SHA-256"):
-        build_validated_reference_application(reference, prepared, prepared, config, "")
     stale = replace(prepared, preparation_fingerprint="0" * 64)
     with pytest.raises(ValueError, match="fingerprint is stale"):
-        build_validated_reference_application(reference, prepared, stale, config, "a" * 64)
+        _build_reference_application_plan_for_current_baseline(
+            reference,
+            prepared,
+            stale,
+            config,
+        )
 
-    context = build_validated_reference_application(
-        reference,
-        prepared,
-        prepared,
-        config,
-        "a" * 64,
-    )
     config.compilation.network_selection = profile(review_when=["material-grey-evidence"])
-    with pytest.raises(ValueError, match="profile changed"):
-        validate_reference_application_for_use(context, config, "a" * 64)
+    with pytest.raises(ValueError, match="profile does not match"):
+        _build_reference_application_plan_for_current_baseline(
+            reference,
+            prepared,
+            prepared,
+            config,
+        )
     config.compilation.network_selection = profile(review_when=[])
-    with pytest.raises(ValueError, match="governed input changed"):
-        validate_reference_application_for_use(context, config, "b" * 64)
     config.config_path.write_text("changed area definition")
-    with pytest.raises(ValueError, match="Area Definition changed"):
-        validate_reference_application_for_use(context, config, "a" * 64)
-
-    payload = context.model_dump(mode="python")
-    payload["governed_input_fingerprint"] = "c" * 64
-    with pytest.raises(ValidationError, match="context is stale"):
-        type(context).model_validate(payload)
+    with pytest.raises(ValueError, match="actual Area Definition bytes"):
+        _build_reference_application_plan_for_current_baseline(
+            reference,
+            prepared,
+            prepared,
+            config,
+        )
 
 
 def test_rejects_stale_foreign_and_different_preparation_lineage() -> None:

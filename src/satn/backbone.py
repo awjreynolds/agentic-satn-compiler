@@ -24,7 +24,6 @@ from satn.models import (
     AccessPointStatus,
     AccessServiceStatus,
     AgentRecord,
-    AreaConfig,
     PublishedFeatureReference,
     TopographyConfig,
     TrafficLight,
@@ -32,8 +31,6 @@ from satn.models import (
 from satn.reference_application import (
     ReferenceApplicationCandidateBinding,
     ReferenceApplicationPlan,
-    ValidatedReferenceApplication,
-    validate_reference_application_for_use,
 )
 from satn.routing import (
     RoadGraph,
@@ -585,10 +582,34 @@ def assemble_backbone_outward(
     max_connection_km: float,
     elevation_evidence: gpd.GeoDataFrame | None = None,
     topography_config: TopographyConfig | None = None,
+) -> BackboneAssembly:
+    """Grow the ordinary deterministic Backbone with no Reference replay input."""
+
+    return _assemble_backbone_outward(
+        communities,
+        schools,
+        gateways,
+        strategic_spines,
+        graph,
+        gate,
+        max_connection_km,
+        elevation_evidence,
+        topography_config,
+    )
+
+
+def _assemble_backbone_outward(
+    communities: gpd.GeoDataFrame,
+    schools: gpd.GeoDataFrame,
+    gateways: gpd.GeoDataFrame,
+    strategic_spines: gpd.GeoDataFrame,
+    graph: RoadGraph,
+    gate: CompilationGate,
+    max_connection_km: float,
+    elevation_evidence: gpd.GeoDataFrame | None = None,
+    topography_config: TopographyConfig | None = None,
     *,
-    validated_reference_application: ValidatedReferenceApplication | None = None,
-    area_config: AreaConfig | None = None,
-    governed_input_fingerprint: str = "",
+    reference_application_plan: ReferenceApplicationPlan | None = None,
 ) -> BackboneAssembly:
     """Grow one deterministic served frontier from every Strategic Spine concurrently."""
     crs = communities.crs or schools.crs or strategic_spines.crs or graph.crs
@@ -602,19 +623,10 @@ def assemble_backbone_outward(
     rejected_by_place: dict[str, list[AgentRecord]] = {}
     candidate_heap: list[tuple[tuple[object, ...], int, _Candidate | _CandidateBound]] = []
     sequence = 0
-    if validated_reference_application is not None and area_config is None:
-        raise ValueError("Reference replay requires the current Area Configuration")
-    reference_plan = (
-        validate_reference_application_for_use(
-            validated_reference_application,
-            area_config,
-            governed_input_fingerprint,
-        )
-        if validated_reference_application is not None and area_config is not None
-        else None
-    )
     reference_replay = (
-        _ReferenceReplayState.create(reference_plan) if reference_plan is not None else None
+        _ReferenceReplayState.create(reference_application_plan)
+        if reference_application_plan is not None
+        else None
     )
     if reference_replay is not None:
         foreign_children = sorted(set(reference_replay.bindings_by_child) - set(unserved))
