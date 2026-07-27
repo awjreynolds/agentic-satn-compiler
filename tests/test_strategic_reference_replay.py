@@ -5,10 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 from copy import deepcopy
+from dataclasses import fields
 
 import geopandas as gpd
+import pandas as pd
 import pytest
 from bath_saltford_fixture import configured_bath_saltford
+from shapely.affinity import translate
 from test_strategic_criteria_scenario import _compiled_inputs
 from test_strategic_reference_application import _resolved_reference_inputs
 
@@ -23,6 +26,7 @@ from satn.strategic_reference_application import (
 )
 from satn.strategic_reference_replay import (
     LINEAGE_COLUMNS,
+    ValidatedStrategicReferenceReplay,
     _aggregate_served_obligations,
     materialise_replay,
     served_obligations_frame,
@@ -37,6 +41,22 @@ def _projected_fingerprint(geometry, crs) -> str:
     ).fingerprint
 
 
+def _with_unrelated_baseline(
+    strategic_spines: gpd.GeoDataFrame,
+    spine_id: str,
+) -> gpd.GeoDataFrame:
+    unrelated = strategic_spines.iloc[[0]].copy()
+    unrelated["spine_id"] = spine_id
+    unrelated["geometry"] = [
+        translate(strategic_spines.iloc[0].geometry, xoff=1.0)
+    ]
+    return gpd.GeoDataFrame(
+        pd.concat([strategic_spines, unrelated], ignore_index=True),
+        geometry="geometry",
+        crs=strategic_spines.crs,
+    )
+
+
 def _replay_inputs(tmp_path):
     _, _, reference, preparation = _resolved_reference_inputs(tmp_path)
 
@@ -48,6 +68,11 @@ def _replay_inputs(tmp_path):
 
 def test_replay_materialises_both_roles_and_serves_endpoints_once(tmp_path) -> None:
     plan, preparation, graph, strategic_spines, places = _replay_inputs(tmp_path)
+    unrelated_spine_id = "strategic-spine-unrelated-baseline"
+    strategic_spines = _with_unrelated_baseline(
+        strategic_spines,
+        unrelated_spine_id,
+    )
 
     validated = validate_fresh_replay(plan, preparation)
     replay = materialise_replay(validated, strategic_spines, places, graph)
@@ -90,12 +115,62 @@ def test_replay_materialises_both_roles_and_serves_endpoints_once(tmp_path) -> N
         replay.effective_strategic_spines["replay_binding_ids"].notna()
     ]
     assert not replay_spines.empty
+    assert unrelated_spine_id in set(replay.effective_strategic_spines["spine_id"])
     for provenance_json in replay_spines["provenance"]:
         provenance = json.loads(provenance_json)
         assert all(
             set(LINEAGE_COLUMNS).issubset(lineage)
             for lineage in provenance["binding_lineages"]
         )
+
+
+def test_replay_rederives_substitutions_from_the_validated_plan(tmp_path) -> None:
+    plan, preparation, graph, strategic_spines, places = _replay_inputs(tmp_path)
+    rejected_spine_id = strategic_spines.loc[
+        strategic_spines["spine_kind"] == "ncn",
+        "spine_id",
+    ].item()
+    unrelated_spine_id = "strategic-spine-unrelated-baseline"
+    strategic_spines = _with_unrelated_baseline(
+        strategic_spines,
+        unrelated_spine_id,
+    )
+    foreign_substitution = CanonicalLineString(
+        coordinates=((0.0, 0.0), (1.0, 1.0))
+    )
+    validated = validate_fresh_replay(plan, preparation)
+    direct = ValidatedStrategicReferenceReplay(
+        plan=validated.plan,
+        current_preparation_fingerprint=(
+            validated.current_preparation_fingerprint
+        ),
+    )
+
+    assert "interurban_candidate_geometries" not in {
+        field.name for field in fields(ValidatedStrategicReferenceReplay)
+    }
+    without_injected_cache = materialise_replay(
+        direct,
+        strategic_spines,
+        places,
+        graph,
+    )
+    object.__setattr__(
+        direct,
+        "interurban_candidate_geometries",
+        (foreign_substitution,),
+    )
+    with_injected_cache = materialise_replay(
+        direct,
+        strategic_spines,
+        places,
+        graph,
+    )
+
+    for replay in (without_injected_cache, with_injected_cache):
+        spine_ids = set(replay.effective_strategic_spines["spine_id"])
+        assert rejected_spine_id not in spine_ids
+        assert unrelated_spine_id in spine_ids
 
 
 def test_replay_rejects_current_preparation_drift(tmp_path) -> None:
@@ -162,8 +237,41 @@ def test_private_pipeline_recompiles_bath_without_spine_access_duplication(
     tmp_path,
 ) -> None:
     _, _, reference, preparation = _resolved_reference_inputs(tmp_path)
+    _, _, ordinary, _, _ = _compiled_inputs(tmp_path)
 
     plan = build_strategic_reference_application_plan(reference, preparation)
+    interurban_binding = next(
+        binding
+        for binding in plan.bindings
+        if binding.unit_role.value == "interurban-spine"
+    )
+    interurban_unit = next(
+        unit
+        for unit in preparation.units
+        if unit.unit_id == interurban_binding.unit_id
+    )
+    selected_record = next(
+        record
+        for record in interurban_unit.candidate_records
+        if record.candidate.candidate_id
+        == interurban_binding.selected_candidate_id
+    )
+    rejected_record = next(
+        record
+        for record in interurban_unit.candidate_records
+        if record.candidate.candidate_id
+        != interurban_binding.selected_candidate_id
+    )
+    rejected_baseline = ordinary.strategic_spines.loc[
+        ordinary.strategic_spines["spine_kind"] == "ncn"
+    ]
+    assert len(rejected_baseline) == 1
+    rejected_spine_id = rejected_baseline["spine_id"].item()
+    assert rejected_record.candidate.source_class.value == (
+        "verified-existing-asset"
+    )
+    assert selected_record.candidate.source_class.value == "a-road-corridor"
+
     compiled = compile_strategic_reference_network(
         configured_bath_saltford(tmp_path),
         FakeAgentRuntime(),
@@ -206,28 +314,17 @@ def test_private_pipeline_recompiles_bath_without_spine_access_duplication(
         {"bath-edge", "saltford"}
     )
     assert compiled.criteria["connections"]["mandatory_checks"].value == "red"
-    interurban_binding = next(
-        binding
-        for binding in plan.bindings
-        if binding.unit_role.value == "interurban-spine"
-    )
-    interurban_unit = next(
-        unit
-        for unit in preparation.units
-        if unit.unit_id == interurban_binding.unit_id
-    )
-    rejected_fingerprints = {
-        record.candidate.geometry_fingerprint
-        for record in interurban_unit.candidate_records
-        if record.candidate.candidate_id
-        != interurban_binding.selected_candidate_id
-    }
+    assert rejected_baseline["spine_kind"].item() == "ncn"
+    assert rejected_spine_id not in set(compiled.strategic_spines["spine_id"])
+    assert not (
+        (compiled.strategic_spines["spine_id"] == rejected_spine_id)
+        & (compiled.strategic_spines["spine_kind"] == "ncn")
+    ).any()
     effective_fingerprints = {
         _projected_fingerprint(geometry, compiled.strategic_spines.crs)
         for geometry in compiled.strategic_spines.geometry
     }
     assert interurban_binding.geometry_fingerprint in effective_fingerprints
-    assert rejected_fingerprints.isdisjoint(effective_fingerprints)
     destination_fingerprints = {
         _projected_fingerprint(
             geometry,

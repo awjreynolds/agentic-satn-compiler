@@ -138,7 +138,6 @@ class ValidatedStrategicReferenceReplay:
 
     plan: StrategicReferenceApplicationPlan
     current_preparation_fingerprint: str
-    interurban_candidate_geometries: tuple[CanonicalLineString, ...]
 
 
 @dataclass(frozen=True)
@@ -188,9 +187,6 @@ def validate_fresh_replay(
     return ValidatedStrategicReferenceReplay(
         plan=validated_plan,
         current_preparation_fingerprint=current_preparation.preparation_fingerprint,
-        interurban_candidate_geometries=_interurban_candidate_geometries(
-            validated_plan
-        ),
     )
 
 
@@ -207,6 +203,7 @@ def materialise_replay(
     )
     if plan.preparation_fingerprint != validated.current_preparation_fingerprint:
         raise ValueError("validated strategic replay identity is stale")
+    interurban_candidate_geometries = _interurban_candidate_geometries(plan)
     bindings = plan.bindings
     binding_ids = tuple(binding.binding_fingerprint for binding in bindings)
     if len(set(binding_ids)) != len(binding_ids):
@@ -337,7 +334,7 @@ def materialise_replay(
     effective = _effective_spines(
         strategic_spines,
         replay_geometries,
-        validated.interurban_candidate_geometries,
+        interurban_candidate_geometries,
         plan,
         crs,
     )
@@ -571,14 +568,18 @@ def _effective_spines(
     crs: object,
 ) -> gpd.GeoDataFrame:
     result = strategic_spines.copy()
-    substituted = {
-        geometry.fingerprint for geometry in interurban_candidate_geometries
-    }
-    retained = [
-        _canonical_projected_geometry(row.geometry, crs).fingerprint
-        not in substituted
-        for _, row in result.iterrows()
-    ]
+    retained = []
+    for _, row in result.iterrows():
+        projected = _canonical_projected_geometry(row.geometry, crs)
+        retained.append(
+            not any(
+                CanonicalLineString(
+                    coordinates=projected.coordinates,
+                    equivalence_profile=candidate.equivalence_profile,
+                ).materially_equivalent(candidate)
+                for candidate in interurban_candidate_geometries
+            )
+        )
     result = result.loc[retained].copy()
     for column in (
         "physical_alignment_id",
