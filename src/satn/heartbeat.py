@@ -14,11 +14,10 @@ DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30.0
 
 
 class StageHeartbeat:
-    """Log the current compiler stage at a bounded interval until stopped.
+    """Log compiler phase transitions and bounded liveness until stopped.
 
-    Milestone logs remain the primary audit trail.  This small daemon thread only
-    supplies liveness information while a remote acquisition or computationally
-    expensive stage is in progress.
+    Progress records are operational CLI feedback only. They do not alter
+    reproducible compiler or publication artifacts.
     """
 
     def __init__(
@@ -56,13 +55,17 @@ class StageHeartbeat:
             name="satn-stage-heartbeat",
             daemon=True,
         )
+        self._log_progress("started")
         self._thread.start()
         return self
 
     def set_stage(self, stage: str) -> None:
-        """Update the stage reported by subsequent heartbeats."""
+        """Report a phase transition and update subsequent heartbeats."""
         with self._stage_lock:
+            changed = stage != self._stage
             self._stage = stage
+        if changed and self._thread is not None:
+            self._log_progress("running")
 
     def update_context(self, context: Mapping[str, Any]) -> None:
         """Merge ephemeral operational context into later heartbeat records.
@@ -78,20 +81,32 @@ class StageHeartbeat:
         with self._stage_lock:
             return deepcopy(self._context)
 
-    def stop(self) -> None:
-        """Stop and join the thread, including when the guarded work failed."""
+    def stop(self, *, status: str = "stopped") -> None:
+        """Stop and join the thread, then report the terminal status."""
         thread = self._thread
         if thread is None:
             return
         self._stop_event.set()
         thread.join()
         self._thread = None
+        self._log_progress(status)
 
     def __enter__(self) -> StageHeartbeat:
         return self.start()
 
-    def __exit__(self, *_: object) -> None:
-        self.stop()
+    def __exit__(
+        self,
+        exception_type: type[BaseException] | None,
+        _exception: BaseException | None,
+        _traceback: object,
+    ) -> None:
+        if exception_type is None:
+            status = "completed"
+        elif issubclass(exception_type, KeyboardInterrupt):
+            status = "interrupted"
+        else:
+            status = "failed"
+        self.stop(status=status)
 
     def _run(self) -> None:
         while not self._stop_event.wait(self._interval_seconds):
@@ -104,3 +119,15 @@ class StageHeartbeat:
                 time.perf_counter() - self._started,
                 context,
             )
+
+    def _log_progress(self, status: str) -> None:
+        with self._stage_lock:
+            stage = self._stage
+            context = json.dumps(self._context, sort_keys=True, default=str)
+        self._logger.info(
+            "event=satn_progress status=%s stage=%s elapsed_seconds=%.1f context=%s",
+            status,
+            stage,
+            time.perf_counter() - self._started,
+            context,
+        )
