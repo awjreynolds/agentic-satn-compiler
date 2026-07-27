@@ -42,6 +42,7 @@ from satn.education_access import OptionEducationEvidence
 from satn.population_reach import PopulationReachProfile
 from satn.psa_evidence_loaders import (
     EducationAccessEvidenceLoad,
+    GovernedEducationAssessmentScope,
     PopulationReachEvidenceLoad,
     assess_education_access_from_evidence,
     compile_population_reach_from_evidence,
@@ -365,6 +366,7 @@ def _assemble_connection(
     option_evidence: tuple[OptionEducationEvidence, ...],
     existing_alignment: ExistingAlignmentCriterionSummary | None,
     population_profile: PopulationReachProfile | None,
+    education_scope: GovernedEducationAssessmentScope | None = None,
 ) -> PreparedCandidateCriteria:
     candidate_set = prepared.candidate_set
     if existing_alignment is not None:
@@ -402,6 +404,7 @@ def _assemble_connection(
             education_evidence,
             option_evidence=option_evidence,
             option_ids=tuple(sorted(expected_option_ids)),
+            scope=education_scope,
         )
         snapshot = _snapshot(
             prepared,

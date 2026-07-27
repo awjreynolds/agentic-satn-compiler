@@ -429,16 +429,57 @@ class EducationAccessEvidenceLoad:
 
 
 @dataclass(frozen=True)
+class GovernedEducationAssessmentScope:
+    """Exact verified education records that one Candidate Set must serve."""
+
+    school_ids: tuple[str, ...]
+    strategic_destination_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        for label, values in (
+            ("school_ids", self.school_ids),
+            ("strategic_destination_ids", self.strategic_destination_ids),
+        ):
+            if (
+                not isinstance(values, tuple)
+                or values != tuple(sorted(values))
+                or len(set(values)) != len(values)
+                or any(
+                    not isinstance(item, str)
+                    or _STRICT_ID.fullmatch(item) is None
+                    for item in values
+                )
+            ):
+                raise GovernedEvidenceLoadError(
+                    f"education assessment scope {label} must contain unique "
+                    "canonical identifiers"
+                )
+
+    def canonical(self) -> dict[str, object]:
+        return {
+            "school_ids": list(self.school_ids),
+            "strategic_destination_ids": list(
+                self.strategic_destination_ids
+            ),
+        }
+
+
+@dataclass(frozen=True)
 class GovernedEducationAccessAssessment:
     """Education assessment retaining exact raw-source identity downstream."""
 
     assessment: EducationAccessAssessment
     source_evidence: EducationAccessEvidenceLoad
+    scope: GovernedEducationAssessmentScope
     assessment_content_sha256: str
     governed_input_fingerprint: str
 
     def __post_init__(self) -> None:
         _verify_education_load(self.source_evidence)
+        scope, schools, destinations = _resolve_education_assessment_scope(
+            self.source_evidence,
+            self.scope,
+        )
         try:
             validated = EducationAccessAssessment.model_validate(
                 self.assessment.model_dump(mode="python")
@@ -454,23 +495,42 @@ class GovernedEducationAccessAssessment:
         _require_assessment_source_matches_binding(
             validated,
             self.source_evidence,
+            scope,
+            schools=schools,
+            destinations=destinations,
         )
+        expected_assessment = assess_education_access(
+            register_evidence=(
+                self.source_evidence.source_snapshot.register_evidence
+            ),
+            schools=schools,
+            strategic_destinations=destinations,
+            option_evidence=validated.source_snapshot.option_evidence,
+            option_ids=validated.source_snapshot.option_ids,
+            supplementary_pct_evidence=(
+                validated.source_snapshot.supplementary_pct_evidence
+            ),
+        )
+        if validated != expected_assessment:
+            raise GovernedEvidenceLoadError(
+                "governed education assessment differs from exact scoped "
+                "rederivation"
+            )
         content_sha256 = canonical_sha256(validated.model_dump(mode="json"))
         if self.assessment_content_sha256 != content_sha256:
             raise GovernedEvidenceLoadError(
                 "governed education assessment content fingerprint mismatch"
             )
-        expected = canonical_sha256(
-            {
-                "schema": "satn-governed-education-assessment-binding/v2",
-                "governed_source_fingerprint": (self.source_evidence.governed_source_fingerprint),
-                "assessment_content_sha256": content_sha256,
-            }
+        expected = _governed_education_assessment_fingerprint(
+            self.source_evidence,
+            scope,
+            content_sha256,
         )
         if self.governed_input_fingerprint != expected:
             raise GovernedEvidenceLoadError(
                 "governed education assessment source fingerprint mismatch"
             )
+        object.__setattr__(self, "scope", scope)
 
     @property
     def artifact_lineage(self) -> tuple[GovernedArtifactLineage, ...]:
@@ -974,6 +1034,7 @@ def assess_education_access_from_evidence(
     option_evidence: tuple[OptionEducationEvidence, ...],
     option_ids: tuple[str, ...] = (),
     supplementary_pct_evidence: tuple[SupplementaryPCTEvidence, ...] = (),
+    scope: GovernedEducationAssessmentScope | None = None,
 ) -> GovernedEducationAccessAssessment:
     """Assess options while retaining and reverifying exact raw-source identity."""
 
@@ -981,25 +1042,28 @@ def assess_education_access_from_evidence(
         raise GovernedEvidenceLoadError("education assessment requires a bound evidence load")
     _verify_education_load(evidence)
     source = evidence.source_snapshot
+    exact_scope, schools, destinations = _resolve_education_assessment_scope(
+        evidence,
+        scope or _full_education_assessment_scope(evidence),
+    )
     assessment = assess_education_access(
         register_evidence=source.register_evidence,
-        schools=source.schools,
-        strategic_destinations=source.strategic_education_destinations,
+        schools=schools,
+        strategic_destinations=destinations,
         option_evidence=option_evidence,
         option_ids=option_ids,
         supplementary_pct_evidence=supplementary_pct_evidence,
     )
     assessment_content_sha256 = canonical_sha256(assessment.model_dump(mode="json"))
-    governed_input_fingerprint = canonical_sha256(
-        {
-            "schema": "satn-governed-education-assessment-binding/v2",
-            "governed_source_fingerprint": (evidence.governed_source_fingerprint),
-            "assessment_content_sha256": assessment_content_sha256,
-        }
+    governed_input_fingerprint = _governed_education_assessment_fingerprint(
+        evidence,
+        exact_scope,
+        assessment_content_sha256,
     )
     return GovernedEducationAccessAssessment(
         assessment=assessment,
         source_evidence=evidence,
+        scope=exact_scope,
         assessment_content_sha256=assessment_content_sha256,
         governed_input_fingerprint=governed_input_fingerprint,
     )
@@ -2101,19 +2165,101 @@ def _verify_education_load(evidence: EducationAccessEvidenceLoad) -> None:
         raise GovernedEvidenceLoadError("governed education source fingerprint mismatch")
 
 
+def _full_education_assessment_scope(
+    source: EducationAccessEvidenceLoad,
+) -> GovernedEducationAssessmentScope:
+    snapshot = source.source_snapshot
+    return GovernedEducationAssessmentScope(
+        school_ids=tuple(item.school_id for item in snapshot.schools),
+        strategic_destination_ids=tuple(
+            item.strategic_destination_id
+            for item in snapshot.strategic_education_destinations
+        ),
+    )
+
+
+def _resolve_education_assessment_scope(
+    source: EducationAccessEvidenceLoad,
+    scope: GovernedEducationAssessmentScope,
+) -> tuple[
+    GovernedEducationAssessmentScope,
+    tuple[School, ...],
+    tuple[StrategicEducationDestination, ...],
+]:
+    if not isinstance(scope, GovernedEducationAssessmentScope):
+        raise GovernedEvidenceLoadError(
+            "education assessment scope must be an exact governed scope"
+        )
+    exact_scope = GovernedEducationAssessmentScope(
+        school_ids=tuple(scope.school_ids),
+        strategic_destination_ids=tuple(
+            scope.strategic_destination_ids
+        ),
+    )
+    snapshot = source.source_snapshot
+    schools_by_id = {item.school_id: item for item in snapshot.schools}
+    destinations_by_id = {
+        item.strategic_destination_id: item
+        for item in snapshot.strategic_education_destinations
+    }
+    unknown_schools = set(exact_scope.school_ids) - set(schools_by_id)
+    unknown_destinations = (
+        set(exact_scope.strategic_destination_ids) - set(destinations_by_id)
+    )
+    if unknown_schools or unknown_destinations:
+        raise GovernedEvidenceLoadError(
+            "education assessment scope names records absent from the exact "
+            "verified source"
+        )
+    return (
+        exact_scope,
+        tuple(schools_by_id[item] for item in exact_scope.school_ids),
+        tuple(
+            destinations_by_id[item]
+            for item in exact_scope.strategic_destination_ids
+        ),
+    )
+
+
+def _governed_education_assessment_fingerprint(
+    source: EducationAccessEvidenceLoad,
+    scope: GovernedEducationAssessmentScope,
+    assessment_content_sha256: str,
+) -> str:
+    return canonical_sha256(
+        {
+            "schema": "satn-governed-education-assessment-binding/v3",
+            "governed_source_fingerprint": source.governed_source_fingerprint,
+            "scope": scope.canonical(),
+            "assessment_content_sha256": assessment_content_sha256,
+        }
+    )
+
+
 def _require_assessment_source_matches_binding(
     assessment: EducationAccessAssessment,
     source: EducationAccessEvidenceLoad,
+    scope: GovernedEducationAssessmentScope,
+    *,
+    schools: tuple[School, ...],
+    destinations: tuple[StrategicEducationDestination, ...],
 ) -> None:
     snapshot = assessment.source_snapshot
     bound = source.source_snapshot
     if (
         snapshot.register_evidence != bound.register_evidence
-        or snapshot.schools != bound.schools
-        or snapshot.strategic_education_destinations != bound.strategic_education_destinations
+        or snapshot.schools != schools
+        or snapshot.strategic_education_destinations != destinations
+        or tuple(item.school_id for item in snapshot.schools)
+        != scope.school_ids
+        or tuple(
+            item.strategic_destination_id
+            for item in snapshot.strategic_education_destinations
+        )
+        != scope.strategic_destination_ids
     ):
         raise GovernedEvidenceLoadError(
-            "education assessment governed sources differ from typed binding"
+            "education assessment governed sources differ from exact scoped binding"
         )
 
 

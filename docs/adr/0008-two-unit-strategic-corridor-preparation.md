@@ -59,24 +59,37 @@ from the admitted destination and its exact current forward/reverse graph
 binding.  Interurban candidates retain only their two Network Place
 obligations.  The resulting `ScenarioCompilation` therefore classifies the
 Railway/A-road alternatives as substitutes and the campus access as a
-complementary required role.  That classification is not a resolved production
-selection: with the unmodified Bath fixture criteria assembly, school-option
-evidence remains incomplete, both selections become Network Gaps and the
-review ledger offers no `select-eligible-option` action.
+complementary required role.
+
+Education assessment is scoped to the exact typed obligations of each
+Candidate Set while retaining the complete verified source as provenance.
+The interurban unit has no school or destination obligation.  The destination
+unit has no school obligation and exactly one admitted Strategic Education
+Destination.  Scope identifiers are canonical, explicit assessment
+provenance, are checked as exact subsets of the verified source and participate
+in the governed assessment fingerprint.  Missing destination evidence still
+creates a Network Gap; unknown, duplicate, foreign or stale scope/source
+identities fail closed.  Ordinary PSA callers which do not declare a narrower
+scope continue to assess the complete verified education source.
 
 This criteria-and-Scenario layer remains inspect-only.  Its bounded review
-ledger may request agent analysis, but an agent cannot adopt the result.  The
-new contract proves that, if a strategic Scenario is fully resolved, a human
-can adopt it through the existing governed Reference decision contract and a
-separate strategic Reference application plan can bind each adopted candidate
-back to its exact unit, Candidate Set, resolution, typed endpoints and
-obligations, forward and reverse graph edges, canonical geometry, physical-
-alignment registry membership, evidence, profile and preparation lineage.
-The proof uses a deterministic test-only criteria adapter to isolate this
-adoption/binding boundary from the known school-option evidence gap.  It does
-not prove that the current production Bath criteria path can produce an
-adoptable Scenario.  The plan is deterministic, validates a fresh preparation
-by exact equality and grants no network-mutation or publication authority.
+ledger may request agent analysis, but an agent cannot adopt the result.  With
+the exact scoped governed evidence, the unmodified Bath fixture path now
+produces two provisional-review selections and finite
+`select-eligible-option` actions.  The production Scenario can be resolved
+through its exact accepted decision ledger, then a human can adopt it through
+the existing governed Reference decision contract.  A separate strategic
+Reference application plan binds each adopted candidate back to its exact
+unit, Candidate Set, resolution, typed endpoints and obligations, forward and
+reverse graph edges, canonical geometry, physical-alignment registry
+membership, evidence, profile and preparation lineage.  The plan is
+deterministic, validates a fresh preparation by exact equality and grants no
+network-mutation or publication authority.
+
+No Existing Alignment criterion is invented.  Without a separately supplied
+governed Existing Alignment summary, the Bath fixture currently offers the
+A-road interurban candidate for finite selection rather than asserting that
+the Railway/NCN candidate has a proven reusable-asset advantage.
 
 The physical-alignment registry remains authoritative for geometry identity:
 one physical alignment may have several logical role memberships, but each
@@ -97,13 +110,12 @@ high-impact operations remain a later bounded slice.
   delivery decision.
 - The output does not claim a route is safe, suitable for independent travel,
   lawful, feasible, cheap, deliverable, funded or adopted.
-- Criteria and Scenario selection now cover both role-specific units without a
-  weighted aggregate score, but current production school-option evidence
-  leaves the Bath selections as Network Gaps.
-- Governed human adoption and exact strategic Reference bindings are proven as
-  contracts against a test-resolved Scenario, not as an end-to-end production
-  Bath pipeline.
-- Production criteria assembly must emit complete eligible option evidence
-  before this pipeline can offer candidates for human adoption.
+- Criteria and Scenario selection cover both role-specific units without a
+  weighted aggregate score or unrelated education obligations.
+- Governed human adoption and exact strategic Reference bindings are proven
+  through the production Bath fixture criteria path and compiler-offered
+  finite actions.
+- Existing-asset preference still requires its own exact governed criterion;
+  route kind alone is not treated as proof.
 - Reference replay/application, pre-backbone whole-network regeneration and
   publication remain a later slice.

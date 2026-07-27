@@ -50,6 +50,7 @@ from satn.population_reach import PopulationReachProfile
 from satn.psa_criteria_assembly import _assemble_connection
 from satn.psa_evidence_loaders import (
     EducationAccessEvidenceLoad,
+    GovernedEducationAssessmentScope,
     PopulationReachEvidenceLoad,
 )
 from satn.scenario_compilation import PreparedCriteriaLineage
@@ -384,12 +385,43 @@ def _assemble_unit(
         option_evidence=_destination_option_evidence(unit),
         existing_alignment=existing_alignment,
         population_profile=population_profile,
+        education_scope=_education_scope(unit),
     )
     return PreparedStrategicUnitCriteria(
         unit_id=unit.unit_id,
         unit_role=unit.unit_role,
         criteria=legacy_packet.criteria,
         preparation_lineage=legacy_packet.preparation_lineage,
+    )
+
+
+def _education_scope(
+    unit: PreparedStrategicCorridorUnit,
+) -> GovernedEducationAssessmentScope:
+    candidate_set = unit.candidate_set
+    if (
+        candidate_set.mandatory_access_obligation_ids
+        or candidate_set.network_role is not unit.unit_role.network_role
+    ):
+        raise ValueError(
+            "strategic unit has unsupported or stale education obligations"
+        )
+    destination_ids = candidate_set.mandatory_strategic_destination_ids
+    if unit.unit_role is StrategicCorridorUnitRole.INTERURBAN_SPINE:
+        if destination_ids or unit.strategic_destination_id is not None:
+            raise ValueError(
+                "interurban unit cannot inherit a strategic destination scope"
+            )
+    elif (
+        len(destination_ids) != 1
+        or destination_ids != (unit.strategic_destination_id,)
+    ):
+        raise ValueError(
+            "destination unit scope must match its exact admitted destination"
+        )
+    return GovernedEducationAssessmentScope(
+        school_ids=(),
+        strategic_destination_ids=destination_ids,
     )
 
 

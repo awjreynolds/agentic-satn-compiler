@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 from test_alignment_selection import (
-    criteria,
     principal_assertion,
     reference_decision,
 )
@@ -27,15 +26,12 @@ from satn.alignment_selection import (
     ScenarioDecisionRecord,
 )
 from satn.evidence import mark_ncn_edges
-from satn.network_selection import CandidateSourceClass
 from satn.routing import RoadGraph
-from satn.scenario_compilation import PreparedCriteriaLineage
 from satn.strategic_corridors import (
     StrategicCorridorUnitRole,
     prepare_strategic_corridors,
 )
 from satn.strategic_criteria_scenario import (
-    PreparedStrategicUnitCriteria,
     StrategicCriteriaScenarioInput,
     compile_strategic_criteria_scenario,
 )
@@ -48,8 +44,8 @@ from satn.strategic_reference_application import (
 )
 
 
-def _resolved_reference_inputs(tmp_path: Path, monkeypatch):
-    """Resolve a test-adapted Scenario solely to exercise the contract seam."""
+def _resolved_reference_inputs(tmp_path: Path):
+    """Resolve only compiler-offered actions from exact governed evidence."""
 
     _, source, compiled, population, education = _compiled_inputs(tmp_path)
     preparation = compiled.strategic_corridor_preparation
@@ -61,54 +57,22 @@ def _resolved_reference_inputs(tmp_path: Path, monkeypatch):
         area_definition=source["boundary"],
         area_fingerprint=_area_fingerprint(source),
     )
-    production = compile_strategic_criteria_scenario(base_request)
-    assert production.status == "review-required"
-    assert production.scenario is not None
-    assert {
-        selection.disposition.value
-        for selection in production.scenario.selections
-    } == {"network-gap"}
-    assert production.review_orchestration is not None
-    assert not any(
-        option.action.value == "select-eligible-option"
-        for state in production.review_orchestration.actionable_requests
-        for option in state.request.options
-    )
-
-    def exact_test_criteria(
-        exact_preparation,
-        unit,
-        **_kwargs,
-    ) -> PreparedStrategicUnitCriteria:
-        # This isolates the Reference contract from the known production
-        # school-option evidence gap. Every candidate retains its exact
-        # compiler-authored geometry and Candidate Set; only the criterion
-        # evidence packet is a deterministic test adapter.
-        packet = criteria(
-            unit.candidate_set,
-            gradient={
-                candidate.candidate_id: "unknown"
-                for candidate in unit.candidate_set.admitted_candidates
-            },
-        )
-        return PreparedStrategicUnitCriteria(
-            unit_id=unit.unit_id,
-            unit_role=unit.unit_role,
-            criteria=packet,
-            preparation_lineage=PreparedCriteriaLineage.from_preparation(
-                exact_preparation
-            ),
-        )
-
-    monkeypatch.setattr(
-        scenario_module,
-        "_assemble_unit",
-        exact_test_criteria,
-    )
     provisional = compile_strategic_criteria_scenario(base_request)
     assert provisional.status == "review-required"
     assert provisional.scenario is not None
+    assert {
+        selection.disposition.value
+        for selection in provisional.scenario.selections
+    } == {"provisional-review"}
+    assert provisional.status == "review-required"
     assert provisional.review_orchestration is not None
+    assert all(
+        any(
+            option.action.value == "select-eligible-option"
+            for option in state.request.options
+        )
+        for state in provisional.review_orchestration.actionable_requests
+    )
     selections = {
         item.candidate_set_id: item for item in provisional.scenario.selections
     }
@@ -116,30 +80,19 @@ def _resolved_reference_inputs(tmp_path: Path, monkeypatch):
     for state in provisional.review_orchestration.actionable_requests:
         request = state.request
         selection = selections[request.candidate_set_id]
-        if (
-            selection.candidate_set.network_role.value
-            == StrategicCorridorUnitRole.INTERURBAN_SPINE.value
-        ):
-            candidate = next(
-                item
-                for item in selection.candidate_set.admitted_candidates
-                if item.source_class
-                is CandidateSourceClass.VERIFIED_EXISTING_ASSET
-            )
-        else:
-            candidate = selection.candidate_set.admitted_candidates[0]
-            assert candidate.source_class is CandidateSourceClass.A_ROAD_CORRIDOR
         option = next(
             item
             for item in request.options
             if item.action.value == "select-eligible-option"
-            and item.candidate_id == candidate.candidate_id
         )
+        assert option.candidate_id is not None
+        evidence_ids = request.immutable_evidence_ids[:1]
+        assert evidence_ids
         response = AlignmentDecisionResponse(
             request_id=request.request_id,
             request_fingerprint=request.request_fingerprint,
             option_id=option.option_id,
-            evidence_ids=("network-assessment",),
+            evidence_ids=evidence_ids,
             invocation=principal_assertion(
                 request,
                 option_id=option.option_id,
@@ -158,7 +111,7 @@ def _resolved_reference_inputs(tmp_path: Path, monkeypatch):
             profile_fingerprint=request.profile_fingerprint,
             finding="accepted",
             resolved=True,
-            evidence_ids=("network-assessment",),
+            evidence_ids=evidence_ids,
             invocation=principal_assertion(
                 request,
                 critic=True,
@@ -207,12 +160,8 @@ def _reseal(payload: dict[str, object], binding_index: int | None = None) -> Non
 
 def test_human_adopts_exact_resolved_strategic_scenario_and_builds_plan(
     tmp_path: Path,
-    monkeypatch,
 ) -> None:
-    _, accepted, reference, preparation = _resolved_reference_inputs(
-        tmp_path,
-        monkeypatch,
-    )
+    _, accepted, reference, preparation = _resolved_reference_inputs(tmp_path)
 
     first = build_strategic_reference_application_plan(reference, preparation)
     second = build_strategic_reference_application_plan(reference, preparation)
@@ -276,12 +225,8 @@ def test_human_adopts_exact_resolved_strategic_scenario_and_builds_plan(
 
 def test_unresolved_or_missing_campus_scenario_cannot_be_adopted(
     tmp_path: Path,
-    monkeypatch,
 ) -> None:
-    provisional, _, reference, _ = _resolved_reference_inputs(
-        tmp_path,
-        monkeypatch,
-    )
+    provisional, _, reference, _ = _resolved_reference_inputs(tmp_path)
     assert provisional.scenario is not None
     with pytest.raises(ValueError, match="fully resolved"):
         adopt_strategic_reference_satn(
@@ -334,14 +279,10 @@ def test_unresolved_or_missing_campus_scenario_cannot_be_adopted(
 )
 def test_plan_rejects_stale_global_identity_even_when_caller_reseals(
     tmp_path: Path,
-    monkeypatch,
     field: str,
     value: str,
 ) -> None:
-    _, _, reference, preparation = _resolved_reference_inputs(
-        tmp_path,
-        monkeypatch,
-    )
+    _, _, reference, preparation = _resolved_reference_inputs(tmp_path)
     payload = build_strategic_reference_application_plan(
         reference,
         preparation,
@@ -367,13 +308,9 @@ def test_plan_rejects_stale_global_identity_even_when_caller_reseals(
 )
 def test_binding_rejects_adversarial_resealing_against_source_lineage(
     tmp_path: Path,
-    monkeypatch,
     mutation: str,
 ) -> None:
-    _, _, reference, preparation = _resolved_reference_inputs(
-        tmp_path,
-        monkeypatch,
-    )
+    _, _, reference, preparation = _resolved_reference_inputs(tmp_path)
     plan = build_strategic_reference_application_plan(reference, preparation)
     payload = plan.model_dump(mode="json")
     bindings = payload["bindings"]
@@ -433,13 +370,9 @@ def test_binding_rejects_adversarial_resealing_against_source_lineage(
 @pytest.mark.parametrize("mutation", ("missing", "duplicate", "foreign"))
 def test_plan_requires_every_unit_and_candidate_exactly_once(
     tmp_path: Path,
-    monkeypatch,
     mutation: str,
 ) -> None:
-    _, _, reference, preparation = _resolved_reference_inputs(
-        tmp_path,
-        monkeypatch,
-    )
+    _, _, reference, preparation = _resolved_reference_inputs(tmp_path)
     payload = build_strategic_reference_application_plan(
         reference,
         preparation,
@@ -461,12 +394,8 @@ def test_plan_requires_every_unit_and_candidate_exactly_once(
 
 def test_resealed_source_preparation_cannot_escape_reference_lineage(
     tmp_path: Path,
-    monkeypatch,
 ) -> None:
-    _, _, reference, preparation = _resolved_reference_inputs(
-        tmp_path,
-        monkeypatch,
-    )
+    _, _, reference, preparation = _resolved_reference_inputs(tmp_path)
     payload = build_strategic_reference_application_plan(
         reference,
         preparation,
@@ -495,12 +424,8 @@ def test_resealed_source_preparation_cannot_escape_reference_lineage(
 
 def test_fresh_preparation_requires_exact_equality(
     tmp_path: Path,
-    monkeypatch,
 ) -> None:
-    _, _, reference, preparation = _resolved_reference_inputs(
-        tmp_path,
-        monkeypatch,
-    )
+    _, _, reference, preparation = _resolved_reference_inputs(tmp_path)
     assert (
         validate_fresh_strategic_reference_preparation(
             reference,
@@ -519,12 +444,8 @@ def test_fresh_preparation_requires_exact_equality(
 
 def test_shared_physical_registry_identity_is_allowed_for_distinct_roles(
     tmp_path: Path,
-    monkeypatch,
 ) -> None:
-    _, _, reference, preparation = _resolved_reference_inputs(
-        tmp_path,
-        monkeypatch,
-    )
+    _, _, reference, preparation = _resolved_reference_inputs(tmp_path)
     plan = build_strategic_reference_application_plan(reference, preparation)
     left, right = plan.bindings
     shared = right.model_copy(

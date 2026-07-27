@@ -18,7 +18,10 @@ from satn.psa_evidence_loaders import (
 )
 from satn.routing import RoadGraph
 from satn.sources import load_snapshot, snapshot
-from satn.strategic_corridors import prepare_strategic_corridors
+from satn.strategic_corridors import (
+    StrategicCorridorUnitRole,
+    prepare_strategic_corridors,
+)
 from satn.strategic_criteria_scenario import (
     StrategicCriteriaScenarioInput,
     compile_strategic_criteria_scenario,
@@ -123,6 +126,63 @@ def test_bath_compiles_both_strategic_roles_without_reference_authority(
     )
     with pytest.raises(ValueError, match="fingerprint is stale"):
         replace(first, result_fingerprint="0" * 64)
+
+
+def test_exact_governed_role_scope_offers_finite_candidate_actions(
+    tmp_path: Path,
+) -> None:
+    _, source, compiled, population, education = _compiled_inputs(tmp_path)
+    preparation = compiled.strategic_corridor_preparation
+    assert preparation is not None
+
+    result = compile_strategic_criteria_scenario(
+        StrategicCriteriaScenarioInput(
+            preparation=preparation,
+            population_evidence=population,
+            education_evidence=education,
+            area_definition=source["boundary"],
+            area_fingerprint=_area_fingerprint(source),
+        )
+    )
+
+    assert result.status == "review-required"
+    assert result.scenario is not None
+    assert {
+        item.disposition.value for item in result.scenario.selections
+    } == {"provisional-review"}
+    assert result.review_orchestration is not None
+    assert all(
+        any(
+            option.action.value == "select-eligible-option"
+            for option in state.request.options
+        )
+        for state in result.review_orchestration.actionable_requests
+    )
+    criteria_by_role = {
+        item.unit_role: item.criteria for item in result.criteria
+    }
+    interurban = criteria_by_role[StrategicCorridorUnitRole.INTERURBAN_SPINE]
+    destination = criteria_by_role[
+        StrategicCorridorUnitRole.STRATEGIC_DESTINATION_ACCESS
+    ]
+    assert not interurban.education.assessment.source_snapshot.schools
+    assert not (
+        interurban.education.assessment.source_snapshot
+        .strategic_education_destinations
+    )
+    assert not destination.education.assessment.source_snapshot.schools
+    assert tuple(
+        item.strategic_destination_id
+        for item in (
+            destination.education.assessment.source_snapshot
+            .strategic_education_destinations
+        )
+    ) == ("bath-spa-university",)
+    assert all(
+        item.state.value == "satisfied"
+        for packet in result.criteria
+        for item in packet.criteria.education.completeness
+    )
 
 
 def test_missing_campus_binding_cannot_compile_or_be_adopted(tmp_path: Path) -> None:

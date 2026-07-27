@@ -1,9 +1,9 @@
 {
   "schema": "satn-bath-saltford-proving/v1",
-  "status": "strategic-reference-contract-bindings-proven-production-criteria-gap",
+  "status": "strategic-reference-production-criteria-and-adoption-proven-application-blocked",
   "scope": "synthetic-minimised-geography-not-current-design",
-  "proof_mode": "contract-only: deterministic test criteria adapter isolates adoption and binding from the unresolved production school-option evidence gap",
-  "production_observation": "The unmodified Bath criteria path is review-required with Network Gaps and offers no select-eligible-option action, so it cannot yet produce an adoptable strategic Reference.",
+  "proof_mode": "production fixture path: exact governed role-scoped education assessment, compiler-offered finite actions, accepted decision ledger and human Reference adoption",
+  "production_observation": "The unmodified Bath fixture criteria path is review-required with two provisional-review selections and finite select-eligible-option actions. The proof resolves only those offered actions and then exercises governed human adoption and deterministic binding.",
   "benchmark": {
     "candidate_count": 3,
     "physical_alignment_count": 3,
@@ -20,9 +20,9 @@
       "strategic-corridor-sibling-preparation",
       "strategic-role-criteria-assembly",
       "strategic-scenario-compilation",
-      "test-only-deterministic-criteria-adapter",
-      "contract-only-governed-human-reference-adoption",
-      "contract-only-deterministic-strategic-reference-binding"
+      "governed-role-scoped-education-assessment",
+      "governed-human-reference-adoption",
+      "deterministic-strategic-reference-binding"
     ]
   },
   "observed_evidence": {
@@ -44,15 +44,16 @@
     }
   },
   "implementation_gap": {
-    "id": "strategic-production-criteria-reference-application-replay-and-publication",
+    "id": "strategic-reference-application-replay-and-publication",
     "blocking_acceptance": ["14.1", "14.11", "14.12"],
-    "observed": "The sibling strategic-corridor preparer derives a two-candidate interurban Railway/NCN versus A-road-related set from exact direct-spine Community anchors and one deduplicated A4/campus destination-access candidate. Four generation strategies collapse into the exact same campus forward/reverse edges and physical geometry while remaining visible as provenance. Governed criteria and Scenario compilation cover both role-specific units without a weighted score, but the unmodified Bath path marks both selections as Network Gaps because school-option evidence is incomplete and offers no select-eligible-option action. A deterministic test-only criteria adapter resolves that known gap solely to prove the downstream contract: a human can adopt a fully resolved Scenario and the strategic Reference application plan binds both adopted candidates back to exact typed obligations, endpoints, forward/reverse edges, geometry, physical-alignment memberships and preparation/profile/evidence lineage. The legacy Spine Access preparer still retains direct parent_role=strategic-spine rows as out of scope.",
-    "exact_seam": "Human Reference adoption and exact strategic bindings are proven only as contracts against a test-resolved Scenario, including fail-closed fresh-preparation equality. The current production Bath pipeline cannot yet reach that seam. The binding plan cannot load inputs, mutate authoritative network geometry, replay the Reference, invoke an agent or publish. Destination access evidence is derived only when the admission record, access-point evidence, current site geometry, explicit graph node, exact incident forward/reverse edges and content binding agree. Missing campus binding cannot produce a Scenario.",
-    "smallest_next_slice": "First close the production school-option criteria evidence gap and prove that the unmodified Bath path offers finite selectable candidates and can produce a fully resolved human-adopted Reference. Only then apply the adopted selected interurban substitute before backbone assembly and regenerate destination access as a first-class complementary role under whole-network replay. Publication remains separately gated.",
+    "observed": "The sibling strategic-corridor preparer derives a two-candidate interurban Railway/NCN versus A-road-related set from exact direct-spine Community anchors and one deduplicated A4/campus destination-access candidate. Four generation strategies collapse into the exact same campus forward/reverse edges and physical geometry while remaining visible as provenance. Governed education assessment now applies only each Candidate Set's exact typed obligations while binding that scope to the complete verified source and assessment fingerprint. The unmodified Bath path produces provisional-review selections and finite candidate actions; resolving only those actions permits governed human adoption and exact strategic Reference bindings. No Existing Alignment summary is invented, so the current fixture offers the A-road interurban candidate rather than claiming the Railway/NCN asset advantage is proven. The legacy Spine Access preparer still retains direct parent_role=strategic-spine rows as out of scope.",
+    "exact_seam": "Production-derived strategic criteria, finite review actions, human Reference adoption and exact strategic bindings are proven, including fail-closed scope/source validation and fresh-preparation equality. The binding plan cannot load inputs, mutate authoritative network geometry, replay the Reference, invoke an agent or publish. Destination access evidence is derived only when the admission record, access-point evidence, current site geometry, explicit graph node, exact incident forward/reverse edges and content binding agree. Missing campus evidence remains a Network Gap and missing campus binding cannot produce a Scenario.",
+    "smallest_next_slice": "Apply the adopted selected interurban substitute before backbone assembly, then regenerate destination access as a first-class complementary role under whole-network replay. Publication remains separately gated. A separate governed Existing Alignment criterion is required before preferring the Railway/NCN candidate as a reusable asset.",
     "non_claims": [
       "No route is asserted safe, feasible, funded, legally accessible or adopted.",
       "A prepared campus candidate is not a selected, safe, feasible, funded or delivered Bath Spa University connection.",
-      "The unmodified production Bath criteria path has not produced an adopted strategic Reference.",
+      "The synthetic fixture adoption is a contract proof, not a current B&NES route adoption.",
+      "Railway/NCN route kind alone is not treated as a proved Existing Alignment advantage.",
       "This fixture establishes no B&NES or WECA runtime baseline."
     ]
   }

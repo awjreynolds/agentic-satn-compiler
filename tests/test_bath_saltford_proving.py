@@ -189,10 +189,13 @@ def test_bath_saltford_fixture_records_evidence_then_exposes_current_psa_boundar
     assert time.perf_counter() - started > 0
 
     result = json.loads(RESULT.read_text(encoding="utf-8"))
-    assert result["status"] == "strategic-corridor-scenario-proven-reference-replay-blocked"
+    assert (
+        result["status"]
+        == "strategic-reference-production-criteria-and-adoption-proven-application-blocked"
+    )
     assert result["benchmark"]["candidate_count"] == 3
     assert (
         result["implementation_gap"]["id"]
-        == "strategic-corridor-reference-replay-and-publication"
+        == "strategic-reference-application-replay-and-publication"
     )
     assert "14.1" in result["implementation_gap"]["blocking_acceptance"]

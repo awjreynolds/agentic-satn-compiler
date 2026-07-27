@@ -22,6 +22,7 @@ from satn.network_selection import (
 )
 from satn.psa_evidence_loaders import (
     GovernedEducationAccessAssessment,
+    GovernedEducationAssessmentScope,
     GovernedEvidenceLoadError,
     _governed_population_assessment_fingerprint,
     assess_education_access_from_evidence,
@@ -1214,6 +1215,7 @@ def test_governed_education_assessment_rejects_tampered_or_deleted_outputs(
         GovernedEducationAccessAssessment(
             assessment=tampered_id,
             source_evidence=source,
+            scope=governed.scope,
             assessment_content_sha256=canonical_sha256(
                 tampered_id.model_dump(mode="json")
             ),
@@ -1228,6 +1230,7 @@ def test_governed_education_assessment_rejects_tampered_or_deleted_outputs(
         GovernedEducationAccessAssessment(
             assessment=deleted_output,
             source_evidence=source,
+            scope=governed.scope,
             assessment_content_sha256=canonical_sha256(
                 deleted_output.model_dump(mode="json")
             ),
@@ -1236,6 +1239,66 @@ def test_governed_education_assessment_rejects_tampered_or_deleted_outputs(
 
     with pytest.raises(GovernedEvidenceLoadError, match="destination count"):
         replace(source, strategic_admission_records=())
+
+
+def test_governed_education_scope_rejects_absent_wrong_duplicate_or_stale_evidence(
+    tmp_path: Path,
+) -> None:
+    school_config, admissions_config = education_configs(tmp_path)
+    source = load_education_access_evidence(
+        school_config,
+        admissions_config,
+        base_directory=tmp_path,
+        as_at=date(2026, 7, 26),
+        school_register_max_age_days=30,
+        strategic_admissions_max_age_days=30,
+    )
+    assert source is not None
+    destination_scope = GovernedEducationAssessmentScope(
+        school_ids=(),
+        strategic_destination_ids=("university-one",),
+    )
+
+    missing = assess_education_access_from_evidence(
+        source,
+        option_ids=("candidate-option",),
+        option_evidence=(),
+        scope=destination_scope,
+    )
+    assert missing.scope == destination_scope
+    assert tuple(
+        item.strategic_destination_id
+        for item in missing.assessment.source_snapshot.strategic_education_destinations
+    ) == ("university-one",)
+    assert {
+        (item.option_id, item.strategic_destination_id)
+        for item in missing.assessment.network_gaps
+    } == {("candidate-option", "university-one")}
+
+    with pytest.raises(GovernedEvidenceLoadError, match="unique canonical"):
+        GovernedEducationAssessmentScope(
+            school_ids=("secondary-one", "secondary-one"),
+            strategic_destination_ids=(),
+        )
+    with pytest.raises(GovernedEvidenceLoadError, match="absent from"):
+        assess_education_access_from_evidence(
+            source,
+            option_evidence=(),
+            scope=GovernedEducationAssessmentScope(
+                school_ids=(),
+                strategic_destination_ids=("foreign-university",),
+            ),
+        )
+    with pytest.raises(GovernedEvidenceLoadError, match="scoped binding"):
+        replace(
+            missing,
+            scope=GovernedEducationAssessmentScope(
+                school_ids=(),
+                strategic_destination_ids=(),
+            ),
+        )
+    with pytest.raises(GovernedEvidenceLoadError, match="source fingerprint"):
+        replace(source, governed_source_fingerprint="0" * 64)
 
 
 def test_education_freshness_is_explicit_and_fingerprinted(
