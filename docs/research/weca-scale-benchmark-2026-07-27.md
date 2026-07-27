@@ -87,7 +87,6 @@ criteria; those require separately governed evidence inputs.
 
 The known completed B&NES baseline is retained for comparison, not as a result
 of this WECA run: **125 places; 41,158 road edges; 5,567 context features; 75
-connections; 91 gaps; `reviewable`; 272.3 seconds.** The currently available
-B&NES publication confirms the 125 strategic-spine count, 75 connections, 91
-gaps and `reviewable` status. Its peak memory was not measured in the evidence
+connections; 91 gaps; `reviewable`; 272.3 seconds.** These are retained
+observed baseline figures. Its peak memory was not measured in the evidence
 available here and is therefore **unknown**.
