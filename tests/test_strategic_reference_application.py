@@ -7,6 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from bath_saltford_fixture import configured_bath_saltford
 from pydantic import ValidationError
 from test_alignment_selection import (
     principal_assertion,
@@ -18,6 +19,7 @@ from test_strategic_criteria_scenario import (
 )
 
 import satn.strategic_criteria_scenario as scenario_module
+from satn.agents import FakeAgentRuntime
 from satn.alignment_selection import (
     AcceptedDecisionEnvelope,
     AlignmentCritiqueRecord,
@@ -26,8 +28,15 @@ from satn.alignment_selection import (
     NetworkRole,
     ScenarioDecisionRecord,
 )
+from satn.compiler import compile_network
 from satn.evidence import mark_ncn_edges
+from satn.pipeline import compile_strategic_reference
+from satn.psa_evidence_loaders import (
+    load_education_access_evidence,
+    load_population_reach_evidence,
+)
 from satn.routing import RoadGraph
+from satn.sources import load_snapshot, snapshot
 from satn.strategic_corridors import (
     StrategicCorridorUnitRole,
     prepare_strategic_corridors,
@@ -45,46 +54,35 @@ from satn.strategic_reference_application import (
 )
 
 
-def _interurban_only_preparation(preparation):
-    """Construct a governed fixture with no admitted destination unit."""
-
-    units = tuple(
-        item
-        for item in preparation.units
-        if item.unit_role is StrategicCorridorUnitRole.INTERURBAN_SPINE
-    )
-    candidate_ids = {
-        candidate.candidate_id
-        for unit in units
-        for candidate in unit.candidate_set.candidates
-    }
-    physical_alignments = tuple(
-        item
-        for item in preparation.physical_alignments
-        if candidate_ids.intersection(item.candidate_ids)
-    )
-    provisional = replace(
-        preparation,
-        units=units,
-        physical_alignments=physical_alignments,
-        preparation_fingerprint="",
-    )
-    return replace(
-        provisional,
-        preparation_fingerprint=scenario_module._fingerprint(
-            provisional.canonical_payload()
-        ),
-    )
-
-
 def _resolved_reference_inputs(tmp_path: Path, *, interurban_only: bool = False):
     """Resolve only compiler-offered actions from exact governed evidence."""
 
-    _, source, compiled, population, education = _compiled_inputs(tmp_path)
-    preparation = compiled.strategic_corridor_preparation
-    assert preparation is not None
     if interurban_only:
-        preparation = _interurban_only_preparation(preparation)
+        config = configured_bath_saltford(tmp_path)
+        config.source.strategic_education_destination_admissions = None
+        config.source.network_selection_strategic_admissions_max_age_days = None
+        snapshot(config)
+        source = load_snapshot(config)
+        compiled = compile_network(config, source, FakeAgentRuntime())
+        population = load_population_reach_evidence(
+            config.source.population_reach_evidence,
+            base_directory=config.config_path.parent,
+            pwc_outside_tolerance_m=0,
+        )
+        education = load_education_access_evidence(
+            config.source.school_register_evidence,
+            None,
+            base_directory=config.config_path.parent,
+            as_at=config.source.network_selection_as_at,
+            school_register_max_age_days=(
+                config.source.network_selection_school_register_max_age_days
+            ),
+            strategic_admissions_max_age_days=None,
+        )
+    else:
+        _, source, compiled, population, education = _compiled_inputs(tmp_path)
+    preparation = compiled.strategic_corridor_preparation
+    assert preparation is not None and population is not None and education is not None
     base_request = StrategicCriteriaScenarioInput(
         preparation=preparation,
         population_evidence=population,
@@ -271,12 +269,90 @@ def test_interurban_only_scenario_is_adopted_without_inventing_destination_acces
         NetworkRole.INTERURBAN_SPINE,
     )
     plan = build_strategic_reference_application_plan(reference, preparation)
+    source = json.loads(plan.source_preparation_json)["canonical_payload"]
+    education_lineage = source["evidence_lineage"]["education"]
+    assert education_lineage["admissions_content_sha256"] is None
+    assert (
+        education_lineage["source_snapshot"][
+            "strategic_education_destinations"
+        ]
+        == []
+    )
     assert len(plan.bindings) == 1
     assert plan.bindings[0].unit_role is StrategicCorridorUnitRole.INTERURBAN_SPINE
     assert (
         plan.bindings[0].application_disposition
         is StrategicReferenceApplicationDisposition.SELECTED_SUBSTITUTE
     )
+
+
+def test_resealed_preparation_cannot_drop_a_governed_admitted_destination(
+    tmp_path: Path,
+) -> None:
+    _, source, compiled, population, education = _compiled_inputs(tmp_path)
+    preparation = compiled.strategic_corridor_preparation
+    assert preparation is not None
+    retained_units = tuple(
+        item
+        for item in preparation.units
+        if item.unit_role is StrategicCorridorUnitRole.INTERURBAN_SPINE
+    )
+    retained_candidates = {
+        candidate.candidate_id
+        for unit in retained_units
+        for candidate in unit.candidate_set.candidates
+    }
+    resealed = replace(
+        preparation,
+        units=retained_units,
+        physical_alignments=tuple(
+            item
+            for item in preparation.physical_alignments
+            if retained_candidates.intersection(item.candidate_ids)
+        ),
+        preparation_fingerprint="",
+    )
+    resealed = replace(
+        resealed,
+        preparation_fingerprint=scenario_module._fingerprint(
+            resealed.canonical_payload()
+        ),
+    )
+
+    with pytest.raises(ValueError, match="do not exactly cover"):
+        compile_strategic_criteria_scenario(
+            StrategicCriteriaScenarioInput(
+                preparation=resealed,
+                population_evidence=population,
+                education_evidence=education,
+                area_definition=source["boundary"],
+                area_fingerprint=_area_fingerprint(source),
+            )
+        )
+
+
+def test_interurban_only_governed_plan_publishes_without_destination_access(
+    tmp_path: Path,
+) -> None:
+    _, _, reference, preparation = _resolved_reference_inputs(
+        tmp_path / "reference",
+        interurban_only=True,
+    )
+    config = configured_bath_saltford(tmp_path / "publication")
+    config.source.strategic_education_destination_admissions = None
+    config.source.network_selection_strategic_admissions_max_age_days = None
+    snapshot(config)
+
+    result = compile_strategic_reference(
+        config,
+        build_strategic_reference_application_plan(reference, preparation),
+    )
+
+    assert result.output_dir.is_dir()
+    published = json.loads((result.output_dir / "run.json").read_text())
+    replay = published["strategic_reference"]["replay"]
+    assert len(replay["interurban_connections"]["features"]) == 1
+    assert replay["destination_access_connections"]["features"] == []
 
 
 def test_unresolved_or_missing_campus_scenario_cannot_be_adopted(

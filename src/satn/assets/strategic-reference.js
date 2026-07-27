@@ -54,7 +54,7 @@ if (legend && destinationFeatures.length) {
 if (legend && spineFeatures.length) {
   legend.insertAdjacentHTML(
     "beforeend",
-    '<li id="legend-strategic-reference-spine"><span class="map-key line" aria-hidden="true"></span>Solid selected authoritative Reference SATN interurban spine</li>',
+    '<li id="legend-strategic-reference-spine"><span class="map-key line" aria-hidden="true"></span>Green solid selected authoritative Reference SATN interurban spine</li>',
   );
 }
 if (legend && alignmentOptions.features.length) {

@@ -285,7 +285,7 @@ def test_bath_strategic_reference_publishes_typed_sibling_and_semantic_map(tmp_p
     assert "layer-strategic-alignment-options" in script
     assert "setLayoutProperty" in script
     assert '"match"' in script and '["get", "disposition"]' in script
-    assert "Solid selected authoritative Reference SATN interurban spine" in script
+    assert "Green solid selected authoritative Reference SATN interurban spine" in script
     assert "Purple dashed complementary destination access" in script
     assert "review-only" in script
     assert 'id="legend-strategic-alignment-options" hidden' in script

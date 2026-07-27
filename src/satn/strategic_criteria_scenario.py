@@ -647,6 +647,46 @@ def _validate_preparation(preparation: StrategicCorridorPreparationResult) -> No
     unit_ids = tuple(item.unit_id for item in preparation.units)
     if len(set(unit_ids)) != len(unit_ids):
         raise ValueError("strategic corridor preparation has duplicate units")
+    if preparation.status == "prepared":
+        education_lineage = preparation.evidence_lineage.get("education")
+        if not isinstance(education_lineage, Mapping):
+            raise ValueError(
+                "strategic corridor preparation education lineage is malformed"
+            )
+        education_source = _lineage_education_source(
+            education_lineage.get("source_snapshot")
+        )
+        admitted_destination_ids = tuple(
+            item.strategic_destination_id
+            for item in education_source.strategic_education_destinations
+        )
+        if admitted_destination_ids and not isinstance(
+            education_lineage.get("admissions_content_sha256"), str
+        ):
+            raise ValueError(
+                "prepared strategic corridor admitted destinations require admissions "
+                "lineage"
+            )
+        destination_units = tuple(
+            item
+            for item in preparation.units
+            if item.unit_role
+            is StrategicCorridorUnitRole.STRATEGIC_DESTINATION_ACCESS
+        )
+        destination_unit_ids = tuple(
+            sorted(
+                item.strategic_destination_id
+                for item in destination_units
+                if item.strategic_destination_id is not None
+            )
+        )
+        if destination_unit_ids != admitted_destination_ids or len(
+            destination_units
+        ) != len(admitted_destination_ids):
+            raise ValueError(
+                "prepared strategic corridor destination units do not exactly cover "
+                "governed admitted Strategic Destination IDs"
+            )
     roles = {item.unit_role for item in preparation.units}
     allowed = {
         StrategicCorridorUnitRole.INTERURBAN_SPINE,
