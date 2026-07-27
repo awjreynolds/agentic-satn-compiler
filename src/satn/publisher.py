@@ -10,6 +10,7 @@ import shlex
 import shutil
 import tempfile
 import zipfile
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from html import escape
 from importlib.resources import files
@@ -48,7 +49,10 @@ from satn.models import (
     TrafficLight,
     canonical_decision_ledger_payload,
 )
-from satn.reference_application import ReferenceSATNPublicationRecord
+from satn.reference_application import (
+    ReferenceApplicationPlan,
+    ReferenceSATNPublicationRecord,
+)
 from satn.runtime_governance import classify_runtime_governance, validate_runtime_governance
 from satn.sources import (
     EA_LIDAR_WECA_ACQUISITION_CONTRACT,
@@ -78,6 +82,27 @@ class EAFixedPointMismatchError(ValueError):
             "the routes sampled before elevation acquisition "
             f"(expected={expected}, actual={actual})"
         )
+
+
+@dataclass(frozen=True)
+class _ValidatedReferencePublication:
+    """Canonical publication bytes anchored to one actual compiled network."""
+
+    record: ReferenceSATNPublicationRecord
+    payload_json: str
+    options_json: str
+
+    def payload(self) -> dict[str, object]:
+        payload = json.loads(self.payload_json)
+        if not isinstance(payload, dict):
+            raise ValueError("Validated Reference publication payload is not an object")
+        return payload
+
+    def options(self) -> dict[str, object]:
+        options = json.loads(self.options_json)
+        if not isinstance(options, dict):
+            raise ValueError("Validated Reference publication options are not an object")
+        return options
 
 
 def publication_artifacts(output: Path) -> dict[str, Path]:
@@ -231,6 +256,10 @@ def publish(
     compiled: CompiledNetwork,
     run_id: str,
 ) -> dict[str, Path]:
+    reference_publication = _validated_reference_publication(
+        compiled.reference_satn_publication,
+        compiled,
+    )
     output = config.publication.output_dir
     LOGGER.info("Publication started temporary_parent=%s", output.parent)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -255,7 +284,13 @@ def publish(
                     f"{error}; candidate retention failed: {retention_error}"
                 ) from retention_error
             raise ValueError(f"{error}; retained candidate={candidate}") from error
-        _write_json_records(temporary, config, compiled, run_id)
+        _write_json_records(
+            temporary,
+            config,
+            compiled,
+            run_id,
+            reference_publication,
+        )
         _write_backbone_comparison(
             temporary / "backbone-comparison.json",
             compiled,
@@ -263,7 +298,7 @@ def publish(
         )
         review = temporary / "review-map"
         review.mkdir()
-        _write_review_map(review, config, compiled)
+        _write_review_map(review, config, compiled, reference_publication)
         _zip_review_map(temporary / "review-map.zip", review)
         _write_pdf(temporary / "network-map.pdf", config, compiled)
         _validate_artifacts(temporary, config)
@@ -289,6 +324,132 @@ def publish(
         if temporary.exists():
             shutil.rmtree(temporary)
     return publication_artifacts(output)
+
+
+def _validated_reference_publication(
+    attached: ReferenceSATNPublicationRecord | None,
+    compiled: CompiledNetwork,
+) -> _ValidatedReferencePublication | None:
+    """Bind one strict Reference record to the exact compiler-produced result."""
+
+    if attached is None:
+        return None
+    record = ReferenceSATNPublicationRecord.from_publication_payload(attached.publication_payload())
+    payload = record.publication_payload()
+    compiled_fields: tuple[tuple[str, object], ...] = (
+        ("snapshot_manifest_sha256", compiled.snapshot_manifest_sha256),
+        ("area_definition_sha256", compiled.area_definition_sha256),
+        ("governed_input_fingerprint", compiled.governed_input_fingerprint),
+        ("compilation_input_fingerprint", compiled.compilation_input_fingerprint),
+        (
+            "compilation_dependency_manifest",
+            compiled.compilation_dependency_manifest,
+        ),
+        ("decision_contract", compiled.decision_contract),
+        ("decision_ledger_input", compiled.decision_ledger_input),
+        ("accepted_decisions", compiled.accepted_decisions),
+    )
+    for field, expected in compiled_fields:
+        if payload.get(field) != expected:
+            raise ValueError(f"Reference publication is not anchored to compiled {field}")
+    actual_diagnostics = compiled.compilation_diagnostics.get("reference_application")
+    if (
+        not isinstance(actual_diagnostics, dict)
+        or payload.get("application_diagnostics") != actual_diagnostics
+    ):
+        raise ValueError(
+            "Reference publication is not anchored to compiled application diagnostics"
+        )
+
+    plan_payload = payload.get("application_plan")
+    if not isinstance(plan_payload, dict):
+        raise ValueError("Reference publication application plan is unavailable")
+    plan = ReferenceApplicationPlan.model_validate(plan_payload)
+    bindings = {binding.logical_connection_id: binding for binding in plan.candidate_bindings}
+    tagged_rows: dict[str, tuple[object, dict[str, object]]] = {}
+    regenerated_ids: set[str] = set()
+    for row in compiled.spine_access_connections.itertuples():
+        raw_provenance = row.provenance
+        try:
+            provenance = (
+                json.loads(raw_provenance) if isinstance(raw_provenance, str) else raw_provenance
+            )
+        except json.JSONDecodeError as error:
+            raise ValueError("Compiled Spine Access provenance is not valid JSON") from error
+        if not isinstance(provenance, dict):
+            raise ValueError("Compiled Spine Access provenance is not an object")
+        application = provenance.get("reference_application")
+        if application is None:
+            continue
+        if not isinstance(application, dict):
+            raise ValueError("Compiled Reference application provenance is malformed")
+        logical_id = application.get("logical_connection_id")
+        if not isinstance(logical_id, str) or logical_id in tagged_rows:
+            raise ValueError(
+                "Compiled Reference application rows duplicate or omit a logical connection"
+            )
+        regenerated_id = str(row.access_connection_id)
+        if regenerated_id in regenerated_ids:
+            raise ValueError(
+                "Compiled Reference application rows duplicate a regenerated connection"
+            )
+        regenerated_ids.add(regenerated_id)
+        tagged_rows[logical_id] = (row, application)
+    if set(tagged_rows) != set(bindings):
+        raise ValueError(
+            "Compiled Reference application rows are missing or contain foreign bindings"
+        )
+
+    source_to_regenerated: dict[str, str] = {}
+    for logical_id, binding in bindings.items():
+        row, application = tagged_rows[logical_id]
+        expected_application = {
+            "plan_fingerprint": plan.plan_fingerprint,
+            "binding_fingerprint": binding.binding_fingerprint,
+            "logical_connection_id": logical_id,
+            "selected_candidate_id": binding.selected_candidate_id,
+            "selected_route_role": binding.route_role,
+        }
+        for field, expected in expected_application.items():
+            if application.get(field) != expected:
+                raise ValueError(f"Compiled Reference application row is stale for {field}")
+        expected_row_fields = {
+            "place_id": binding.community_place_id,
+            "parent_place_id": binding.parent_place_id,
+            "root_spine_id": binding.root_spine_id,
+        }
+        for field, expected in expected_row_fields.items():
+            if str(getattr(row, field)) != expected:
+                raise ValueError(f"Compiled Reference application row is stale for {field}")
+        if binding.source_access_connection_id in source_to_regenerated:
+            raise ValueError("Reference application plan duplicates a source access connection")
+        source_to_regenerated[binding.source_access_connection_id] = str(row.access_connection_id)
+    diagnostic_mapping = actual_diagnostics.get("source_to_regenerated_access_connection_ids")
+    if (
+        diagnostic_mapping != source_to_regenerated
+        or set(source_to_regenerated.values()) != regenerated_ids
+    ):
+        raise ValueError("Compiled Reference diagnostics do not exactly map final regenerated rows")
+
+    payload_json = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
+    options_json = json.dumps(
+        _reference_option_collection(record),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
+    return _ValidatedReferencePublication(
+        record=record,
+        payload_json=payload_json,
+        options_json=options_json,
+    )
 
 
 def _ea_fixed_point_candidate_path(config: AreaConfig) -> Path:
@@ -342,16 +503,14 @@ def _ea_fixed_point_next_step(
         )
         if any(
             not math.isclose(actual, pinned, abs_tol=0.001)
-            for actual, pinned in zip(
-                actual_extent, WECA_PINNED_ELIGIBLE_ROUTE_BBOX, strict=True
-            )
+            for actual, pinned in zip(actual_extent, WECA_PINNED_ELIGIBLE_ROUTE_BBOX, strict=True)
         ):
             return _ea_fixed_point_repin_required(
                 "candidate-extent-or-request-differs-from-pinned-survey-index"
             )
-        if governed_survey_request_bbox(
-            routes, routing_buffer_m=WECA_ROUTING_BUFFER_M
-        ) != tuple(int(value) for value in WECA_SURVEY_REQUEST_BBOX):
+        if governed_survey_request_bbox(routes, routing_buffer_m=WECA_ROUTING_BUFFER_M) != tuple(
+            int(value) for value in WECA_SURVEY_REQUEST_BBOX
+        ):
             return _ea_fixed_point_repin_required(
                 "candidate-extent-or-request-differs-from-pinned-survey-index"
             )
@@ -366,8 +525,7 @@ def _ea_fixed_point_next_step(
     authority_boundaries = snapshot / "ea-authority-boundaries.geojson"
     survey_index = snapshot / "ea-survey-index.geojson"
     if any(
-        not path.is_file() or path.is_symlink()
-        for path in (authority_boundaries, survey_index)
+        not path.is_file() or path.is_symlink() for path in (authority_boundaries, survey_index)
     ):
         return _ea_fixed_point_repin_required("candidate-missing-pinned-survey-inputs")
     cache_dir = elevation.path.parent / "ea-dtm-cache"
@@ -926,7 +1084,12 @@ def _write_json_records(
     config: AreaConfig,
     compiled: CompiledNetwork,
     run_id: str,
+    reference_publication: _ValidatedReferencePublication | None = None,
 ) -> None:
+    if compiled.reference_satn_publication is not None and reference_publication is None:
+        raise ValueError(
+            "Reference JSON serialization requires compiler-bound publication evidence"
+        )
     topography_comparisons = pd.concat(
         [compiled.spine_access_connections, compiled.branch_meeting_connections],
         ignore_index=True,
@@ -1011,9 +1174,8 @@ def _write_json_records(
         "atm_geometry_included": compiled.atm_reference is not None,
         "disclaimer": DISCLAIMER,
     }
-    if compiled.reference_satn_publication is not None:
-        reference_record = compiled.reference_satn_publication.revalidated()
-        run["reference_satn"] = reference_record.publication_payload()
+    if reference_publication is not None:
+        run["reference_satn"] = reference_publication.payload()
     (output / "run.json").write_text(json.dumps(run, indent=2), encoding="utf-8")
     records = {
         "schema_version": SCHEMA_VERSION,
@@ -1324,10 +1486,7 @@ def _reference_option_collection(
         item.candidate_set_id: str(item.disposition)
         for item in reference.scenario.candidate_set_classifications
     }
-    resolutions = {
-        item.candidate_set_id: item
-        for item in reference.scenario.resolved_selections
-    }
+    resolutions = {item.candidate_set_id: item for item in reference.scenario.resolved_selections}
     features: list[dict[str, object]] = []
     for candidate_set in sorted(
         reference.scenario.candidate_sets,
@@ -1435,8 +1594,7 @@ def _reference_population_summary(criteria: object, candidate_id: str) -> dict[s
         for item in population.assessment.summaries
     }
     sensitivities = {
-        int(item.corridor_distance_m): item
-        for item in population.assessment.sensitivities
+        int(item.corridor_distance_m): item for item in population.assessment.sensitivities
     }
     for radius, findings in (
         (500, population.headline_500m),
@@ -1453,9 +1611,7 @@ def _reference_population_summary(criteria: object, candidate_id: str) -> dict[s
             "near_equivalent": finding.near_equivalent,
             "sensitive": sensitivity.sensitive,
             "within_tolerance": sensitivity.within_tolerance,
-            "ordering_flips_from_500m": (
-                sensitivity.ordering_flips_from_first_distance
-            ),
+            "ordering_flips_from_500m": (sensitivity.ordering_flips_from_first_distance),
             "current_development_omission": finding.current_development_omission,
             "borderline_oa_ids": list(finding.borderline_oa_ids),
         }
@@ -1482,8 +1638,7 @@ def _reference_education_summary(criteria: object, candidate_id: str) -> dict[st
         "independent_travel_state": str(opportunity.state),
         "independent_travel_opportunity_count": opportunity.opportunity_count,
         "independent_travel_caveat": (
-            "This is not a finding that the route is safe, suitable, or independently "
-            "accessible."
+            "This is not a finding that the route is safe, suitable, or independently accessible."
         ),
     }
 
@@ -1550,9 +1705,7 @@ def _reference_decision_summary(selection: object, resolution: object) -> dict[s
             "decision_evidence_ids": list(envelope.response.evidence_ids),
             "critique_finding": str(envelope.critique.finding),
             "critique_evidence_ids": list(envelope.critique.evidence_ids),
-            "resolved_challenge_fingerprints": list(
-                envelope.resolved_challenge_fingerprints
-            ),
+            "resolved_challenge_fingerprints": list(envelope.resolved_challenge_fingerprints),
             "envelope_fingerprint": envelope.envelope_fingerprint,
         }
     )
@@ -1577,8 +1730,7 @@ def _reference_option_evidence_html(
             "option and its evidence remains available below.</p>"
         ),
         f"<p><strong>Human selection rationale:</strong> {escape(decision.rationale)}</p>",
-        '<div id="reference-option-evidence" data-reference-option-count="'
-        f'{len(features)}">',
+        f'<div id="reference-option-evidence" data-reference-option-count="{len(features)}">',
     ]
     for feature in features:
         if not isinstance(feature, dict) or not isinstance(feature.get("properties"), dict):
@@ -1615,7 +1767,7 @@ def _reference_option_evidence_html(
                 "<h3>Population Reach</h3>",
                 _reference_population_html(population),
                 (
-                    "<p class=\"caveat\">Straight-line whole-Output-Area evidence; "
+                    '<p class="caveat">Straight-line whole-Output-Area evidence; '
                     "not demand, a walking-time claim, or population actually connected.</p>"
                 ),
                 "<h3>Education and independent travel</h3>",
@@ -1629,7 +1781,7 @@ def _reference_option_evidence_html(
                     ),
                 ),
                 (
-                    "<p class=\"caveat\">Independent-Travel Opportunity is not a "
+                    '<p class="caveat">Independent-Travel Opportunity is not a '
                     "finding that this route is safe, suitable, or independently accessible.</p>"
                 ),
                 "<h3>Existing-alignment evidence and unknowns</h3>",
@@ -1675,7 +1827,7 @@ def _reference_option_evidence_html(
                         "resolved_challenge_fingerprints",
                     ),
                 ),
-                f"<p class=\"caveat\">{escape(str(properties['disclaimer']))}</p>",
+                f'<p class="caveat">{escape(str(properties["disclaimer"]))}</p>',
                 "</details>",
             ]
         )
@@ -1745,16 +1897,13 @@ def _write_review_map(
     review: Path,
     config: AreaConfig,
     compiled: CompiledNetwork,
+    reference_publication: _ValidatedReferencePublication | None = None,
 ) -> None:
-    reference_record = (
-        compiled.reference_satn_publication.revalidated()
-        if compiled.reference_satn_publication is not None
-        else None
-    )
+    if compiled.reference_satn_publication is not None and reference_publication is None:
+        raise ValueError("Reference map serialization requires compiler-bound publication evidence")
+    reference_record = reference_publication.record if reference_publication is not None else None
     reference_options = (
-        _reference_option_collection(reference_record)
-        if reference_record is not None
-        else None
+        reference_publication.options() if reference_publication is not None else None
     )
     asset_root = files("satn.assets")
     asset_output = review / "assets"
@@ -1833,7 +1982,7 @@ def _write_review_map(
         "layer_counts": _layer_counts(compiled),
     }
     if reference_record is not None and reference_options is not None:
-        data["reference_satn"] = reference_record.publication_payload()
+        data["reference_satn"] = reference_publication.payload()
         data["reference_satn_options"] = reference_options
     (review / "data.js").write_text(
         f"window.SATN_DATA = {json.dumps(data).replace('</', '<\\/')};\n",

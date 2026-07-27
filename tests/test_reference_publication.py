@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -17,7 +18,8 @@ from test_reference_replay import (
 
 from satn.agents import FakeAgentRuntime
 from satn.compiler import compile_network
-from satn.pipeline import compile_reference
+from satn.pipeline import compile_reference, compile_reference_network
+from satn.publisher import publish
 from satn.reference_application import ReferenceSATNPublicationRecord
 
 
@@ -49,6 +51,20 @@ def _publishable_parallel_source():
         crs=4326,
     )
     return source
+
+
+def _refingerprint_publication(payload: dict[str, object]) -> None:
+    unsigned = dict(payload)
+    unsigned.pop("reference_publication_fingerprint", None)
+    payload["reference_publication_fingerprint"] = hashlib.sha256(
+        json.dumps(
+            unsigned,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def test_reference_compile_atomically_publishes_matching_canonical_provenance(
@@ -93,7 +109,11 @@ def test_reference_compile_atomically_publishes_matching_canonical_provenance(
     assert "Directness and topography" in html
     assert "Decision and critique provenance" in html
     assert "<details" in html and "<summary>" in html
-    assert "reference-satn-summary\" aria-labelledby=\"reference-satn-heading\" hidden" not in html
+    assert 'reference-satn-summary" aria-labelledby="reference-satn-heading" hidden' not in html
+    assert "Red dashed linework means selected" in html
+    assert "purple dashed linework means complementary" in html
+    assert "grey dashed linework means rejected" in html
+    assert "All dashed alternative linework is review-only evidence" in html
 
 
 def test_reference_publication_record_rejects_stale_self_fingerprint(
@@ -109,6 +129,33 @@ def test_reference_publication_record_rejects_stale_self_fingerprint(
 
     with pytest.raises(ValueError, match="diagnostics are stale"):
         ReferenceSATNPublicationRecord.from_publication_payload(payload)
+
+
+def test_reference_publication_public_parser_requires_exact_fingerprint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, reference, preparation = _reference_fixture(tmp_path)
+    monkeypatch.setattr("satn.pipeline.load_snapshot", lambda area: _publishable_parallel_source())
+    result = compile_reference(config, reference, preparation)
+    payload = json.loads((result.output_dir / "run.json").read_text(encoding="utf-8"))[
+        "reference_satn"
+    ]
+
+    missing = dict(payload)
+    missing.pop("reference_publication_fingerprint")
+    with pytest.raises(ValueError, match="requires its exact nonblank fingerprint"):
+        ReferenceSATNPublicationRecord.from_publication_payload(missing)
+
+    blank = dict(payload)
+    blank["reference_publication_fingerprint"] = ""
+    with pytest.raises(ValueError, match="requires its exact nonblank fingerprint"):
+        ReferenceSATNPublicationRecord.from_publication_payload(blank)
+
+    stale = dict(payload)
+    stale["reference_publication_fingerprint"] = "0" * 64
+    with pytest.raises(ValueError, match="publication fingerprint is stale"):
+        ReferenceSATNPublicationRecord.from_publication_payload(stale)
 
 
 def test_reference_publication_record_is_deeply_immutable_and_rejects_forged_contract(
@@ -129,9 +176,71 @@ def test_reference_publication_record_is_deeply_immutable_and_rejects_forged_con
     assert record.publication_payload()["application_diagnostics"]["status"] == "applied"
     forged = record.publication_payload()
     forged["decision_contract"] = "forged-contract"
-    forged["reference_publication_fingerprint"] = ""
+    _refingerprint_publication(forged)
     with pytest.raises(ValueError, match="decision contract disagrees"):
         ReferenceSATNPublicationRecord.from_publication_payload(forged)
+
+
+def test_publisher_rejects_freshly_refingerprinted_cross_lineage_records(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, reference, preparation = _reference_fixture(tmp_path)
+    monkeypatch.setattr("satn.pipeline.load_snapshot", lambda area: _publishable_parallel_source())
+    compiled = compile_reference_network(
+        config,
+        FakeAgentRuntime(),
+        reference,
+        preparation,
+    )
+    publish(config, compiled, "reference-good")
+    previous = (config.publication.output_dir / "run.json").read_bytes()
+    original = compiled.reference_satn_publication
+    assert original is not None
+
+    snapshot_forgery = original.publication_payload()
+    snapshot_forgery["snapshot_manifest_sha256"] = "0" * 64
+
+    manifest_forgery = original.publication_payload()
+    manifest = manifest_forgery["compilation_dependency_manifest"]
+    assert isinstance(manifest, dict)
+    components = manifest["components"]
+    assert isinstance(components, list) and components
+    components[0]["sha256"] = "0" * 64
+    manifest["sha256"] = hashlib.sha256(
+        json.dumps(
+            {
+                "schema_version": manifest["schema_version"],
+                "dependency_set_version": manifest["dependency_set_version"],
+                "components": components,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+    diagnostics_forgery = original.publication_payload()
+    diagnostics = diagnostics_forgery["application_diagnostics"]
+    assert isinstance(diagnostics, dict)
+    mapping = diagnostics["source_to_regenerated_access_connection_ids"]
+    assert isinstance(mapping, dict) and mapping
+    first_source = sorted(mapping)[0]
+    mapping[first_source] = "foreign-regenerated-access"
+
+    for forged_payload in (
+        snapshot_forgery,
+        manifest_forgery,
+        diagnostics_forgery,
+    ):
+        _refingerprint_publication(forged_payload)
+        compiled.reference_satn_publication = (
+            ReferenceSATNPublicationRecord.from_publication_payload(forged_payload)
+        )
+        with pytest.raises(ValueError, match="not anchored"):
+            publish(config, compiled, "reference-forged")
+        assert (config.publication.output_dir / "run.json").read_bytes() == previous
 
 
 def test_reference_publication_failure_preserves_previous_output(

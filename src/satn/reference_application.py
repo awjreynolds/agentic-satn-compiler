@@ -359,9 +359,7 @@ class ReferenceSATNPublicationRecord(BaseModel):
             "publication_authority": self.publication_authority,
         }
         if include_fingerprint:
-            payload["reference_publication_fingerprint"] = (
-                self.reference_publication_fingerprint
-            )
+            payload["reference_publication_fingerprint"] = self.reference_publication_fingerprint
         return payload
 
     def revalidated(self) -> ReferenceSATNPublicationRecord:
@@ -374,7 +372,13 @@ class ReferenceSATNPublicationRecord(BaseModel):
         cls,
         payload: Mapping[str, object],
     ) -> ReferenceSATNPublicationRecord:
-        """Parse the expanded public wire record into deeply immutable values."""
+        """Strictly verify an expanded public wire record; never reseal it."""
+
+        fingerprint = payload.get("reference_publication_fingerprint")
+        if not isinstance(fingerprint, str) or _SHA256.fullmatch(fingerprint) is None:
+            raise ValueError(
+                "Reference publication payload requires its exact nonblank fingerprint"
+            )
 
         required_json_fields = (
             "reference_selection",
@@ -386,11 +390,7 @@ class ReferenceSATNPublicationRecord(BaseModel):
             "accepted_decisions",
             "application_diagnostics",
         )
-        internal = {
-            key: value
-            for key, value in payload.items()
-            if key not in required_json_fields
-        }
+        internal = {key: value for key, value in payload.items() if key not in required_json_fields}
         for field in required_json_fields:
             if field not in payload:
                 raise ValueError(f"Reference publication payload is missing {field}")
@@ -533,9 +533,7 @@ def build_reference_satn_publication_record(
         snapshot_manifest_sha256=snapshot_manifest_sha256,
         compilation_input_fingerprint=compilation_input_fingerprint,
         governed_input_fingerprint=governed_input_fingerprint,
-        compilation_dependency_manifest_json=_canonical_json(
-            compilation_dependency_manifest
-        ),
+        compilation_dependency_manifest_json=_canonical_json(compilation_dependency_manifest),
         decision_contract=decision_contract,
         decision_ledger_input_json=_canonical_json(decision_ledger_input),
         accepted_decisions_json=_canonical_json(accepted_decisions),

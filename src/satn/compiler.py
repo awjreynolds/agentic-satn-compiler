@@ -16,7 +16,11 @@ import pandas as pd
 from shapely.geometry import MultiPoint
 
 from satn.agents import AgentDecisionResolver, AgentRuntimeSource, CompilationGate
-from satn.backbone import GAP_COLUMNS, _assemble_backbone_outward
+from satn.backbone import (
+    GAP_COLUMNS,
+    _assemble_backbone_outward,
+    assemble_backbone_outward,
+)
 from satn.cross_spine import CrossSpineProgress, resolve_cross_spine_assembly
 from satn.evidence import (
     PUBLIC_CYCLE_ROUTE_TYPES,
@@ -118,9 +122,7 @@ class CompiledNetwork:
     # Optional bounded Spine Access preparation. It remains absent, rather
     # than empty, for legacy compilations so their route and publication
     # behaviour stays byte-compatible.
-    spine_access_candidate_preparation: SpineAccessCandidatePreparationResult | None = (
-        None
-    )
+    spine_access_candidate_preparation: SpineAccessCandidatePreparationResult | None = None
     # A Reference record is deliberately absent for ordinary compilations.
     # That keeps their publication contract byte-compatible while giving the
     # dedicated Reference boundary one canonical provenance payload.
@@ -238,7 +240,7 @@ def _compile_network(
     strategic_spines = _strategic_spines(context)
     rural_communities = _rural_communities(communities)
     rural_schools = _rural_schools(context)
-    backbone = _assemble_backbone_outward(
+    backbone_arguments = (
         rural_communities,
         rural_schools,
         gateways,
@@ -248,7 +250,14 @@ def _compile_network(
         config.compilation.max_connection_km,
         source.get("elevation_evidence", empty_elevation_evidence(road_graph.crs)),
         config.compilation.topography,
-        reference_application_plan=reference_application_plan,
+    )
+    backbone = (
+        assemble_backbone_outward(*backbone_arguments)
+        if reference_application_plan is None
+        else _assemble_backbone_outward(
+            *backbone_arguments,
+            reference_application_plan=reference_application_plan,
+        )
     )
     spine_access_connections = backbone.connections
     access_obligations = backbone.obligations
@@ -627,9 +636,7 @@ def _compile_network(
         network_units=network_units,
         atm_reference=None,
         divergence_records=[],
-        superseded_hypotheses=sum(
-            record.decision == "superseded" for record in agent_records
-        ),
+        superseded_hypotheses=sum(record.decision == "superseded" for record in agent_records),
         human_intervention_requests=_human_intervention_requests(
             agent_records, config.compilation.agent.max_attempts
         ),
@@ -699,9 +706,7 @@ def _cross_spine_progress_observer(
                     "cross_spine_elapsed_seconds": round(elapsed, 3),
                     "cross_spine_throughput_connectors_per_second": round(throughput, 3),
                     "cross_spine_estimated_remaining_seconds": (
-                        round(estimated_remaining, 3)
-                        if estimated_remaining is not None
-                        else None
+                        round(estimated_remaining, 3) if estimated_remaining is not None else None
                     ),
                     "cross_spine_peak_noded_graph_edges": (
                         diagnostics.get("peak_noded_graph_edges", 0)
@@ -898,9 +903,7 @@ def _human_intervention_requests(
                 attempted_revisions=[
                     attempt.model_dump(mode="json") for attempt in record.attempts
                 ],
-                unresolved_findings=[
-                    finding.model_dump(mode="json") for finding in blocking
-                ],
+                unresolved_findings=[finding.model_dump(mode="json") for finding in blocking],
                 missing_evidence=sorted(
                     {
                         str(evidence_id)
