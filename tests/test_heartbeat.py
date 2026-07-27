@@ -6,6 +6,7 @@ import inspect
 import logging
 import shutil
 import time
+from io import StringIO
 from pathlib import Path
 from typing import ClassVar
 
@@ -60,9 +61,90 @@ def _fixture_config(tmp_path: Path) -> CouncilConfig:
 
 def _wait_for_heartbeats(caplog: pytest.LogCaptureFixture, count: int) -> None:
     deadline = time.monotonic() + 1
-    while len(caplog.records) < count and time.monotonic() < deadline:
+    while (
+        sum("event=satn_heartbeat" in record.getMessage() for record in caplog.records)
+        < count
+        and time.monotonic() < deadline
+    ):
         time.sleep(0.005)
-    assert len(caplog.records) >= count
+    assert (
+        sum("event=satn_heartbeat" in record.getMessage() for record in caplog.records)
+        >= count
+    )
+
+
+def test_progress_reports_phase_transitions_and_completion_to_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = iter((10.0, 10.0, 12.5, 14.0))
+    monkeypatch.setattr("satn.heartbeat.time.perf_counter", lambda: next(clock))
+    stdout = StringIO()
+    stderr = StringIO()
+    logger = logging.getLogger("tests.heartbeat.stderr")
+    handler = logging.StreamHandler(stderr)
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
+    try:
+        with StageHeartbeat(
+            logger,
+            "snapshot-acquisition",
+            {"completed": 2, "total": 5},
+            interval_seconds=60,
+        ) as heartbeat:
+            print("machine-readable-result", file=stdout)
+            heartbeat.set_stage("snapshot-validation")
+    finally:
+        logger.removeHandler(handler)
+        logger.propagate = True
+
+    assert stdout.getvalue() == "machine-readable-result\n"
+    messages = stderr.getvalue().splitlines()
+    assert messages == [
+        (
+            "event=satn_progress status=started stage=snapshot-acquisition "
+            'elapsed_seconds=0.0 context={"completed": 2, "total": 5}'
+        ),
+        (
+            "event=satn_progress status=running stage=snapshot-validation "
+            'elapsed_seconds=2.5 context={"completed": 2, "total": 5}'
+        ),
+        (
+            "event=satn_progress status=completed stage=snapshot-validation "
+            'elapsed_seconds=4.0 context={"completed": 2, "total": 5}'
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("exception", "status"),
+    [
+        (RuntimeError("failed"), "failed"),
+        (KeyboardInterrupt(), "interrupted"),
+    ],
+)
+def test_progress_reports_failed_and_interrupted_terminal_outcomes(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    exception: BaseException,
+    status: str,
+) -> None:
+    clock = iter((20.0, 20.0, 23.0))
+    monkeypatch.setattr("satn.heartbeat.time.perf_counter", lambda: next(clock))
+    logger = logging.getLogger(f"tests.heartbeat.{status}")
+    caplog.set_level(logging.INFO, logger=logger.name)
+
+    with (
+        pytest.raises(type(exception)),
+        StageHeartbeat(logger, "network-compilation", {}, interval_seconds=60),
+    ):
+        raise exception
+
+    assert (
+        f"event=satn_progress status={status} stage=network-compilation "
+        "elapsed_seconds=3.0 context={}"
+    ) in [record.getMessage() for record in caplog.records]
 
 
 def test_heartbeat_logs_current_stage_context_and_elapsed_time(
@@ -109,7 +191,11 @@ def test_heartbeat_merges_operational_progress_context(caplog: pytest.LogCapture
         )
         _wait_for_heartbeats(caplog, 1)
 
-    message = caplog.records[0].getMessage()
+    message = next(
+        record.getMessage()
+        for record in caplog.records
+        if "event=satn_heartbeat" in record.getMessage()
+    )
     assert '"cross_spine_connectors_assessed": 4' in message
     assert '"cross_spine_estimated_remaining_seconds": 2.4' in message
 
