@@ -59,6 +59,11 @@ from satn.spine_access_candidate_preparation import (
     SpineAccessCandidatePreparationResult,
     prepare_spine_access_candidates,
 )
+from satn.strategic_corridors import (
+    NetworkSelectionPreparationResult,
+    StrategicCorridorPreparationResult,
+    prepare_strategic_corridors,
+)
 from satn.topography import (
     GradientThresholds,
     build_topography_profiles,
@@ -123,6 +128,11 @@ class CompiledNetwork:
     # than empty, for legacy compilations so their route and publication
     # behaviour stays byte-compatible.
     spine_access_candidate_preparation: SpineAccessCandidatePreparationResult | None = None
+    # This sibling unit family keeps direct-spine attachments out of the legacy
+    # Spine Access contract while preparing their exact two-place corridor role.
+    # It is absent for profile-free compiles so ordinary output stays compatible.
+    strategic_corridor_preparation: StrategicCorridorPreparationResult | None = None
+    network_selection_preparation: NetworkSelectionPreparationResult | None = None
     # A Reference record is deliberately absent for ordinary compilations.
     # That keeps their publication contract byte-compatible while giving the
     # dedicated Reference boundary one canonical provenance payload.
@@ -204,6 +214,10 @@ def _compile_network(
 ) -> CompiledNetwork:
     places = source["places"].copy().sort_values("place_id").reset_index(drop=True)
     context = source.get("context", empty_context(source["network"].crs)).copy()
+    # Preserve raw current destination site/access-point geometry for the
+    # profile-enabled sibling preparation.  The ordinary scoped context keeps
+    # its existing schema and output behaviour.
+    strategic_corridor_context = context.copy()
     communities = places[places["kind"] == "community"].copy()
     if len(communities) < 2:
         raise ValueError("a network requires at least two Communities")
@@ -403,6 +417,8 @@ def _compile_network(
         minimum_sustained_spacing_m=(config.compilation.topography.minimum_sustained_spacing_m),
     )
     spine_access_candidate_preparation = None
+    strategic_corridor_preparation = None
+    network_selection_preparation = None
     if config.compilation.network_selection is not None:
         # This seam prepares finite Spine Access candidates and strict input
         # bindings. It does not select strategic Community Connections, choose
@@ -417,6 +433,21 @@ def _compile_network(
             official_road_classification=official_road_classification,
             source_config=config.source,
             config_directory=config.config_path.parent,
+        )
+        # Direct-to-spine rows retain their existing out-of-scope Spine Access
+        # disposition.  The sibling module derives finite strategic units from
+        # those exact compiler-emitted anchors without mutating this network.
+        strategic_corridor_preparation = prepare_strategic_corridors(
+            config.compilation.network_selection,
+            road_graph=road_graph,
+            spine_access_connections=spine_access_connections,
+            context=strategic_corridor_context,
+            source_config=config.source,
+            config_directory=config.config_path.parent,
+        )
+        network_selection_preparation = NetworkSelectionPreparationResult(
+            spine_access_preparation=spine_access_candidate_preparation,
+            strategic_corridor_preparation=strategic_corridor_preparation,
         )
     crossing_warnings = _backbone_crossing_warnings(
         spine_access_connections, branch_meeting_connections
@@ -655,8 +686,23 @@ def _compile_network(
                 if spine_access_candidate_preparation is not None
                 else {}
             ),
+            **(
+                {
+                    "strategic_corridor_preparation": (
+                        strategic_corridor_preparation.metadata()
+                    ),
+                    "network_selection_preparation": (
+                        network_selection_preparation.metadata()
+                    ),
+                }
+                if strategic_corridor_preparation is not None
+                and network_selection_preparation is not None
+                else {}
+            ),
         },
         spine_access_candidate_preparation=spine_access_candidate_preparation,
+        strategic_corridor_preparation=strategic_corridor_preparation,
+        network_selection_preparation=network_selection_preparation,
     )
     # ``compile_network`` is also a supported public entry point.  Its output
     # must therefore carry the same exact decision wire contract as the

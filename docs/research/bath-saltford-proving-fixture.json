@@ -1,9 +1,9 @@
 {
   "schema": "satn-bath-saltford-proving/v1",
-  "status": "blocked-before-reference-replay",
+  "status": "strategic-corridor-preparation-proven-reference-replay-blocked",
   "scope": "synthetic-minimised-geography-not-current-design",
   "benchmark": {
-    "candidate_count": 0,
+    "candidate_count": 8,
     "wall_time_seconds": null,
     "wall_time_status": "not-persisted: test-host dependent; no B&NES or WECA performance claim",
     "stages": [
@@ -12,7 +12,8 @@
       "strict-education-loader",
       "population-500m-1000m-comparison",
       "education-access-assessment",
-      "compiler-candidate-preparation"
+      "compiler-candidate-preparation",
+      "strategic-corridor-sibling-preparation"
     ]
   },
   "observed_evidence": {
@@ -32,14 +33,14 @@
     }
   },
   "implementation_gap": {
-    "id": "direct-strategic-spine-psa-promotion",
+    "id": "strategic-corridor-reference-replay-and-publication",
     "blocking_acceptance": ["14.1", "14.11", "14.12"],
-    "observed": "A current NCN/greenway is correctly derived as a Strategic Spine. Bath edge and Saltford therefore receive direct Strategic Spine attachments, and the current PSA preparer emits zero candidate sets.",
-    "exact_seam": "spine_access_candidate_preparation._prepare_spine_access_candidate_sets promotes only parent_role=spine-access-connection community rows; direct parent_role=strategic-spine rows are recorded as out-of-scope. CriteriaAssemblyInput accepts destination evidence supplied by a caller but neither routes destination access nor creates a complementary connection.",
-    "smallest_next_slice": "Add a governed destination-access/corridor candidate-preparation seam for declared Strategic Education Destinations and relevant direct-spine communities. It must generate finite route options, bind school/destination obligations, and classify substitute versus complementary from exact role/obligation coverage before Reference adoption/replay.",
+    "observed": "The sibling strategic-corridor preparer derives a finite interurban Railway/NCN versus A-road-related candidate set from exact direct-spine Community anchors and a separate A4/campus destination-access set from a current governed Bath Spa site/access-point geometry joined to the RoadGraph. The legacy Spine Access preparer still retains direct parent_role=strategic-spine rows as out of scope.",
+    "exact_seam": "Strategic-corridor preparation has no criteria/scenario decision, governed human Reference replay binding or publication authority. Destination access is prepared only when the admission site_id, current geometry, access_point_evidence_ids and RoadGraph attachment agree.",
+    "smallest_next_slice": "Generalise criteria/scenario selection and the private Reference application plan across both logical unit roles, then validate and publish selected/complementary geometry through whole-network replay.",
     "non_claims": [
       "No route is asserted safe, feasible, funded, legally accessible or adopted.",
-      "No automatic Bath Spa University connection is claimed by the present compiler.",
+      "A prepared campus candidate is not a selected, safe, feasible, funded or delivered Bath Spa University connection.",
       "This fixture establishes no B&NES or WECA runtime baseline."
     ]
   }

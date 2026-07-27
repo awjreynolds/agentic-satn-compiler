@@ -168,10 +168,19 @@ def test_bath_saltford_fixture_records_evidence_then_exposes_current_psa_boundar
         item.reason == "out-of-scope-direct-strategic-spine-attachment"
         for item in preparation.connection_roster
     )
+    strategic = compiled.strategic_corridor_preparation
+    assert strategic is not None and strategic.prepared
+    assert {item.unit_role.value for item in strategic.units} == {
+        "interurban-spine",
+        "strategic-destination-access",
+    }
     assert time.perf_counter() - started > 0
 
     result = json.loads(RESULT.read_text(encoding="utf-8"))
-    assert result["status"] == "blocked-before-reference-replay"
-    assert result["benchmark"]["candidate_count"] == 0
-    assert result["implementation_gap"]["id"] == "direct-strategic-spine-psa-promotion"
+    assert result["status"] == "strategic-corridor-preparation-proven-reference-replay-blocked"
+    assert result["benchmark"]["candidate_count"] == 8
+    assert (
+        result["implementation_gap"]["id"]
+        == "strategic-corridor-reference-replay-and-publication"
+    )
     assert "14.1" in result["implementation_gap"]["blocking_acceptance"]
