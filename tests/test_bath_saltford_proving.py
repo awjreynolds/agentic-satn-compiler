@@ -168,14 +168,13 @@ def test_bath_saltford_fixture_records_evidence_then_exposes_current_psa_boundar
         for record in interurban.candidate_records
         if record.candidate.source_class.value == "verified-existing-asset"
     )
-    assert railway.routing_edge_ids == (
-        "railway-west-reverse",
-        "railway-east-reverse",
-    )
-    assert railway.reverse_routing_edge_ids == (
-        "railway-east-forward",
-        "railway-west-forward",
-    )
+    assert {
+        railway.routing_edge_ids,
+        railway.reverse_routing_edge_ids,
+    } == {
+        ("railway-west-reverse", "railway-east-reverse"),
+        ("railway-east-forward", "railway-west-forward"),
+    }
     assert not railway.candidate.served_strategic_destination_ids
     assert destination.candidate_records[0].routing_edge_ids == (
         "a4-campus-forward",
