@@ -104,6 +104,9 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     "satn/deployment_provenance.py": "deployment lock validation",
     "satn/heartbeat.py": "operational progress reporting",
     "satn/pages_packaging.py": "Pages release packaging",
+    "satn/psa_criteria_assembly.py": (
+        "post-compile governed criteria assembly without CompiledNetwork mutation"
+    ),
     "satn/publisher.py": "publication, PDF and review-map serialization",
     "satn/runtime_governance.py": "current publication runtime-governance validation",
     "satn/runtime_governance_contract.py": "current publication governance contract",
