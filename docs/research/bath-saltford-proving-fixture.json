@@ -1,6 +1,6 @@
 {
   "schema": "satn-bath-saltford-proving/v1",
-  "status": "strategic-corridor-preparation-proven-reference-replay-blocked",
+  "status": "strategic-corridor-scenario-proven-reference-replay-blocked",
   "scope": "synthetic-minimised-geography-not-current-design",
   "benchmark": {
     "candidate_count": 3,
@@ -15,7 +15,9 @@
       "population-500m-1000m-comparison",
       "education-access-assessment",
       "compiler-candidate-preparation",
-      "strategic-corridor-sibling-preparation"
+      "strategic-corridor-sibling-preparation",
+      "strategic-role-criteria-assembly",
+      "strategic-scenario-compilation"
     ]
   },
   "observed_evidence": {
@@ -39,9 +41,9 @@
   "implementation_gap": {
     "id": "strategic-corridor-reference-replay-and-publication",
     "blocking_acceptance": ["14.1", "14.11", "14.12"],
-    "observed": "The sibling strategic-corridor preparer derives a two-candidate interurban Railway/NCN versus A-road-related set from exact direct-spine Community anchors and one deduplicated A4/campus destination-access candidate. Four generation strategies collapse into the exact same campus forward/reverse edges and physical geometry while remaining visible as provenance. The legacy Spine Access preparer still retains direct parent_role=strategic-spine rows as out of scope.",
-    "exact_seam": "Strategic-corridor preparation has no criteria/scenario decision, governed human Reference replay binding or publication authority. Destination access is prepared only when the admission record, access-point evidence, current site geometry, explicit graph node, exact incident forward/reverse edges and content binding agree.",
-    "smallest_next_slice": "Generalise criteria/scenario selection and the private Reference application plan across both logical unit roles, then validate and publish selected/complementary geometry through whole-network replay.",
+    "observed": "The sibling strategic-corridor preparer derives a two-candidate interurban Railway/NCN versus A-road-related set from exact direct-spine Community anchors and one deduplicated A4/campus destination-access candidate. Four generation strategies collapse into the exact same campus forward/reverse edges and physical geometry while remaining visible as provenance. Governed criteria and Scenario compilation now cover both role-specific units without a weighted score. The legacy Spine Access preparer still retains direct parent_role=strategic-spine rows as out of scope.",
+    "exact_seam": "Strategic-corridor preparation and criteria/Scenario compilation have no governed human Reference replay binding or publication authority. Destination access evidence is derived only when the admission record, access-point evidence, current site geometry, explicit graph node, exact incident forward/reverse edges and content binding agree. Missing campus binding cannot produce a Scenario.",
+    "smallest_next_slice": "Add a discriminated strategic sibling to the private Reference application plan, require human adoption, then apply the selected interurban spine before backbone assembly and regenerate destination access as a first-class complementary role without changing the ordinary compiler or public backbone signature.",
     "non_claims": [
       "No route is asserted safe, feasible, funded, legally accessible or adopted.",
       "A prepared campus candidate is not a selected, safe, feasible, funded or delivered Bath Spa University connection.",

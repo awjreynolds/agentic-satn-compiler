@@ -120,6 +120,9 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     "satn/scenario_compilation.py": (
         "post-compile Scenario Compilation bridge without CompiledNetwork mutation"
     ),
+    "satn/strategic_criteria_scenario.py": (
+        "post-compile strategic criteria and Scenario bridge without CompiledNetwork mutation"
+    ),
 }
 
 # These are the distributions whose executed runtime can change a compiled

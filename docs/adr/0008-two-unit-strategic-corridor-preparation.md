@@ -50,6 +50,24 @@ replay, geometry mutation or publication authority.  A private aggregate
 preparation view can present both unit families to later criteria/scenario work
 without renaming a strategic unit as an `access_connection_id`.
 
+The next bounded layer compiles both units through the existing separate
+population, education, existing-alignment (when supplied), directness,
+topography and uncertainty criteria.  A private typed adapter translates the
+unit shape into the governed criterion assembler; its legacy connection-shaped
+key is never exposed.  Strategic Destination option evidence is derived only
+from the admitted destination and its exact current forward/reverse graph
+binding.  Interurban candidates retain only their two Network Place
+obligations.  The resulting `ScenarioCompilation` therefore classifies the
+Railway/A-road alternatives as substitutes and the campus access as a
+complementary required role.
+
+This criteria-and-Scenario layer remains inspect-only.  Its bounded review
+ledger may request agent analysis, but an agent cannot adopt the result.  Human
+adoption and exact Reference application remain separate later authorities.
+The high-risk pre-backbone replay seam is intentionally not crossed until it
+can regenerate destination access as a first-class role without changing the
+ordinary compiler or public backbone signature.
+
 ## Consequences
 
 - A governed site/access geometry schema is required before destination access
@@ -59,5 +77,7 @@ without renaming a strategic unit as an `access_connection_id`.
   delivery decision.
 - The output does not claim a route is safe, suitable for independent travel,
   lawful, feasible, cheap, deliverable, funded or adopted.
-- Reference replay and publication remain a later slice, after exact selection
-  and lineage/application bindings are implemented for both unit types.
+- Criteria and Scenario selection now cover both role-specific units without a
+  weighted aggregate score.
+- Reference application, pre-backbone whole-network replay, human adoption and
+  publication remain a later slice.
