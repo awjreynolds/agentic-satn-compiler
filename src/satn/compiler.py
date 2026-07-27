@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from itertools import combinations
 from numbers import Number
+from typing import TYPE_CHECKING
 
 import geopandas as gpd
 import networkx as nx
@@ -16,7 +17,11 @@ import pandas as pd
 from shapely.geometry import MultiPoint
 
 from satn.agents import AgentDecisionResolver, AgentRuntimeSource, CompilationGate
-from satn.backbone import GAP_COLUMNS, assemble_backbone_outward
+from satn.backbone import (
+    GAP_COLUMNS,
+    _assemble_backbone_outward,
+    assemble_backbone_outward,
+)
 from satn.cross_spine import CrossSpineProgress, resolve_cross_spine_assembly
 from satn.evidence import (
     PUBLIC_CYCLE_ROUTE_TYPES,
@@ -41,11 +46,32 @@ from satn.models import (
     TrafficLight,
     UrbanClassificationStatus,
 )
+from satn.reference_application import (
+    ReferenceApplicationPlan,
+    ReferenceSATNPublicationRecord,
+)
 from satn.routing import RoadGraph
 from satn.school_street import assess_school_street_candidates
 from satn.settlement import (
     assess_community_urban_eligibility,
     urban_settlement_form_profiles,
+)
+from satn.spine_access_candidate_preparation import (
+    SpineAccessCandidatePreparationResult,
+    prepare_spine_access_candidates,
+)
+from satn.strategic_corridors import (
+    NetworkSelectionPreparationResult,
+    StrategicCorridorPreparationResult,
+    prepare_strategic_corridors,
+)
+from satn.strategic_reference_replay import (
+    StrategicReferenceReplayMaterialisation,
+    ValidatedStrategicReferenceReplay,
+    empty_destination_access_connections,
+    empty_interurban_connections,
+    materialise_replay,
+    served_obligations_frame,
 )
 from satn.topography import (
     GradientThresholds,
@@ -55,6 +81,9 @@ from satn.topography import (
 from satn.urban import derive_urban_structure
 from satn.urban_community import assess_urban_community_access, urban_community_gaps
 from satn.urban_school import assess_urban_school_access
+
+if TYPE_CHECKING:
+    from satn.strategic_reference_publication import StrategicReferencePublicationRecord
 
 URBAN_A_ROAD_SOURCE_ALIGNMENT_TOLERANCE_M = 100.0
 
@@ -107,11 +136,43 @@ class CompiledNetwork:
     # the input fingerprint independently reproducible.
     decision_ledger_input: dict[str, object] = field(default_factory=dict)
     accepted_decisions: list[dict[str, str]] = field(default_factory=list)
+    # Optional bounded Spine Access preparation. It remains absent, rather
+    # than empty, for legacy compilations so their route and publication
+    # behaviour stays byte-compatible.
+    spine_access_candidate_preparation: SpineAccessCandidatePreparationResult | None = None
+    # This sibling unit family keeps direct-spine attachments out of the legacy
+    # Spine Access contract while preparing their exact two-place corridor role.
+    # It is absent for profile-free compiles so ordinary output stays compatible.
+    strategic_corridor_preparation: StrategicCorridorPreparationResult | None = None
+    network_selection_preparation: NetworkSelectionPreparationResult | None = None
+    # A Reference record is deliberately absent for ordinary compilations.
+    # That keeps their publication contract byte-compatible while giving the
+    # dedicated Reference boundary one canonical provenance payload.
+    reference_satn_publication: ReferenceSATNPublicationRecord | None = None
+    # Private strategic replay outputs remain empty for every ordinary compile.
+    strategic_interurban_connections: gpd.GeoDataFrame = field(
+        default_factory=empty_interurban_connections
+    )
+    strategic_destination_access_connections: gpd.GeoDataFrame = field(
+        default_factory=empty_destination_access_connections
+    )
+    strategic_reference_diagnostics: dict[str, object] = field(default_factory=dict)
+    # Strategic publication provenance is intentionally a sibling of the
+    # replay frames.  It is absent from ordinary and community paths.
+    strategic_reference_publication: StrategicReferencePublicationRecord | None = None
 
     @property
     def connection_count(self) -> int:
         """Number of authoritative Community/School access and branch-meeting edges."""
         return len(self.spine_access_connections) + len(self.branch_meeting_connections)
+
+    @property
+    def strategic_reference_connection_count(self) -> int:
+        """Number of first-class connections materialised by strategic replay."""
+        return (
+            len(self.strategic_interurban_connections)
+            + len(self.strategic_destination_access_connections)
+        )
 
     @property
     def status(self) -> str:
@@ -133,8 +194,87 @@ def compile_network(
     heartbeat: StageHeartbeat | None = None,
     cross_spine_progress: CrossSpineProgress | None = None,
 ) -> CompiledNetwork:
+    """Compile the ordinary current-input network with no Reference replay input."""
+
+    return _compile_network(
+        config,
+        source,
+        runtime,
+        governed_input_fingerprint=governed_input_fingerprint,
+        decision_resolver=decision_resolver,
+        heartbeat=heartbeat,
+        cross_spine_progress=cross_spine_progress,
+    )
+
+
+def _compile_network_with_reference(
+    config: AreaConfig,
+    source: dict[str, gpd.GeoDataFrame],
+    runtime: AgentRuntimeSource,
+    reference_application_plan: ReferenceApplicationPlan,
+    *,
+    governed_input_fingerprint: str,
+    decision_resolver: AgentDecisionResolver,
+    heartbeat: StageHeartbeat | None = None,
+    cross_spine_progress: CrossSpineProgress | None = None,
+) -> CompiledNetwork:
+    """Private replay seam reachable only after pipeline-owned baseline validation."""
+
+    return _compile_network(
+        config,
+        source,
+        runtime,
+        governed_input_fingerprint=governed_input_fingerprint,
+        decision_resolver=decision_resolver,
+        heartbeat=heartbeat,
+        cross_spine_progress=cross_spine_progress,
+        reference_application_plan=reference_application_plan,
+    )
+
+
+def _compile_network_with_strategic_reference(
+    config: AreaConfig,
+    source: dict[str, gpd.GeoDataFrame],
+    runtime: AgentRuntimeSource,
+    validated_replay: ValidatedStrategicReferenceReplay,
+    *,
+    governed_input_fingerprint: str,
+    decision_resolver: AgentDecisionResolver,
+    heartbeat: StageHeartbeat | None = None,
+    cross_spine_progress: CrossSpineProgress | None = None,
+) -> CompiledNetwork:
+    """Private seam accepting only pipeline-validated strategic replay state."""
+
+    return _compile_network(
+        config,
+        source,
+        runtime,
+        governed_input_fingerprint=governed_input_fingerprint,
+        decision_resolver=decision_resolver,
+        heartbeat=heartbeat,
+        cross_spine_progress=cross_spine_progress,
+        validated_strategic_replay=validated_replay,
+    )
+
+
+def _compile_network(
+    config: AreaConfig,
+    source: dict[str, gpd.GeoDataFrame],
+    runtime: AgentRuntimeSource,
+    *,
+    governed_input_fingerprint: str = "",
+    decision_resolver: AgentDecisionResolver | None = None,
+    heartbeat: StageHeartbeat | None = None,
+    cross_spine_progress: CrossSpineProgress | None = None,
+    reference_application_plan: ReferenceApplicationPlan | None = None,
+    validated_strategic_replay: ValidatedStrategicReferenceReplay | None = None,
+) -> CompiledNetwork:
     places = source["places"].copy().sort_values("place_id").reset_index(drop=True)
     context = source.get("context", empty_context(source["network"].crs)).copy()
+    # Preserve raw current destination site/access-point geometry for the
+    # profile-enabled sibling preparation.  The ordinary scoped context keeps
+    # its existing schema and output behaviour.
+    strategic_corridor_context = context.copy()
     communities = places[places["kind"] == "community"].copy()
     if len(communities) < 2:
         raise ValueError("a network requires at least two Communities")
@@ -170,9 +310,23 @@ def compile_network(
     )
     strategic_spines = _strategic_spines(context)
     rural_communities = _rural_communities(communities)
+    strategic_replay: StrategicReferenceReplayMaterialisation | None = None
+    backbone_rural_communities = rural_communities
+    if validated_strategic_replay is not None:
+        strategic_replay = materialise_replay(
+            validated_strategic_replay,
+            strategic_spines,
+            communities,
+            road_graph,
+        )
+        strategic_spines = strategic_replay.effective_strategic_spines
+        served_endpoint_ids = set(strategic_replay.served_endpoint_place_ids)
+        backbone_rural_communities = rural_communities[
+            ~rural_communities["place_id"].astype(str).isin(served_endpoint_ids)
+        ].copy()
     rural_schools = _rural_schools(context)
-    backbone = assemble_backbone_outward(
-        rural_communities,
+    backbone_arguments = (
+        backbone_rural_communities,
         rural_schools,
         gateways,
         strategic_spines,
@@ -182,11 +336,31 @@ def compile_network(
         source.get("elevation_evidence", empty_elevation_evidence(road_graph.crs)),
         config.compilation.topography,
     )
+    backbone = (
+        assemble_backbone_outward(*backbone_arguments)
+        if reference_application_plan is None
+        else _assemble_backbone_outward(
+            *backbone_arguments,
+            reference_application_plan=reference_application_plan,
+        )
+    )
     spine_access_connections = backbone.connections
     access_obligations = backbone.obligations
     access_obligations["network_scope"] = access_obligations["network_scope"].astype(object)
     rural_obligations = access_obligations["obligation_kind"].isin(["community", "school"])
     access_obligations.loc[rural_obligations, "network_scope"] = NetworkScope.RURAL.value
+    if strategic_replay is not None:
+        replay_obligations = served_obligations_frame(strategic_replay, communities)
+        access_obligations = gpd.GeoDataFrame(
+            pd.concat(
+                [access_obligations, replay_obligations],
+                ignore_index=True,
+                sort=False,
+            ),
+            columns=access_obligations.columns,
+            geometry="geometry",
+            crs=access_obligations.crs,
+        )
     spine_access_branches = backbone.branches
     branch_meeting_connections = backbone.meeting_connections
     cross_spine_connectors = backbone.cross_spine_connectors
@@ -325,6 +499,39 @@ def compile_network(
         maximum_sample_spacing_m=(config.compilation.topography.maximum_sample_spacing_m),
         minimum_sustained_spacing_m=(config.compilation.topography.minimum_sustained_spacing_m),
     )
+    spine_access_candidate_preparation = None
+    strategic_corridor_preparation = None
+    network_selection_preparation = None
+    if config.compilation.network_selection is not None:
+        # This seam prepares finite Spine Access candidates and strict input
+        # bindings. It does not select strategic Community Connections, choose
+        # a Preferred Strategic Alignment, or mutate compiled routes.
+        spine_access_candidate_preparation = prepare_spine_access_candidates(
+            config.compilation.network_selection,
+            road_graph=road_graph,
+            spine_access_connections=spine_access_connections,
+            access_obligations=access_obligations,
+            strategic_spines=strategic_spines,
+            context=context,
+            official_road_classification=official_road_classification,
+            source_config=config.source,
+            config_directory=config.config_path.parent,
+        )
+        # Direct-to-spine rows retain their existing out-of-scope Spine Access
+        # disposition.  The sibling module derives finite strategic units from
+        # those exact compiler-emitted anchors without mutating this network.
+        strategic_corridor_preparation = prepare_strategic_corridors(
+            config.compilation.network_selection,
+            road_graph=road_graph,
+            spine_access_connections=spine_access_connections,
+            context=strategic_corridor_context,
+            source_config=config.source,
+            config_directory=config.config_path.parent,
+        )
+        network_selection_preparation = NetworkSelectionPreparationResult(
+            spine_access_preparation=spine_access_candidate_preparation,
+            strategic_corridor_preparation=strategic_corridor_preparation,
+        )
     crossing_warnings = _backbone_crossing_warnings(
         spine_access_connections, branch_meeting_connections
     )
@@ -543,9 +750,7 @@ def compile_network(
         network_units=network_units,
         atm_reference=None,
         divergence_records=[],
-        superseded_hypotheses=sum(
-            record.decision == "superseded" for record in agent_records
-        ),
+        superseded_hypotheses=sum(record.decision == "superseded" for record in agent_records),
         human_intervention_requests=_human_intervention_requests(
             agent_records, config.compilation.agent.max_attempts
         ),
@@ -555,7 +760,57 @@ def compile_network(
             "community_coverage": community_coverage,
             "urban_settlement_form_profiles": urban_settlement_form_profiles(communities),
             "urban_a_road_spine_coverage": urban_a_road_coverage,
+            **(
+                {
+                    "spine_access_candidate_preparation": (
+                        spine_access_candidate_preparation.diagnostics
+                    )
+                }
+                if spine_access_candidate_preparation is not None
+                else {}
+            ),
+            **(
+                {
+                    "strategic_corridor_preparation": (
+                        strategic_corridor_preparation.metadata()
+                    ),
+                    "network_selection_preparation": (
+                        network_selection_preparation.metadata()
+                    ),
+                }
+                if strategic_corridor_preparation is not None
+                and network_selection_preparation is not None
+                else {}
+            ),
         },
+        spine_access_candidate_preparation=spine_access_candidate_preparation,
+        strategic_corridor_preparation=strategic_corridor_preparation,
+        network_selection_preparation=network_selection_preparation,
+        strategic_interurban_connections=(
+            strategic_replay.interurban_connections
+            if strategic_replay is not None
+            else empty_interurban_connections()
+        ),
+        strategic_destination_access_connections=(
+            strategic_replay.destination_access_connections
+            if strategic_replay is not None
+            else empty_destination_access_connections()
+        ),
+        strategic_reference_diagnostics=(
+            strategic_replay.diagnostics
+            | {
+                "backbone_rural_community_count_before": len(rural_communities),
+                "backbone_rural_community_count_after": len(
+                    backbone_rural_communities
+                ),
+                "filtered_backbone_network_place_ids": list(
+                    strategic_replay.served_endpoint_place_ids
+                ),
+                "destination_access_satisfied_community_obligation_count": 0,
+            }
+            if strategic_replay is not None
+            else {}
+        ),
     )
     # ``compile_network`` is also a supported public entry point.  Its output
     # must therefore carry the same exact decision wire contract as the
@@ -605,9 +860,7 @@ def _cross_spine_progress_observer(
                     "cross_spine_elapsed_seconds": round(elapsed, 3),
                     "cross_spine_throughput_connectors_per_second": round(throughput, 3),
                     "cross_spine_estimated_remaining_seconds": (
-                        round(estimated_remaining, 3)
-                        if estimated_remaining is not None
-                        else None
+                        round(estimated_remaining, 3) if estimated_remaining is not None else None
                     ),
                     "cross_spine_peak_noded_graph_edges": (
                         diagnostics.get("peak_noded_graph_edges", 0)
@@ -804,9 +1057,7 @@ def _human_intervention_requests(
                 attempted_revisions=[
                     attempt.model_dump(mode="json") for attempt in record.attempts
                 ],
-                unresolved_findings=[
-                    finding.model_dump(mode="json") for finding in blocking
-                ],
+                unresolved_findings=[finding.model_dump(mode="json") for finding in blocking],
                 missing_evidence=sorted(
                     {
                         str(evidence_id)

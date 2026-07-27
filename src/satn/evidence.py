@@ -548,12 +548,49 @@ def mark_ncn_edges(network: gpd.GeoDataFrame, context: gpd.GeoDataFrame) -> gpd.
         result["satn_ncn"] = False
         return result
     projected = result.to_crs(27700)
-    corridor = ncn.to_crs(27700).geometry.buffer(20).union_all()
+    projected_corridor = gpd.GeoSeries(
+        [ncn.to_crs(27700).geometry.buffer(20).union_all()],
+        crs=27700,
+    )
     result["satn_ncn"] = [
-        bool(geometry.length and geometry.intersection(corridor).length / geometry.length >= 0.5)
+        corridor_overlap_share(
+            geometry,
+            projected_corridor,
+            route_crs=projected.crs,
+            corridor_crs=projected_corridor.crs,
+            buffer_m=0,
+        )
+        >= 0.5
         for geometry in projected.geometry
     ]
     return result
+
+
+def corridor_overlap_share(
+    route: LineString,
+    corridor_geometries: object,
+    *,
+    route_crs: object,
+    corridor_crs: object,
+    buffer_m: float,
+) -> float:
+    """Return the directional share of a route inside buffered corridor geometry."""
+    projected_route = gpd.GeoSeries([route], crs=route_crs).to_crs(27700).iloc[0]
+    if not projected_route.length:
+        return 0.0
+    projected_corridors = gpd.GeoSeries(
+        corridor_geometries,
+        crs=corridor_crs,
+    ).to_crs(27700)
+    corridor = (
+        projected_corridors.union_all()
+        if buffer_m == 0
+        else projected_corridors.buffer(buffer_m).union_all()
+    )
+    return min(
+        1.0,
+        float(projected_route.intersection(corridor).length / projected_route.length),
+    )
 
 
 def _retail_centres(points: list[dict[str, object]], crs: object) -> list[dict[str, object]]:

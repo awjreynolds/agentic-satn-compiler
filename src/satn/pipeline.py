@@ -7,19 +7,30 @@ import json
 import logging
 import time
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
+
+import geopandas as gpd
 
 from satn.agents import (
     AgentCompilationTerminated,
     AgentDecisionRequired,
     AgentDecisionResolver,
     AgentRuntimeProvider,
+    AgentRuntimeSource,
     runtime_for,
 )
+from satn.alignment_selection import ReferenceSATNSelection
 from satn.atm import compare_atm, load_atm
 from satn.compilation_dependencies import compilation_dependency_manifest
-from satn.compiler import compile_network
+from satn.compiler import (
+    CompiledNetwork,
+    _compile_network_with_reference,
+    _compile_network_with_strategic_reference,
+    compile_network,
+)
 from satn.constants import SCHEMA_VERSION
+from satn.content_identity import ordered_geometry_fingerprint
 from satn.heartbeat import StageHeartbeat
 from satn.models import (
     AgentDecisionLedger,
@@ -38,10 +49,113 @@ from satn.publisher import (
     publish,
     validate_publication,
 )
+from satn.reference_application import (
+    _build_reference_application_plan_for_current_baseline,
+    build_reference_satn_publication_record,
+)
 from satn.runtime_governance import incomplete_runtime_governance
 from satn.sources import load_snapshot
+from satn.spine_access_candidate_preparation import SpineAccessCandidatePreparationResult
+from satn.strategic_reference_application import StrategicReferenceApplicationPlan
+from satn.strategic_reference_publication import (
+    build_strategic_reference_publication_record,
+)
+from satn.strategic_reference_replay import validate_fresh_replay
 
 LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _FreshReferenceBaseline:
+    council: AreaConfig
+    ledger: AgentDecisionLedger
+    dependency_manifest: dict[str, object]
+    governed_input_fingerprint: str
+    source: dict[str, gpd.GeoDataFrame]
+    compiled: CompiledNetwork
+
+
+def _fresh_reference_baseline(
+    config: AreaConfig | str | Path,
+    decision_ledger: AgentDecisionLedger | str | Path | None,
+    heartbeat: StageHeartbeat | None,
+    *,
+    label: str,
+) -> _FreshReferenceBaseline:
+    council = (
+        config
+        if isinstance(config, (AreaDefinition, CouncilConfig))
+        else AreaDefinition.from_yaml(config)
+    )
+    ledger = _load_decision_ledger(decision_ledger)
+    dependency_manifest = compilation_dependency_manifest()
+    governed_input_fingerprint = compilation_governed_input_fingerprint(
+        council,
+        dependency_manifest=dependency_manifest,
+    )
+    source = load_snapshot(council)
+    resolver = AgentDecisionResolver(ledger, governed_input_fingerprint)
+    baseline = compile_network(
+        council,
+        _copy_compilation_source(source),
+        None,
+        governed_input_fingerprint=governed_input_fingerprint,
+        decision_resolver=resolver,
+        heartbeat=heartbeat,
+    )
+    unconsumed = {
+        response.request_id for response in ledger.responses
+    } - resolver.consumed_request_ids
+    if unconsumed:
+        raise ValueError(
+            "decision ledger contains responses that do not belong to the fresh "
+            f"{label} baseline: " + ", ".join(sorted(unconsumed))
+        )
+    return _FreshReferenceBaseline(
+        council=council,
+        ledger=ledger,
+        dependency_manifest=dependency_manifest,
+        governed_input_fingerprint=governed_input_fingerprint,
+        source=source,
+        compiled=baseline,
+    )
+
+
+def _finalize_reference_network(
+    compiled: CompiledNetwork,
+    baseline: _FreshReferenceBaseline,
+    final_resolver: AgentDecisionResolver,
+    *,
+    label: str,
+) -> CompiledNetwork:
+    unconsumed = {
+        response.request_id for response in baseline.ledger.responses
+    } - final_resolver.consumed_request_ids
+    if unconsumed:
+        raise ValueError(
+            "decision ledger contains responses that do not belong to the fresh "
+            f"{label} compilation: " + ", ".join(sorted(unconsumed))
+        )
+    compiled.compilation_input_fingerprint = decision_ledger_input_fingerprint(
+        baseline.governed_input_fingerprint,
+        baseline.ledger,
+    )
+    compiled.governed_input_fingerprint = baseline.governed_input_fingerprint
+    compiled.snapshot_manifest_sha256 = snapshot_manifest_sha256(baseline.council)
+    compiled.area_definition_sha256 = area_definition_sha256(baseline.council)
+    compiled.compilation_dependency_manifest = baseline.dependency_manifest
+    compiled.decision_contract = baseline.ledger.decision_contract
+    compiled.decision_ledger_input = baseline.ledger.model_dump(mode="json")
+    compiled.accepted_decisions = AgentDecisionLedger.model_validate(
+        {
+            "decision_contract": baseline.ledger.decision_contract,
+            "responses": [
+                response.model_dump(mode="json")
+                for response in final_resolver.accepted_responses
+            ],
+        }
+    ).model_dump(mode="json")["responses"]
+    return compiled
 
 
 def compile(
@@ -64,6 +178,300 @@ def compile(
         },
     ) as heartbeat:
         return _compile(council, decision_ledger=decision_ledger, heartbeat=heartbeat)
+
+
+def compile_reference_network(
+    config: AreaConfig | str | Path,
+    runtime: AgentRuntimeSource,
+    reference: ReferenceSATNSelection,
+    source_preparation: SpineAccessCandidatePreparationResult,
+    *,
+    decision_ledger: AgentDecisionLedger | str | Path | None = None,
+    heartbeat: StageHeartbeat | None = None,
+) -> CompiledNetwork:
+    """Recompile one human-adopted Reference through a fresh current baseline.
+
+    Baseline decisions must already exist in the supplied canonical ledger, so
+    validation cannot consume or duplicate direct-runtime responses.  Runtime
+    remains available only to the fresh final compilation for genuinely new
+    downstream decisions.
+    """
+
+    baseline = _fresh_reference_baseline(
+        config,
+        decision_ledger,
+        heartbeat,
+        label="Reference",
+    )
+    current_preparation = baseline.compiled.spine_access_candidate_preparation
+    if current_preparation is None:
+        raise ValueError(
+            "Reference compilation requires current network_selection candidate preparation"
+        )
+    plan = _build_reference_application_plan_for_current_baseline(
+        reference,
+        source_preparation,
+        current_preparation,
+        baseline.council,
+    )
+    final_resolver = AgentDecisionResolver(
+        baseline.ledger,
+        baseline.governed_input_fingerprint,
+    )
+    compiled = _compile_network_with_reference(
+        baseline.council,
+        _copy_compilation_source(baseline.source),
+        runtime,
+        plan,
+        governed_input_fingerprint=baseline.governed_input_fingerprint,
+        decision_resolver=final_resolver,
+        heartbeat=heartbeat,
+    )
+    compiled = _finalize_reference_network(
+        compiled,
+        baseline,
+        final_resolver,
+        label="Reference",
+    )
+    compiled.reference_satn_publication = build_reference_satn_publication_record(
+        reference=reference,
+        source_preparation=source_preparation,
+        baseline_preparation=current_preparation,
+        application_plan=plan,
+        area_definition_sha256=compiled.area_definition_sha256,
+        snapshot_manifest_sha256=compiled.snapshot_manifest_sha256,
+        compilation_input_fingerprint=compiled.compilation_input_fingerprint,
+        governed_input_fingerprint=compiled.governed_input_fingerprint,
+        compilation_dependency_manifest=baseline.dependency_manifest,
+        decision_contract=compiled.decision_contract,
+        decision_ledger_input=compiled.decision_ledger_input,
+        accepted_decisions=compiled.accepted_decisions,
+        application_diagnostics=compiled.compilation_diagnostics.get("reference_application", {}),
+    )
+    return compiled
+
+
+def compile_strategic_reference_network(
+    config: AreaConfig | str | Path,
+    runtime: AgentRuntimeSource,
+    plan: StrategicReferenceApplicationPlan,
+    *,
+    decision_ledger: AgentDecisionLedger | str | Path | None = None,
+    heartbeat: StageHeartbeat | None = None,
+) -> CompiledNetwork:
+    """Recompile an adopted strategic Reference without publication authority.
+
+    The ordinary baseline is always rebuilt from the current snapshot.  Exact
+    preparation equality is established here, and only the resulting validated
+    replay object crosses the private compiler seam.
+    """
+
+    baseline = _fresh_reference_baseline(
+        config,
+        decision_ledger,
+        heartbeat,
+        label="strategic Reference",
+    )
+    current_preparation = baseline.compiled.strategic_corridor_preparation
+    if current_preparation is None:
+        raise ValueError(
+            "strategic Reference compilation requires current strategic "
+            "corridor preparation"
+        )
+    current_area_fingerprint = ordered_geometry_fingerprint(
+        baseline.source["boundary"].geometry
+    )
+    if plan.area_fingerprint != current_area_fingerprint:
+        raise ValueError(
+            "strategic Reference Area identity does not match the fresh current "
+            "snapshot boundary"
+        )
+    validated_replay = validate_fresh_replay(plan, current_preparation)
+
+    final_resolver = AgentDecisionResolver(
+        baseline.ledger,
+        baseline.governed_input_fingerprint,
+    )
+    compiled = _compile_network_with_strategic_reference(
+        baseline.council,
+        _copy_compilation_source(baseline.source),
+        runtime,
+        validated_replay,
+        governed_input_fingerprint=baseline.governed_input_fingerprint,
+        decision_resolver=final_resolver,
+        heartbeat=heartbeat,
+    )
+    return _finalize_reference_network(
+        compiled,
+        baseline,
+        final_resolver,
+        label="strategic Reference",
+    )
+
+
+def compile_strategic_reference(
+    config: AreaConfig | str | Path,
+    plan: StrategicReferenceApplicationPlan,
+    *,
+    decision_ledger: AgentDecisionLedger | str | Path | None = None,
+) -> CompilationResult:
+    """Freshly compile then atomically publish a strategic Reference replay.
+
+    This public boundary intentionally accepts a plan only as replay input. It
+    derives a fresh private compilation first; the existing publisher remains
+    the only authority that can replace a publication directory.
+    """
+
+    council = (
+        config
+        if isinstance(config, (AreaDefinition, CouncilConfig))
+        else AreaDefinition.from_yaml(config)
+    )
+    with StageHeartbeat(
+        LOGGER,
+        "strategic-reference-publication",
+        {"area_id": council.area_id, "snapshot_id": council.source.snapshot_id},
+    ) as heartbeat:
+        # A strategic publication is a governed replay of accepted decisions,
+        # not an invitation for a publisher to obtain or choose agent output.
+        compiled = compile_strategic_reference_network(
+            council,
+            None,
+            plan,
+            decision_ledger=decision_ledger,
+            heartbeat=heartbeat,
+        )
+        # Only the public publication boundary makes the sibling record; the
+        # private replay entry point remains inspect-only and record-free.
+        compiled.strategic_reference_publication = build_strategic_reference_publication_record(
+            plan=plan,
+            replay_diagnostics=compiled.strategic_reference_diagnostics,
+            area_definition_sha256=compiled.area_definition_sha256,
+            snapshot_manifest_sha256=compiled.snapshot_manifest_sha256,
+            compilation_input_fingerprint=compiled.compilation_input_fingerprint,
+            governed_input_fingerprint=compiled.governed_input_fingerprint,
+            compilation_dependency_manifest=compiled.compilation_dependency_manifest,
+            decision_contract=compiled.decision_contract,
+            decision_ledger_input=compiled.decision_ledger_input,
+            accepted_decisions=compiled.accepted_decisions,
+        )
+        record = compiled.strategic_reference_publication
+        if record is None:
+            raise ValueError("strategic Reference compilation produced no publication provenance")
+        run_fingerprint = json.dumps(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "area_id": council.area_id,
+                "snapshot_id": council.source.snapshot_id,
+                "strategic_reference_publication_fingerprint": record.record_fingerprint,
+                "compilation_input_fingerprint": compiled.compilation_input_fingerprint,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        run_id = "strategic-reference-" + hashlib.sha256(run_fingerprint.encode()).hexdigest()[:12]
+        heartbeat.set_stage("strategic-reference-publication")
+        artifacts = publish(council, compiled, run_id)
+    return CompilationResult(
+        run_id=run_id,
+        status=compiled.status,
+        output_dir=council.publication.output_dir,
+        connections=compiled.connection_count,
+        gaps=len(compiled.gaps),
+        artifacts=artifacts,
+        criteria=compiled.criteria,
+        agent_records=compiled.agent_records,
+        divergence_records=compiled.divergence_records,
+        metadata={
+            "network_model": "backbone-outward",
+            "compilation_input_fingerprint": compiled.compilation_input_fingerprint,
+            "strategic_reference": record.publication_payload(),
+            "compilation_diagnostics": compiled.compilation_diagnostics,
+        },
+    )
+
+
+def compile_reference(
+    config: AreaConfig | str | Path,
+    reference: ReferenceSATNSelection,
+    source_preparation: SpineAccessCandidatePreparationResult,
+    *,
+    decision_ledger: AgentDecisionLedger | str | Path | None = None,
+) -> CompilationResult:
+    """Atomically publish one freshly validated, human-governed Reference SATN.
+
+    The normal compiler entry point remains unchanged.  This boundary always
+    performs a fresh baseline/replay validation before reaching the established
+    atomic publisher, and never treats a Reference selection as delivery or
+    publication authority by itself.
+    """
+
+    council = (
+        config
+        if isinstance(config, (AreaDefinition, CouncilConfig))
+        else AreaDefinition.from_yaml(config)
+    )
+    with StageHeartbeat(
+        LOGGER,
+        "reference-publication",
+        {"area_id": council.area_id, "snapshot_id": council.source.snapshot_id},
+    ) as heartbeat:
+        runtime = (
+            AgentRuntimeProvider(lambda: runtime_for(council.compilation.agent))
+            if council.compilation.agent.response_mode == "direct-runtime"
+            and council.compilation.agent.review_statuses
+            else None
+        )
+        compiled = compile_reference_network(
+            council,
+            runtime,
+            reference,
+            source_preparation,
+            decision_ledger=decision_ledger,
+            heartbeat=heartbeat,
+        )
+        record = compiled.reference_satn_publication
+        if record is None:  # Defensive: the dedicated boundary must bind provenance.
+            raise ValueError("Reference compilation produced no publication provenance")
+        run_fingerprint = json.dumps(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "area_id": council.area_id,
+                "snapshot_id": council.source.snapshot_id,
+                "reference_publication_fingerprint": record.reference_publication_fingerprint,
+                "compilation_input_fingerprint": compiled.compilation_input_fingerprint,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        run_id = f"reference-{hashlib.sha256(run_fingerprint.encode()).hexdigest()[:12]}"
+        heartbeat.set_stage("reference-publication")
+        artifacts = publish(council, compiled, run_id)
+    return CompilationResult(
+        run_id=run_id,
+        status=compiled.status,
+        output_dir=council.publication.output_dir,
+        connections=compiled.connection_count,
+        gaps=len(compiled.gaps),
+        artifacts=artifacts,
+        criteria=compiled.criteria,
+        agent_records=compiled.agent_records,
+        divergence_records=compiled.divergence_records,
+        metadata={
+            "network_model": "backbone-outward",
+            "compilation_input_fingerprint": compiled.compilation_input_fingerprint,
+            "reference_satn": record.revalidated().publication_payload(),
+            "compilation_diagnostics": compiled.compilation_diagnostics,
+        },
+    )
+
+
+def _copy_compilation_source(
+    source: dict[str, gpd.GeoDataFrame],
+) -> dict[str, gpd.GeoDataFrame]:
+    """Give baseline and final compilation independent current-input frames."""
+
+    return {name: frame.copy(deep=True) for name, frame in source.items()}
 
 
 def _compile(
@@ -221,6 +629,11 @@ def _compile(
             "schema_version": SCHEMA_VERSION,
             "criteria_version": council.compilation.criteria_version,
             "compilation_input_fingerprint": input_fingerprint,
+            "spine_access_candidate_preparation_fingerprint": (
+                compiled.spine_access_candidate_preparation.preparation_fingerprint
+                if compiled.spine_access_candidate_preparation is not None
+                else None
+            ),
             "snapshot_manifest": hashlib.sha256(
                 (
                     council.source.snapshot_dir / council.source.snapshot_id / "snapshot.json"
@@ -425,6 +838,15 @@ def _compile(
             "network_units": compiled.network_units,
             "urban_classification_status": compiled.urban_classification_status,
             "elevation_evidence_status": compiled.elevation_evidence_status,
+            **(
+                {
+                    "spine_access_candidate_preparation": (
+                        compiled.spine_access_candidate_preparation.metadata()
+                    )
+                }
+                if compiled.spine_access_candidate_preparation is not None
+                else {}
+            ),
             "urban_spines": len(compiled.urban_spines),
             "urban_classification_unknowns": len(compiled.urban_classification_unknowns),
             "urban_spine_records": [
@@ -788,6 +1210,7 @@ def compilation_governed_input_fingerprint(
     # The superseded comparison is explanatory, never a correctness input. Its path is
     # governed by configuration, but promoting this run to that path must not invalidate
     # reuse of the authoritative network it just produced.
+    network_selection_paths = _network_selection_governed_paths(council)
     governed_paths = [
         council.atm.path,
         (
@@ -805,7 +1228,17 @@ def compilation_governed_input_fingerprint(
             if council.source.national_elevation is not None
             else None
         ),
+        *network_selection_paths,
     ]
+    missing_paths = sorted(
+        str(path)
+        for path in network_selection_paths
+        if not path.is_file()
+    )
+    if missing_paths:
+        raise ValueError(
+            "configured governed input file is missing: " + ", ".join(missing_paths)
+        )
     manifest = dependency_manifest or compilation_dependency_manifest()
     payload = {
         "schema_version": SCHEMA_VERSION,
@@ -823,6 +1256,29 @@ def compilation_governed_input_fingerprint(
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+
+
+def _network_selection_governed_paths(council: AreaConfig) -> tuple[Path, ...]:
+    """Return governed alignment-evidence paths when the optional pass is enabled."""
+    if council.compilation.network_selection is None:
+        return ()
+    paths: list[Path] = []
+    population = council.source.population_reach_evidence
+    if population is not None:
+        paths.extend(
+            [
+                population.output_area_geometry.path,
+                population.population_weighted_centroids.path,
+                population.usual_resident_counts.path,
+            ]
+        )
+    school_register = council.source.school_register_evidence
+    if school_register is not None:
+        paths.append(school_register.school_register.path)
+    admissions = council.source.strategic_education_destination_admissions
+    if admissions is not None:
+        paths.append(admissions.admissions.path)
+    return tuple(paths)
 
 
 def snapshot_manifest_sha256(council: AreaConfig) -> str:

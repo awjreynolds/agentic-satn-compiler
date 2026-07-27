@@ -3,14 +3,17 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import geopandas as gpd
 
 import satn.compilation_dependencies as dependencies
+import satn.compiler as compiler_module
 from satn import compile
 from satn.compilation_dependencies import compilation_dependency_manifest
 from satn.models import CouncilConfig, TrafficLight
+from satn.network_selection import NetworkSelectionProfile
 from satn.sources import snapshot
 
 PROJECT = Path(__file__).parents[1]
@@ -120,6 +123,40 @@ def test_criteria_change_invalidates_all_reuse(tmp_path: Path) -> None:
 
     assert "cache" not in changed.metadata
     assert changed.run_id != original.run_id
+
+
+def test_spine_access_preparation_fingerprint_directly_changes_final_run_id(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = prepared_config(tmp_path)
+    config.compilation.network_selection = NetworkSelectionProfile.model_validate(
+        {
+            "profile_id": "run-fingerprint-fixture-v1",
+            "candidate_source_precedence": [
+                "verified-existing-asset",
+                "a-road-corridor",
+                "other-routable",
+            ],
+        }
+    )
+    first = compile(config)
+    original_prepare = compiler_module.prepare_spine_access_candidates
+
+    def changed_prepare(*args, **kwargs):
+        prepared = original_prepare(*args, **kwargs)
+        return replace(prepared, preparation_fingerprint="f" * 64)
+
+    monkeypatch.setattr(compiler_module, "prepare_spine_access_candidates", changed_prepare)
+    config.compilation.full = True
+    changed = compile(config)
+
+    assert first.metadata["spine_access_candidate_preparation"][
+        "preparation_fingerprint"
+    ] != changed.metadata["spine_access_candidate_preparation"][
+        "preparation_fingerprint"
+    ]
+    assert changed.run_id != first.run_id
 
 
 def test_agent_review_policy_change_invalidates_publication_reuse(tmp_path: Path) -> None:

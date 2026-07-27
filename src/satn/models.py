@@ -19,6 +19,13 @@ from pydantic import (
     model_validator,
 )
 
+from satn.network_selection import (
+    NetworkSelectionProfile,
+    PopulationReachEvidenceConfig,
+    SchoolRegisterEvidenceConfig,
+    StrategicEducationDestinationAdmissionConfig,
+)
+
 PublicationContractText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 _SNAPSHOT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -237,6 +244,38 @@ class SourceConfig(BaseModel):
     official_road_classification: OfficialRoadClassificationConfig | None = None
     observed_through_traffic: ObservedThroughTrafficConfig | None = None
     national_elevation: NationalElevationConfig | None = None
+    population_reach_evidence: PopulationReachEvidenceConfig | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    school_register_evidence: SchoolRegisterEvidenceConfig | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    strategic_education_destination_admissions: (
+        StrategicEducationDestinationAdmissionConfig | None
+    ) = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    network_selection_as_at: date | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "Declared assessment date for currentness-sensitive governed population "
+            "or education inputs used by optional network-selection preparation."
+        ),
+    )
+    network_selection_school_register_max_age_days: int | None = Field(
+        default=None,
+        ge=1,
+        exclude_if=lambda value: value is None,
+    )
+    network_selection_strategic_admissions_max_age_days: int | None = Field(
+        default=None,
+        ge=1,
+        exclude_if=lambda value: value is None,
+    )
     retained_core_source: RetainedCoreSourceConfig | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
@@ -260,6 +299,51 @@ class SourceConfig(BaseModel):
             and self.retained_core_source.snapshot_id == self.snapshot_id
         ):
             raise ValueError("retained-core source snapshot must differ from target snapshot")
+        if (
+            self.school_register_evidence is None
+            and self.network_selection_school_register_max_age_days is not None
+        ):
+            raise ValueError(
+                "school-register freshness requires a school-register evidence artifact"
+            )
+        if (
+            self.school_register_evidence is not None
+            and self.network_selection_school_register_max_age_days is None
+        ):
+            raise ValueError(
+                "school-register evidence requires a declared freshness window"
+            )
+        if (
+            self.strategic_education_destination_admissions is None
+            and self.network_selection_strategic_admissions_max_age_days is not None
+        ):
+            raise ValueError(
+                "strategic-admissions freshness requires an admissions artifact"
+            )
+        if (
+            self.strategic_education_destination_admissions is not None
+            and self.network_selection_strategic_admissions_max_age_days is None
+        ):
+            raise ValueError(
+                "strategic-admissions evidence requires a declared freshness window"
+            )
+        if (
+            self.strategic_education_destination_admissions is not None
+            and self.school_register_evidence is None
+        ):
+            raise ValueError(
+                "strategic-admissions evidence requires school-register evidence"
+            )
+        if (
+            self.network_selection_as_at is None
+            and (
+                self.school_register_evidence is not None
+                or self.strategic_education_destination_admissions is not None
+            )
+        ):
+            raise ValueError(
+                "current education evidence requires network_selection_as_at"
+            )
         return self
 
     @property
@@ -384,6 +468,15 @@ class CompilationConfig(BaseModel):
     criteria_version: str = "1"
     agent: AgentConfig = Field(default_factory=AgentConfig)
     topography: TopographyConfig = Field(default_factory=TopographyConfig)
+    network_selection: NetworkSelectionProfile | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+
+    @property
+    def network_selection_fingerprint(self) -> str | None:
+        """Expose the active immutable policy identity without changing legacy payloads."""
+        return self.network_selection.fingerprint if self.network_selection is not None else None
 
 
 class ATMConfig(BaseModel):
@@ -459,6 +552,46 @@ def _resolve_definition_paths(definition: Any) -> None:
         and not national_elevation.path.is_absolute()
     ):
         national_elevation.path = (root / national_elevation.path).resolve()
+    population_evidence = definition.source.population_reach_evidence
+    if population_evidence is not None:
+        resolved_artifacts = {}
+        for name in (
+            "output_area_geometry",
+            "population_weighted_centroids",
+            "usual_resident_counts",
+        ):
+            artifact = getattr(population_evidence, name)
+            resolved_artifacts[name] = artifact.model_copy(
+                update={
+                    "path": (
+                        artifact.path if artifact.path.is_absolute() else root / artifact.path
+                    ).resolve()
+                }
+            )
+        definition.source.population_reach_evidence = population_evidence.model_copy(
+            update=resolved_artifacts
+        )
+        definition.source.population_reach_evidence = PopulationReachEvidenceConfig.model_validate(
+            definition.source.population_reach_evidence.model_dump()
+        )
+    school_register = definition.source.school_register_evidence
+    if school_register is not None and not school_register.school_register.path.is_absolute():
+        definition.source.school_register_evidence = school_register.model_copy(
+            update={
+                "school_register": school_register.school_register.model_copy(
+                    update={"path": (root / school_register.school_register.path).resolve()}
+                )
+            }
+        )
+    admissions = definition.source.strategic_education_destination_admissions
+    if admissions is not None and not admissions.admissions.path.is_absolute():
+        definition.source.strategic_education_destination_admissions = admissions.model_copy(
+            update={
+                "admissions": admissions.admissions.model_copy(
+                    update={"path": (root / admissions.admissions.path).resolve()}
+                )
+            }
+        )
     if not definition.publication.output_dir.is_absolute():
         definition.publication.output_dir = (root / definition.publication.output_dir).resolve()
     if (

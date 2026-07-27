@@ -1,0 +1,41 @@
+council_id: synthetic-bath-saltford
+council_name: Synthetic Bath–Saltford proving fixture
+source:
+  kind: fixture
+  fixture_dir: source
+  snapshot_dir: work/snapshots
+  snapshot_id: bath-saltford-synthetic-001
+  national_elevation:
+    provider: local-geojson
+    path: source/elevation-evidence.geojson
+    source_id: synthetic-terrain-2026
+    effective_date: 2026-07-01
+    licence: Synthetic fixture
+    attribution: Synthetic minimised terrain evidence
+compilation:
+  max_connection_km: 15
+  agent:
+    provider: fake
+    response_mode: caller
+    review_statuses: []
+  network_selection:
+    profile_id: bath-saltford-proving-v1
+    candidate_source_precedence:
+      - verified-existing-asset
+      - a-road-corridor
+      - other-routable
+    ambiguity:
+      review_when:
+        - headline-and-sensitivity-order-differ
+        - objective-sections-conflict-materially
+        - material-grey-evidence
+        - near-equivalent-options
+        - substitute-complementary-uncertain
+      maximum_options_per_candidate_set: 5
+      maximum_actionable_requests_per_round: 12
+      maximum_review_rounds: 3
+      maximum_additional_analyses_per_candidate_set: 2
+publication:
+  output_dir: work/output
+  title: Synthetic Bath–Saltford SATN proving review
+  pdf_page_size: A3

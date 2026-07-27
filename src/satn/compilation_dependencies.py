@@ -39,13 +39,50 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
         "compilation dependency manifest and fail-closed registry",
     ),
     "satn/compiler.py": ("module", "CompiledNetwork derivation"),
+    "satn/content_identity.py": (
+        "module",
+        "deterministic local content and Area identities",
+    ),
     "satn/constants.py": ("module", "compiler schema and source constants"),
     "satn/cross_spine.py": ("module", "Cross-Spine Connector assembly"),
     "satn/ea_elevation.py": ("module", "governed elevation contract and sampling"),
+    "satn/education_access.py": (
+        "module",
+        "School Access Obligation and destination evidence assessment",
+    ),
     "satn/evidence.py": ("module", "network evidence derivation"),
+    "satn/existing_alignment.py": (
+        "module",
+        "Existing-Alignment Advantage evidence derivation and tie-break records",
+    ),
     "satn/identifiers.py": ("module", "stable compiled feature identifiers"),
     "satn/models.py": ("module", "Area Definition and compiled model semantics"),
+    "satn/network_selection.py": (
+        "module",
+        "frozen Network Selection Profile validation and fingerprinting",
+    ),
+    "satn/alignment_selection.py": (
+        "module",
+        "deterministic Preferred Strategic Alignment selection contract",
+    ),
     "satn/pipeline.py": ("module", "compilation orchestration and reuse binding"),
+    "satn/population_reach.py": ("module", "governed Population Reach evidence assessment"),
+    "satn/psa_evidence_loaders.py": (
+        "module",
+        "strict governed Preferred Strategic Alignment evidence loading",
+    ),
+    "satn/spine_access_candidate_preparation.py": (
+        "module",
+        "bounded Spine Access candidate-preparation adapter; no strategic selection",
+    ),
+    "satn/strategic_corridors.py": (
+        "module",
+        "compiler-derived sibling strategic-corridor candidate preparation",
+    ),
+    "satn/strategic_reference_replay.py": (
+        "module",
+        "private deterministic strategic Reference replay materialisation",
+    ),
     "satn/routing.py": ("module", "routable network and route selection"),
     "satn/school_street.py": ("module", "school-street assessment"),
     "satn/settlement.py": ("module", "settlement and urban eligibility"),
@@ -73,15 +110,35 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     "satn/assets/review-map.css": "review-map presentation asset",
     "satn/assets/review-map.html": "review-map presentation asset",
     "satn/assets/review-map.js": "review-map presentation asset",
+    "satn/assets/strategic-reference.css": "strategic-only review-map presentation asset",
+    "satn/assets/strategic-reference.js": "strategic-only review-map presentation asset",
     "satn/cli.py": "command-line adapter",
     "satn/deployment.py": "isolated deployment assembly",
     "satn/deployment_catalogue.py": "deployment catalogue assembly",
     "satn/deployment_provenance.py": "deployment lock validation",
     "satn/heartbeat.py": "operational progress reporting",
     "satn/pages_packaging.py": "Pages release packaging",
+    "satn/psa_criteria_assembly.py": (
+        "post-compile governed criteria assembly without CompiledNetwork mutation"
+    ),
     "satn/publisher.py": "publication, PDF and review-map serialization",
+    "satn/reference_application.py": (
+        "post-adoption Reference replay planning without CompiledNetwork mutation"
+    ),
     "satn/runtime_governance.py": "current publication runtime-governance validation",
     "satn/runtime_governance_contract.py": "current publication governance contract",
+    "satn/scenario_compilation.py": (
+        "post-compile Scenario Compilation bridge without CompiledNetwork mutation"
+    ),
+    "satn/strategic_criteria_scenario.py": (
+        "post-compile strategic criteria and Scenario bridge without CompiledNetwork mutation"
+    ),
+    "satn/strategic_reference_application.py": (
+        "post-adoption strategic Reference binding without CompiledNetwork mutation"
+    ),
+    "satn/strategic_reference_publication.py": (
+        "publication-only strategic Reference provenance record; no compiler authority"
+    ),
 }
 
 # These are the distributions whose executed runtime can change a compiled

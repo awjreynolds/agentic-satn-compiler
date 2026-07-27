@@ -1,0 +1,7 @@
+{"type":"FeatureCollection","crs":"EPSG:27700","features":[
+{"type":"Feature","properties":{"OA21CD":"E00013701"},"geometry":{"type":"Polygon","coordinates":[[[372220,165820],[372380,165820],[372380,165980],[372220,165980],[372220,165820]]]}},
+{"type":"Feature","properties":{"OA21CD":"E00013702"},"geometry":{"type":"Polygon","coordinates":[[[371840,167620],[372000,167620],[372000,167780],[371840,167780],[371840,167620]]]}},
+{"type":"Feature","properties":{"OA21CD":"E00013703"},"geometry":{"type":"Polygon","coordinates":[[[371380,166580],[371540,166580],[371540,166740],[371380,166740],[371380,166580]]]}},
+{"type":"Feature","properties":{"OA21CD":"E00013704"},"geometry":{"type":"Polygon","coordinates":[[[371720,168050],[371880,168050],[371880,168210],[371720,168210],[371720,168050]]]}},
+{"type":"Feature","properties":{"OA21CD":"E00013705"},"geometry":{"type":"Polygon","coordinates":[[[369950,166780],[370110,166780],[370110,166940],[369950,166940],[369950,166780]]]} }
+]}

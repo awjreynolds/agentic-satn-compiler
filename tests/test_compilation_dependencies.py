@@ -28,11 +28,15 @@ def test_manifest_is_explicit_complete_and_records_component_digests() -> None:
     assert {
         "satn/__init__.py",
         "satn/compiler.py",
+        "satn/existing_alignment.py",
         "satn/routing.py",
         "satn/backbone.py",
         "satn/sources.py",
         "satn/models.py",
+        "satn/education_access.py",
         "satn/ea_elevation.py",
+        "satn/population_reach.py",
+        "satn/alignment_selection.py",
         "runtime-distribution/geopandas",
         "runtime-distribution/httpx",
         "runtime-distribution/networkx",
@@ -43,6 +47,22 @@ def test_manifest_is_explicit_complete_and_records_component_digests() -> None:
     assert "satn/publisher.py" not in components
     assert "satn/pages_packaging.py" not in components
     assert "satn/assets/review-map.js" not in components
+    population_component = next(
+        component
+        for component in manifest["components"]
+        if component["path"] == "satn/population_reach.py"
+    )
+    assert population_component["kind"] == "module"
+    assert population_component["reason"] == "governed Population Reach evidence assessment"
+    alignment_component = next(
+        component
+        for component in manifest["components"]
+        if component["path"] == "satn/alignment_selection.py"
+    )
+    assert (
+        alignment_component["reason"]
+        == "deterministic Preferred Strategic Alignment selection contract"
+    )
     assert all(not path.startswith("src/") for path in components)
     runtime_components = {
         component["path"]: component for component in manifest["components"]
@@ -51,6 +71,38 @@ def test_manifest_is_explicit_complete_and_records_component_digests() -> None:
         assert runtime_components[f"runtime-distribution/{distribution}"]["version"] == (
             dependencies.metadata.version(distribution)
         )
+
+
+def test_network_selection_contract_is_a_controlled_compilation_component(
+    tmp_path: Path,
+) -> None:
+    root = copied_compiler_tree(tmp_path)
+    original = dependencies.compilation_dependency_manifest(package_root=root)
+    profile = root / "network_selection.py"
+    profile.write_bytes(profile.read_bytes() + b"\n# dependency-manifest regression probe\n")
+
+    changed = dependencies.compilation_dependency_manifest(package_root=root)
+
+    assert "satn/network_selection.py" in {
+        component["path"] for component in original["components"]
+    }
+    assert changed["sha256"] != original["sha256"]
+
+
+def test_existing_alignment_contract_is_a_controlled_compilation_component(
+    tmp_path: Path,
+) -> None:
+    root = copied_compiler_tree(tmp_path)
+    original = dependencies.compilation_dependency_manifest(package_root=root)
+    module = root / "existing_alignment.py"
+    module.write_bytes(module.read_bytes() + b"\n# dependency-manifest regression probe\n")
+
+    changed = dependencies.compilation_dependency_manifest(package_root=root)
+
+    assert "satn/existing_alignment.py" in {
+        component["path"] for component in original["components"]
+    }
+    assert changed["sha256"] != original["sha256"]
 
 
 def test_compiler_semantic_module_changes_change_the_manifest_digest(tmp_path: Path) -> None:
@@ -64,6 +116,7 @@ def test_compiler_semantic_module_changes_change_the_manifest_digest(tmp_path: P
         "sources.py",
         "models.py",
         "ea_elevation.py",
+        "population_reach.py",
     ):
         path = root / relative_path
         original_bytes = path.read_bytes()

@@ -916,9 +916,12 @@ def _weight_for(role: str) -> Callable[[str, str, dict[str, object]], float]:
     def weight(_u: str, _v: str, edge: dict[str, object]) -> float:
         length = float(edge["length_m"])
         is_a = _is_a_road(edge["ref"])
+        is_b = _is_b_road(edge["ref"])
         highway = set(edge["highway"])
         if role == "strategic-spine":
             return length * (0.35 if is_a else 1.6)
+        if role == "b-road-corridor":
+            return length * (0.35 if is_b else 1.6)
         if role == "low-traffic":
             return length * (0.75 if highway & LOW_TRAFFIC else 4.0)
         if role == "ncn-informed":
@@ -926,6 +929,10 @@ def _weight_for(role: str) -> Callable[[str, str, dict[str, object]], float]:
         return length
 
     return weight
+
+
+def _is_b_road(refs: object) -> bool:
+    return any(ref.upper().startswith("B") for ref in _tag_values(refs))
 
 
 def stationary_route_option(point: Point) -> RouteOption:

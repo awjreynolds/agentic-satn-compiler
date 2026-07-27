@@ -17,6 +17,8 @@
   }
   const network = data.network;
   const places = data.places;
+  const referenceRecord = data.reference_satn || null;
+  const referenceOptions = data.reference_satn_options || { type: "FeatureCollection", features: [] };
   const state = { pinned: null, active: null, inspectionPath: [], inspectionVersion: 0 };
   const gradientPathTypes = new Set([
     "strategic-spine",
@@ -1274,6 +1276,20 @@
         if (legend) legend.hidden = !control.checked;
       });
     });
+    const referenceControl = document.getElementById("layer-reference-options");
+    if (referenceControl) {
+      referenceControl.addEventListener("change", () => {
+        if (map.getLayer("reference-satn-options")) {
+          map.setLayoutProperty(
+            "reference-satn-options",
+            "visibility",
+            referenceControl.checked ? "visible" : "none"
+          );
+        }
+        const status = document.getElementById("reference-options-status");
+        if (status) status.hidden = !referenceControl.checked;
+      });
+    }
     document.querySelectorAll(".info-button").forEach((button) => {
       const popover = document.getElementById(button.getAttribute("aria-controls"));
       const close = () => {
@@ -1412,6 +1428,22 @@
       lineMetrics: true,
       data: { type: "FeatureCollection", features: [] }
     });
+    if (referenceRecord && referenceOptions.features.length) {
+      map.addSource("reference-satn-options", { type: "geojson", data: referenceOptions });
+      map.addLayer({
+        id: "reference-satn-options",
+        type: "line",
+        source: "reference-satn-options",
+        layout: { visibility: "none" },
+        paint: {
+          "line-color": ["match", ["get", "disposition"], "selected", "#c0392b", "complementary", "#7c4a93", "#7f8c8d"],
+          "line-width": ["interpolate", ["linear"], ["zoom"], 8, 2, 13, 4],
+          "line-dasharray": [2, 1],
+          "line-opacity": .78
+        }
+      });
+      document.querySelector("#reference-options-control").hidden = false;
+    }
     map.addLayer({
       id: "authority-boundaries",
       type: "line",
