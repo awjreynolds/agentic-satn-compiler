@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import urllib.parse
 from pathlib import Path
@@ -255,6 +256,8 @@ def _write_final_ea_snapshot(config: CouncilConfig, *, pre_elevation_network_sha
         ),
         SAMPLE_LEDGER_FILENAME: b"retained-elevation-sample-ledger",
         EA_RETAINED_ROUTE_FILENAME: b"retained-elevation-sampled-routes",
+        "ea-authority-boundaries.geojson": b'{"authority":"retained"}',
+        "ea-survey-index.geojson": b'{"survey":"retained"}',
     }
     for filename, contents in retained.items():
         (snapshot_path / filename).write_bytes(contents)
@@ -277,6 +280,12 @@ def _write_final_ea_snapshot(config: CouncilConfig, *, pre_elevation_network_sha
         "sample_route_sha256": digests[EA_RETAINED_ROUTE_FILENAME],
         "authority_boundaries_path": "ea-authority-boundaries.geojson",
         "survey_index_path": "ea-survey-index.geojson",
+        "survey_index_sha256": digests["ea-survey-index.geojson"],
+        "survey_coverage_preflight": {
+            "authority_boundaries": {
+                "raw_sha256": digests["ea-authority-boundaries.geojson"],
+            }
+        },
         "governed_input_fingerprint": "b" * 64,
     }
     acquisition_path = snapshot_path / "elevation-evidence.manifest.json"
@@ -291,7 +300,34 @@ def _write_final_ea_snapshot(config: CouncilConfig, *, pre_elevation_network_sha
                 "acquisition_output_sha256": acquisition_output_digest,
                 "sample_ledger_sha256": digests[SAMPLE_LEDGER_FILENAME],
                 "ea_acquisition_manifest_sha256": digests["elevation-evidence.manifest.json"],
+                "replay_inputs": {
+                    "schema_version": "ea-fixed-point-replay-inputs/v1",
+                    "licence": "Open Government Licence v3.0",
+                    "files": {
+                        "authority_boundaries": {
+                            "path": "ea-authority-boundaries.geojson",
+                            "sha256": digests["ea-authority-boundaries.geojson"],
+                        },
+                        "sample_ledger": {
+                            "path": SAMPLE_LEDGER_FILENAME,
+                            "sha256": digests[SAMPLE_LEDGER_FILENAME],
+                        },
+                        "sample_routes": {
+                            "path": EA_RETAINED_ROUTE_FILENAME,
+                            "sha256": digests[EA_RETAINED_ROUTE_FILENAME],
+                        },
+                        "survey_index": {
+                            "path": "ea-survey-index.geojson",
+                            "sha256": digests["ea-survey-index.geojson"],
+                        },
+                    },
+                },
             }
+        },
+        "file_sha256": {
+            filename: digest
+            for filename, digest in digests.items()
+            if filename != "elevation-evidence.manifest.json"
         },
         "provenance_file_sha256": digests,
     }
@@ -343,6 +379,46 @@ def _final_eligible_network(path: Path) -> str:
     )
     routes.to_file(path, driver="GeoJSON")
     return eligible_route_fingerprint(routes)
+
+
+def _pinned_weca_candidate(path: Path) -> Path:
+    from satn.ea_elevation import WECA_PINNED_ELIGIBLE_ROUTE_BBOX
+
+    west, south, east, north = WECA_PINNED_ELIGIBLE_ROUTE_BBOX
+    gpd.GeoDataFrame(
+        [
+            {
+                "feature_id": "pinned-route",
+                "feature_type": "strategic-spine",
+                "topography_profile_id": "profile",
+                "geometry": LineString([(west, south), (east, north)]),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    ).to_file(path, driver="GeoJSON")
+    return path
+
+
+def _retain_candidate_status(
+    config: CouncilConfig,
+    candidate_network: Path,
+    *,
+    run_id: str,
+) -> dict[str, object]:
+    _retain_ea_fixed_point_candidate(
+        config,
+        run_id=run_id,
+        network_path=candidate_network,
+        expected="0" * 64,
+        actual=eligible_route_fingerprint(gpd.read_file(candidate_network)),
+        governed_input_fingerprint="c" * 64,
+    )
+    return json.loads(
+        (
+            _ea_fixed_point_candidate_path(config) / EA_FIXED_POINT_CANDIDATE_STATUS
+        ).read_text()
+    )
 
 
 def test_local_national_elevation_is_clipped_and_snapshotted_with_provenance(
@@ -621,6 +697,20 @@ def test_ea_acquisition_sidecar_binds_pre_elevation_network_to_snapshot(
         == elevation["content_fingerprint"]
     )
     assert "ea-elevation-sample-ledger.jsonl" in manifest["provenance_file_sha256"]
+    replay = elevation["replay_inputs"]
+    assert replay["schema_version"] == "ea-fixed-point-replay-inputs/v1"
+    assert replay["licence"] == "Open Government Licence v3.0"
+    assert {
+        role: record["path"] for role, record in replay["files"].items()
+    } == {
+        "authority_boundaries": "ea-authority-boundaries.geojson",
+        "sample_ledger": SAMPLE_LEDGER_FILENAME,
+        "sample_routes": EA_RETAINED_ROUTE_FILENAME,
+        "survey_index": "ea-survey-index.geojson",
+    }
+    for record in replay["files"].values():
+        assert manifest["file_sha256"][record["path"]] == record["sha256"]
+        assert manifest["provenance_file_sha256"][record["path"]] == record["sha256"]
     copied_sidecar = json.loads((path / "elevation-evidence.manifest.json").read_text())
     assert copied_sidecar["authority_boundaries_path"] == "ea-authority-boundaries.geojson"
     assert copied_sidecar["survey_index_path"] == "ea-survey-index.geojson"
@@ -987,47 +1077,98 @@ def test_ea_fixed_point_mismatch_retains_candidate_with_exact_status_and_keeps_o
 def test_ea_fixed_point_candidate_advertises_only_pinned_weca_request_with_current_fingerprint(
     tmp_path: Path,
 ) -> None:
-    from satn.ea_elevation import WECA_PINNED_ELIGIBLE_ROUTE_BBOX
-
     config = _final_ea_config(copied_config(tmp_path), tmp_path)
     config.publication.output_dir = tmp_path / "published"
     compiled = _publication_compiled(config)
     compiled.governed_input_fingerprint = "c" * 64
     snapshot_path = _write_final_ea_snapshot(config, pre_elevation_network_sha256="0" * 64)
-    for filename in ("ea-authority-boundaries.geojson", "ea-survey-index.geojson"):
-        (snapshot_path / filename).write_text("{}", encoding="utf-8")
-    west, south, east, north = WECA_PINNED_ELIGIBLE_ROUTE_BBOX
-    candidate_network = tmp_path / "pinned-candidate.geojson"
-    gpd.GeoDataFrame(
-        [
-            {
-                "feature_id": "pinned-route",
-                "feature_type": "strategic-spine",
-                "topography_profile_id": "profile",
-                "geometry": LineString([(west, south), (east, north)]),
-            }
-        ],
-        geometry="geometry",
-        crs=27700,
-    ).to_file(candidate_network, driver="GeoJSON")
-
-    _retain_ea_fixed_point_candidate(
+    isolated_snapshot = tmp_path / "isolated-checkout" / "snapshots" / config.source.snapshot_id
+    isolated_snapshot.parent.mkdir(parents=True)
+    snapshot_path.replace(isolated_snapshot)
+    config.source.snapshot_dir = isolated_snapshot.parent
+    status = _retain_candidate_status(
         config,
+        _pinned_weca_candidate(tmp_path / "pinned-candidate.geojson"),
         run_id="run-pinned-candidate",
-        network_path=candidate_network,
-        expected="0" * 64,
-        actual=eligible_route_fingerprint(gpd.read_file(candidate_network)),
-        governed_input_fingerprint=compiled.governed_input_fingerprint,
     )
 
-    candidate = _ea_fixed_point_candidate_path(config)
-    status = json.loads((candidate / EA_FIXED_POINT_CANDIDATE_STATUS).read_text())
     assert status["governed_input_fingerprint"] == compiled.governed_input_fingerprint
     assert status["next_step_status"] == "ea-acquisition-ready"
     command = status["next_step_command"]
     assert "--weca-preflight" in command
     assert f"--governed-input-fingerprint {'c' * 64}" in command
     assert "b" * 64 not in command
+    command_parts = shlex.split(command)
+    for option, filename in (
+        ("--authority-boundaries", "ea-authority-boundaries.geojson"),
+        ("--survey-index", "ea-survey-index.geojson"),
+    ):
+        command_path = Path(command_parts[command_parts.index(option) + 1])
+        assert command_path == isolated_snapshot / filename
+        assert command_path.is_file()
+
+
+@pytest.mark.parametrize("mutation", ["unhashed", "escaping"])
+def test_ea_fixed_point_candidate_refuses_invalid_snapshot_replay_inputs(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    config = _final_ea_config(copied_config(tmp_path), tmp_path)
+    config.publication.output_dir = tmp_path / "published"
+    snapshot_path = _write_final_ea_snapshot(config, pre_elevation_network_sha256="0" * 64)
+    manifest_path = snapshot_path / "snapshot.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if mutation == "unhashed":
+        manifest["file_sha256"].pop("ea-survey-index.geojson")
+    else:
+        acquisition_path = snapshot_path / "elevation-evidence.manifest.json"
+        acquisition = json.loads(acquisition_path.read_text(encoding="utf-8"))
+        acquisition["authority_boundaries_path"] = "../authorities.geojson"
+        acquisition_path.write_text(
+            json.dumps(acquisition, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        digest = hashlib.sha256(acquisition_path.read_bytes()).hexdigest()
+        manifest["provenance_file_sha256"][acquisition_path.name] = digest
+        manifest["evidence_sources"]["elevation"]["ea_acquisition_manifest_sha256"] = digest
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    status = _retain_candidate_status(
+        config,
+        _pinned_weca_candidate(tmp_path / "pinned-candidate.geojson"),
+        run_id="run-invalid-replay-inputs",
+    )
+
+    assert status["next_step_status"] == "survey-index-repin-required"
+    assert status["next_step_reason"] == "candidate-snapshot-replay-inputs-invalid"
+    assert "next_step_command" not in status
+
+
+def test_legacy_ea_snapshot_remains_usable_with_explicit_replay_diagnostic(
+    tmp_path: Path,
+) -> None:
+    config = _final_ea_config(copied_config(tmp_path), tmp_path)
+    config.publication.output_dir = tmp_path / "published"
+    final_network = tmp_path / "final-network.geojson"
+    fingerprint = _final_eligible_network(final_network)
+    snapshot_path = _write_final_ea_snapshot(
+        config,
+        pre_elevation_network_sha256=fingerprint,
+    )
+    manifest_path = snapshot_path / "snapshot.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["evidence_sources"]["elevation"].pop("replay_inputs")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    _validate_ea_elevation_fixed_point(config, final_network)
+
+    status = _retain_candidate_status(
+        config,
+        _pinned_weca_candidate(tmp_path / "pinned-candidate.geojson"),
+        run_id="run-legacy-replay",
+    )
+
+    assert status["next_step_status"] == "survey-index-repin-required"
+    assert status["next_step_reason"] == "legacy-snapshot-not-self-contained"
 
 
 def test_bootstrap_publication_sharing_output_parent_preserves_ea_candidate(
