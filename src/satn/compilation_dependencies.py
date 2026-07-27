@@ -108,6 +108,9 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
         "post-compile governed criteria assembly without CompiledNetwork mutation"
     ),
     "satn/publisher.py": "publication, PDF and review-map serialization",
+    "satn/reference_application.py": (
+        "post-adoption Reference replay planning without CompiledNetwork mutation"
+    ),
     "satn/runtime_governance.py": "current publication runtime-governance validation",
     "satn/runtime_governance_contract.py": "current publication governance contract",
     "satn/scenario_compilation.py": (
