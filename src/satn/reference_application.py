@@ -36,6 +36,7 @@ from satn.spine_access_candidate_preparation import (
 )
 
 REFERENCE_APPLICATION_CONTRACT = "satn-reference-application-plan/v1"
+REFERENCE_PUBLICATION_CONTRACT = "satn-reference-satn-publication/v1"
 _PREPARATION_CONTRACT = "satn-spine-access-candidate-preparation/v1"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _CONNECTION_ID = re.compile(r"^connection-[0-9a-f]{20}$")
@@ -200,6 +201,137 @@ class ReferenceApplicationPlan(BaseModel):
             raise ValueError("Reference application plan fingerprint is stale")
         object.__setattr__(self, "plan_fingerprint", expected)
         return self
+
+
+class ReferenceSATNPublicationRecord(BaseModel):
+    """Canonical provenance for publishing one governed Reference SATN.
+
+    This is an inspectable local record, not a credential or an assertion that
+    the selected alignment is safe, feasible, funded, adopted for delivery, or
+    suitable for independent travel.  Its SHA-256 value is content identity for
+    replay and staleness checks only.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    contract: Literal["satn-reference-satn-publication/v1"] = REFERENCE_PUBLICATION_CONTRACT
+    reference_selection: ReferenceSATNSelection
+    source_preparation: SpineAccessCandidatePreparationResult
+    baseline_preparation: SpineAccessCandidatePreparationResult
+    application_plan: ReferenceApplicationPlan
+    area_definition_sha256: str = Field(pattern=_SHA256.pattern)
+    snapshot_manifest_sha256: str = Field(pattern=_SHA256.pattern)
+    compilation_input_fingerprint: str = Field(pattern=_SHA256.pattern)
+    governed_input_fingerprint: str = Field(pattern=_SHA256.pattern)
+    compilation_dependency_manifest: dict[str, object]
+    decision_contract: str = Field(min_length=1)
+    decision_ledger_input: dict[str, object]
+    accepted_decisions: tuple[dict[str, object], ...]
+    application_diagnostics: dict[str, object]
+    disclaimer: tuple[str, ...] = (
+        (
+            "Preferred Strategic Alignments are not final designs, safety findings, "
+            "feasibility evidence, funding decisions, or delivery adoption."
+        ),
+        (
+            "Population Reach is a whole-Output-Area straight-line corridor measure, "
+            "not demand, a walking-time claim, or population actually connected."
+        ),
+        (
+            "Independent-Travel Opportunity is not a finding that a route is safe, "
+            "suitable, or independently accessible."
+        ),
+        (
+            "Existing-alignment evidence does not establish legal access, condition, "
+            "cost, deliverability, or feasibility."
+        ),
+    )
+    publication_authority: Literal["existing-atomic-publisher"] = "existing-atomic-publisher"
+    reference_publication_fingerprint: str = ""
+
+    @model_validator(mode="after")
+    def bind_publication(self) -> Self:
+        reference = ReferenceSATNSelection.model_validate(
+            self.reference_selection.model_dump(mode="python")
+        )
+        # Preparation is an immutable dataclass rather than a Pydantic model.
+        # ``build_reference_application_plan`` below performs its full canonical
+        # validation, including the bound preparation fingerprint and evidence.
+        source = self.source_preparation
+        baseline = self.baseline_preparation
+        plan = ReferenceApplicationPlan.model_validate(
+            self.application_plan.model_dump(mode="python")
+        )
+        expected_plan = build_reference_application_plan(reference, source)
+        if plan != expected_plan:
+            raise ValueError("Reference publication plan does not bind its exact human selection")
+        if (
+            baseline.canonical_payload() != source.canonical_payload()
+            or baseline.preparation_fingerprint != source.preparation_fingerprint
+            or baseline.evidence_fingerprints != source.evidence_fingerprints
+            or baseline.profile_fingerprint != source.profile_fingerprint
+        ):
+            raise ValueError(
+                "Reference publication baseline preparation is not the exact source preparation"
+            )
+        if (
+            plan.preparation_fingerprint != source.preparation_fingerprint
+            or plan.profile_fingerprint != source.profile_fingerprint
+            or plan.scenario_fingerprint != reference.scenario.scenario_fingerprint
+            or plan.reference_selection_fingerprint != reference.reference_selection_fingerprint
+            or plan.scenario_area_fingerprint != self.area_definition_sha256
+        ):
+            raise ValueError("Reference publication lineage is stale")
+        if not self.compilation_dependency_manifest:
+            raise ValueError("Reference publication requires a compilation dependency manifest")
+        object.__setattr__(self, "reference_selection", reference)
+        object.__setattr__(self, "source_preparation", source)
+        object.__setattr__(self, "baseline_preparation", baseline)
+        object.__setattr__(self, "application_plan", plan)
+        payload = self.model_dump(mode="json", exclude={"reference_publication_fingerprint"})
+        expected = _fingerprint(payload)
+        if (
+            self.reference_publication_fingerprint
+            and self.reference_publication_fingerprint != expected
+        ):
+            raise ValueError("Reference publication fingerprint is stale")
+        object.__setattr__(self, "reference_publication_fingerprint", expected)
+        return self
+
+
+def build_reference_satn_publication_record(
+    *,
+    reference: ReferenceSATNSelection,
+    source_preparation: SpineAccessCandidatePreparationResult,
+    baseline_preparation: SpineAccessCandidatePreparationResult,
+    application_plan: ReferenceApplicationPlan,
+    area_definition_sha256: str,
+    snapshot_manifest_sha256: str,
+    compilation_input_fingerprint: str,
+    governed_input_fingerprint: str,
+    compilation_dependency_manifest: dict[str, object],
+    decision_contract: str,
+    decision_ledger_input: dict[str, object],
+    accepted_decisions: list[dict[str, object]],
+    application_diagnostics: dict[str, object],
+) -> ReferenceSATNPublicationRecord:
+    """Build the one self-validating publication record after replay succeeds."""
+
+    return ReferenceSATNPublicationRecord(
+        reference_selection=reference,
+        source_preparation=source_preparation,
+        baseline_preparation=baseline_preparation,
+        application_plan=application_plan,
+        area_definition_sha256=area_definition_sha256,
+        snapshot_manifest_sha256=snapshot_manifest_sha256,
+        compilation_input_fingerprint=compilation_input_fingerprint,
+        governed_input_fingerprint=governed_input_fingerprint,
+        compilation_dependency_manifest=compilation_dependency_manifest,
+        decision_contract=decision_contract,
+        decision_ledger_input=decision_ledger_input,
+        accepted_decisions=tuple(accepted_decisions),
+        application_diagnostics=application_diagnostics,
+    )
 
 
 def _build_reference_application_plan_for_current_baseline(

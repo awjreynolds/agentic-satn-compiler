@@ -42,7 +42,10 @@ from satn.publisher import (
     publish,
     validate_publication,
 )
-from satn.reference_application import _build_reference_application_plan_for_current_baseline
+from satn.reference_application import (
+    _build_reference_application_plan_for_current_baseline,
+    build_reference_satn_publication_record,
+)
 from satn.runtime_governance import incomplete_runtime_governance
 from satn.sources import load_snapshot
 from satn.spine_access_candidate_preparation import SpineAccessCandidatePreparationResult
@@ -155,7 +158,107 @@ def compile_reference_network(
     compiled.snapshot_manifest_sha256 = snapshot_manifest_sha256(council)
     compiled.area_definition_sha256 = area_definition_sha256(council)
     compiled.compilation_dependency_manifest = dependency_manifest
+    compiled.decision_contract = ledger.decision_contract
+    compiled.decision_ledger_input = ledger.model_dump(mode="json")
+    compiled.accepted_decisions = AgentDecisionLedger.model_validate(
+        {
+            "decision_contract": ledger.decision_contract,
+            "responses": [
+                response.model_dump(mode="json") for response in final_resolver.accepted_responses
+            ],
+        }
+    ).model_dump(mode="json")["responses"]
+    compiled.reference_satn_publication = build_reference_satn_publication_record(
+        reference=reference,
+        source_preparation=source_preparation,
+        baseline_preparation=current_preparation,
+        application_plan=plan,
+        area_definition_sha256=compiled.area_definition_sha256,
+        snapshot_manifest_sha256=compiled.snapshot_manifest_sha256,
+        compilation_input_fingerprint=compiled.compilation_input_fingerprint,
+        governed_input_fingerprint=compiled.governed_input_fingerprint,
+        compilation_dependency_manifest=dependency_manifest,
+        decision_contract=compiled.decision_contract,
+        decision_ledger_input=compiled.decision_ledger_input,
+        accepted_decisions=compiled.accepted_decisions,
+        application_diagnostics=compiled.compilation_diagnostics.get("reference_application", {}),
+    )
     return compiled
+
+
+def compile_reference(
+    config: AreaConfig | str | Path,
+    reference: ReferenceSATNSelection,
+    source_preparation: SpineAccessCandidatePreparationResult,
+    *,
+    decision_ledger: AgentDecisionLedger | str | Path | None = None,
+) -> CompilationResult:
+    """Atomically publish one freshly validated, human-governed Reference SATN.
+
+    The normal compiler entry point remains unchanged.  This boundary always
+    performs a fresh baseline/replay validation before reaching the established
+    atomic publisher, and never treats a Reference selection as delivery or
+    publication authority by itself.
+    """
+
+    council = (
+        config
+        if isinstance(config, (AreaDefinition, CouncilConfig))
+        else AreaDefinition.from_yaml(config)
+    )
+    with StageHeartbeat(
+        LOGGER,
+        "reference-publication",
+        {"area_id": council.area_id, "snapshot_id": council.source.snapshot_id},
+    ) as heartbeat:
+        runtime = (
+            AgentRuntimeProvider(lambda: runtime_for(council.compilation.agent))
+            if council.compilation.agent.response_mode == "direct-runtime"
+            and council.compilation.agent.review_statuses
+            else None
+        )
+        compiled = compile_reference_network(
+            council,
+            runtime,
+            reference,
+            source_preparation,
+            decision_ledger=decision_ledger,
+            heartbeat=heartbeat,
+        )
+        record = compiled.reference_satn_publication
+        if record is None:  # Defensive: the dedicated boundary must bind provenance.
+            raise ValueError("Reference compilation produced no publication provenance")
+        run_fingerprint = json.dumps(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "area_id": council.area_id,
+                "snapshot_id": council.source.snapshot_id,
+                "reference_publication_fingerprint": record.reference_publication_fingerprint,
+                "compilation_input_fingerprint": compiled.compilation_input_fingerprint,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        run_id = f"reference-{hashlib.sha256(run_fingerprint.encode()).hexdigest()[:12]}"
+        heartbeat.set_stage("reference-publication")
+        artifacts = publish(council, compiled, run_id)
+    return CompilationResult(
+        run_id=run_id,
+        status=compiled.status,
+        output_dir=council.publication.output_dir,
+        connections=compiled.connection_count,
+        gaps=len(compiled.gaps),
+        artifacts=artifacts,
+        criteria=compiled.criteria,
+        agent_records=compiled.agent_records,
+        divergence_records=compiled.divergence_records,
+        metadata={
+            "network_model": "backbone-outward",
+            "compilation_input_fingerprint": compiled.compilation_input_fingerprint,
+            "reference_satn": record.model_dump(mode="json"),
+            "compilation_diagnostics": compiled.compilation_diagnostics,
+        },
+    )
 
 
 def _copy_compilation_source(

@@ -41,7 +41,10 @@ from satn.models import (
     TrafficLight,
     UrbanClassificationStatus,
 )
-from satn.reference_application import ReferenceApplicationPlan
+from satn.reference_application import (
+    ReferenceApplicationPlan,
+    ReferenceSATNPublicationRecord,
+)
 from satn.routing import RoadGraph
 from satn.school_street import assess_school_street_candidates
 from satn.settlement import (
@@ -118,6 +121,10 @@ class CompiledNetwork:
     spine_access_candidate_preparation: SpineAccessCandidatePreparationResult | None = (
         None
     )
+    # A Reference record is deliberately absent for ordinary compilations.
+    # That keeps their publication contract byte-compatible while giving the
+    # dedicated Reference boundary one canonical provenance payload.
+    reference_satn_publication: ReferenceSATNPublicationRecord | None = None
 
     @property
     def connection_count(self) -> int:

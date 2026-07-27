@@ -17,6 +17,8 @@
   }
   const network = data.network;
   const places = data.places;
+  const referenceRecord = data.reference_satn || null;
+  const referenceOptions = data.reference_satn_options || { type: "FeatureCollection", features: [] };
   const state = { pinned: null, active: null, inspectionPath: [], inspectionVersion: 0 };
   const gradientPathTypes = new Set([
     "strategic-spine",
@@ -97,6 +99,33 @@
     "school-access-topography-warnings",
     "school-access-gaps"
   ];
+
+  function renderReferenceSummary() {
+    if (!referenceRecord) return;
+    const section = document.querySelector("#reference-satn-summary");
+    const copy = document.querySelector("#reference-satn-copy");
+    const details = document.querySelector("#reference-satn-details");
+    if (!section || !copy || !details) return;
+    const decision = referenceRecord.reference_selection?.governed_decision || {};
+    const selected = referenceRecord.reference_selection?.selected_candidate_ids || [];
+    const complementary = referenceRecord.reference_selection?.complementary_candidate_ids || [];
+    const rejected = referenceOptions.features.filter((item) => item.properties?.disposition === "rejected");
+    section.hidden = false;
+    copy.textContent = `The governed Reference selects ${selected.length} alignment option(s), retains ${complementary.length} complementary option(s), and records ${rejected.length} rejected alternative(s). ${decision.rationale || "No additional decision rationale was recorded."}`;
+    const list = document.createElement("ul");
+    [
+      "Population Reach at 500 m and 1 km is a whole-Output-Area straight-line corridor measure, not demand, a five-minute walk, or population actually connected.",
+      "Independent-Travel Opportunity is not a finding that any route is safe, suitable, or independently accessible.",
+      "Existing-alignment evidence can be unknown and does not establish legal access, condition, cost, deliverability, or feasibility.",
+      "Directness and topography remain separate evidence; this Reference is not a funded, safe, feasible, or delivery-adopted scheme.",
+      `Decision maker: ${decision.decision_maker_name || "not recorded"}; change conditions and full criteria/evidence remain in the machine-readable Reference record.`
+    ].forEach((text) => {
+      const item = document.createElement("li");
+      item.textContent = text;
+      list.append(item);
+    });
+    details.replaceChildren(list);
+  }
 
   function formatBytes(bytes) {
     if (!Number.isFinite(Number(bytes)) || Number(bytes) <= 0) return "0 KB";
@@ -1274,6 +1303,20 @@
         if (legend) legend.hidden = !control.checked;
       });
     });
+    const referenceControl = document.getElementById("layer-reference-options");
+    if (referenceControl) {
+      referenceControl.addEventListener("change", () => {
+        if (map.getLayer("reference-satn-options")) {
+          map.setLayoutProperty(
+            "reference-satn-options",
+            "visibility",
+            referenceControl.checked ? "visible" : "none"
+          );
+        }
+        const legend = document.getElementById("legend-reference-options");
+        if (legend) legend.hidden = !referenceControl.checked;
+      });
+    }
     document.querySelectorAll(".info-button").forEach((button) => {
       const popover = document.getElementById(button.getAttribute("aria-controls"));
       const close = () => {
@@ -1412,6 +1455,22 @@
       lineMetrics: true,
       data: { type: "FeatureCollection", features: [] }
     });
+    if (referenceRecord && referenceOptions.features.length) {
+      map.addSource("reference-satn-options", { type: "geojson", data: referenceOptions });
+      map.addLayer({
+        id: "reference-satn-options",
+        type: "line",
+        source: "reference-satn-options",
+        layout: { visibility: "none" },
+        paint: {
+          "line-color": ["match", ["get", "disposition"], "selected", "#c0392b", "complementary", "#7c4a93", "#7f8c8d"],
+          "line-width": ["interpolate", ["linear"], ["zoom"], 8, 2, 13, 4],
+          "line-dasharray": [2, 1],
+          "line-opacity": .78
+        }
+      });
+      document.querySelector("#reference-options-control").hidden = false;
+    }
     map.addLayer({
       id: "authority-boundaries",
       type: "line",
@@ -1544,6 +1603,7 @@
   });
 
   renderCards();
+  renderReferenceSummary();
   bindControls();
   updateGradientCandidate();
   renderLinearEvidence();

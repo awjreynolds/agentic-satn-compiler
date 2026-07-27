@@ -48,6 +48,7 @@ from satn.models import (
     TrafficLight,
     canonical_decision_ledger_payload,
 )
+from satn.reference_application import ReferenceSATNPublicationRecord
 from satn.runtime_governance import classify_runtime_governance, validate_runtime_governance
 from satn.sources import (
     EA_LIDAR_WECA_ACQUISITION_CONTRACT,
@@ -1010,6 +1011,8 @@ def _write_json_records(
         "atm_geometry_included": compiled.atm_reference is not None,
         "disclaimer": DISCLAIMER,
     }
+    if compiled.reference_satn_publication is not None:
+        run["reference_satn"] = compiled.reference_satn_publication.model_dump(mode="json")
     (output / "run.json").write_text(json.dumps(run, indent=2), encoding="utf-8")
     records = {
         "schema_version": SCHEMA_VERSION,
@@ -1301,6 +1304,73 @@ def _linework_length_m(geometries: list[object], crs: object) -> float:
     return float(gpd.GeoSeries(geometries, crs=crs).to_crs(27700).length.sum())
 
 
+def _reference_option_collection(
+    record: ReferenceSATNPublicationRecord,
+) -> dict[str, object]:
+    """Render Reference options as a non-authoritative WGS84 review overlay.
+
+    Candidate geometries in the governed record are canonical EPSG:27700
+    linework.  Transforming here, rather than in browser code, keeps the map
+    payload inspectable and ensures the selected authoritative network remains
+    the ordinary ``network`` collection.
+    """
+
+    reference = record.reference_selection
+    selected = set(reference.selected_candidate_ids)
+    complementary = set(reference.complementary_candidate_ids)
+    selections = {item.candidate_set_id: item for item in reference.scenario.selections}
+    features: list[dict[str, object]] = []
+    for candidate_set in sorted(
+        reference.scenario.candidate_sets,
+        key=lambda item: item.candidate_set_id,
+    ):
+        selection = selections[candidate_set.candidate_set_id]
+        criteria = selection.criteria.model_dump(mode="json")
+        for candidate in candidate_set.candidates:
+            if candidate.candidate_id in selected:
+                disposition = "selected"
+            elif candidate.candidate_id in complementary:
+                disposition = "complementary"
+            else:
+                disposition = "rejected"
+            geometry = (
+                gpd.GeoSeries([candidate.geometry.as_shapely()], crs="EPSG:27700")
+                .to_crs(4326)
+                .iloc[0]
+            )
+            features.append(
+                {
+                    "type": "Feature",
+                    "id": candidate.candidate_id,
+                    "geometry": mapping(geometry),
+                    "properties": {
+                        "feature_type": "reference-satn-option",
+                        "candidate_id": candidate.candidate_id,
+                        "candidate_set_id": candidate_set.candidate_set_id,
+                        "connection_id": candidate_set.connection_id,
+                        "disposition": disposition,
+                        "network_role": str(candidate.network_role),
+                        "source_class": str(candidate.source_class),
+                        "directness_m": candidate.directness_m,
+                        "maximum_gradient_pct": candidate.maximum_gradient_pct,
+                        "evidence_fingerprints": list(candidate.evidence_fingerprints),
+                        "criteria": criteria,
+                        "change_conditions": [
+                            str(condition) for condition in selection.change_conditions
+                        ],
+                        "reference_publication_fingerprint": (
+                            record.reference_publication_fingerprint
+                        ),
+                        "disclaimer": (
+                            "Alternative alignment evidence is for review only; it is not a "
+                            "safe, feasible, funded, or adopted scheme."
+                        ),
+                    },
+                }
+            )
+    return {"type": "FeatureCollection", "features": features}
+
+
 def _write_review_map(
     review: Path,
     config: AreaConfig,
@@ -1370,6 +1440,11 @@ def _write_review_map(
         "disclaimer": DISCLAIMER,
         "layer_counts": _layer_counts(compiled),
     }
+    if compiled.reference_satn_publication is not None:
+        data["reference_satn"] = compiled.reference_satn_publication.model_dump(mode="json")
+        data["reference_satn_options"] = _reference_option_collection(
+            compiled.reference_satn_publication
+        )
     (review / "data.js").write_text(
         f"window.SATN_DATA = {json.dumps(data).replace('</', '<\\/')};\n",
         encoding="utf-8",

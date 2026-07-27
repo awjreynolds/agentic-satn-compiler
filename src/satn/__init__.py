@@ -7,7 +7,7 @@ from satn.models import (
     PublishedArtifactReference,
     PublishedNetworkFeatureReference,
 )
-from satn.pipeline import compile
+from satn.pipeline import compile, compile_reference
 from satn.publisher import published_artifact_reference, published_feature_reference
 
 __all__ = [
@@ -17,6 +17,7 @@ __all__ = [
     "PublishedArtifactReference",
     "PublishedNetworkFeatureReference",
     "compile",
+    "compile_reference",
     "published_artifact_reference",
     "published_feature_reference",
 ]
