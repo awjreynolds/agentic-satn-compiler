@@ -64,6 +64,14 @@ from satn.strategic_corridors import (
     StrategicCorridorPreparationResult,
     prepare_strategic_corridors,
 )
+from satn.strategic_reference_replay import (
+    StrategicReferenceReplayMaterialisation,
+    ValidatedStrategicReferenceReplay,
+    empty_destination_access_connections,
+    empty_interurban_connections,
+    materialise_replay,
+    served_obligations_frame,
+)
 from satn.topography import (
     GradientThresholds,
     build_topography_profiles,
@@ -137,11 +145,27 @@ class CompiledNetwork:
     # That keeps their publication contract byte-compatible while giving the
     # dedicated Reference boundary one canonical provenance payload.
     reference_satn_publication: ReferenceSATNPublicationRecord | None = None
+    # Private strategic replay outputs remain empty for every ordinary compile.
+    strategic_interurban_connections: gpd.GeoDataFrame = field(
+        default_factory=empty_interurban_connections
+    )
+    strategic_destination_access_connections: gpd.GeoDataFrame = field(
+        default_factory=empty_destination_access_connections
+    )
+    strategic_reference_diagnostics: dict[str, object] = field(default_factory=dict)
 
     @property
     def connection_count(self) -> int:
         """Number of authoritative Community/School access and branch-meeting edges."""
         return len(self.spine_access_connections) + len(self.branch_meeting_connections)
+
+    @property
+    def strategic_reference_connection_count(self) -> int:
+        """Number of first-class connections materialised by strategic replay."""
+        return (
+            len(self.strategic_interurban_connections)
+            + len(self.strategic_destination_access_connections)
+        )
 
     @property
     def status(self) -> str:
@@ -201,6 +225,31 @@ def _compile_network_with_reference(
     )
 
 
+def _compile_network_with_strategic_reference(
+    config: AreaConfig,
+    source: dict[str, gpd.GeoDataFrame],
+    runtime: AgentRuntimeSource,
+    validated_replay: ValidatedStrategicReferenceReplay,
+    *,
+    governed_input_fingerprint: str,
+    decision_resolver: AgentDecisionResolver,
+    heartbeat: StageHeartbeat | None = None,
+    cross_spine_progress: CrossSpineProgress | None = None,
+) -> CompiledNetwork:
+    """Private seam accepting only pipeline-validated strategic replay state."""
+
+    return _compile_network(
+        config,
+        source,
+        runtime,
+        governed_input_fingerprint=governed_input_fingerprint,
+        decision_resolver=decision_resolver,
+        heartbeat=heartbeat,
+        cross_spine_progress=cross_spine_progress,
+        validated_strategic_replay=validated_replay,
+    )
+
+
 def _compile_network(
     config: AreaConfig,
     source: dict[str, gpd.GeoDataFrame],
@@ -211,6 +260,7 @@ def _compile_network(
     heartbeat: StageHeartbeat | None = None,
     cross_spine_progress: CrossSpineProgress | None = None,
     reference_application_plan: ReferenceApplicationPlan | None = None,
+    validated_strategic_replay: ValidatedStrategicReferenceReplay | None = None,
 ) -> CompiledNetwork:
     places = source["places"].copy().sort_values("place_id").reset_index(drop=True)
     context = source.get("context", empty_context(source["network"].crs)).copy()
@@ -253,9 +303,23 @@ def _compile_network(
     )
     strategic_spines = _strategic_spines(context)
     rural_communities = _rural_communities(communities)
+    strategic_replay: StrategicReferenceReplayMaterialisation | None = None
+    backbone_rural_communities = rural_communities
+    if validated_strategic_replay is not None:
+        strategic_replay = materialise_replay(
+            validated_strategic_replay,
+            strategic_spines,
+            communities,
+            road_graph,
+        )
+        strategic_spines = strategic_replay.effective_strategic_spines
+        served_endpoint_ids = set(strategic_replay.served_endpoint_place_ids)
+        backbone_rural_communities = rural_communities[
+            ~rural_communities["place_id"].astype(str).isin(served_endpoint_ids)
+        ].copy()
     rural_schools = _rural_schools(context)
     backbone_arguments = (
-        rural_communities,
+        backbone_rural_communities,
         rural_schools,
         gateways,
         strategic_spines,
@@ -278,6 +342,18 @@ def _compile_network(
     access_obligations["network_scope"] = access_obligations["network_scope"].astype(object)
     rural_obligations = access_obligations["obligation_kind"].isin(["community", "school"])
     access_obligations.loc[rural_obligations, "network_scope"] = NetworkScope.RURAL.value
+    if strategic_replay is not None:
+        replay_obligations = served_obligations_frame(strategic_replay, communities)
+        access_obligations = gpd.GeoDataFrame(
+            pd.concat(
+                [access_obligations, replay_obligations],
+                ignore_index=True,
+                sort=False,
+            ),
+            columns=access_obligations.columns,
+            geometry="geometry",
+            crs=access_obligations.crs,
+        )
     spine_access_branches = backbone.branches
     branch_meeting_connections = backbone.meeting_connections
     cross_spine_connectors = backbone.cross_spine_connectors
@@ -703,6 +779,31 @@ def _compile_network(
         spine_access_candidate_preparation=spine_access_candidate_preparation,
         strategic_corridor_preparation=strategic_corridor_preparation,
         network_selection_preparation=network_selection_preparation,
+        strategic_interurban_connections=(
+            strategic_replay.interurban_connections
+            if strategic_replay is not None
+            else empty_interurban_connections()
+        ),
+        strategic_destination_access_connections=(
+            strategic_replay.destination_access_connections
+            if strategic_replay is not None
+            else empty_destination_access_connections()
+        ),
+        strategic_reference_diagnostics=(
+            strategic_replay.diagnostics
+            | {
+                "backbone_rural_community_count_before": len(rural_communities),
+                "backbone_rural_community_count_after": len(
+                    backbone_rural_communities
+                ),
+                "filtered_backbone_network_place_ids": list(
+                    strategic_replay.served_endpoint_place_ids
+                ),
+                "destination_access_satisfied_community_obligation_count": 0,
+            }
+            if strategic_replay is not None
+            else {}
+        ),
     )
     # ``compile_network`` is also a supported public entry point.  Its output
     # must therefore carry the same exact decision wire contract as the

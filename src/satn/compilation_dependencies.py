@@ -75,6 +75,10 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
         "module",
         "compiler-derived sibling strategic-corridor candidate preparation",
     ),
+    "satn/strategic_reference_replay.py": (
+        "module",
+        "private deterministic strategic Reference replay materialisation",
+    ),
     "satn/routing.py": ("module", "routable network and route selection"),
     "satn/school_street.py": ("module", "school-street assessment"),
     "satn/settlement.py": ("module", "settlement and urban eligibility"),
