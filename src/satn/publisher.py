@@ -64,6 +64,7 @@ from satn.sources import (
     NCN_ATTRIBUTION,
     OSM_ATTRIBUTION,
     _validate_canonical_retained_ea_evidence,
+    _validated_ea_snapshot_replay_inputs,
 )
 from satn.strategic_reference_application import StrategicReferenceApplicationDisposition
 from satn.strategic_reference_publication import StrategicReferencePublicationRecord
@@ -815,12 +816,18 @@ def _ea_fixed_point_next_step(
         return _ea_fixed_point_repin_required(
             "candidate-current-governed-input-fingerprint-is-invalid"
         )
-    authority_boundaries = snapshot / "ea-authority-boundaries.geojson"
-    survey_index = snapshot / "ea-survey-index.geojson"
-    if any(
-        not path.is_file() or path.is_symlink() for path in (authority_boundaries, survey_index)
-    ):
-        return _ea_fixed_point_repin_required("candidate-missing-pinned-survey-inputs")
+    try:
+        replay_inputs = _validated_ea_snapshot_replay_inputs(snapshot)
+    except ValueError as error:
+        reason = (
+            "legacy-snapshot-not-self-contained"
+            if str(error) == "legacy EA fixed-point snapshot is not self-contained"
+            else "candidate-snapshot-replay-inputs-invalid"
+        )
+        LOGGER.warning("EA fixed-point replay unavailable reason=%s detail=%s", reason, error)
+        return _ea_fixed_point_repin_required(reason)
+    authority_boundaries = replay_inputs["authority_boundaries"]
+    survey_index = replay_inputs["survey_index"]
     cache_dir = elevation.path.parent / "ea-dtm-cache"
     command = [
         "uv",

@@ -75,6 +75,7 @@ ELEVATION_EVIDENCE_FILENAME = "elevation-evidence.geojson"
 EA_RETAINED_ROUTE_FILENAME = "ea-elevation-sampled-routes.geojson"
 EA_LIDAR_SOURCE_ID = "ea-lidar-composite-dtm-1m"
 EA_LIDAR_WECA_ACQUISITION_CONTRACT = "ea-lidar-weca-v1"
+EA_FIXED_POINT_REPLAY_INPUT_SCHEMA_VERSION = "ea-fixed-point-replay-inputs/v1"
 ELEVATION_ARTIFACT_FILENAMES = frozenset(
     {
         ELEVATION_EVIDENCE_FILENAME,
@@ -1576,7 +1577,137 @@ def _ea_elevation_acquisition_provenance(
         "sample_ledger_sha256": recomputed["sample_ledger_sha256"],
         "cross_boundary_transitions": recomputed["cross_boundary_transitions"],
         "evidence_row_sha256s": recomputed["evidence_row_sha256s"],
+        "replay_inputs": {
+            "schema_version": EA_FIXED_POINT_REPLAY_INPUT_SCHEMA_VERSION,
+            "licence": acquisition["licence"],
+            "files": {
+                "authority_boundaries": {
+                    "path": "ea-authority-boundaries.geojson",
+                    "sha256": authority_identity["raw_sha256"],
+                },
+                "sample_ledger": {
+                    "path": SAMPLE_LEDGER_FILENAME,
+                    "sha256": ledger_digest,
+                },
+                "sample_routes": {
+                    "path": EA_RETAINED_ROUTE_FILENAME,
+                    "sha256": route_digest,
+                },
+                "survey_index": {
+                    "path": "ea-survey-index.geojson",
+                    "sha256": official_index["raw_sha256"],
+                },
+            },
+        },
     }
+
+
+def _validated_ea_snapshot_replay_inputs(snapshot_dir: Path) -> dict[str, Path]:
+    """Resolve only complete, content-bound fixed-point replay inputs."""
+    manifest_path = _regular_sibling(
+        snapshot_dir,
+        "snapshot.json",
+        label="EA fixed-point snapshot manifest",
+    )
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        elevation = manifest["evidence_sources"]["elevation"]
+    except (json.JSONDecodeError, KeyError, TypeError) as error:
+        raise ValueError("EA fixed-point snapshot replay metadata is invalid") from error
+    if not isinstance(elevation, dict):
+        raise ValueError("EA fixed-point snapshot replay metadata is invalid")
+    replay = elevation.get("replay_inputs")
+    if replay is None:
+        raise ValueError("legacy EA fixed-point snapshot is not self-contained")
+    if (
+        not isinstance(replay, dict)
+        or replay.get("schema_version") != EA_FIXED_POINT_REPLAY_INPUT_SCHEMA_VERSION
+        or not isinstance(replay.get("licence"), str)
+        or not replay["licence"].strip()
+        or not isinstance(replay.get("files"), dict)
+    ):
+        raise ValueError("EA fixed-point snapshot replay contract is invalid")
+
+    file_hashes = _manifest_hashes(
+        manifest,
+        "file_sha256",
+        label="EA fixed-point replay file hashes",
+    )
+    provenance_hashes = _manifest_hashes(
+        manifest,
+        "provenance_file_sha256",
+        label="EA fixed-point replay provenance hashes",
+    )
+    expected_names = {
+        "authority_boundaries": "ea-authority-boundaries.geojson",
+        "sample_ledger": SAMPLE_LEDGER_FILENAME,
+        "sample_routes": EA_RETAINED_ROUTE_FILENAME,
+        "survey_index": "ea-survey-index.geojson",
+    }
+    records = replay["files"]
+    if set(records) != set(expected_names):
+        raise ValueError("EA fixed-point snapshot replay files are incomplete")
+    resolved: dict[str, Path] = {}
+    for role, expected_name in expected_names.items():
+        record = records[role]
+        if not isinstance(record, dict):
+            raise ValueError("EA fixed-point snapshot replay file record is invalid")
+        digest = record.get("sha256")
+        if (
+            record.get("path") != expected_name
+            or not isinstance(digest, str)
+            or len(digest) != 64
+            or file_hashes.get(expected_name) != digest
+            or provenance_hashes.get(expected_name) != digest
+        ):
+            raise ValueError(f"EA fixed-point snapshot replay {role} is unbound")
+        retained = _regular_sibling(
+            snapshot_dir,
+            expected_name,
+            label=f"EA fixed-point replay {role}",
+        )
+        if sha256_file(retained) != digest:
+            raise ValueError(f"EA fixed-point snapshot replay {role} is tampered")
+        resolved[role] = retained
+
+    sidecar = _regular_sibling(
+        snapshot_dir,
+        "elevation-evidence.manifest.json",
+        label="EA fixed-point replay acquisition manifest",
+    )
+    sidecar_digest = sha256_file(sidecar)
+    if (
+        provenance_hashes.get(sidecar.name) != sidecar_digest
+        or elevation.get("ea_acquisition_manifest_sha256") != sidecar_digest
+    ):
+        raise ValueError("EA fixed-point replay acquisition manifest is unbound")
+    try:
+        acquisition = json.loads(sidecar.read_text(encoding="utf-8"))
+        authority_identity = acquisition["survey_coverage_preflight"]["authority_boundaries"]
+    except (json.JSONDecodeError, KeyError, TypeError) as error:
+        raise ValueError("EA fixed-point replay acquisition manifest is invalid") from error
+    expected_sidecar_values = {
+        "authority_boundaries_path": expected_names["authority_boundaries"],
+        "sample_ledger_path": expected_names["sample_ledger"],
+        "sample_route_path": expected_names["sample_routes"],
+        "survey_index_path": expected_names["survey_index"],
+        "sample_ledger_sha256": records["sample_ledger"]["sha256"],
+        "sample_route_sha256": records["sample_routes"]["sha256"],
+        "survey_index_sha256": records["survey_index"]["sha256"],
+    }
+    if (
+        not isinstance(acquisition, dict)
+        or acquisition.get("licence") != replay["licence"]
+        or any(
+            acquisition.get(field) != expected
+            for field, expected in expected_sidecar_values.items()
+        )
+        or not isinstance(authority_identity, dict)
+        or authority_identity.get("raw_sha256")
+        != records["authority_boundaries"]["sha256"]
+    ):
+        raise ValueError("EA fixed-point replay acquisition inputs do not match the snapshot")
+    return resolved
 
 
 def _validate_canonical_retained_ea_evidence(
