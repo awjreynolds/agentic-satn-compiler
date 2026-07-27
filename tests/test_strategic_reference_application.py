@@ -49,11 +49,31 @@ from satn.strategic_reference_application import (
 
 
 def _resolved_reference_inputs(tmp_path: Path, monkeypatch):
-    """Resolve only compiler-offered finite actions for the exact two units."""
+    """Resolve a test-adapted Scenario solely to exercise the contract seam."""
 
     _, source, compiled, population, education = _compiled_inputs(tmp_path)
     preparation = compiled.strategic_corridor_preparation
     assert preparation is not None
+    base_request = StrategicCriteriaScenarioInput(
+        preparation=preparation,
+        population_evidence=population,
+        education_evidence=education,
+        area_definition=source["boundary"],
+        area_fingerprint=_area_fingerprint(source),
+    )
+    production = compile_strategic_criteria_scenario(base_request)
+    assert production.status == "review-required"
+    assert production.scenario is not None
+    assert {
+        selection.disposition.value
+        for selection in production.scenario.selections
+    } == {"network-gap"}
+    assert production.review_orchestration is not None
+    assert not any(
+        option.action.value == "select-eligible-option"
+        for state in production.review_orchestration.actionable_requests
+        for option in state.request.options
+    )
 
     def exact_test_criteria(
         exact_preparation,
@@ -84,13 +104,6 @@ def _resolved_reference_inputs(tmp_path: Path, monkeypatch):
         scenario_module,
         "_assemble_unit",
         exact_test_criteria,
-    )
-    base_request = StrategicCriteriaScenarioInput(
-        preparation=preparation,
-        population_evidence=population,
-        education_evidence=education,
-        area_definition=source["boundary"],
-        area_fingerprint=_area_fingerprint(source),
     )
     provisional = compile_strategic_criteria_scenario(base_request)
     assert provisional.status == "review-required"
