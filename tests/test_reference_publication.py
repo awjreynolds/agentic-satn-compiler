@@ -115,6 +115,13 @@ def test_reference_compile_atomically_publishes_matching_canonical_provenance(
     assert "purple dashed linework means complementary" in html
     assert "grey dashed linework means rejected" in html
     assert "All dashed alternative linework is review-only evidence" in html
+    persistent_status = html.split('id="reference-options-status"', maxsplit=1)[1].split(
+        "</div>", maxsplit=1
+    )[0]
+    assert (
+        "All dashed alternative linework is review-only evidence, "
+        "not the authoritative selected network."
+    ) in persistent_status
 
 
 def test_reference_publication_record_rejects_stale_self_fingerprint(
@@ -358,12 +365,19 @@ def test_reference_option_legend_remains_visible_while_layer_is_active(
         assert all(
             meaning in status.inner_text() for meaning in ("selected", "complementary", "rejected")
         )
+        persistent_semantics = (
+            "All dashed alternative linework is review-only evidence, "
+            "not the authoritative selected network."
+        )
+        assert persistent_semantics in status.inner_text()
 
         reference_information.click()
         page.locator("#map").hover()
         assert status.is_visible()
+        assert persistent_semantics in status.inner_text()
         page.get_by_role("button", name="About the strategic network").click()
         assert status.is_visible()
+        assert persistent_semantics in status.inner_text()
 
         control.uncheck()
         assert status.is_hidden()
