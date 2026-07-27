@@ -1059,6 +1059,9 @@ def _evidence_lineage(
         "education": (
             {
                 "governed_source_fingerprint": education.governed_source_fingerprint,
+                "source_snapshot": education.source_snapshot.model_dump(
+                    mode="json"
+                ),
                 "school_register_content_sha256": education.school_register_lineage.content_sha256,
                 "admissions_content_sha256": (
                     education.admissions_lineage.content_sha256

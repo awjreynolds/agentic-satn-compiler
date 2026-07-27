@@ -21,7 +21,11 @@ from satn.alignment_selection import (
     GovernedEvidenceSnapshot,
 )
 from satn.compiler import compile_network
-from satn.education_access import assess_education_access
+from satn.education_access import (
+    StrategicEducationDestination,
+    assess_education_access,
+    governed_education_assessment_fingerprint,
+)
 from satn.evidence import mark_ncn_edges
 from satn.psa_evidence_loaders import (
     load_education_access_evidence,
@@ -251,16 +255,11 @@ def test_resealed_destination_criteria_cannot_erase_its_education_scope(
         destination.education.governed_binding
         .full_source_governed_fingerprint
     )
-    erased_governed_input = _canonical_sha256(
-        {
-            "schema": "satn-governed-education-assessment-binding/v3",
-            "governed_source_fingerprint": full_source_sha256,
-            "scope": {
-                "school_ids": [],
-                "strategic_destination_ids": [],
-            },
-            "assessment_content_sha256": erased_content_sha256,
-        }
+    erased_governed_input = governed_education_assessment_fingerprint(
+        governed_source_fingerprint=full_source_sha256,
+        school_ids=(),
+        strategic_destination_ids=(),
+        assessment_content_sha256=erased_content_sha256,
     )
     erased_governed_binding = GovernedEducationCriterionBinding(
         school_ids=(),
@@ -338,20 +337,11 @@ def test_resealed_destination_criteria_cannot_substitute_foreign_source_with_sam
     assert isinstance(destination, CandidateCriteria)
     governed = destination.education.governed_binding
     foreign_source_sha256 = "f" * 64
-    foreign_input = _canonical_sha256(
-        {
-            "schema": "satn-governed-education-assessment-binding/v3",
-            "governed_source_fingerprint": foreign_source_sha256,
-            "scope": {
-                "school_ids": list(governed.school_ids),
-                "strategic_destination_ids": list(
-                    governed.strategic_destination_ids
-                ),
-            },
-            "assessment_content_sha256": (
-                governed.assessment_content_sha256
-            ),
-        }
+    foreign_input = governed_education_assessment_fingerprint(
+        governed_source_fingerprint=foreign_source_sha256,
+        school_ids=governed.school_ids,
+        strategic_destination_ids=governed.strategic_destination_ids,
+        assessment_content_sha256=governed.assessment_content_sha256,
     )
     foreign_binding = GovernedEducationCriterionBinding(
         school_ids=governed.school_ids,
@@ -410,6 +400,159 @@ def test_resealed_destination_criteria_cannot_substitute_foreign_source_with_sam
             unit_role=destination_packet.unit_role,
             criteria=foreign_criteria,
             preparation_lineage=destination_packet.preparation_lineage,
+        )
+
+
+def test_resealed_destination_record_must_equal_preparation_source(
+    tmp_path: Path,
+) -> None:
+    _, source, compiled, population, education = _compiled_inputs(tmp_path)
+    preparation = compiled.strategic_corridor_preparation
+    assert preparation is not None
+    result = compile_strategic_criteria_scenario(
+        StrategicCriteriaScenarioInput(
+            preparation=preparation,
+            population_evidence=population,
+            education_evidence=education,
+            area_definition=source["boundary"],
+            area_fingerprint=_area_fingerprint(source),
+        )
+    )
+    destination_packet = next(
+        item
+        for item in result.criteria
+        if item.unit_role
+        is StrategicCorridorUnitRole.STRATEGIC_DESTINATION_ACCESS
+    )
+    destination = destination_packet.criteria
+    assert isinstance(destination, CandidateCriteria)
+    assessment_source = destination.education.assessment.source_snapshot
+    original_destination = (
+        assessment_source.strategic_education_destinations[0]
+    )
+    assert isinstance(
+        original_destination,
+        StrategicEducationDestination,
+    )
+    changed_destination = original_destination.model_copy(
+        update={"name": "Foreign Bath Spa identity"}
+    )
+    changed_assessment = assess_education_access(
+        register_evidence=assessment_source.register_evidence,
+        schools=assessment_source.schools,
+        strategic_destinations=(changed_destination,),
+        option_evidence=assessment_source.option_evidence,
+        option_ids=assessment_source.option_ids,
+        supplementary_pct_evidence=(
+            assessment_source.supplementary_pct_evidence
+        ),
+    )
+    changed_content = _canonical_sha256(
+        changed_assessment.model_dump(mode="json")
+    )
+    governed = destination.education.governed_binding
+    changed_governed = GovernedEducationCriterionBinding(
+        school_ids=governed.school_ids,
+        strategic_destination_ids=governed.strategic_destination_ids,
+        full_source_governed_fingerprint=(
+            governed.full_source_governed_fingerprint
+        ),
+        governed_input_fingerprint=(
+            governed_education_assessment_fingerprint(
+                governed_source_fingerprint=(
+                    governed.full_source_governed_fingerprint
+                ),
+                school_ids=governed.school_ids,
+                strategic_destination_ids=(
+                    governed.strategic_destination_ids
+                ),
+                assessment_content_sha256=changed_content,
+            )
+        ),
+        assessment_content_sha256=changed_content,
+    )
+    changed_education_snapshot = next(
+        binding
+        for binding in destination.evidence_snapshot.assessments
+        if binding.kind is AssessmentKind.EDUCATION_ACCESS
+    ).model_copy(
+        update={
+            "assessment_id": changed_assessment.assessment_id,
+            "assessment_content_sha256": changed_content,
+        }
+    )
+    changed_snapshot = GovernedEvidenceSnapshot(
+        snapshot_id=destination.evidence_snapshot.snapshot_id,
+        assessments=tuple(
+            changed_education_snapshot
+            if binding.kind is AssessmentKind.EDUCATION_ACCESS
+            else binding
+            for binding in destination.evidence_snapshot.assessments
+        ),
+    )
+    changed_summary = EducationCriterionSummary.from_assessment(
+        changed_assessment,
+        candidate_set=destination.education.candidate_set,
+        scenario_evidence_snapshot_fingerprint=(
+            changed_snapshot.snapshot_fingerprint
+        ),
+        governed_binding=changed_governed,
+    )
+    changed_criteria = CandidateCriteria(
+        evidence_snapshot=changed_snapshot,
+        population=destination.population.model_copy(
+            update={
+                "scenario_evidence_snapshot_fingerprint": (
+                    changed_snapshot.snapshot_fingerprint
+                )
+            }
+        ),
+        education=changed_summary,
+        existing_alignment=destination.existing_alignment,
+        directness=destination.directness,
+        gradient=destination.gradient,
+        uncertainty=destination.uncertainty,
+    )
+
+    with pytest.raises(ValueError, match="prepared source lineage"):
+        PreparedStrategicUnitCriteria(
+            unit_id=destination_packet.unit_id,
+            unit_role=destination_packet.unit_role,
+            criteria=changed_criteria,
+            preparation_lineage=destination_packet.preparation_lineage,
+        )
+
+
+def test_strategic_packet_deeply_revalidates_nested_criteria(
+    tmp_path: Path,
+) -> None:
+    _, source, compiled, population, education = _compiled_inputs(tmp_path)
+    preparation = compiled.strategic_corridor_preparation
+    assert preparation is not None
+    result = compile_strategic_criteria_scenario(
+        StrategicCriteriaScenarioInput(
+            preparation=preparation,
+            population_evidence=population,
+            education_evidence=education,
+            area_definition=source["boundary"],
+            area_fingerprint=_area_fingerprint(source),
+        )
+    )
+    packet = next(
+        item
+        for item in result.criteria
+        if isinstance(item.criteria, CandidateCriteria)
+    )
+    stale = packet.criteria.model_copy(
+        update={"criteria_fingerprint": "0" * 64}
+    )
+
+    with pytest.raises(ValueError, match="CandidateCriteria is stale"):
+        PreparedStrategicUnitCriteria(
+            unit_id=packet.unit_id,
+            unit_role=packet.unit_role,
+            criteria=stale,
+            preparation_lineage=packet.preparation_lineage,
         )
 
 

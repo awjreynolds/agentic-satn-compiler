@@ -42,8 +42,10 @@ from satn.alignment_selection import (
 )
 from satn.education_access import (
     ConnectorContinuity,
+    EducationAccessSourceSnapshot,
     MeasuredDistance,
     StrategicEducationDestinationEvidence,
+    governed_education_assessment_fingerprint,
 )
 from satn.models import AccessPointStatus
 from satn.population_reach import PopulationReachProfile
@@ -53,7 +55,10 @@ from satn.psa_evidence_loaders import (
     GovernedEducationAssessmentScope,
     PopulationReachEvidenceLoad,
 )
-from satn.scenario_compilation import PreparedCriteriaLineage
+from satn.scenario_compilation import (
+    PreparedCriteriaLineage,
+    _validate_education_source_extension,
+)
 from satn.strategic_corridors import (
     PreparedStrategicCorridorUnit,
     StrategicCorridorPreparationResult,
@@ -74,6 +79,32 @@ def _fingerprint(value: object) -> str:
             allow_nan=False,
         ).encode("utf-8")
     ).hexdigest()
+
+
+def _thaw(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {
+            str(key): _thaw(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, tuple):
+        return [_thaw(item) for item in value]
+    return value
+
+
+def _lineage_education_source(
+    value: object,
+) -> EducationAccessSourceSnapshot:
+    if not isinstance(value, Mapping):
+        raise ValueError(
+            "strategic criterion education preparation lineage is malformed"
+        )
+    try:
+        return EducationAccessSourceSnapshot.model_validate(_thaw(value))
+    except Exception as error:
+        raise ValueError(
+            "strategic criterion education preparation lineage is malformed"
+        ) from error
 
 
 @dataclass(frozen=True)
@@ -135,15 +166,30 @@ class PreparedStrategicUnitCriteria:
     def __post_init__(self) -> None:
         if not self.unit_id or self.unit_id.strip() != self.unit_id:
             raise ValueError("strategic criterion unit_id must be canonical")
+        if isinstance(self.criteria, CandidateCriteria):
+            try:
+                criteria = CandidateCriteria.model_validate(
+                    self.criteria.model_dump(mode="python")
+                )
+            except Exception as error:
+                raise ValueError(
+                    "strategic criterion CandidateCriteria is stale"
+                ) from error
+            object.__setattr__(self, "criteria", criteria)
+        else:
+            criteria = CandidateSetGapEvidence.model_validate(
+                self.criteria.model_dump(mode="python")
+            )
+            object.__setattr__(self, "criteria", criteria)
         candidate_set = (
-            self.criteria.candidate_set
-            if isinstance(self.criteria, CandidateSetGapEvidence)
-            else self.criteria.education.candidate_set
+            criteria.candidate_set
+            if isinstance(criteria, CandidateSetGapEvidence)
+            else criteria.education.candidate_set
         )
         expected_role = candidate_set.network_role
         if expected_role is not self.unit_role.network_role:
             raise ValueError("strategic criterion role is stale for its Candidate Set")
-        if isinstance(self.criteria, CandidateCriteria):
+        if isinstance(criteria, CandidateCriteria):
             education_lineage = self.preparation_lineage.evidence_lineage.get(
                 "education"
             )
@@ -154,36 +200,40 @@ class PreparedStrategicUnitCriteria:
             governed_source = education_lineage.get(
                 "governed_source_fingerprint"
             )
-            governed_binding = self.criteria.education.governed_binding
-            expected_input = _fingerprint(
-                {
-                    "schema": (
-                        "satn-governed-education-assessment-binding/v3"
-                    ),
-                    "governed_source_fingerprint": governed_source,
-                    "scope": {
-                        "school_ids": list(governed_binding.school_ids),
-                        "strategic_destination_ids": list(
-                            governed_binding.strategic_destination_ids
-                        ),
-                    },
-                    "assessment_content_sha256": (
-                        governed_binding.assessment_content_sha256
-                    ),
-                }
+            prepared_source = _lineage_education_source(
+                education_lineage.get("source_snapshot")
             )
+            governed_binding = criteria.education.governed_binding
             if (
                 not isinstance(governed_source, str)
                 or _SHA256.fullmatch(governed_source) is None
                 or governed_binding.full_source_governed_fingerprint
                 != governed_source
                 or governed_binding.governed_input_fingerprint
-                != expected_input
+                != governed_education_assessment_fingerprint(
+                    governed_source_fingerprint=governed_source,
+                    school_ids=governed_binding.school_ids,
+                    strategic_destination_ids=(
+                        governed_binding.strategic_destination_ids
+                    ),
+                    assessment_content_sha256=(
+                        governed_binding.assessment_content_sha256
+                    ),
+                )
             ):
                 raise ValueError(
                     "strategic criterion education source is foreign to "
                     "preparation lineage"
                 )
+            _validate_education_source_extension(
+                prepared_source,
+                criteria.education.assessment.source_snapshot,
+                school_ids=governed_binding.school_ids,
+                strategic_destination_ids=(
+                    governed_binding.strategic_destination_ids
+                ),
+                require_full_scope=False,
+            )
 
 
 @dataclass(frozen=True)
@@ -627,6 +677,10 @@ def _validate_evidence_identity(
     if (
         education_lineage.get("governed_source_fingerprint")
         != education.governed_source_fingerprint
+        or _lineage_education_source(
+            education_lineage.get("source_snapshot")
+        )
+        != education.source_snapshot
         or education_lineage.get("school_register_content_sha256")
         != education.school_register_lineage.content_sha256
         or education_lineage.get("admissions_content_sha256")

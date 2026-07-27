@@ -2162,3 +2162,46 @@ def assess_education_access(
         special_school_accessibility_views=(derivation.special_school_accessibility_views),
         network_gaps=derivation.network_gaps,
     )
+
+
+def governed_education_assessment_fingerprint(
+    *,
+    governed_source_fingerprint: str,
+    school_ids: tuple[str, ...],
+    strategic_destination_ids: tuple[str, ...],
+    assessment_content_sha256: str,
+) -> str:
+    """Bind one exact education scope and assessment to its full source."""
+
+    if (
+        re.fullmatch(_SHA256_PATTERN, governed_source_fingerprint) is None
+        or re.fullmatch(_SHA256_PATTERN, assessment_content_sha256) is None
+    ):
+        raise ValueError(
+            "governed education binding requires lowercase SHA-256 identities"
+        )
+    for label, values in (
+        ("school_ids", school_ids),
+        ("strategic_destination_ids", strategic_destination_ids),
+    ):
+        if (
+            values != tuple(sorted(values))
+            or len(set(values)) != len(values)
+            or any(_ID_PATTERN.fullmatch(item) is None for item in values)
+        ):
+            raise ValueError(
+                f"governed education binding {label} must be canonical"
+            )
+    return canonical_sha256(
+        {
+            "schema": "satn-governed-education-assessment-binding/v3",
+            "governed_source_fingerprint": governed_source_fingerprint,
+            "scope": {
+                "school_ids": list(school_ids),
+                "strategic_destination_ids": list(
+                    strategic_destination_ids
+                ),
+            },
+            "assessment_content_sha256": assessment_content_sha256,
+        }
+    )

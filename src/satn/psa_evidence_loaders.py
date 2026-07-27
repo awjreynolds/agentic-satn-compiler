@@ -54,6 +54,7 @@ from satn.education_access import (
     StrategicEducationDestination,
     SupplementaryPCTEvidence,
     assess_education_access,
+    governed_education_assessment_fingerprint,
 )
 from satn.network_selection import (
     GovernedEvidenceArtifactConfig,
@@ -521,10 +522,13 @@ class GovernedEducationAccessAssessment:
             raise GovernedEvidenceLoadError(
                 "governed education assessment content fingerprint mismatch"
             )
-        expected = _governed_education_assessment_fingerprint(
-            self.source_evidence,
-            scope,
-            content_sha256,
+        expected = governed_education_assessment_fingerprint(
+            governed_source_fingerprint=(
+                self.source_evidence.governed_source_fingerprint
+            ),
+            school_ids=scope.school_ids,
+            strategic_destination_ids=scope.strategic_destination_ids,
+            assessment_content_sha256=content_sha256,
         )
         if self.governed_input_fingerprint != expected:
             raise GovernedEvidenceLoadError(
@@ -1055,10 +1059,11 @@ def assess_education_access_from_evidence(
         supplementary_pct_evidence=supplementary_pct_evidence,
     )
     assessment_content_sha256 = canonical_sha256(assessment.model_dump(mode="json"))
-    governed_input_fingerprint = _governed_education_assessment_fingerprint(
-        evidence,
-        exact_scope,
-        assessment_content_sha256,
+    governed_input_fingerprint = governed_education_assessment_fingerprint(
+        governed_source_fingerprint=evidence.governed_source_fingerprint,
+        school_ids=exact_scope.school_ids,
+        strategic_destination_ids=exact_scope.strategic_destination_ids,
+        assessment_content_sha256=assessment_content_sha256,
     )
     return GovernedEducationAccessAssessment(
         assessment=assessment,
@@ -2218,21 +2223,6 @@ def _resolve_education_assessment_scope(
             destinations_by_id[item]
             for item in exact_scope.strategic_destination_ids
         ),
-    )
-
-
-def _governed_education_assessment_fingerprint(
-    source: EducationAccessEvidenceLoad,
-    scope: GovernedEducationAssessmentScope,
-    assessment_content_sha256: str,
-) -> str:
-    return canonical_sha256(
-        {
-            "schema": "satn-governed-education-assessment-binding/v3",
-            "governed_source_fingerprint": source.governed_source_fingerprint,
-            "scope": scope.canonical(),
-            "assessment_content_sha256": assessment_content_sha256,
-        }
     )
 
 

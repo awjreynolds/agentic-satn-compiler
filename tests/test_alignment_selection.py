@@ -77,6 +77,7 @@ from satn.education_access import (
     StrategicEducationDestination,
     StrategicEducationDestinationEvidence,
     assess_education_access,
+    governed_education_assessment_fingerprint,
 )
 from satn.existing_alignment import (
     CurrentRouteKind,
@@ -582,13 +583,13 @@ def criteria(
             )
         ],
     }
-    education_governed_input = fingerprint(
-        {
-            "schema": "satn-governed-education-assessment-binding/v3",
-            "governed_source_fingerprint": education_source_sha256,
-            "scope": education_scope,
-            "assessment_content_sha256": education_content_sha256,
-        }
+    education_governed_input = governed_education_assessment_fingerprint(
+        governed_source_fingerprint=education_source_sha256,
+        school_ids=tuple(education_scope["school_ids"]),
+        strategic_destination_ids=tuple(
+            education_scope["strategic_destination_ids"]
+        ),
+        assessment_content_sha256=education_content_sha256,
     )
     education_binding = GovernedEducationCriterionBinding(
         school_ids=tuple(education_scope["school_ids"]),

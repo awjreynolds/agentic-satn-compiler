@@ -25,6 +25,7 @@ from satn.alignment_selection import (
     CandidateSetGapEvidence,
     DecisionProcessMode,
     GovernedAssessmentBinding,
+    GovernedEducationCriterionBinding,
     GovernedEvidenceSnapshot,
     RuntimeDecisionAttempt,
     RuntimeInvocationRecord,
@@ -32,7 +33,10 @@ from satn.alignment_selection import (
     admit_candidate_set,
     review_frontier_fingerprint,
 )
-from satn.education_access import assess_education_access
+from satn.education_access import (
+    assess_education_access,
+    governed_education_assessment_fingerprint,
+)
 from satn.scenario_compilation import (
     PreparedCandidateCriteria,
     PreparedCriteriaLineage,
@@ -253,7 +257,7 @@ def bound_snapshot(
     education_source = (
         education_base_source(prepared)["source_content_fingerprint"]
         if use_base_education_source
-        else snapshot.assessment(AssessmentKind.EDUCATION_ACCESS).source_content_sha256
+        else EDUCATION_GOVERNED
     )
     expected = {
         AssessmentKind.POPULATION_REACH: POPULATION_SOURCE,
@@ -298,6 +302,25 @@ def bound_criteria(
     network_assessment = snapshot.assessment(AssessmentKind.NETWORK_GEOMETRY)
     topography_assessment = snapshot.assessment(AssessmentKind.TOPOGRAPHY)
     assert network_assessment is not None and topography_assessment is not None
+    governed = base.education.governed_binding
+    governed_binding = GovernedEducationCriterionBinding(
+        school_ids=governed.school_ids,
+        strategic_destination_ids=governed.strategic_destination_ids,
+        full_source_governed_fingerprint=EDUCATION_GOVERNED,
+        governed_input_fingerprint=(
+            governed_education_assessment_fingerprint(
+                governed_source_fingerprint=EDUCATION_GOVERNED,
+                school_ids=governed.school_ids,
+                strategic_destination_ids=(
+                    governed.strategic_destination_ids
+                ),
+                assessment_content_sha256=(
+                    governed.assessment_content_sha256
+                ),
+            )
+        ),
+        assessment_content_sha256=governed.assessment_content_sha256,
+    )
     return CandidateCriteria(
         evidence_snapshot=snapshot,
         population=base.population.model_copy(
@@ -307,7 +330,10 @@ def bound_criteria(
         ),
         education=base.education.model_copy(
             update={
-                "scenario_evidence_snapshot_fingerprint": snapshot.snapshot_fingerprint
+                "scenario_evidence_snapshot_fingerprint": (
+                    snapshot.snapshot_fingerprint
+                ),
+                "governed_binding": governed_binding,
             }
         ),
         existing_alignment=base.existing_alignment,
@@ -784,6 +810,85 @@ def test_forged_criterion_source_hash_fails_closed() -> None:
         compile_prepared_scenario(
             preparation(item),
             request((packet(item, forged),)),
+        )
+
+
+def test_resealed_ordinary_criterion_rejects_foreign_full_education_source() -> None:
+    item = connection()
+    prepared = preparation(item)
+    exact = bound_criteria(item)
+    governed = exact.education.governed_binding
+    foreign_source = "f" * 64
+    foreign_binding = GovernedEducationCriterionBinding(
+        school_ids=governed.school_ids,
+        strategic_destination_ids=governed.strategic_destination_ids,
+        full_source_governed_fingerprint=foreign_source,
+        governed_input_fingerprint=(
+            governed_education_assessment_fingerprint(
+                governed_source_fingerprint=foreign_source,
+                school_ids=governed.school_ids,
+                strategic_destination_ids=(
+                    governed.strategic_destination_ids
+                ),
+                assessment_content_sha256=(
+                    governed.assessment_content_sha256
+                ),
+            )
+        ),
+        assessment_content_sha256=governed.assessment_content_sha256,
+    )
+    foreign_education_snapshot = next(
+        binding
+        for binding in exact.evidence_snapshot.assessments
+        if binding.kind is AssessmentKind.EDUCATION_ACCESS
+    ).model_copy(update={"source_content_sha256": foreign_source})
+    foreign_snapshot = GovernedEvidenceSnapshot(
+        snapshot_id=exact.evidence_snapshot.snapshot_id,
+        assessments=tuple(
+            foreign_education_snapshot
+            if binding.kind is AssessmentKind.EDUCATION_ACCESS
+            else binding
+            for binding in exact.evidence_snapshot.assessments
+        ),
+    )
+    foreign = CandidateCriteria(
+        evidence_snapshot=foreign_snapshot,
+        population=exact.population.model_copy(
+            update={
+                "scenario_evidence_snapshot_fingerprint": (
+                    foreign_snapshot.snapshot_fingerprint
+                )
+            }
+        ),
+        education=exact.education.model_copy(
+            update={
+                "governed_binding": foreign_binding,
+                "scenario_evidence_snapshot_fingerprint": (
+                    foreign_snapshot.snapshot_fingerprint
+                ),
+            }
+        ),
+        existing_alignment=exact.existing_alignment,
+        directness=exact.directness,
+        gradient=exact.gradient,
+        uncertainty=exact.uncertainty,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="education-access criterion source is foreign or stale",
+    ):
+        compile_prepared_scenario(
+            prepared,
+            request(
+                (
+                    packet(
+                        item,
+                        foreign,
+                        source_preparation=prepared,
+                    ),
+                )
+            ),
         )
 
 

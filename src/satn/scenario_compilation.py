@@ -432,7 +432,11 @@ def compile_prepared_scenario(
         )
 
     _validate_promoted_candidate_sets(preparation)
-    population_source, education_source = _criterion_source_lineage(preparation)
+    (
+        population_source,
+        education_source,
+        education_governed_source,
+    ) = _criterion_source_lineage(preparation)
     selections: list[PreferredStrategicAlignment] = []
     for item in prepared:
         criterion = criteria_by_id[item.access_connection_id]
@@ -442,6 +446,7 @@ def compile_prepared_scenario(
             criterion,
             population_source=population_source,
             education_source=education_source,
+            education_governed_source=education_governed_source,
         )
         selections.append(
             select_preferred_alignment(
@@ -687,6 +692,7 @@ def _validate_criterion_sources(
     *,
     population_source: str,
     education_source: EducationAccessSourceSnapshot,
+    education_governed_source: str,
 ) -> None:
     snapshot = criterion.evidence_snapshot
     expected = {
@@ -715,23 +721,40 @@ def _validate_criterion_sources(
         education_binding.source_content_sha256
         != criterion.education.governed_binding
         .full_source_governed_fingerprint
+        or education_binding.source_content_sha256
+        != education_governed_source
     ):
         raise ValueError("education-access criterion source is foreign or stale")
-    _validate_education_source_extension(education_source, criterion_source)
+    governed_scope = criterion.education.governed_binding
+    _validate_education_source_extension(
+        education_source,
+        criterion_source,
+        school_ids=governed_scope.school_ids,
+        strategic_destination_ids=(
+            governed_scope.strategic_destination_ids
+        ),
+        require_full_scope=True,
+    )
 
 
 def _criterion_source_lineage(
     preparation: SpineAccessCandidatePreparationResult,
-) -> tuple[str, EducationAccessSourceSnapshot]:
+) -> tuple[str, EducationAccessSourceSnapshot, str]:
     population = preparation.evidence_lineage.get("population")
     education = preparation.evidence_lineage.get("education")
     if not isinstance(population, Mapping) or not isinstance(education, Mapping):
         raise ValueError("prepared evidence lineage is malformed")
     population_source = population.get("source_content_sha256")
+    education_governed_source = education.get(
+        "governed_source_fingerprint"
+    )
     source_snapshot = education.get("source_snapshot")
-    if not isinstance(population_source, str) or _SHA256.fullmatch(
-        population_source
-    ) is None:
+    if (
+        not isinstance(population_source, str)
+        or _SHA256.fullmatch(population_source) is None
+        or not isinstance(education_governed_source, str)
+        or _SHA256.fullmatch(education_governed_source) is None
+    ):
         raise ValueError("prepared population/education source lineage is malformed")
     if not isinstance(source_snapshot, Mapping):
         raise ValueError("prepared population/education source lineage is malformed")
@@ -747,12 +770,20 @@ def _criterion_source_lineage(
         raise ValueError(
             "prepared education lineage must retain the pre-candidate source snapshot"
         )
-    return population_source, education_source
+    return (
+        population_source,
+        education_source,
+        education_governed_source,
+    )
 
 
 def _validate_education_source_extension(
     prepared_source: EducationAccessSourceSnapshot,
     criterion_source: EducationAccessSourceSnapshot,
+    *,
+    school_ids: tuple[str, ...],
+    strategic_destination_ids: tuple[str, ...],
+    require_full_scope: bool,
 ) -> None:
     """Prove the option-specific assessment extends the exact prepared source.
 
@@ -762,15 +793,47 @@ def _validate_education_source_extension(
     content hash covers the complete deterministic extension.
     """
 
-    shared_fields = (
-        "register_evidence",
-        "schools",
-        "strategic_education_destinations",
-        "supplementary_pct_evidence",
+    criterion_school_ids = tuple(
+        item.school_id for item in criterion_source.schools
     )
-    if any(
-        getattr(criterion_source, field) != getattr(prepared_source, field)
-        for field in shared_fields
+    criterion_destination_ids = tuple(
+        item.strategic_destination_id
+        for item in criterion_source.strategic_education_destinations
+    )
+    prepared_schools = {
+        item.school_id: item for item in prepared_source.schools
+    }
+    prepared_destinations = {
+        item.strategic_destination_id: item
+        for item in prepared_source.strategic_education_destinations
+    }
+    expected_full_scope = (
+        tuple(prepared_schools),
+        tuple(prepared_destinations),
+    )
+    exact_records = (
+        all(
+            prepared_schools.get(item.school_id) == item
+            for item in criterion_source.schools
+        )
+        and all(
+            prepared_destinations.get(item.strategic_destination_id) == item
+            for item in criterion_source.strategic_education_destinations
+        )
+    )
+    if (
+        criterion_source.register_evidence
+        != prepared_source.register_evidence
+        or criterion_source.supplementary_pct_evidence
+        != prepared_source.supplementary_pct_evidence
+        or criterion_school_ids != school_ids
+        or criterion_destination_ids != strategic_destination_ids
+        or not exact_records
+        or (
+            require_full_scope
+            and (school_ids, strategic_destination_ids)
+            != expected_full_scope
+        )
     ):
         raise ValueError(
             "education-access criterion does not extend the prepared source lineage"

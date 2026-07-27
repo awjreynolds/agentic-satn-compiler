@@ -27,6 +27,7 @@ from shapely.ops import linemerge, unary_union
 from .education_access import (
     EducationAccessAssessment,
     IndependentTravelStatus,
+    governed_education_assessment_fingerprint,
 )
 from .existing_alignment import (
     CandidateEligibilityProof,
@@ -1301,22 +1302,13 @@ class GovernedEducationCriterionBinding(BaseModel):
 
     @model_validator(mode="after")
     def bind_governed_input(self) -> Self:
-        expected_input = _fingerprint(
-            {
-                "schema": "satn-governed-education-assessment-binding/v3",
-                "governed_source_fingerprint": (
-                    self.full_source_governed_fingerprint
-                ),
-                "scope": {
-                    "school_ids": list(self.school_ids),
-                    "strategic_destination_ids": list(
-                        self.strategic_destination_ids
-                    ),
-                },
-                "assessment_content_sha256": (
-                    self.assessment_content_sha256
-                ),
-            }
+        expected_input = governed_education_assessment_fingerprint(
+            governed_source_fingerprint=(
+                self.full_source_governed_fingerprint
+            ),
+            school_ids=self.school_ids,
+            strategic_destination_ids=self.strategic_destination_ids,
+            assessment_content_sha256=self.assessment_content_sha256,
         )
         if self.governed_input_fingerprint != expected_input:
             raise ValueError(
