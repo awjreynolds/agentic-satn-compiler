@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -282,13 +283,16 @@ def _validate_preparation(
     if preparation.preparation_fingerprint != expected_fingerprint:
         raise ValueError("Reference application preparation fingerprint is stale")
     evidence_fingerprints = tuple(preparation.evidence_fingerprints)
+    expected_evidence_fingerprints = _evidence_lineage_fingerprints(preparation.evidence_lineage)
     if (
-        not evidence_fingerprints
-        or evidence_fingerprints != tuple(sorted(evidence_fingerprints))
-        or len(set(evidence_fingerprints)) != len(evidence_fingerprints)
+        not expected_evidence_fingerprints
+        or evidence_fingerprints != expected_evidence_fingerprints
         or any(_SHA256.fullmatch(item) is None for item in evidence_fingerprints)
     ):
-        raise ValueError("Reference application preparation evidence lineage is stale")
+        raise ValueError(
+            "Reference application preparation fingerprints do not exactly match "
+            "the raw evidence lineage"
+        )
     roster = tuple(preparation.connection_roster)
     roster_ids = tuple(item.access_connection_id for item in roster)
     if (
@@ -364,11 +368,54 @@ def _validate_preparation_lineage(
     preparation: SpineAccessCandidatePreparationResult,
 ) -> None:
     scenario = reference.scenario
+    expected_lineage = tuple(
+        sorted(
+            {
+                preparation.preparation_fingerprint,
+                *(selection.criteria.criteria_fingerprint for selection in scenario.selections),
+            }
+        )
+    )
     if (
         scenario.profile_fingerprint != preparation.profile_fingerprint
-        or preparation.preparation_fingerprint not in scenario.lineage_fingerprints
+        or scenario.lineage_fingerprints != expected_lineage
     ):
-        raise ValueError("Reference Scenario does not bind the exact preparation and profile")
+        raise ValueError(
+            "Reference Scenario does not bind the exact preparation, profile and criteria lineage"
+        )
+
+
+def _evidence_lineage_fingerprints(
+    lineage: Mapping[str, object],
+) -> tuple[str, ...]:
+    """Mirror the preparation compiler's exact raw-evidence identity derivation."""
+
+    fingerprints: set[str] = set()
+    population = lineage.get("population")
+    education = lineage.get("education")
+    if not isinstance(population, Mapping) or not isinstance(education, Mapping):
+        return ()
+    for key in ("source_content_sha256", "frame_content_sha256"):
+        value = population.get(key)
+        if isinstance(value, str):
+            fingerprints.add(value)
+    artifacts = population.get("artifact_lineage")
+    if isinstance(artifacts, (list, tuple)):
+        for item in artifacts:
+            if isinstance(item, Mapping):
+                value = item.get("content_sha256")
+                if isinstance(value, str):
+                    fingerprints.add(value)
+    governed_source = education.get("governed_source_fingerprint")
+    if isinstance(governed_source, str):
+        fingerprints.add(governed_source)
+    for key in ("school_register_lineage", "admissions_lineage"):
+        item = education.get(key)
+        if isinstance(item, Mapping):
+            value = item.get("content_sha256")
+            if isinstance(value, str):
+                fingerprints.add(value)
+    return tuple(sorted(fingerprints))
 
 
 def _candidate_binding(

@@ -94,6 +94,18 @@ def build(reference, prepared):
     return build_reference_application_plan(reference, prepared)
 
 
+def readopt_with_lineage(reference, lineage_fingerprints):
+    payload = reference.scenario.model_dump(mode="python")
+    payload["lineage_fingerprints"] = tuple(sorted(lineage_fingerprints))
+    payload["scenario_id"] = ""
+    payload["scenario_fingerprint"] = ""
+    rebuilt = type(reference.scenario).model_validate(payload)
+    return adopt_reference_satn(
+        rebuilt,
+        governed_decision=reference_decision(rebuilt),
+    )
+
+
 def test_builds_exact_immutable_deterministic_replay_plan() -> None:
     reference, prepared = adopted_reference()
 
@@ -189,8 +201,50 @@ def test_rejects_stale_foreign_and_different_preparation_lineage() -> None:
         reverse_routing_edge_ids=("different-reverse-edge",),
     )
     different_preparation = preparation(replace(source, candidate_records=(changed_record,)))
-    with pytest.raises(ValueError, match="exact preparation and profile"):
+    with pytest.raises(ValueError, match="exact preparation, profile and criteria"):
         build(reference, different_preparation)
+
+
+@pytest.mark.parametrize("mutation", ("missing-criteria", "extra-foreign"))
+def test_rejects_freshly_readopted_scenario_with_inexact_lineage(mutation) -> None:
+    reference, prepared = adopted_reference()
+    criteria_fingerprints = {
+        selection.criteria.criteria_fingerprint for selection in reference.scenario.selections
+    }
+    lineage = {prepared.preparation_fingerprint, *criteria_fingerprints}
+    if mutation == "missing-criteria":
+        lineage.remove(next(iter(criteria_fingerprints)))
+    else:
+        lineage.add("f" * 64)
+    forged_reference = readopt_with_lineage(reference, lineage)
+
+    with pytest.raises(ValueError, match="exact preparation, profile and criteria"):
+        build(forged_reference, prepared)
+
+
+@pytest.mark.parametrize("mutation", ("missing", "extra"))
+def test_rejects_refingerprinted_preparation_with_forged_evidence_fingerprints(
+    mutation,
+) -> None:
+    reference, prepared = adopted_reference()
+    source = prepared.prepared_spine_access_connections[0]
+    forged_evidence = set(prepared.evidence_fingerprints)
+    if mutation == "missing":
+        forged_evidence.remove(next(iter(forged_evidence)))
+    else:
+        forged_evidence.add("f" * 64)
+    forged_preparation = preparation(
+        source,
+        fingerprints=tuple(sorted(forged_evidence)),
+    )
+    exact_forged_lineage = {
+        forged_preparation.preparation_fingerprint,
+        *(selection.criteria.criteria_fingerprint for selection in reference.scenario.selections),
+    }
+    forged_reference = readopt_with_lineage(reference, exact_forged_lineage)
+
+    with pytest.raises(ValueError, match="raw evidence lineage"):
+        build(forged_reference, forged_preparation)
 
 
 @pytest.mark.parametrize(
