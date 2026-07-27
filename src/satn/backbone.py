@@ -17,6 +17,7 @@ from shapely.geometry import MultiPoint, Point
 from shapely.ops import nearest_points
 
 from satn.agents import CompilationGate
+from satn.alignment_selection import CanonicalLineString
 from satn.identifiers import stable_id as _stable_id
 from satn.models import (
     ACCESS_OBLIGATION_COLUMNS,
@@ -26,6 +27,10 @@ from satn.models import (
     PublishedFeatureReference,
     TopographyConfig,
     TrafficLight,
+)
+from satn.reference_application import (
+    ReferenceApplicationCandidateBinding,
+    ReferenceApplicationPlan,
 )
 from satn.routing import (
     RoadGraph,
@@ -283,6 +288,90 @@ class _CandidateBound:
     frontier: _Frontier
 
 
+@dataclass
+class _ReferenceReplayState:
+    """Compiler-local consumption state for an already validated Reference plan."""
+
+    plan: ReferenceApplicationPlan
+    bindings_by_child: dict[str, ReferenceApplicationCandidateBinding]
+    consumed: dict[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def create(cls, plan: ReferenceApplicationPlan) -> _ReferenceReplayState:
+        bindings_by_child: dict[str, ReferenceApplicationCandidateBinding] = {}
+        for binding in plan.candidate_bindings:
+            previous = bindings_by_child.setdefault(binding.community_place_id, binding)
+            if previous is not binding:
+                raise ValueError(
+                    "Reference application plan contains duplicate Community replay bindings "
+                    f"for {binding.community_place_id}"
+                )
+        return cls(plan=plan, bindings_by_child=bindings_by_child)
+
+    def binding_for(self, place_id: str) -> ReferenceApplicationCandidateBinding | None:
+        return self.bindings_by_child.get(place_id)
+
+    def record_consumed(
+        self,
+        binding: ReferenceApplicationCandidateBinding,
+        regenerated_access_connection_id: str,
+    ) -> None:
+        if binding.logical_connection_id in self.consumed:
+            raise ValueError(
+                "Reference application replay consumed one logical connection more than once: "
+                f"{binding.logical_connection_id}"
+            )
+        self.consumed[binding.logical_connection_id] = regenerated_access_connection_id
+
+    def finalise(self, unserved: set[str]) -> None:
+        expected = set(self.bindings_by_child)
+        missing = sorted(expected & unserved)
+        expected_logical_ids = {
+            binding.logical_connection_id for binding in self.bindings_by_child.values()
+        }
+        consumed_logical_ids = set(self.consumed)
+        unconsumed = sorted(expected_logical_ids - consumed_logical_ids)
+        foreign = sorted(consumed_logical_ids - expected_logical_ids)
+        if missing or unconsumed or foreign:
+            raise ValueError(
+                "Reference application replay did not consume every planned Community binding "
+                f"(missing_communities={missing}, unconsumed={unconsumed}, foreign={foreign}); "
+                "the plan may contain a missing parent, duplicate child, or dependency cycle"
+            )
+
+    def diagnostics(self) -> dict[str, object]:
+        logical_ids = sorted(self.consumed)
+        binding_by_logical_id = {
+            binding.logical_connection_id: binding
+            for binding in self.bindings_by_child.values()
+        }
+        return {
+            "contract": self.plan.contract,
+            "plan_fingerprint": self.plan.plan_fingerprint,
+            "status": "applied",
+            "expected_count": len(self.bindings_by_child),
+            "applied_count": len(self.consumed),
+            "logical_connection_ids": logical_ids,
+            "source_to_regenerated_access_connection_ids": {
+                binding_by_logical_id[logical_id].source_access_connection_id: self.consumed[
+                    logical_id
+                ]
+                for logical_id in logical_ids
+            },
+            "selected_candidate_ids": {
+                logical_id: binding_by_logical_id[logical_id].selected_candidate_id
+                for logical_id in logical_ids
+            },
+            "binding_fingerprints": {
+                logical_id: binding_by_logical_id[logical_id].binding_fingerprint
+                for logical_id in logical_ids
+            },
+            "application_stage": "compiler-only",
+            "publication_created": False,
+            "publication_authority": "none",
+        }
+
+
 @dataclass(frozen=True)
 class _MeetingCandidate:
     rank: tuple[object, ...]
@@ -493,6 +582,8 @@ def assemble_backbone_outward(
     max_connection_km: float,
     elevation_evidence: gpd.GeoDataFrame | None = None,
     topography_config: TopographyConfig | None = None,
+    *,
+    reference_application_plan: ReferenceApplicationPlan | None = None,
 ) -> BackboneAssembly:
     """Grow one deterministic served frontier from every Strategic Spine concurrently."""
     crs = communities.crs or schools.crs or strategic_spines.crs or graph.crs
@@ -506,6 +597,18 @@ def assemble_backbone_outward(
     rejected_by_place: dict[str, list[AgentRecord]] = {}
     candidate_heap: list[tuple[tuple[object, ...], int, _Candidate | _CandidateBound]] = []
     sequence = 0
+    reference_replay = (
+        _ReferenceReplayState.create(reference_application_plan)
+        if reference_application_plan is not None
+        else None
+    )
+    if reference_replay is not None:
+        foreign_children = sorted(set(reference_replay.bindings_by_child) - set(unserved))
+        if foreign_children:
+            raise ValueError(
+                "Reference application plan includes Communities outside this compilation: "
+                f"{foreign_children}"
+            )
     candidate_evaluations = 0
     candidate_pairs_enqueued = 0
     candidate_bounds_expanded = 0
@@ -522,6 +625,13 @@ def assemble_backbone_outward(
     def add_frontier_bounds(frontier: _Frontier) -> None:
         nonlocal candidate_pairs_enqueued, sequence
         for place_id in sorted(unserved):
+            binding = (
+                reference_replay.binding_for(place_id)
+                if reference_replay is not None
+                else None
+            )
+            if binding is not None and not _reference_frontier_matches(binding, frontier):
+                continue
             bound = _CandidateBound(
                 rank=_candidate_bound_rank(unserved[place_id], frontier, graph),
                 place_id=place_id,
@@ -542,13 +652,27 @@ def assemble_backbone_outward(
                 continue
             candidate_bounds_expanded += 1
             candidate_evaluations += 1
-            selected = _candidate(
-                unserved[work.place_id],
-                work.frontier,
-                graph,
-                obligation_kind="community",
-                elevation_evidence=elevation_evidence,
-                topography_config=topography_config,
+            binding = (
+                reference_replay.binding_for(work.place_id)
+                if reference_replay is not None
+                else None
+            )
+            selected = (
+                _reference_candidate(
+                    unserved[work.place_id],
+                    work.frontier,
+                    binding,
+                    graph,
+                )
+                if binding is not None
+                else _candidate(
+                    unserved[work.place_id],
+                    work.frontier,
+                    graph,
+                    obligation_kind="community",
+                    elevation_evidence=elevation_evidence,
+                    topography_config=topography_config,
+                )
             )
             if selected is not None:
                 heapq.heappush(candidate_heap, (selected.rank, sequence, selected))
@@ -577,10 +701,28 @@ def assemble_backbone_outward(
             elevation_evidence,
             topography_config,
         )
+        binding = (
+            reference_replay.binding_for(place_id) if reference_replay is not None else None
+        )
+        if binding is not None:
+            selected = _reference_selected_candidate(selected, binding, graph)
         row = _connection_row(selected, graph, obligation_kind="community")
+        if binding is not None:
+            assert reference_replay is not None
+            _apply_reference_selection_provenance(
+                row,
+                binding,
+                selected,
+                reference_replay.plan.plan_fingerprint,
+            )
         record = _evaluate(row, gate)
         agent_records.append(record)
         if record.mapped_action is not None and record.mapped_action.kind == "retain-network-gap":
+            if binding is not None:
+                raise ValueError(
+                    "Reference application replay gate rejected planned Community binding "
+                    f"{binding.logical_connection_id}; no fallback route is permitted"
+                )
             gap_row = _gap_row(
                 unserved[place_id],
                 graph,
@@ -592,6 +734,11 @@ def assemble_backbone_outward(
             del unserved[place_id]
             continue
         if record.decision != "accept":
+            if binding is not None:
+                raise ValueError(
+                    "Reference application replay gate did not accept planned Community binding "
+                    f"{binding.logical_connection_id}; no fallback route is permitted"
+                )
             rejected_by_place.setdefault(place_id, []).append(record)
             continue
         _record_gate_acceptance(row, record)
@@ -599,6 +746,8 @@ def assemble_backbone_outward(
             rejected.decision = "superseded"
             rejected.outcome_reason = "A different governed frontier attachment was accepted."
         rows.append(row)
+        if binding is not None:
+            reference_replay.record_consumed(binding, str(row["access_connection_id"]))
         del unserved[place_id]
         served_count = total_communities - len(unserved)
         LOGGER.debug(
@@ -620,6 +769,9 @@ def assemble_backbone_outward(
         frontiers.append(served_frontier)
         frontiers.sort(key=_frontier_key)
         add_frontier_bounds(served_frontier)
+
+    if reference_replay is not None:
+        reference_replay.finalise(set(unserved))
 
     for place_id in sorted(unserved):
         rejected = rejected_by_place.get(place_id, [])
@@ -883,6 +1035,11 @@ def assemble_backbone_outward(
         "unserved_communities": len(unserved),
         "optimization_findings": optimization_findings,
         **graph_diagnostics,
+        **(
+            {"reference_application": reference_replay.diagnostics()}
+            if reference_replay is not None
+            else {}
+        ),
     }
     return BackboneAssembly(
         connections=connections,
@@ -1054,6 +1211,158 @@ def _candidate_bound_rank(
         "",
         "community",
     )
+
+
+def _reference_frontier_matches(
+    binding: ReferenceApplicationCandidateBinding,
+    frontier: _Frontier,
+) -> bool:
+    """Allow a planned child only through its exact already-served parent."""
+
+    return (
+        frontier.target_role == "spine-access-connection"
+        and frontier.target_place_id == binding.parent_place_id
+        and frontier.root_spine_id == binding.root_spine_id
+        and any(node_id == binding.routing_end_node_id for node_id, _ in frontier.attachments)
+    )
+
+
+def _reference_candidate(
+    place: pd.Series,
+    frontier: _Frontier,
+    binding: ReferenceApplicationCandidateBinding,
+    graph: RoadGraph,
+) -> _Candidate:
+    """Recompute current attachment evidence while retaining one exact route menu entry."""
+
+    if str(place["place_id"]) != binding.community_place_id:
+        raise ValueError("Reference application binding Community does not match replay work")
+    choice = graph.best_point_attachment(
+        place.geometry,
+        MAX_OBLIGATION_ATTACHMENT_M,
+        [(binding.routing_end_node_id, 0.0)],
+    )
+    if choice is None:
+        raise ValueError(
+            "Reference application replay cannot reproduce the governed Community attachment"
+        )
+    if (
+        choice.start_node != binding.routing_start_node_id
+        or choice.end_node != binding.routing_end_node_id
+    ):
+        raise ValueError(
+            "Reference application replay attachment drifted from the prepared routing nodes"
+        )
+    option = graph.option(
+        binding.routing_start_node_id,
+        binding.routing_end_node_id,
+        binding.route_role,
+    )
+    if option is None or not option.bidirectional:
+        raise ValueError("Reference application replay route is absent or not bidirectional")
+    if tuple(option.edge_ids) != binding.routing_edge_ids:
+        raise ValueError("Reference application replay forward route edges no longer match")
+    if tuple(option.reverse_edge_ids) != binding.reverse_routing_edge_ids:
+        raise ValueError("Reference application replay reverse route edges no longer match")
+    canonical_geometry = gpd.GeoSeries([option.geometry], crs=graph.crs).to_crs(27700).iloc[0]
+    fingerprint = CanonicalLineString(
+        coordinates=tuple((float(x), float(y)) for x, y in canonical_geometry.coords)
+    ).fingerprint
+    if fingerprint != binding.geometry_fingerprint:
+        raise ValueError("Reference application replay route geometry fingerprint drifted")
+    return _Candidate(
+        rank=(
+            round(choice.total_distance_km, 9),
+            binding.community_place_id,
+            1,
+            binding.root_spine_id,
+            frontier.target_id,
+            binding.routing_start_node_id,
+            binding.routing_end_node_id,
+            "community",
+        ),
+        place=place,
+        frontier=frontier,
+        option=option,
+        options=(option,),
+        topography=None,
+        start_node=choice.start_node,
+        start_snap_m=choice.start_snap_m,
+        end_node=choice.end_node,
+        end_snap_m=choice.end_snap_m,
+        start_point=choice.start_point,
+        end_point=choice.end_point,
+        start_attachment_id=choice.start_attachment_id,
+        end_attachment_id=choice.end_attachment_id,
+    )
+
+
+def _reference_selected_candidate(
+    candidate: _Candidate,
+    binding: ReferenceApplicationCandidateBinding,
+    graph: RoadGraph,
+) -> _Candidate:
+    """Keep deterministic topography evidence, but apply the governed exact route."""
+
+    option = graph.option(
+        binding.routing_start_node_id,
+        binding.routing_end_node_id,
+        binding.route_role,
+    )
+    if option is None or not option.bidirectional:
+        raise ValueError("Reference application replay route is absent or not bidirectional")
+    if (
+        tuple(option.edge_ids) != binding.routing_edge_ids
+        or tuple(option.reverse_edge_ids) != binding.reverse_routing_edge_ids
+    ):
+        raise ValueError("Reference application replay route edges drifted before selection")
+    canonical_geometry = gpd.GeoSeries([option.geometry], crs=graph.crs).to_crs(27700).iloc[0]
+    fingerprint = CanonicalLineString(
+        coordinates=tuple((float(x), float(y)) for x, y in canonical_geometry.coords)
+    ).fingerprint
+    if fingerprint != binding.geometry_fingerprint:
+        raise ValueError("Reference application replay route geometry drifted before selection")
+    governed_options = {
+        (item.role, *item.edge_ids): item for item in candidate.options
+    }
+    governed_options.setdefault((option.role, *option.edge_ids), option)
+    return replace(candidate, option=option, options=tuple(governed_options.values()))
+
+
+def _apply_reference_selection_provenance(
+    row: dict[str, object],
+    binding: ReferenceApplicationCandidateBinding,
+    candidate: _Candidate,
+    plan_fingerprint: str,
+) -> None:
+    """Make the Reference decision explicit without changing default row construction."""
+
+    comparison = candidate.topography
+    recommendation = comparison.selected.role if comparison is not None else "not-evaluated"
+    comparison_status = comparison.status.value if comparison is not None else "not-evaluated"
+    row["selection_reason"] = (
+        "Applied the governed Reference SATN candidate "
+        f"{binding.selected_candidate_id} (binding {binding.binding_fingerprint}) for "
+        f"{binding.logical_connection_id}. Deterministic topography comparison status "
+        f"{comparison_status} recommended {recommendation}; the governed Reference "
+        f"selection retains {binding.route_role}."
+    )
+    row["topography_comparison_rationale"] = (
+        f"{row['topography_comparison_rationale']} Deterministic comparison status "
+        f"{comparison_status} recommended {recommendation}; governed Reference candidate "
+        f"{binding.selected_candidate_id} remains authoritative for this replay."
+    )
+    provenance = json.loads(str(row["provenance"]))
+    provenance["reference_application"] = {
+        "plan_fingerprint": plan_fingerprint,
+        "binding_fingerprint": binding.binding_fingerprint,
+        "logical_connection_id": binding.logical_connection_id,
+        "selected_candidate_id": binding.selected_candidate_id,
+        "selected_route_role": binding.route_role,
+        "deterministic_topography_status": comparison_status,
+        "deterministic_recommended_role": recommendation,
+    }
+    row["provenance"] = json.dumps(provenance, sort_keys=True)
 
 
 def _candidate(

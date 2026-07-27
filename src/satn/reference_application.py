@@ -28,6 +28,7 @@ from satn.alignment_selection import (
     ReferenceSATNSelection,
     ResolvedPreferredStrategicAlignment,
 )
+from satn.identifiers import stable_id
 from satn.spine_access_candidate_preparation import (
     PreparedSpineAccessConnection,
     SpineAccessCandidatePreparationResult,
@@ -66,6 +67,11 @@ class ReferenceApplicationCandidateBinding(BaseModel):
     resolution_fingerprint: str = Field(pattern=_SHA256.pattern)
     selected_candidate_id: str = Field(pattern=_CANDIDATE_ID.pattern)
     source_access_connection_id: str = Field(min_length=1)
+    community_place_id: str = Field(min_length=1)
+    parent_place_id: str = Field(min_length=1)
+    root_spine_id: str = Field(min_length=1)
+    routing_start_node_id: str = Field(min_length=1)
+    routing_end_node_id: str = Field(min_length=1)
     route_role: str = Field(min_length=1)
     routing_edge_ids: tuple[str, ...] = Field(min_length=1)
     reverse_routing_edge_ids: tuple[str, ...] = Field(min_length=1)
@@ -76,7 +82,15 @@ class ReferenceApplicationCandidateBinding(BaseModel):
     prepared_connection_fingerprint: str = Field(pattern=_SHA256.pattern)
     binding_fingerprint: str = ""
 
-    @field_validator("source_access_connection_id", "route_role")
+    @field_validator(
+        "source_access_connection_id",
+        "community_place_id",
+        "parent_place_id",
+        "root_spine_id",
+        "routing_start_node_id",
+        "routing_end_node_id",
+        "route_role",
+    )
     @classmethod
     def canonical_text(cls, value: str) -> str:
         if value.strip() != value:
@@ -437,6 +451,7 @@ def _candidate_binding(
     )
     if candidate is None:
         raise ValueError("Reference resolution selected a foreign candidate")
+    _validate_replay_endpoints(prepared, candidate_set.endpoints, candidate.endpoints)
     records = tuple(
         item
         for item in prepared.candidate_records
@@ -462,6 +477,7 @@ def _candidate_binding(
             "Reference application requires non-empty forward and reverse routing "
             "edge sequences for every selected route"
         )
+    replay_facts = _binding_replay_facts(prepared, record.connection_json)
     return ReferenceApplicationCandidateBinding(
         logical_connection_id=candidate_set.connection_id,
         candidate_set_id=candidate_set.candidate_set_id,
@@ -469,6 +485,7 @@ def _candidate_binding(
         resolution_fingerprint=resolution_fingerprint,
         selected_candidate_id=selected_candidate_id,
         source_access_connection_id=prepared.access_connection_id,
+        **replay_facts,
         route_role=record.route_role,
         routing_edge_ids=record.routing_edge_ids,
         reverse_routing_edge_ids=record.reverse_routing_edge_ids,
@@ -478,6 +495,96 @@ def _candidate_binding(
         prepared_candidate_record_fingerprint=_fingerprint(record.canonical()),
         prepared_connection_fingerprint=_fingerprint(prepared.canonical()),
     )
+
+
+def _binding_replay_facts(
+    prepared: PreparedSpineAccessConnection,
+    connection_json: str,
+) -> dict[str, str]:
+    """Derive executable route facts from the exact prepared connection record.
+
+    The data is not a caller-declared replay claim: it is embedded in the
+    ``PreparedCandidateRecord`` that is itself bound into preparation and plan
+    fingerprints.  Verify every duplicated typed fact before exposing it to a
+    later compiler-only replay.
+    """
+
+    try:
+        payload = json.loads(connection_json)
+    except json.JSONDecodeError as error:
+        raise ValueError("Reference application prepared connection JSON is invalid") from error
+    if not isinstance(payload, dict):
+        raise ValueError("Reference application prepared connection JSON must be an object")
+
+    expected = {
+        "access_connection_id": prepared.access_connection_id,
+        "obligation_kind": "community",
+        "community_id": prepared.community_id,
+        "place_id": prepared.place_id,
+        "parent_place_id": prepared.parent_place_id,
+        "root_spine_id": prepared.root_spine_id,
+        "parent_role": "spine-access-connection",
+    }
+    for name, value in expected.items():
+        if prepared.obligation_kind != "community" and name == "obligation_kind":
+            raise ValueError("Reference application requires a Community preparation")
+        if prepared.parent_role != "spine-access-connection" and name == "parent_role":
+            raise ValueError("Reference application requires a chained Community parent")
+        if payload.get(name) != value:
+            raise ValueError(
+                "Reference application prepared connection JSON disagrees with typed "
+                f"preparation for {name}"
+            )
+
+    start = payload.get("community_attachment_node")
+    end = payload.get("target_attachment_node")
+    if not isinstance(start, str) or not start.strip() or start.strip() != start:
+        raise ValueError("Reference application requires a canonical community routing node")
+    if not isinstance(end, str) or not end.strip() or end.strip() != end:
+        raise ValueError("Reference application requires a canonical parent routing node")
+    return {
+        "community_place_id": prepared.community_id,
+        "parent_place_id": prepared.parent_place_id,
+        "root_spine_id": prepared.root_spine_id,
+        "routing_start_node_id": start,
+        "routing_end_node_id": end,
+    }
+
+
+def _validate_replay_endpoints(
+    prepared: PreparedSpineAccessConnection,
+    candidate_set_endpoints: tuple[str, str],
+    candidate_endpoints: tuple[str, str],
+) -> None:
+    """Require the selected menu entry to retain the prepared child-parent orientation."""
+
+    expected = tuple(
+        sorted(
+            (
+                _canonical_prepared_endpoint(
+                    prepared.community_id,
+                    prefix="community-endpoint",
+                ),
+                _canonical_prepared_endpoint(
+                    prepared.parent_place_id,
+                    prefix="network-endpoint",
+                ),
+            )
+        )
+    )
+    if candidate_set_endpoints != expected or candidate_endpoints != expected:
+        raise ValueError(
+            "Reference application Candidate Set and selected candidate endpoints must "
+            "exactly match the typed prepared Community parent orientation"
+        )
+
+
+def _canonical_prepared_endpoint(value: str, *, prefix: str) -> str:
+    """Mirror preparation's endpoint derivation without accepting a caller claim."""
+
+    if re.fullmatch(r"^[a-z0-9][a-z0-9._:-]*$", value):
+        return value
+    return stable_id(prefix, value)
 
 
 def _candidate_input_fingerprint(candidate: AlignmentCandidateInput) -> str:

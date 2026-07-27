@@ -33,6 +33,7 @@ from test_prepared_scenario_compilation import (
 
 from satn.reference_application import (
     ReferenceApplicationPlan,
+    _validate_replay_endpoints,
     build_reference_application_plan,
 )
 from satn.scenario_compilation import compile_prepared_scenario
@@ -59,7 +60,16 @@ def retained_prepared_connection(label: str = "one"):
             '{"access_connection_id":"'
             + item.access_connection_id
             + '","community_attachment_node":"node-a",'
-            '"target_attachment_node":"node-b"}'
+            '"community_id":"'
+            + item.community_id
+            + '","obligation_kind":"community","parent_place_id":"'
+            + item.parent_place_id
+            + '","parent_role":"spine-access-connection",'
+            '"place_id":"'
+            + item.place_id
+            + '","root_spine_id":"'
+            + item.root_spine_id
+            + '","target_attachment_node":"node-b"}'
         ),
         strategic_spine_json="{}",
         preparation_disposition="retained-representative",
@@ -134,6 +144,11 @@ def test_builds_exact_immutable_deterministic_replay_plan() -> None:
     assert binding.source_access_connection_id == source.access_connection_id
     assert binding.selected_candidate_id == selected.candidate_id
     assert binding.route_role == "ncn-informed"
+    assert binding.community_place_id == source.community_id
+    assert binding.parent_place_id == source.parent_place_id
+    assert binding.root_spine_id == source.root_spine_id
+    assert binding.routing_start_node_id == "node-a"
+    assert binding.routing_end_node_id == "node-b"
     assert binding.routing_edge_ids == ("edge-forward-1", "edge-forward-2")
     assert binding.reverse_routing_edge_ids == (
         "edge-reverse-2",
@@ -144,6 +159,32 @@ def test_builds_exact_immutable_deterministic_replay_plan() -> None:
     assert binding.selected_candidate_id in reference.complementary_candidate_ids
     with pytest.raises(ValidationError, match="frozen"):
         first.publication_created = True
+
+
+def test_binding_rejects_connection_json_that_disagrees_with_typed_preparation() -> None:
+    item = retained_prepared_connection()
+    record = replace(
+        item.candidate_records[0],
+        connection_json=item.candidate_records[0].connection_json.replace(
+            f'"parent_place_id":"{item.parent_place_id}"', '"parent_place_id":"foreign"'
+        ),
+    )
+    prepared_item = replace(item, candidate_records=(record,))
+    reference, prepared = adopted_reference(prepared_item)
+
+    with pytest.raises(ValueError, match="parent_place_id"):
+        build(reference, prepared)
+
+
+def test_binding_rejects_self_consistent_foreign_candidate_endpoints() -> None:
+    item = retained_prepared_connection()
+
+    with pytest.raises(ValueError, match="endpoints"):
+        _validate_replay_endpoints(
+            item,
+            ("foreign-child", "foreign-parent"),
+            ("foreign-child", "foreign-parent"),
+        )
 
 
 def test_plan_round_trip_rejects_changed_binding_or_derived_identity() -> None:
