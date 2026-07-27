@@ -100,33 +100,6 @@
     "school-access-gaps"
   ];
 
-  function renderReferenceSummary() {
-    if (!referenceRecord) return;
-    const section = document.querySelector("#reference-satn-summary");
-    const copy = document.querySelector("#reference-satn-copy");
-    const details = document.querySelector("#reference-satn-details");
-    if (!section || !copy || !details) return;
-    const decision = referenceRecord.reference_selection?.governed_decision || {};
-    const selected = referenceRecord.reference_selection?.selected_candidate_ids || [];
-    const complementary = referenceRecord.reference_selection?.complementary_candidate_ids || [];
-    const rejected = referenceOptions.features.filter((item) => item.properties?.disposition === "rejected");
-    section.hidden = false;
-    copy.textContent = `The governed Reference selects ${selected.length} alignment option(s), retains ${complementary.length} complementary option(s), and records ${rejected.length} rejected alternative(s). ${decision.rationale || "No additional decision rationale was recorded."}`;
-    const list = document.createElement("ul");
-    [
-      "Population Reach at 500 m and 1 km is a whole-Output-Area straight-line corridor measure, not demand, a five-minute walk, or population actually connected.",
-      "Independent-Travel Opportunity is not a finding that any route is safe, suitable, or independently accessible.",
-      "Existing-alignment evidence can be unknown and does not establish legal access, condition, cost, deliverability, or feasibility.",
-      "Directness and topography remain separate evidence; this Reference is not a funded, safe, feasible, or delivery-adopted scheme.",
-      `Decision maker: ${decision.decision_maker_name || "not recorded"}; change conditions and full criteria/evidence remain in the machine-readable Reference record.`
-    ].forEach((text) => {
-      const item = document.createElement("li");
-      item.textContent = text;
-      list.append(item);
-    });
-    details.replaceChildren(list);
-  }
-
   function formatBytes(bytes) {
     if (!Number.isFinite(Number(bytes)) || Number(bytes) <= 0) return "0 KB";
     const units = ["B", "KB", "MB", "GB"];
@@ -1603,7 +1576,6 @@
   });
 
   renderCards();
-  renderReferenceSummary();
   bindControls();
   updateGradientCandidate();
   renderLinearEvidence();

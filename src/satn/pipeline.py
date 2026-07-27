@@ -255,7 +255,7 @@ def compile_reference(
         metadata={
             "network_model": "backbone-outward",
             "compilation_input_fingerprint": compiled.compilation_input_fingerprint,
-            "reference_satn": record.model_dump(mode="json"),
+            "reference_satn": record.revalidated().publication_payload(),
             "compilation_diagnostics": compiled.compilation_diagnostics,
         },
     )

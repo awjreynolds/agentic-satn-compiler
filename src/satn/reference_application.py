@@ -29,7 +29,7 @@ from satn.alignment_selection import (
     ResolvedPreferredStrategicAlignment,
 )
 from satn.identifiers import stable_id
-from satn.models import AreaConfig
+from satn.models import AgentDecisionLedger, AreaConfig, canonical_decision_ledger_payload
 from satn.spine_access_candidate_preparation import (
     PreparedSpineAccessConnection,
     SpineAccessCandidatePreparationResult,
@@ -215,19 +215,19 @@ class ReferenceSATNPublicationRecord(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     contract: Literal["satn-reference-satn-publication/v1"] = REFERENCE_PUBLICATION_CONTRACT
-    reference_selection: ReferenceSATNSelection
-    source_preparation: SpineAccessCandidatePreparationResult
-    baseline_preparation: SpineAccessCandidatePreparationResult
-    application_plan: ReferenceApplicationPlan
+    reference_selection_json: str = Field(min_length=2)
+    source_preparation_json: str = Field(min_length=2)
+    baseline_preparation_json: str = Field(min_length=2)
+    application_plan_json: str = Field(min_length=2)
     area_definition_sha256: str = Field(pattern=_SHA256.pattern)
     snapshot_manifest_sha256: str = Field(pattern=_SHA256.pattern)
     compilation_input_fingerprint: str = Field(pattern=_SHA256.pattern)
     governed_input_fingerprint: str = Field(pattern=_SHA256.pattern)
-    compilation_dependency_manifest: dict[str, object]
+    compilation_dependency_manifest_json: str = Field(min_length=2)
     decision_contract: str = Field(min_length=1)
-    decision_ledger_input: dict[str, object]
-    accepted_decisions: tuple[dict[str, object], ...]
-    application_diagnostics: dict[str, object]
+    decision_ledger_input_json: str = Field(min_length=2)
+    accepted_decisions_json: str = Field(min_length=2)
+    application_diagnostics_json: str = Field(min_length=2)
     disclaimer: tuple[str, ...] = (
         (
             "Preferred Strategic Alignments are not final designs, safety findings, "
@@ -251,44 +251,75 @@ class ReferenceSATNPublicationRecord(BaseModel):
 
     @model_validator(mode="after")
     def bind_publication(self) -> Self:
-        reference = ReferenceSATNSelection.model_validate(
-            self.reference_selection.model_dump(mode="python")
+        reference_payload = _canonical_json_object(
+            self.reference_selection_json,
+            "Reference selection",
         )
-        # Preparation is an immutable dataclass rather than a Pydantic model.
-        # ``build_reference_application_plan`` below performs its full canonical
-        # validation, including the bound preparation fingerprint and evidence.
-        source = self.source_preparation
-        baseline = self.baseline_preparation
-        plan = ReferenceApplicationPlan.model_validate(
-            self.application_plan.model_dump(mode="python")
+        reference = ReferenceSATNSelection.model_validate(reference_payload)
+        if reference.model_dump(mode="json") != reference_payload:
+            raise ValueError("Reference publication selection JSON is not canonical")
+        source = _canonical_preparation_publication_payload(
+            self.source_preparation_json,
+            "source preparation",
         )
-        expected_plan = build_reference_application_plan(reference, source)
-        if plan != expected_plan:
-            raise ValueError("Reference publication plan does not bind its exact human selection")
-        if (
-            baseline.canonical_payload() != source.canonical_payload()
-            or baseline.preparation_fingerprint != source.preparation_fingerprint
-            or baseline.evidence_fingerprints != source.evidence_fingerprints
-            or baseline.profile_fingerprint != source.profile_fingerprint
-        ):
+        baseline = _canonical_preparation_publication_payload(
+            self.baseline_preparation_json,
+            "baseline preparation",
+        )
+        plan_payload = _canonical_json_object(self.application_plan_json, "application plan")
+        plan = ReferenceApplicationPlan.model_validate(plan_payload)
+        if plan.model_dump(mode="json") != plan_payload:
+            raise ValueError("Reference publication application plan JSON is not canonical")
+        if baseline != source:
             raise ValueError(
                 "Reference publication baseline preparation is not the exact source preparation"
             )
         if (
-            plan.preparation_fingerprint != source.preparation_fingerprint
-            or plan.profile_fingerprint != source.profile_fingerprint
+            plan.preparation_fingerprint != source["preparation_fingerprint"]
+            or plan.profile_fingerprint != source["canonical_payload"]["profile_fingerprint"]
             or plan.scenario_fingerprint != reference.scenario.scenario_fingerprint
             or plan.reference_selection_fingerprint != reference.reference_selection_fingerprint
             or plan.scenario_area_fingerprint != self.area_definition_sha256
         ):
             raise ValueError("Reference publication lineage is stale")
-        if not self.compilation_dependency_manifest:
-            raise ValueError("Reference publication requires a compilation dependency manifest")
-        object.__setattr__(self, "reference_selection", reference)
-        object.__setattr__(self, "source_preparation", source)
-        object.__setattr__(self, "baseline_preparation", baseline)
-        object.__setattr__(self, "application_plan", plan)
-        payload = self.model_dump(mode="json", exclude={"reference_publication_fingerprint"})
+        _canonical_dependency_manifest(self.compilation_dependency_manifest_json)
+        ledger_payload = _canonical_json_object(
+            self.decision_ledger_input_json,
+            "decision ledger input",
+        )
+        ledger = canonical_decision_ledger_payload(ledger_payload)
+        if self.decision_contract != ledger.decision_contract:
+            raise ValueError("Reference publication decision contract disagrees with its ledger")
+        accepted_payload = _canonical_json_array(
+            self.accepted_decisions_json,
+            "accepted decisions",
+        )
+        accepted = AgentDecisionLedger.model_validate(
+            {
+                "decision_contract": self.decision_contract,
+                "responses": accepted_payload,
+            }
+        )
+        if accepted.model_dump(mode="json")["responses"] != accepted_payload:
+            raise ValueError("Reference publication accepted decisions are not canonical")
+        if accepted.responses != ledger.responses:
+            raise ValueError(
+                "Reference publication accepted decisions do not exactly match its consumed ledger"
+            )
+        expected_compilation_input = _fingerprint(
+            {
+                "governed_input_fingerprint": self.governed_input_fingerprint,
+                "decision_ledger": ledger.model_dump(mode="json"),
+            }
+        )
+        if self.compilation_input_fingerprint != expected_compilation_input:
+            raise ValueError("Reference publication compilation input fingerprint is stale")
+        diagnostics = _canonical_json_object(
+            self.application_diagnostics_json,
+            "application diagnostics",
+        )
+        _validate_publication_diagnostics(diagnostics, plan)
+        payload = self.publication_payload(include_fingerprint=False)
         expected = _fingerprint(payload)
         if (
             self.reference_publication_fingerprint
@@ -297,6 +328,178 @@ class ReferenceSATNPublicationRecord(BaseModel):
             raise ValueError("Reference publication fingerprint is stale")
         object.__setattr__(self, "reference_publication_fingerprint", expected)
         return self
+
+    @property
+    def reference_selection(self) -> ReferenceSATNSelection:
+        """Reconstruct the typed selection from its canonical immutable bytes."""
+
+        return ReferenceSATNSelection.model_validate(json.loads(self.reference_selection_json))
+
+    def publication_payload(self, *, include_fingerprint: bool = True) -> dict[str, object]:
+        """Expand canonical JSON values into the stable public wire record."""
+
+        payload: dict[str, object] = {
+            "contract": self.contract,
+            "reference_selection": json.loads(self.reference_selection_json),
+            "source_preparation": json.loads(self.source_preparation_json),
+            "baseline_preparation": json.loads(self.baseline_preparation_json),
+            "application_plan": json.loads(self.application_plan_json),
+            "area_definition_sha256": self.area_definition_sha256,
+            "snapshot_manifest_sha256": self.snapshot_manifest_sha256,
+            "compilation_input_fingerprint": self.compilation_input_fingerprint,
+            "governed_input_fingerprint": self.governed_input_fingerprint,
+            "compilation_dependency_manifest": json.loads(
+                self.compilation_dependency_manifest_json
+            ),
+            "decision_contract": self.decision_contract,
+            "decision_ledger_input": json.loads(self.decision_ledger_input_json),
+            "accepted_decisions": json.loads(self.accepted_decisions_json),
+            "application_diagnostics": json.loads(self.application_diagnostics_json),
+            "disclaimer": list(self.disclaimer),
+            "publication_authority": self.publication_authority,
+        }
+        if include_fingerprint:
+            payload["reference_publication_fingerprint"] = (
+                self.reference_publication_fingerprint
+            )
+        return payload
+
+    def revalidated(self) -> ReferenceSATNPublicationRecord:
+        """Reconstruct immediately before publication to reject stale instances."""
+
+        return type(self).model_validate(self.model_dump(mode="json"))
+
+    @classmethod
+    def from_publication_payload(
+        cls,
+        payload: Mapping[str, object],
+    ) -> ReferenceSATNPublicationRecord:
+        """Parse the expanded public wire record into deeply immutable values."""
+
+        required_json_fields = (
+            "reference_selection",
+            "source_preparation",
+            "baseline_preparation",
+            "application_plan",
+            "compilation_dependency_manifest",
+            "decision_ledger_input",
+            "accepted_decisions",
+            "application_diagnostics",
+        )
+        internal = {
+            key: value
+            for key, value in payload.items()
+            if key not in required_json_fields
+        }
+        for field in required_json_fields:
+            if field not in payload:
+                raise ValueError(f"Reference publication payload is missing {field}")
+            internal[f"{field}_json"] = _canonical_json(payload[field])
+        return cls.model_validate(internal)
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
+
+
+def _canonical_json_value(value: str, label: str) -> object:
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError as error:
+        raise ValueError(f"Reference publication {label} is not valid JSON") from error
+    if _canonical_json(payload) != value:
+        raise ValueError(f"Reference publication {label} JSON is not canonical")
+    return payload
+
+
+def _canonical_json_object(value: str, label: str) -> dict[str, object]:
+    payload = _canonical_json_value(value, label)
+    if not isinstance(payload, dict):
+        raise ValueError(f"Reference publication {label} must be a JSON object")
+    return payload
+
+
+def _canonical_json_array(value: str, label: str) -> list[object]:
+    payload = _canonical_json_value(value, label)
+    if not isinstance(payload, list):
+        raise ValueError(f"Reference publication {label} must be a JSON array")
+    return payload
+
+
+def _preparation_publication_payload(
+    preparation: SpineAccessCandidatePreparationResult,
+) -> dict[str, object]:
+    return {
+        "canonical_payload": preparation.canonical_payload(),
+        "preparation_fingerprint": preparation.preparation_fingerprint,
+    }
+
+
+def _canonical_preparation_publication_payload(
+    value: str,
+    label: str,
+) -> dict[str, object]:
+    payload = _canonical_json_object(value, label)
+    canonical = payload.get("canonical_payload")
+    fingerprint = payload.get("preparation_fingerprint")
+    if not isinstance(canonical, dict) or not isinstance(fingerprint, str):
+        raise ValueError(f"Reference publication {label} is incomplete")
+    if _fingerprint(canonical) != fingerprint:
+        raise ValueError(f"Reference publication {label} fingerprint is stale")
+    return payload
+
+
+def _canonical_dependency_manifest(value: str) -> dict[str, object]:
+    manifest = _canonical_json_object(value, "compilation dependency manifest")
+    digest_payload = {
+        "schema_version": manifest.get("schema_version"),
+        "dependency_set_version": manifest.get("dependency_set_version"),
+        "components": manifest.get("components"),
+    }
+    if (
+        not isinstance(digest_payload["schema_version"], str)
+        or not isinstance(digest_payload["dependency_set_version"], str)
+        or not isinstance(digest_payload["components"], list)
+        or manifest.get("sha256") != _fingerprint(digest_payload)
+    ):
+        raise ValueError("Reference publication compilation dependency manifest is stale")
+    return manifest
+
+
+def _validate_publication_diagnostics(
+    diagnostics: dict[str, object],
+    plan: ReferenceApplicationPlan,
+) -> None:
+    expected_selected = {
+        binding.logical_connection_id: binding.selected_candidate_id
+        for binding in plan.candidate_bindings
+    }
+    expected_bindings = {
+        binding.logical_connection_id: binding.binding_fingerprint
+        for binding in plan.candidate_bindings
+    }
+    expected = {
+        "contract": plan.contract,
+        "plan_fingerprint": plan.plan_fingerprint,
+        "status": "applied",
+        "expected_count": len(plan.candidate_bindings),
+        "applied_count": len(plan.candidate_bindings),
+        "logical_connection_ids": sorted(expected_selected),
+        "selected_candidate_ids": expected_selected,
+        "binding_fingerprints": expected_bindings,
+        "application_stage": "compiler-only",
+        "publication_created": False,
+        "publication_authority": "none",
+    }
+    for field, value in expected.items():
+        if diagnostics.get(field) != value:
+            raise ValueError(f"Reference publication diagnostics are stale for {field}")
 
 
 def build_reference_satn_publication_record(
@@ -318,19 +521,25 @@ def build_reference_satn_publication_record(
     """Build the one self-validating publication record after replay succeeds."""
 
     return ReferenceSATNPublicationRecord(
-        reference_selection=reference,
-        source_preparation=source_preparation,
-        baseline_preparation=baseline_preparation,
-        application_plan=application_plan,
+        reference_selection_json=_canonical_json(reference.model_dump(mode="json")),
+        source_preparation_json=_canonical_json(
+            _preparation_publication_payload(source_preparation)
+        ),
+        baseline_preparation_json=_canonical_json(
+            _preparation_publication_payload(baseline_preparation)
+        ),
+        application_plan_json=_canonical_json(application_plan.model_dump(mode="json")),
         area_definition_sha256=area_definition_sha256,
         snapshot_manifest_sha256=snapshot_manifest_sha256,
         compilation_input_fingerprint=compilation_input_fingerprint,
         governed_input_fingerprint=governed_input_fingerprint,
-        compilation_dependency_manifest=compilation_dependency_manifest,
+        compilation_dependency_manifest_json=_canonical_json(
+            compilation_dependency_manifest
+        ),
         decision_contract=decision_contract,
-        decision_ledger_input=decision_ledger_input,
-        accepted_decisions=tuple(accepted_decisions),
-        application_diagnostics=application_diagnostics,
+        decision_ledger_input_json=_canonical_json(decision_ledger_input),
+        accepted_decisions_json=_canonical_json(accepted_decisions),
+        application_diagnostics_json=_canonical_json(application_diagnostics),
     )
 
 

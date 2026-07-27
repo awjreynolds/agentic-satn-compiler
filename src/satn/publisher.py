@@ -1012,7 +1012,8 @@ def _write_json_records(
         "disclaimer": DISCLAIMER,
     }
     if compiled.reference_satn_publication is not None:
-        run["reference_satn"] = compiled.reference_satn_publication.model_dump(mode="json")
+        reference_record = compiled.reference_satn_publication.revalidated()
+        run["reference_satn"] = reference_record.publication_payload()
     (output / "run.json").write_text(json.dumps(run, indent=2), encoding="utf-8")
     records = {
         "schema_version": SCHEMA_VERSION,
@@ -1319,6 +1320,14 @@ def _reference_option_collection(
     selected = set(reference.selected_candidate_ids)
     complementary = set(reference.complementary_candidate_ids)
     selections = {item.candidate_set_id: item for item in reference.scenario.selections}
+    classifications = {
+        item.candidate_set_id: str(item.disposition)
+        for item in reference.scenario.candidate_set_classifications
+    }
+    resolutions = {
+        item.candidate_set_id: item
+        for item in reference.scenario.resolved_selections
+    }
     features: list[dict[str, object]] = []
     for candidate_set in sorted(
         reference.scenario.candidate_sets,
@@ -1326,6 +1335,7 @@ def _reference_option_collection(
     ):
         selection = selections[candidate_set.candidate_set_id]
         criteria = selection.criteria.model_dump(mode="json")
+        resolution = resolutions.get(candidate_set.candidate_set_id)
         for candidate in candidate_set.candidates:
             if candidate.candidate_id in selected:
                 disposition = "selected"
@@ -1349,12 +1359,47 @@ def _reference_option_collection(
                         "candidate_set_id": candidate_set.candidate_set_id,
                         "connection_id": candidate_set.connection_id,
                         "disposition": disposition,
+                        "candidate_set_classification": classifications.get(
+                            candidate_set.candidate_set_id,
+                            "uncertain",
+                        ),
                         "network_role": str(candidate.network_role),
                         "source_class": str(candidate.source_class),
                         "directness_m": candidate.directness_m,
                         "maximum_gradient_pct": candidate.maximum_gradient_pct,
                         "evidence_fingerprints": list(candidate.evidence_fingerprints),
                         "criteria": criteria,
+                        "population": _reference_population_summary(
+                            selection.criteria,
+                            candidate.candidate_id,
+                        ),
+                        "education": _reference_education_summary(
+                            selection.criteria,
+                            candidate.candidate_id,
+                        ),
+                        "existing_alignment": _reference_existing_alignment_summary(
+                            selection.criteria,
+                            candidate.candidate_id,
+                        ),
+                        "directness": _reference_finding_summary(
+                            selection.criteria,
+                            "directness",
+                            candidate.candidate_id,
+                        ),
+                        "topography": _reference_finding_summary(
+                            selection.criteria,
+                            "gradient",
+                            candidate.candidate_id,
+                        ),
+                        "uncertainty": _reference_finding_summary(
+                            selection.criteria,
+                            "uncertainty",
+                            candidate.candidate_id,
+                        ),
+                        "decision_and_critique": _reference_decision_summary(
+                            selection,
+                            resolution,
+                        ),
                         "change_conditions": [
                             str(condition) for condition in selection.change_conditions
                         ],
@@ -1371,11 +1416,346 @@ def _reference_option_collection(
     return {"type": "FeatureCollection", "features": features}
 
 
+def _reference_population_summary(criteria: object, candidate_id: str) -> dict[str, object]:
+    population = getattr(criteria, "population", None)
+    if population is None:
+        return {"status": "unavailable"}
+    binding = next(
+        (item for item in population.option_bindings if item.candidate_id == candidate_id),
+        None,
+    )
+    if binding is None:
+        return {"status": "unavailable"}
+    result: dict[str, object] = {
+        "status": "available",
+        "assessment_id": population.assessment_id,
+    }
+    summaries = {
+        (item.option_id, int(item.corridor_distance_m)): item
+        for item in population.assessment.summaries
+    }
+    sensitivities = {
+        int(item.corridor_distance_m): item
+        for item in population.assessment.sensitivities
+    }
+    for radius, findings in (
+        (500, population.headline_500m),
+        (1000, population.sensitivity_1000m),
+    ):
+        finding = next(item for item in findings if item.candidate_id == candidate_id)
+        summary = summaries[(binding.option_id, radius)]
+        sensitivity = sensitivities[radius]
+        result[f"{radius}m"] = {
+            "resident_count": finding.resident_count,
+            "shared_residents": summary.shared_residents,
+            "option_exclusive_residents": summary.option_exclusive_residents,
+            "rank": finding.rank,
+            "near_equivalent": finding.near_equivalent,
+            "sensitive": sensitivity.sensitive,
+            "within_tolerance": sensitivity.within_tolerance,
+            "ordering_flips_from_500m": (
+                sensitivity.ordering_flips_from_first_distance
+            ),
+            "current_development_omission": finding.current_development_omission,
+            "borderline_oa_ids": list(finding.borderline_oa_ids),
+        }
+    return result
+
+
+def _reference_education_summary(criteria: object, candidate_id: str) -> dict[str, object]:
+    education = getattr(criteria, "education", None)
+    if education is None:
+        return {"status": "unavailable"}
+    completeness = next(
+        item for item in education.completeness if item.candidate_id == candidate_id
+    )
+    opportunity = next(
+        item
+        for item in education.independent_travel_opportunity
+        if item.candidate_id == candidate_id
+    )
+    return {
+        "status": "available",
+        "assessment_id": education.assessment_id,
+        "completeness_state": str(completeness.state),
+        "completeness_evidence_record_id": completeness.evidence_record_id,
+        "independent_travel_state": str(opportunity.state),
+        "independent_travel_opportunity_count": opportunity.opportunity_count,
+        "independent_travel_caveat": (
+            "This is not a finding that the route is safe, suitable, or independently "
+            "accessible."
+        ),
+    }
+
+
+def _reference_existing_alignment_summary(
+    criteria: object,
+    candidate_id: str,
+) -> dict[str, object]:
+    existing = getattr(criteria, "existing_alignment", None)
+    if existing is None:
+        return {
+            "status": "unknown",
+            "unknown_reasons": ["no-governed-existing-alignment-comparison"],
+        }
+    advantage = next(
+        item for item in existing.comparison.advantages if item.candidate_id == candidate_id
+    )
+    return {
+        "status": "available",
+        "assessment_id": existing.proof.proof_id,
+        "matched_share": advantage.matched_share,
+        "recognised_current_share": advantage.recognised_current_share,
+        "reusable_asset_share": advantage.reusable_asset_share,
+        "unknown_length_m": advantage.unknown_length_m,
+        "unknown_reasons": [str(item) for item in advantage.unknown_reasons],
+        "evidence_fingerprint": advantage.evidence_fingerprint,
+        "caveat": (
+            "Existing alignment does not establish legal access, condition, cost, "
+            "deliverability, or feasibility."
+        ),
+    }
+
+
+def _reference_finding_summary(
+    criteria: object,
+    field: str,
+    candidate_id: str,
+) -> dict[str, object]:
+    findings = getattr(criteria, field, ())
+    finding = next((item for item in findings if item.candidate_id == candidate_id), None)
+    if finding is None:
+        return {"state": "unknown"}
+    return {
+        "state": str(finding.state),
+        "assessment_id": finding.assessment_id,
+        "evidence_record_id": finding.evidence_record_id,
+    }
+
+
+def _reference_decision_summary(selection: object, resolution: object) -> dict[str, object]:
+    result: dict[str, object] = {
+        "selection_fingerprint": selection.selection_fingerprint,
+        "decision_action": str(selection.decision_action),
+    }
+    envelope = getattr(resolution, "accepted_decision_envelope", None)
+    if envelope is None:
+        result["mode"] = "deterministic-profile"
+        return result
+    result.update(
+        {
+            "mode": "accepted-agent-decision-ledger",
+            "request_id": envelope.request.request_id,
+            "selected_option_id": envelope.response.option_id,
+            "decision_evidence_ids": list(envelope.response.evidence_ids),
+            "critique_finding": str(envelope.critique.finding),
+            "critique_evidence_ids": list(envelope.critique.evidence_ids),
+            "resolved_challenge_fingerprints": list(
+                envelope.resolved_challenge_fingerprints
+            ),
+            "envelope_fingerprint": envelope.envelope_fingerprint,
+        }
+    )
+    return result
+
+
+def _reference_option_evidence_html(
+    options: dict[str, object],
+    record: ReferenceSATNPublicationRecord,
+) -> str:
+    """Create keyboard-native semantic evidence from the exact map option payload."""
+
+    features = options.get("features", [])
+    if not isinstance(features, list):
+        raise ValueError("Reference option evidence requires a feature list")
+    decision = record.reference_selection.governed_decision
+    parts = [
+        '<h2 id="reference-satn-heading">Reference SATN review record</h2>',
+        (
+            "<p>The selected network remains the authoritative default map. "
+            "Reviewed alternatives are hidden on the map until enabled, while every "
+            "option and its evidence remains available below.</p>"
+        ),
+        f"<p><strong>Human selection rationale:</strong> {escape(decision.rationale)}</p>",
+        '<div id="reference-option-evidence" data-reference-option-count="'
+        f'{len(features)}">',
+    ]
+    for feature in features:
+        if not isinstance(feature, dict) or not isinstance(feature.get("properties"), dict):
+            raise ValueError("Reference option evidence contains an invalid feature")
+        properties = feature["properties"]
+        candidate_id = str(properties["candidate_id"])
+        candidate_set_id = str(properties["candidate_set_id"])
+        disposition = str(properties["disposition"])
+        population = properties.get("population", {})
+        education = properties.get("education", {})
+        existing = properties.get("existing_alignment", {})
+        decision_summary = properties.get("decision_and_critique", {})
+        parts.extend(
+            [
+                (
+                    '<details class="reference-option" '
+                    f'id="reference-option-{escape(candidate_id)}" '
+                    f'data-candidate-id="{escape(candidate_id)}">'
+                ),
+                (
+                    f"<summary>{escape(disposition.title())}: {escape(candidate_id)} "
+                    f"({escape(str(properties['source_class']))})</summary>"
+                ),
+                "<dl>",
+                f"<dt>Candidate Set</dt><dd>{escape(candidate_set_id)}</dd>",
+                f"<dt>Disposition</dt><dd>{escape(disposition)}</dd>",
+                (
+                    "<dt>Substitute/complementary classification</dt><dd>"
+                    f"{escape(str(properties['candidate_set_classification']))}</dd>"
+                ),
+                f"<dt>Network role</dt><dd>{escape(str(properties['network_role']))}</dd>",
+                f"<dt>Source class</dt><dd>{escape(str(properties['source_class']))}</dd>",
+                "</dl>",
+                "<h3>Population Reach</h3>",
+                _reference_population_html(population),
+                (
+                    "<p class=\"caveat\">Straight-line whole-Output-Area evidence; "
+                    "not demand, a walking-time claim, or population actually connected.</p>"
+                ),
+                "<h3>Education and independent travel</h3>",
+                _reference_mapping_html(
+                    education,
+                    preferred=(
+                        "completeness_state",
+                        "independent_travel_state",
+                        "independent_travel_opportunity_count",
+                        "assessment_id",
+                    ),
+                ),
+                (
+                    "<p class=\"caveat\">Independent-Travel Opportunity is not a "
+                    "finding that this route is safe, suitable, or independently accessible.</p>"
+                ),
+                "<h3>Existing-alignment evidence and unknowns</h3>",
+                _reference_mapping_html(
+                    existing,
+                    preferred=(
+                        "status",
+                        "matched_share",
+                        "recognised_current_share",
+                        "reusable_asset_share",
+                        "unknown_length_m",
+                        "unknown_reasons",
+                        "assessment_id",
+                    ),
+                ),
+                "<h3>Directness and topography</h3>",
+                (
+                    f"<p>Directness: {escape(str(properties.get('directness_m')))} m; "
+                    f"maximum gradient: {escape(str(properties.get('maximum_gradient_pct')))}. "
+                    f"Directness evidence state: {_reference_state(properties.get('directness'))}; "
+                    "topography evidence state: "
+                    f"{_reference_state(properties.get('topography'))}.</p>"
+                ),
+                "<h3>Uncertainty, evidence and change conditions</h3>",
+                (
+                    f"<p>Uncertainty state: {_reference_state(properties.get('uncertainty'))}. "
+                    "Evidence references: "
+                    f"{_reference_list(properties.get('evidence_fingerprints'))}. "
+                    "Change conditions: "
+                    f"{_reference_list(properties.get('change_conditions'))}.</p>"
+                ),
+                "<h3>Decision and critique provenance</h3>",
+                _reference_mapping_html(
+                    decision_summary,
+                    preferred=(
+                        "mode",
+                        "decision_action",
+                        "request_id",
+                        "selected_option_id",
+                        "decision_evidence_ids",
+                        "critique_finding",
+                        "critique_evidence_ids",
+                        "resolved_challenge_fingerprints",
+                    ),
+                ),
+                f"<p class=\"caveat\">{escape(str(properties['disclaimer']))}</p>",
+                "</details>",
+            ]
+        )
+    parts.extend(
+        [
+            "</div>",
+            *[f'<p class="caveat">{escape(item)}</p>' for item in record.disclaimer],
+        ]
+    )
+    return "\n".join(parts)
+
+
+def _reference_population_html(value: object) -> str:
+    if not isinstance(value, dict) or value.get("status") != "available":
+        return "<p>Population evidence is unavailable.</p>"
+    rows = []
+    for radius, label in (("500m", "500 m"), ("1000m", "1 km")):
+        result = value.get(radius)
+        if not isinstance(result, dict):
+            rows.append(f"<li>{label}: unavailable</li>")
+            continue
+        rows.append(
+            f"<li>{label}: {escape(str(result.get('resident_count')))} residents; "
+            f"shared {escape(str(result.get('shared_residents')))}; option-exclusive "
+            f"{escape(str(result.get('option_exclusive_residents')))}; rank "
+            f"{escape(str(result.get('rank')))}; sensitivity "
+            f"{escape(str(result.get('sensitive')))}; within tolerance "
+            f"{escape(str(result.get('within_tolerance')))}; ordering flips from 500 m "
+            f"{escape(str(result.get('ordering_flips_from_500m')))}.</li>"
+        )
+    return "<ul>" + "".join(rows) + "</ul>"
+
+
+def _reference_mapping_html(value: object, *, preferred: tuple[str, ...]) -> str:
+    if not isinstance(value, dict):
+        return "<p>Evidence unavailable.</p>"
+    rows = []
+    for key in preferred:
+        if key not in value:
+            continue
+        rows.append(
+            f"<dt>{escape(key.replace('_', ' ').title())}</dt>"
+            f"<dd>{escape(_reference_text(value[key]))}</dd>"
+        )
+    return "<dl>" + "".join(rows) + "</dl>" if rows else "<p>Evidence unavailable.</p>"
+
+
+def _reference_state(value: object) -> str:
+    return escape(str(value.get("state", "unknown"))) if isinstance(value, dict) else "unknown"
+
+
+def _reference_list(value: object) -> str:
+    if not isinstance(value, list) or not value:
+        return "none recorded"
+    return escape(", ".join(str(item) for item in value))
+
+
+def _reference_text(value: object) -> str:
+    if isinstance(value, list):
+        return ", ".join(str(item) for item in value) or "none recorded"
+    if value is None:
+        return "unknown"
+    return str(value)
+
+
 def _write_review_map(
     review: Path,
     config: AreaConfig,
     compiled: CompiledNetwork,
 ) -> None:
+    reference_record = (
+        compiled.reference_satn_publication.revalidated()
+        if compiled.reference_satn_publication is not None
+        else None
+    )
+    reference_options = (
+        _reference_option_collection(reference_record)
+        if reference_record is not None
+        else None
+    )
     asset_root = files("satn.assets")
     asset_output = review / "assets"
     asset_output.mkdir()
@@ -1410,6 +1790,18 @@ def _write_review_map(
         .replace("__ATM_STATE__", atm_state)
         .replace("__ATM_STATUS__", atm_status)
         .replace(
+            "__REFERENCE_SATN_STATE__",
+            "" if reference_record is not None else "hidden",
+        )
+        .replace(
+            "__REFERENCE_SATN_EVIDENCE__",
+            (
+                _reference_option_evidence_html(reference_options, reference_record)
+                if reference_record is not None and reference_options is not None
+                else ""
+            ),
+        )
+        .replace(
             "__GENTLE_MAX_PCT__",
             f"{config.compilation.topography.gentle_max_pct:g}",
         )
@@ -1440,11 +1832,9 @@ def _write_review_map(
         "disclaimer": DISCLAIMER,
         "layer_counts": _layer_counts(compiled),
     }
-    if compiled.reference_satn_publication is not None:
-        data["reference_satn"] = compiled.reference_satn_publication.model_dump(mode="json")
-        data["reference_satn_options"] = _reference_option_collection(
-            compiled.reference_satn_publication
-        )
+    if reference_record is not None and reference_options is not None:
+        data["reference_satn"] = reference_record.publication_payload()
+        data["reference_satn_options"] = reference_options
     (review / "data.js").write_text(
         f"window.SATN_DATA = {json.dumps(data).replace('</', '<\\/')};\n",
         encoding="utf-8",

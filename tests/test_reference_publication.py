@@ -79,7 +79,21 @@ def test_reference_compile_atomically_publishes_matching_canonical_provenance(
     html = (result.output_dir / "review-map" / "index.html").read_text(encoding="utf-8")
     script = (result.output_dir / "review-map" / "assets").glob("review-map.*.js")
     assert "layer-reference-options" in html
-    assert "reference-satn-options" in next(script).read_text(encoding="utf-8")
+    script_text = next(script).read_text(encoding="utf-8")
+    assert "reference-satn-options" in script_text
+    assert 'layout: { visibility: "none" }' in script_text
+    assert html.count('class="reference-option"') == len(alternatives["features"])
+    for feature in alternatives["features"]:
+        candidate_id = feature["properties"]["candidate_id"]
+        assert f'data-candidate-id="{candidate_id}"' in html
+        assert f"{feature['properties']['disposition'].title()}: {candidate_id}" in html
+    assert "500 m" in html and "1 km" in html
+    assert "Education and independent travel" in html
+    assert "Existing-alignment evidence and unknowns" in html
+    assert "Directness and topography" in html
+    assert "Decision and critique provenance" in html
+    assert "<details" in html and "<summary>" in html
+    assert "reference-satn-summary\" aria-labelledby=\"reference-satn-heading\" hidden" not in html
 
 
 def test_reference_publication_record_rejects_stale_self_fingerprint(
@@ -93,8 +107,31 @@ def test_reference_publication_record_rejects_stale_self_fingerprint(
     payload = run["reference_satn"]
     payload["application_diagnostics"] = {"status": "forged"}
 
-    with pytest.raises(ValueError, match="fingerprint is stale"):
-        ReferenceSATNPublicationRecord.model_validate(payload)
+    with pytest.raises(ValueError, match="diagnostics are stale"):
+        ReferenceSATNPublicationRecord.from_publication_payload(payload)
+
+
+def test_reference_publication_record_is_deeply_immutable_and_rejects_forged_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, reference, preparation = _reference_fixture(tmp_path)
+    monkeypatch.setattr("satn.pipeline.load_snapshot", lambda area: _publishable_parallel_source())
+    result = compile_reference(config, reference, preparation)
+    payload = json.loads((result.output_dir / "run.json").read_text(encoding="utf-8"))[
+        "reference_satn"
+    ]
+    record = ReferenceSATNPublicationRecord.from_publication_payload(payload)
+    fingerprint = record.reference_publication_fingerprint
+    payload["application_diagnostics"]["status"] = "caller-mutated"
+
+    assert record.reference_publication_fingerprint == fingerprint
+    assert record.publication_payload()["application_diagnostics"]["status"] == "applied"
+    forged = record.publication_payload()
+    forged["decision_contract"] = "forged-contract"
+    forged["reference_publication_fingerprint"] = ""
+    with pytest.raises(ValueError, match="decision contract disagrees"):
+        ReferenceSATNPublicationRecord.from_publication_payload(forged)
 
 
 def test_reference_publication_failure_preserves_previous_output(
