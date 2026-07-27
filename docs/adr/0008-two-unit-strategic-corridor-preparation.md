@@ -2,6 +2,7 @@
 
 - Status: accepted
 - Date: 2026-07-27
+- Last amended: 2026-07-27
 - Decision owners: SATN product
 - Related: ADR 0001, ADR 0002, ADR 0006 and GitHub issue #137
 
@@ -95,11 +96,29 @@ The physical-alignment registry remains authoritative for geometry identity:
 one physical alignment may have several logical role memberships, but each
 unit/candidate binding remains distinct and is consumed exactly once.
 
-Reference replay/application is still not implemented.  In particular, this
-contract does not insert the selected interurban substitute before backbone
-assembly, regenerate destination access as a first-class complementary role,
-or alter the ordinary compiler or public backbone signature.  Those
-high-impact operations remain a later bounded slice.
+The private strategic Reference replay layer is now implemented as a separate
+bounded decision.  A fresh ordinary baseline is compiled from the current
+snapshot, its strategic preparation and ordered Area boundary geometry must
+exactly match the adopted plan, and only then can a validated replay object
+cross the private compiler seam.  The raw plan never enters Backbone assembly.
+
+Replay removes every governed interurban candidate geometry for the affected
+logical unit from the baseline authoritative spine frame, then inserts only
+the selected substitute before Backbone frontier creation.  Unrelated
+baseline spines remain.  Shared interurban hubs create one served Network Place
+obligation with canonical multiple logical memberships.  Destination access
+remains a separate first-class complementary frame and cannot become a spine,
+Spine Access row, branch, community frontier or served community obligation.
+Forward and reverse graph chains must each reproduce the exact bound physical
+geometry.  Every replay frame and obligation carries complete immutable plan,
+preparation, Scenario, decision, evidence, Area, unit, Candidate Set,
+resolution and candidate-record lineage.
+
+The ordinary `compile_network` signature and behaviour remain unchanged, as do
+the public Backbone signature and legacy Community/School connection-count
+invariant.  Strategic replay has no publication authority and creates no
+Reference publication record.  Publishing these new first-class frames remains
+a later bounded slice.
 
 ## Consequences
 
@@ -117,5 +136,5 @@ high-impact operations remain a later bounded slice.
   finite actions.
 - Existing-asset preference still requires its own exact governed criterion;
   route kind alone is not treated as proof.
-- Reference replay/application, pre-backbone whole-network regeneration and
-  publication remain a later slice.
+- Private Reference replay and pre-backbone whole-network regeneration are
+  implemented; publication of strategic replay outputs remains a later slice.

@@ -7,6 +7,7 @@ import json
 import logging
 import time
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 
 import geopandas as gpd
@@ -29,6 +30,7 @@ from satn.compiler import (
     compile_network,
 )
 from satn.constants import SCHEMA_VERSION
+from satn.content_identity import ordered_geometry_fingerprint
 from satn.heartbeat import StageHeartbeat
 from satn.models import (
     AgentDecisionLedger,
@@ -58,6 +60,99 @@ from satn.strategic_reference_application import StrategicReferenceApplicationPl
 from satn.strategic_reference_replay import validate_fresh_replay
 
 LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _FreshReferenceBaseline:
+    council: AreaConfig
+    ledger: AgentDecisionLedger
+    dependency_manifest: dict[str, object]
+    governed_input_fingerprint: str
+    source: dict[str, gpd.GeoDataFrame]
+    compiled: CompiledNetwork
+
+
+def _fresh_reference_baseline(
+    config: AreaConfig | str | Path,
+    decision_ledger: AgentDecisionLedger | str | Path | None,
+    heartbeat: StageHeartbeat | None,
+    *,
+    label: str,
+) -> _FreshReferenceBaseline:
+    council = (
+        config
+        if isinstance(config, (AreaDefinition, CouncilConfig))
+        else AreaDefinition.from_yaml(config)
+    )
+    ledger = _load_decision_ledger(decision_ledger)
+    dependency_manifest = compilation_dependency_manifest()
+    governed_input_fingerprint = compilation_governed_input_fingerprint(
+        council,
+        dependency_manifest=dependency_manifest,
+    )
+    source = load_snapshot(council)
+    resolver = AgentDecisionResolver(ledger, governed_input_fingerprint)
+    baseline = compile_network(
+        council,
+        _copy_compilation_source(source),
+        None,
+        governed_input_fingerprint=governed_input_fingerprint,
+        decision_resolver=resolver,
+        heartbeat=heartbeat,
+    )
+    unconsumed = {
+        response.request_id for response in ledger.responses
+    } - resolver.consumed_request_ids
+    if unconsumed:
+        raise ValueError(
+            "decision ledger contains responses that do not belong to the fresh "
+            f"{label} baseline: " + ", ".join(sorted(unconsumed))
+        )
+    return _FreshReferenceBaseline(
+        council=council,
+        ledger=ledger,
+        dependency_manifest=dependency_manifest,
+        governed_input_fingerprint=governed_input_fingerprint,
+        source=source,
+        compiled=baseline,
+    )
+
+
+def _finalize_reference_network(
+    compiled: CompiledNetwork,
+    baseline: _FreshReferenceBaseline,
+    final_resolver: AgentDecisionResolver,
+    *,
+    label: str,
+) -> CompiledNetwork:
+    unconsumed = {
+        response.request_id for response in baseline.ledger.responses
+    } - final_resolver.consumed_request_ids
+    if unconsumed:
+        raise ValueError(
+            "decision ledger contains responses that do not belong to the fresh "
+            f"{label} compilation: " + ", ".join(sorted(unconsumed))
+        )
+    compiled.compilation_input_fingerprint = decision_ledger_input_fingerprint(
+        baseline.governed_input_fingerprint,
+        baseline.ledger,
+    )
+    compiled.governed_input_fingerprint = baseline.governed_input_fingerprint
+    compiled.snapshot_manifest_sha256 = snapshot_manifest_sha256(baseline.council)
+    compiled.area_definition_sha256 = area_definition_sha256(baseline.council)
+    compiled.compilation_dependency_manifest = baseline.dependency_manifest
+    compiled.decision_contract = baseline.ledger.decision_contract
+    compiled.decision_ledger_input = baseline.ledger.model_dump(mode="json")
+    compiled.accepted_decisions = AgentDecisionLedger.model_validate(
+        {
+            "decision_contract": baseline.ledger.decision_contract,
+            "responses": [
+                response.model_dump(mode="json")
+                for response in final_resolver.accepted_responses
+            ],
+        }
+    ).model_dump(mode="json")["responses"]
+    return compiled
 
 
 def compile(
@@ -99,36 +194,13 @@ def compile_reference_network(
     downstream decisions.
     """
 
-    council = (
-        config
-        if isinstance(config, (AreaDefinition, CouncilConfig))
-        else AreaDefinition.from_yaml(config)
+    baseline = _fresh_reference_baseline(
+        config,
+        decision_ledger,
+        heartbeat,
+        label="Reference",
     )
-    ledger = _load_decision_ledger(decision_ledger)
-    dependency_manifest = compilation_dependency_manifest()
-    governed_input_fingerprint = compilation_governed_input_fingerprint(
-        council,
-        dependency_manifest=dependency_manifest,
-    )
-    source = load_snapshot(council)
-    baseline_resolver = AgentDecisionResolver(ledger, governed_input_fingerprint)
-    baseline = compile_network(
-        council,
-        _copy_compilation_source(source),
-        None,
-        governed_input_fingerprint=governed_input_fingerprint,
-        decision_resolver=baseline_resolver,
-        heartbeat=heartbeat,
-    )
-    unconsumed_baseline = {
-        response.request_id for response in ledger.responses
-    } - baseline_resolver.consumed_request_ids
-    if unconsumed_baseline:
-        raise ValueError(
-            "decision ledger contains responses that do not belong to the fresh "
-            "Reference baseline: " + ", ".join(sorted(unconsumed_baseline))
-        )
-    current_preparation = baseline.spine_access_candidate_preparation
+    current_preparation = baseline.compiled.spine_access_candidate_preparation
     if current_preparation is None:
         raise ValueError(
             "Reference compilation requires current network_selection candidate preparation"
@@ -137,44 +209,27 @@ def compile_reference_network(
         reference,
         source_preparation,
         current_preparation,
-        council,
+        baseline.council,
     )
-    final_resolver = AgentDecisionResolver(ledger, governed_input_fingerprint)
+    final_resolver = AgentDecisionResolver(
+        baseline.ledger,
+        baseline.governed_input_fingerprint,
+    )
     compiled = _compile_network_with_reference(
-        council,
-        _copy_compilation_source(source),
+        baseline.council,
+        _copy_compilation_source(baseline.source),
         runtime,
         plan,
-        governed_input_fingerprint=governed_input_fingerprint,
+        governed_input_fingerprint=baseline.governed_input_fingerprint,
         decision_resolver=final_resolver,
         heartbeat=heartbeat,
     )
-    unconsumed_final = {
-        response.request_id for response in ledger.responses
-    } - final_resolver.consumed_request_ids
-    if unconsumed_final:
-        raise ValueError(
-            "decision ledger contains responses that do not belong to the fresh "
-            "Reference compilation: " + ", ".join(sorted(unconsumed_final))
-        )
-    compiled.compilation_input_fingerprint = decision_ledger_input_fingerprint(
-        governed_input_fingerprint,
-        ledger,
+    compiled = _finalize_reference_network(
+        compiled,
+        baseline,
+        final_resolver,
+        label="Reference",
     )
-    compiled.governed_input_fingerprint = governed_input_fingerprint
-    compiled.snapshot_manifest_sha256 = snapshot_manifest_sha256(council)
-    compiled.area_definition_sha256 = area_definition_sha256(council)
-    compiled.compilation_dependency_manifest = dependency_manifest
-    compiled.decision_contract = ledger.decision_contract
-    compiled.decision_ledger_input = ledger.model_dump(mode="json")
-    compiled.accepted_decisions = AgentDecisionLedger.model_validate(
-        {
-            "decision_contract": ledger.decision_contract,
-            "responses": [
-                response.model_dump(mode="json") for response in final_resolver.accepted_responses
-            ],
-        }
-    ).model_dump(mode="json")["responses"]
     compiled.reference_satn_publication = build_reference_satn_publication_record(
         reference=reference,
         source_preparation=source_preparation,
@@ -184,7 +239,7 @@ def compile_reference_network(
         snapshot_manifest_sha256=compiled.snapshot_manifest_sha256,
         compilation_input_fingerprint=compiled.compilation_input_fingerprint,
         governed_input_fingerprint=compiled.governed_input_fingerprint,
-        compilation_dependency_manifest=dependency_manifest,
+        compilation_dependency_manifest=baseline.dependency_manifest,
         decision_contract=compiled.decision_contract,
         decision_ledger_input=compiled.decision_ledger_input,
         accepted_decisions=compiled.accepted_decisions,
@@ -208,83 +263,47 @@ def compile_strategic_reference_network(
     replay object crosses the private compiler seam.
     """
 
-    council = (
-        config
-        if isinstance(config, (AreaDefinition, CouncilConfig))
-        else AreaDefinition.from_yaml(config)
+    baseline = _fresh_reference_baseline(
+        config,
+        decision_ledger,
+        heartbeat,
+        label="strategic Reference",
     )
-    ledger = _load_decision_ledger(decision_ledger)
-    dependency_manifest = compilation_dependency_manifest()
-    governed_input_fingerprint = compilation_governed_input_fingerprint(
-        council,
-        dependency_manifest=dependency_manifest,
-    )
-    source = load_snapshot(council)
-    baseline_resolver = AgentDecisionResolver(ledger, governed_input_fingerprint)
-    baseline = compile_network(
-        council,
-        _copy_compilation_source(source),
-        None,
-        governed_input_fingerprint=governed_input_fingerprint,
-        decision_resolver=baseline_resolver,
-        heartbeat=heartbeat,
-    )
-    unconsumed_baseline = {
-        response.request_id for response in ledger.responses
-    } - baseline_resolver.consumed_request_ids
-    if unconsumed_baseline:
-        raise ValueError(
-            "decision ledger contains responses that do not belong to the fresh "
-            "strategic Reference baseline: "
-            + ", ".join(sorted(unconsumed_baseline))
-        )
-    current_preparation = baseline.strategic_corridor_preparation
+    current_preparation = baseline.compiled.strategic_corridor_preparation
     if current_preparation is None:
         raise ValueError(
             "strategic Reference compilation requires current strategic "
             "corridor preparation"
         )
+    current_area_fingerprint = ordered_geometry_fingerprint(
+        baseline.source["boundary"].geometry
+    )
+    if plan.area_fingerprint != current_area_fingerprint:
+        raise ValueError(
+            "strategic Reference Area identity does not match the fresh current "
+            "snapshot boundary"
+        )
     validated_replay = validate_fresh_replay(plan, current_preparation)
 
-    final_resolver = AgentDecisionResolver(ledger, governed_input_fingerprint)
+    final_resolver = AgentDecisionResolver(
+        baseline.ledger,
+        baseline.governed_input_fingerprint,
+    )
     compiled = _compile_network_with_strategic_reference(
-        council,
-        _copy_compilation_source(source),
+        baseline.council,
+        _copy_compilation_source(baseline.source),
         runtime,
         validated_replay,
-        governed_input_fingerprint=governed_input_fingerprint,
+        governed_input_fingerprint=baseline.governed_input_fingerprint,
         decision_resolver=final_resolver,
         heartbeat=heartbeat,
     )
-    unconsumed_final = {
-        response.request_id for response in ledger.responses
-    } - final_resolver.consumed_request_ids
-    if unconsumed_final:
-        raise ValueError(
-            "decision ledger contains responses that do not belong to the fresh "
-            "strategic Reference compilation: "
-            + ", ".join(sorted(unconsumed_final))
-        )
-    compiled.compilation_input_fingerprint = decision_ledger_input_fingerprint(
-        governed_input_fingerprint,
-        ledger,
+    return _finalize_reference_network(
+        compiled,
+        baseline,
+        final_resolver,
+        label="strategic Reference",
     )
-    compiled.governed_input_fingerprint = governed_input_fingerprint
-    compiled.snapshot_manifest_sha256 = snapshot_manifest_sha256(council)
-    compiled.area_definition_sha256 = area_definition_sha256(council)
-    compiled.compilation_dependency_manifest = dependency_manifest
-    compiled.decision_contract = ledger.decision_contract
-    compiled.decision_ledger_input = ledger.model_dump(mode="json")
-    compiled.accepted_decisions = AgentDecisionLedger.model_validate(
-        {
-            "decision_contract": ledger.decision_contract,
-            "responses": [
-                response.model_dump(mode="json")
-                for response in final_resolver.accepted_responses
-            ],
-        }
-    ).model_dump(mode="json")["responses"]
-    return compiled
 
 
 def compile_reference(

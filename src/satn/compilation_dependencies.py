@@ -39,6 +39,10 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
         "compilation dependency manifest and fail-closed registry",
     ),
     "satn/compiler.py": ("module", "CompiledNetwork derivation"),
+    "satn/content_identity.py": (
+        "module",
+        "deterministic local content and Area identities",
+    ),
     "satn/constants.py": ("module", "compiler schema and source constants"),
     "satn/cross_spine.py": ("module", "Cross-Spine Connector assembly"),
     "satn/ea_elevation.py": ("module", "governed elevation contract and sampling"),

@@ -7,19 +7,20 @@ preparation and fails closed if current preparation or graph facts drift.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass
 from itertools import pairwise
-from typing import Literal
+from typing import Literal, Self
 
 import geopandas as gpd
 import pandas as pd
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from shapely.geometry import LineString
 from shapely.ops import linemerge, unary_union
 
 from satn.alignment_selection import CanonicalLineString
+from satn.content_identity import canonical_json as _canonical_json
+from satn.content_identity import content_fingerprint as _fingerprint
 from satn.identifiers import stable_id
 from satn.models import ACCESS_OBLIGATION_COLUMNS, NetworkScope
 from satn.routing import RoadGraph
@@ -31,6 +32,24 @@ from satn.strategic_reference_application import (
     StrategicReferenceApplicationPlan,
     StrategicReferenceCandidateBinding,
 )
+
+LINEAGE_COLUMNS = [
+    "unit_id",
+    "source_unit_fingerprint",
+    "candidate_set_id",
+    "candidate_set_fingerprint",
+    "resolution_fingerprint",
+    "candidate_record_fingerprint",
+    "plan_fingerprint",
+    "preparation_fingerprint",
+    "profile_fingerprint",
+    "scenario_fingerprint",
+    "reference_selection_fingerprint",
+    "reference_decision_fingerprint",
+    "area_fingerprint",
+    "evidence_snapshot_fingerprint",
+    "selection_run_fingerprint",
+]
 
 INTERURBAN_COLUMNS = [
     "strategic_connection_id",
@@ -48,6 +67,7 @@ INTERURBAN_COLUMNS = [
     "evidence_ids",
     "generation_strategies",
     "geometry_fingerprint",
+    *LINEAGE_COLUMNS,
     "geometry",
 ]
 
@@ -67,6 +87,7 @@ DESTINATION_ACCESS_COLUMNS = [
     "evidence_ids",
     "generation_strategies",
     "geometry_fingerprint",
+    *LINEAGE_COLUMNS,
     "geometry",
 ]
 
@@ -78,13 +99,37 @@ class ServedNetworkPlaceObligation(BaseModel):
 
     obligation_id: str = Field(min_length=1)
     network_place_id: str = Field(min_length=1)
-    binding_id: str = Field(min_length=1)
-    strategic_connection_id: str = Field(min_length=1)
-    physical_alignment_id: str = Field(min_length=1)
+    binding_ids: tuple[str, ...] = Field(min_length=1)
+    strategic_connection_ids: tuple[str, ...] = Field(min_length=1)
+    physical_alignment_ids: tuple[str, ...] = Field(min_length=1)
+    binding_lineages: tuple[str, ...] = Field(min_length=1)
     service_status: Literal["served"] = "served"
     network_role: Literal["interurban-network-place-obligation"] = (
         "interurban-network-place-obligation"
     )
+
+    @model_validator(mode="after")
+    def canonical_memberships(self) -> Self:
+        for field in (
+            "binding_ids",
+            "strategic_connection_ids",
+            "physical_alignment_ids",
+            "binding_lineages",
+        ):
+            values = getattr(self, field)
+            if values != tuple(sorted(set(values))):
+                raise ValueError(
+                    f"served Network Place {field} must be canonical"
+                )
+        if not (
+            len(self.binding_ids)
+            == len(self.strategic_connection_ids)
+            == len(self.binding_lineages)
+        ):
+            raise ValueError(
+                "served Network Place logical memberships are incomplete"
+            )
+        return self
 
 
 @dataclass(frozen=True)
@@ -93,6 +138,7 @@ class ValidatedStrategicReferenceReplay:
 
     plan: StrategicReferenceApplicationPlan
     current_preparation_fingerprint: str
+    interurban_candidate_geometries: tuple[CanonicalLineString, ...]
 
 
 @dataclass(frozen=True)
@@ -142,6 +188,9 @@ def validate_fresh_replay(
     return ValidatedStrategicReferenceReplay(
         plan=validated_plan,
         current_preparation_fingerprint=current_preparation.preparation_fingerprint,
+        interurban_candidate_geometries=_interurban_candidate_geometries(
+            validated_plan
+        ),
     )
 
 
@@ -174,17 +223,20 @@ def materialise_replay(
     physical_id_by_geometry: dict[str, str] = {}
     interurban_rows: list[dict[str, object]] = []
     destination_rows: list[dict[str, object]] = []
-    obligations: list[ServedNetworkPlaceObligation] = []
+    obligation_memberships: dict[str, list[dict[str, str]]] = {}
     consumed: list[str] = []
     replay_geometries: list[tuple[StrategicReferenceCandidateBinding, LineString]] = []
 
     for binding in bindings:
         binding_id = binding.binding_fingerprint
-        geometry = _materialise_binding_geometry(binding, graph)
+        geometry, reverse_geometry = _materialise_binding_geometry(binding, graph)
         canonical = _canonical_projected_geometry(geometry, graph.crs)
+        canonical_reverse = _canonical_projected_geometry(reverse_geometry, graph.crs)
         if (
             canonical != binding.geometry
+            or canonical_reverse != binding.geometry
             or canonical.fingerprint != binding.geometry_fingerprint
+            or canonical_reverse.fingerprint != binding.geometry_fingerprint
             or binding.geometry != binding.registry_geometry
             or binding.geometry_fingerprint != binding.registry_geometry_fingerprint
         ):
@@ -205,6 +257,7 @@ def materialise_replay(
         ):
             raise ValueError("strategic replay physical alignment identities collide")
 
+        lineage = _binding_lineage(plan, binding)
         common = {
             "strategic_connection_id": stable_id(
                 "strategic-reference-connection", binding_id
@@ -223,6 +276,7 @@ def materialise_replay(
             "evidence_ids": json.dumps(list(binding.evidence_ids)),
             "generation_strategies": json.dumps(list(binding.generation_strategies)),
             "geometry_fingerprint": binding.geometry_fingerprint,
+            **lineage,
             "geometry": geometry,
         }
         endpoints = binding.endpoint_binding
@@ -238,20 +292,15 @@ def materialise_replay(
                 }
             )
             for place_id in endpoints.network_place_ids:
-                obligations.append(
-                    ServedNetworkPlaceObligation(
-                        obligation_id=stable_id(
-                            "interurban-network-place-obligation",
-                            binding_id,
-                            place_id,
-                        ),
-                        network_place_id=place_id,
-                        binding_id=binding_id,
-                        strategic_connection_id=str(
+                obligation_memberships.setdefault(place_id, []).append(
+                    {
+                        "binding_id": binding_id,
+                        "strategic_connection_id": str(
                             common["strategic_connection_id"]
                         ),
-                        physical_alignment_id=binding.physical_alignment_id,
-                    )
+                        "physical_alignment_id": binding.physical_alignment_id,
+                        "binding_lineage": _canonical_json(lineage),
+                    }
                 )
             replay_geometries.append((binding, geometry))
         else:
@@ -281,14 +330,17 @@ def materialise_replay(
             "strategic replay did not consume every binding exactly once "
             f"(missing={sorted(expected - actual)}, foreign={sorted(actual - expected)})"
         )
-    obligation_place_ids = tuple(
-        sorted(item.network_place_id for item in obligations)
-    )
-    if len(set(obligation_place_ids)) != len(obligation_place_ids):
-        raise ValueError("strategic replay serves one Network Place more than once")
+    obligations = _aggregate_served_obligations(obligation_memberships)
+    obligation_place_ids = tuple(item.network_place_id for item in obligations)
 
     crs = strategic_spines.crs or communities.crs or graph.crs
-    effective = _effective_spines(strategic_spines, replay_geometries, crs)
+    effective = _effective_spines(
+        strategic_spines,
+        replay_geometries,
+        validated.interurban_candidate_geometries,
+        plan,
+        crs,
+    )
     interurban = gpd.GeoDataFrame(
         interurban_rows,
         columns=INTERURBAN_COLUMNS,
@@ -320,13 +372,52 @@ def materialise_replay(
         effective_strategic_spines=effective,
         interurban_connections=interurban,
         destination_access_connections=destination,
-        served_network_place_obligations=tuple(
-            sorted(obligations, key=lambda item: item.network_place_id)
-        ),
+        served_network_place_obligations=obligations,
         served_endpoint_place_ids=obligation_place_ids,
         consumed_binding_ids=tuple(sorted(consumed)),
         diagnostics=diagnostics,
     )
+
+
+def _aggregate_served_obligations(
+    obligation_memberships: dict[str, list[dict[str, str]]],
+) -> tuple[ServedNetworkPlaceObligation, ...]:
+    obligations = []
+    for place_id, memberships in sorted(obligation_memberships.items()):
+        binding_ids = tuple(sorted(item["binding_id"] for item in memberships))
+        connection_ids = tuple(
+            sorted(item["strategic_connection_id"] for item in memberships)
+        )
+        lineages = tuple(sorted(item["binding_lineage"] for item in memberships))
+        if (
+            len(set(binding_ids)) != len(binding_ids)
+            or len(set(connection_ids)) != len(connection_ids)
+            or len(set(lineages)) != len(lineages)
+        ):
+            raise ValueError(
+                "strategic replay duplicates one logical membership at a shared hub"
+            )
+        obligations.append(
+            ServedNetworkPlaceObligation(
+                obligation_id=stable_id(
+                    "interurban-network-place-obligation",
+                    place_id,
+                ),
+                network_place_id=place_id,
+                binding_ids=binding_ids,
+                strategic_connection_ids=connection_ids,
+                physical_alignment_ids=tuple(
+                    sorted(
+                        {
+                            item["physical_alignment_id"]
+                            for item in memberships
+                        }
+                    )
+                ),
+                binding_lineages=lineages,
+            )
+        )
+    return tuple(obligations)
 
 
 def served_obligations_frame(
@@ -344,9 +435,12 @@ def served_obligations_frame(
         if place is None:
             raise ValueError("served strategic obligation has no current Network Place")
         provenance = {
-            "binding_id": item.binding_id,
-            "strategic_connection_id": item.strategic_connection_id,
-            "physical_alignment_id": item.physical_alignment_id,
+            "binding_ids": list(item.binding_ids),
+            "strategic_connection_ids": list(item.strategic_connection_ids),
+            "physical_alignment_ids": list(item.physical_alignment_ids),
+            "binding_lineages": [
+                json.loads(value) for value in item.binding_lineages
+            ],
             "service_status": item.service_status,
         }
         rows.append(
@@ -366,7 +460,7 @@ def served_obligations_frame(
                     "strategic Reference alignment."
                 ),
                 "access_connection_id": None,
-                "root_spine_id": item.physical_alignment_id,
+                "root_spine_id": None,
                 "branch_id": None,
                 "criterion_continuity": "green",
                 "geometry_semantics": "network-place-reference-point",
@@ -399,7 +493,7 @@ def empty_destination_access_connections() -> gpd.GeoDataFrame:
 def _materialise_binding_geometry(
     binding: StrategicReferenceCandidateBinding,
     graph: RoadGraph,
-) -> LineString:
+) -> tuple[LineString, LineString]:
     forward_nodes = _unique_edge_chain(
         graph,
         binding.routing_start_node_id,
@@ -416,14 +510,21 @@ def _materialise_binding_geometry(
         # Reverse routing may use distinct reciprocal edges, but must visit the
         # same ordered physical node chain.
         raise ValueError(f"strategic replay reverse edge chain drifts for {binding.unit_id}")
-    lines = [
-        graph.graph[left][right]["geometry"]
-        for left, right in pairwise(forward_nodes)
-    ]
+    forward = _chain_geometry(graph, forward_nodes, binding.unit_id)
+    reverse = _chain_geometry(graph, reverse_nodes, binding.unit_id)
+    return forward, LineString(list(reverse.coords)[::-1])
+
+
+def _chain_geometry(
+    graph: RoadGraph,
+    nodes: tuple[str, ...],
+    unit_id: str,
+) -> LineString:
+    lines = [graph.graph[left][right]["geometry"] for left, right in pairwise(nodes)]
     unioned = unary_union(lines)
     merged = unioned if isinstance(unioned, LineString) else linemerge(unioned)
     if not isinstance(merged, LineString) or merged.is_empty:
-        raise ValueError(f"strategic replay graph route is not one LineString: {binding.unit_id}")
+        raise ValueError(f"strategic replay graph route is not one LineString: {unit_id}")
     return merged
 
 
@@ -465,9 +566,20 @@ def _unique_edge_chain(
 def _effective_spines(
     strategic_spines: gpd.GeoDataFrame,
     replay_geometries: list[tuple[StrategicReferenceCandidateBinding, LineString]],
+    interurban_candidate_geometries: tuple[CanonicalLineString, ...],
+    plan: StrategicReferenceApplicationPlan,
     crs: object,
 ) -> gpd.GeoDataFrame:
     result = strategic_spines.copy()
+    substituted = {
+        geometry.fingerprint for geometry in interurban_candidate_geometries
+    }
+    retained = [
+        _canonical_projected_geometry(row.geometry, crs).fingerprint
+        not in substituted
+        for _, row in result.iterrows()
+    ]
+    result = result.loc[retained].copy()
     for column in (
         "physical_alignment_id",
         "logical_membership_ids",
@@ -514,6 +626,15 @@ def _effective_spines(
                 addition["replay_binding_ids"],
                 binding.binding_fingerprint,
             )
+            provenance = json.loads(str(addition["provenance"]))
+            provenance["binding_lineages"] = sorted(
+                [
+                    *provenance["binding_lineages"],
+                    _binding_lineage(plan, binding),
+                ],
+                key=lambda item: str(item["unit_id"]),
+            )
+            addition["provenance"] = _canonical_json(provenance)
             continue
         additions.append(
             {
@@ -537,8 +658,9 @@ def _effective_spines(
                 "design_status": "adopted strategic Reference; not a final design",
                 "provenance": json.dumps(
                     {
-                        "binding_id": binding.binding_fingerprint,
-                        "candidate_id": binding.selected_candidate_id,
+                        "binding_lineages": [
+                            _binding_lineage(plan, binding)
+                        ],
                         "source_ids": list(binding.source_ids),
                         "evidence_ids": list(binding.evidence_ids),
                     },
@@ -567,18 +689,102 @@ def _effective_spines(
     return result.sort_values("spine_id").reset_index(drop=True)
 
 
-def _canonical_json(value: object) -> str:
-    return json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=True,
-        allow_nan=False,
-    )
+def _binding_lineage(
+    plan: StrategicReferenceApplicationPlan,
+    binding: StrategicReferenceCandidateBinding,
+) -> dict[str, object]:
+    return {
+        "binding_id": binding.binding_fingerprint,
+        "unit_id": binding.unit_id,
+        "source_unit_fingerprint": binding.source_unit_fingerprint,
+        "candidate_set_id": binding.candidate_set_id,
+        "candidate_set_fingerprint": binding.candidate_set_fingerprint,
+        "resolution_fingerprint": binding.resolution_fingerprint,
+        "candidate_record_fingerprint": binding.candidate_record_fingerprint,
+        "selected_candidate_id": binding.selected_candidate_id,
+        "physical_alignment_id": binding.physical_alignment_id,
+        "geometry_fingerprint": binding.geometry_fingerprint,
+        "source_ids": list(binding.source_ids),
+        "evidence_ids": list(binding.evidence_ids),
+        "generation_strategies": list(binding.generation_strategies),
+        "plan_fingerprint": plan.plan_fingerprint,
+        "preparation_fingerprint": plan.preparation_fingerprint,
+        "profile_fingerprint": plan.profile_fingerprint,
+        "scenario_fingerprint": plan.scenario_fingerprint,
+        "reference_selection_fingerprint": (
+            plan.reference_selection_fingerprint
+        ),
+        "reference_decision_fingerprint": plan.reference_decision_fingerprint,
+        "area_fingerprint": plan.area_fingerprint,
+        "evidence_snapshot_fingerprint": plan.evidence_snapshot_fingerprint,
+        "selection_run_fingerprint": plan.selection_run_fingerprint,
+    }
 
 
-def _fingerprint(value: object) -> str:
-    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+def _interurban_candidate_geometries(
+    plan: StrategicReferenceApplicationPlan,
+) -> tuple[CanonicalLineString, ...]:
+    source = json.loads(plan.source_preparation_json)
+    canonical = source.get("canonical_payload")
+    if not isinstance(canonical, dict):
+        raise ValueError("strategic replay canonical preparation is malformed")
+    units = canonical.get("units")
+    registry = canonical.get("physical_alignments")
+    if not isinstance(units, list) or not isinstance(registry, list):
+        raise ValueError("strategic replay substitution registry is malformed")
+    geometry_by_physical_id: dict[str, CanonicalLineString] = {}
+    for item in registry:
+        if not isinstance(item, dict):
+            raise ValueError("strategic replay physical alignment is malformed")
+        identifier = item.get("physical_alignment_id")
+        geometry = item.get("geometry")
+        if (
+            not isinstance(identifier, str)
+            or identifier in geometry_by_physical_id
+            or not isinstance(geometry, dict)
+        ):
+            raise ValueError("strategic replay physical alignment identity collides")
+        geometry_by_physical_id[identifier] = CanonicalLineString.model_validate(
+            geometry
+        )
+    expected_units = {
+        binding.unit_id
+        for binding in plan.bindings
+        if binding.unit_role is StrategicCorridorUnitRole.INTERURBAN_SPINE
+    }
+    seen_units: set[str] = set()
+    geometries: dict[str, CanonicalLineString] = {}
+    for unit in units:
+        if (
+            not isinstance(unit, dict)
+            or unit.get("unit_role")
+            != StrategicCorridorUnitRole.INTERURBAN_SPINE.value
+        ):
+            continue
+        unit_id = unit.get("unit_id")
+        if not isinstance(unit_id, str) or unit_id not in expected_units:
+            raise ValueError("strategic replay contains a foreign interurban unit")
+        if unit_id in seen_units:
+            raise ValueError("strategic replay duplicates an interurban unit")
+        seen_units.add(unit_id)
+        records = unit.get("candidate_records")
+        if not isinstance(records, list) or not records:
+            raise ValueError("strategic replay interurban unit has no candidates")
+        for record in records:
+            physical_id = (
+                record.get("physical_alignment_id")
+                if isinstance(record, dict)
+                else None
+            )
+            geometry = geometry_by_physical_id.get(str(physical_id))
+            if not isinstance(physical_id, str) or geometry is None:
+                raise ValueError(
+                    "strategic replay interurban candidate lacks registry geometry"
+                )
+            geometries[geometry.fingerprint] = geometry
+    if seen_units != expected_units:
+        raise ValueError("strategic replay omits an interurban substitution unit")
+    return tuple(geometries[key] for key in sorted(geometries))
 
 
 def _append_json_id(value: object, identifier: str) -> str:

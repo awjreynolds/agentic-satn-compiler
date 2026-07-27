@@ -12,7 +12,6 @@ roots, or claims about an external principal.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from dataclasses import replace
@@ -29,6 +28,8 @@ from satn.alignment_selection import (
     ReferenceSATNSelection,
     adopt_reference_satn,
 )
+from satn.content_identity import canonical_json as _canonical_json
+from satn.content_identity import content_fingerprint as _fingerprint
 from satn.strategic_corridors import (
     StrategicCorridorPreparationResult,
     StrategicCorridorUnitRole,
@@ -40,20 +41,6 @@ STRATEGIC_REFERENCE_APPLICATION_CONTRACT = (
 )
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _ID = re.compile(r"^[a-z0-9][a-z0-9._:-]*$")
-
-
-def _canonical_json(value: object) -> str:
-    return json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=True,
-        allow_nan=False,
-    )
-
-
-def _fingerprint(value: object) -> str:
-    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
 
 
 def _canonical_ids(
