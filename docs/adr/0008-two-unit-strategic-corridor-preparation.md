@@ -62,11 +62,25 @@ Railway/A-road alternatives as substitutes and the campus access as a
 complementary required role.
 
 This criteria-and-Scenario layer remains inspect-only.  Its bounded review
-ledger may request agent analysis, but an agent cannot adopt the result.  Human
-adoption and exact Reference application remain separate later authorities.
-The high-risk pre-backbone replay seam is intentionally not crossed until it
-can regenerate destination access as a first-class role without changing the
-ordinary compiler or public backbone signature.
+ledger may request agent analysis, but an agent cannot adopt the result.  A
+human may now adopt an exact fully resolved strategic Scenario through the
+existing governed Reference decision contract.  A separate strategic
+Reference application plan then binds each adopted candidate back to its exact
+unit, Candidate Set, resolution, typed endpoints and obligations, forward and
+reverse graph edges, canonical geometry, physical-alignment registry
+membership, evidence, profile and preparation lineage.  The plan is
+deterministic, validates a fresh preparation by exact equality and grants no
+network-mutation or publication authority.
+
+The physical-alignment registry remains authoritative for geometry identity:
+one physical alignment may have several logical role memberships, but each
+unit/candidate binding remains distinct and is consumed exactly once.
+
+Reference replay/application is still not implemented.  In particular, this
+contract does not insert the selected interurban substitute before backbone
+assembly, regenerate destination access as a first-class complementary role,
+or alter the ordinary compiler or public backbone signature.  Those
+high-impact operations remain a later bounded slice.
 
 ## Consequences
 
@@ -79,5 +93,7 @@ ordinary compiler or public backbone signature.
   lawful, feasible, cheap, deliverable, funded or adopted.
 - Criteria and Scenario selection now cover both role-specific units without a
   weighted aggregate score.
-- Reference application, pre-backbone whole-network replay, human adoption and
+- Governed human adoption and exact strategic Reference bindings are proven
+  without changing compiler execution.
+- Reference replay/application, pre-backbone whole-network regeneration and
   publication remain a later slice.
