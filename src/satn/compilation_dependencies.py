@@ -110,6 +110,8 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     "satn/assets/review-map.css": "review-map presentation asset",
     "satn/assets/review-map.html": "review-map presentation asset",
     "satn/assets/review-map.js": "review-map presentation asset",
+    "satn/assets/strategic-reference.css": "strategic-only review-map presentation asset",
+    "satn/assets/strategic-reference.js": "strategic-only review-map presentation asset",
     "satn/cli.py": "command-line adapter",
     "satn/deployment.py": "isolated deployment assembly",
     "satn/deployment_catalogue.py": "deployment catalogue assembly",
@@ -133,6 +135,9 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     ),
     "satn/strategic_reference_application.py": (
         "post-adoption strategic Reference binding without CompiledNetwork mutation"
+    ),
+    "satn/strategic_reference_publication.py": (
+        "publication-only strategic Reference provenance record; no compiler authority"
     ),
 }
 

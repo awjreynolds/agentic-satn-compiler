@@ -1,6 +1,6 @@
 # ADR 0008: Prepare strategic corridors as two sibling logical units
 
-- Status: accepted
+- Status: accepted — publication implemented
 - Date: 2026-07-27
 - Last amended: 2026-07-27
 - Decision owners: SATN product
@@ -116,9 +116,13 @@ resolution and candidate-record lineage.
 
 The ordinary `compile_network` signature and behaviour remain unchanged, as do
 the public Backbone signature and legacy Community/School connection-count
-invariant.  Strategic replay has no publication authority and creates no
-Reference publication record.  Publishing these new first-class frames remains
-a later bounded slice.
+invariant. Strategic Reference publication is a bounded sibling: a fresh
+private replay creates an immutable local SHA-only record before the existing
+atomic publisher can proceed. The record, replay frames and published
+artifacts are presence-gated and cross-validated; it is excluded from compiler
+identity because it cannot alter `CompiledNetwork` derivation. Selected
+interurban geometry remains published once through effective Strategic Spines,
+while complementary destination access is a separate typed output.
 
 ## Consequences
 
@@ -136,5 +140,5 @@ a later bounded slice.
   finite actions.
 - Existing-asset preference still requires its own exact governed criterion;
   route kind alone is not treated as proof.
-- Private Reference replay and pre-backbone whole-network regeneration are
-  implemented; publication of strategic replay outputs remains a later slice.
+- Private Reference replay, pre-backbone whole-network regeneration and
+  bounded atomic publication are implemented.

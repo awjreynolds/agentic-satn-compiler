@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from itertools import combinations
 from numbers import Number
+from typing import TYPE_CHECKING
 
 import geopandas as gpd
 import networkx as nx
@@ -80,6 +81,9 @@ from satn.topography import (
 from satn.urban import derive_urban_structure
 from satn.urban_community import assess_urban_community_access, urban_community_gaps
 from satn.urban_school import assess_urban_school_access
+
+if TYPE_CHECKING:
+    from satn.strategic_reference_publication import StrategicReferencePublicationRecord
 
 URBAN_A_ROAD_SOURCE_ALIGNMENT_TOLERANCE_M = 100.0
 
@@ -153,6 +157,9 @@ class CompiledNetwork:
         default_factory=empty_destination_access_connections
     )
     strategic_reference_diagnostics: dict[str, object] = field(default_factory=dict)
+    # Strategic publication provenance is intentionally a sibling of the
+    # replay frames.  It is absent from ordinary and community paths.
+    strategic_reference_publication: StrategicReferencePublicationRecord | None = None
 
     @property
     def connection_count(self) -> int:

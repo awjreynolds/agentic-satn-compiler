@@ -57,6 +57,9 @@ from satn.runtime_governance import incomplete_runtime_governance
 from satn.sources import load_snapshot
 from satn.spine_access_candidate_preparation import SpineAccessCandidatePreparationResult
 from satn.strategic_reference_application import StrategicReferenceApplicationPlan
+from satn.strategic_reference_publication import (
+    build_strategic_reference_publication_record,
+)
 from satn.strategic_reference_replay import validate_fresh_replay
 
 LOGGER = logging.getLogger(__name__)
@@ -303,6 +306,88 @@ def compile_strategic_reference_network(
         baseline,
         final_resolver,
         label="strategic Reference",
+    )
+
+
+def compile_strategic_reference(
+    config: AreaConfig | str | Path,
+    plan: StrategicReferenceApplicationPlan,
+    *,
+    decision_ledger: AgentDecisionLedger | str | Path | None = None,
+) -> CompilationResult:
+    """Freshly compile then atomically publish a strategic Reference replay.
+
+    This public boundary intentionally accepts a plan only as replay input. It
+    derives a fresh private compilation first; the existing publisher remains
+    the only authority that can replace a publication directory.
+    """
+
+    council = (
+        config
+        if isinstance(config, (AreaDefinition, CouncilConfig))
+        else AreaDefinition.from_yaml(config)
+    )
+    with StageHeartbeat(
+        LOGGER,
+        "strategic-reference-publication",
+        {"area_id": council.area_id, "snapshot_id": council.source.snapshot_id},
+    ) as heartbeat:
+        # A strategic publication is a governed replay of accepted decisions,
+        # not an invitation for a publisher to obtain or choose agent output.
+        compiled = compile_strategic_reference_network(
+            council,
+            None,
+            plan,
+            decision_ledger=decision_ledger,
+            heartbeat=heartbeat,
+        )
+        # Only the public publication boundary makes the sibling record; the
+        # private replay entry point remains inspect-only and record-free.
+        compiled.strategic_reference_publication = build_strategic_reference_publication_record(
+            plan=plan,
+            replay_diagnostics=compiled.strategic_reference_diagnostics,
+            area_definition_sha256=compiled.area_definition_sha256,
+            snapshot_manifest_sha256=compiled.snapshot_manifest_sha256,
+            compilation_input_fingerprint=compiled.compilation_input_fingerprint,
+            governed_input_fingerprint=compiled.governed_input_fingerprint,
+            compilation_dependency_manifest=compiled.compilation_dependency_manifest,
+            decision_contract=compiled.decision_contract,
+            decision_ledger_input=compiled.decision_ledger_input,
+            accepted_decisions=compiled.accepted_decisions,
+        )
+        record = compiled.strategic_reference_publication
+        if record is None:
+            raise ValueError("strategic Reference compilation produced no publication provenance")
+        run_fingerprint = json.dumps(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "area_id": council.area_id,
+                "snapshot_id": council.source.snapshot_id,
+                "strategic_reference_publication_fingerprint": record.record_fingerprint,
+                "compilation_input_fingerprint": compiled.compilation_input_fingerprint,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        run_id = "strategic-reference-" + hashlib.sha256(run_fingerprint.encode()).hexdigest()[:12]
+        heartbeat.set_stage("strategic-reference-publication")
+        artifacts = publish(council, compiled, run_id)
+    return CompilationResult(
+        run_id=run_id,
+        status=compiled.status,
+        output_dir=council.publication.output_dir,
+        connections=compiled.connection_count,
+        gaps=len(compiled.gaps),
+        artifacts=artifacts,
+        criteria=compiled.criteria,
+        agent_records=compiled.agent_records,
+        divergence_records=compiled.divergence_records,
+        metadata={
+            "network_model": "backbone-outward",
+            "compilation_input_fingerprint": compiled.compilation_input_fingerprint,
+            "strategic_reference": record.publication_payload(),
+            "compilation_diagnostics": compiled.compilation_diagnostics,
+        },
     )
 
 
