@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -1205,7 +1206,7 @@ def compilation_governed_input_fingerprint(
     dependency_manifest: dict[str, object] | None = None,
 ) -> str:
     """Fingerprint every governed input required for safe whole-publication reuse."""
-    config_payload = council.model_dump(mode="json")
+    config_payload = _canonical_configuration_payload(council)
     config_payload["compilation"].pop("full", None)
     # The superseded comparison is explanatory, never a correctness input. Its path is
     # governed by configuration, but promoting this run to that path must not invalidate
@@ -1245,7 +1246,7 @@ def compilation_governed_input_fingerprint(
         "configuration": config_payload,
         "snapshot_manifest_sha256": snapshot_manifest_sha256(council),
         "governed_file_sha256": {
-            str(path): _file_digest(path)
+            _canonical_path_identity(path, council.config_path.parent): _file_digest(path)
             for path in governed_paths
             if path is not None and path.is_file()
         },
@@ -1256,6 +1257,50 @@ def compilation_governed_input_fingerprint(
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+
+
+def _canonical_configuration_payload(council: AreaConfig) -> dict[str, object]:
+    """Serialize configured paths by their identity relative to the Area Definition."""
+    python_payload = council.model_dump(mode="python")
+    json_payload = council.model_dump(mode="json")
+    canonical = _canonical_configuration_value(
+        python_payload,
+        json_payload,
+        council.config_path.parent,
+    )
+    if not isinstance(canonical, dict):  # Defensive: AreaConfig always serializes a mapping.
+        raise TypeError("Area Definition configuration payload must be a mapping")
+    return canonical
+
+
+def _canonical_configuration_value(
+    value: object,
+    serialized: object,
+    base_directory: Path,
+) -> object:
+    if isinstance(value, Path):
+        return _canonical_path_identity(value, base_directory)
+    if isinstance(value, dict) and isinstance(serialized, dict):
+        return {
+            key: _canonical_configuration_value(
+                item,
+                serialized[key],
+                base_directory,
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)) and isinstance(serialized, list):
+        return [
+            _canonical_configuration_value(item, serialized[index], base_directory)
+            for index, item in enumerate(value)
+        ]
+    return serialized
+
+
+def _canonical_path_identity(path: Path, base_directory: Path) -> str:
+    """Return one POSIX path identity independent of the checkout's absolute root."""
+    relative = Path(os.path.relpath(path.resolve(), base_directory.resolve()))
+    return relative.as_posix()
 
 
 def _network_selection_governed_paths(council: AreaConfig) -> tuple[Path, ...]:
