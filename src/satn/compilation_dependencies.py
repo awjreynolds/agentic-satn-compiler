@@ -1,9 +1,10 @@
 """Explicit fail-closed identity for code that can change a compiled network.
 
-The compiler identity deliberately has two small, reviewable inputs:
+The compiler identity deliberately has two small, reviewable inputs selected
+for the configured execution:
 
-* SATN package files whose execution can change ``CompiledNetwork``; and
-* installed runtime distributions that those files execute through.
+* SATN package files whose active path can change ``CompiledNetwork``; and
+* installed runtime distributions that active path executes through.
 
 Publication, deployment and Pages code intentionally do not participate in
 this identity.  They validate, present or package a compiled network.  Their
@@ -19,14 +20,19 @@ import re
 from collections.abc import Mapping
 from importlib import metadata
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final, Literal
 
-MANIFEST_SCHEMA_VERSION: Final = "satn-compilation-dependency-manifest/v2"
-DEPENDENCY_SET_VERSION: Final = "satn-compiled-network/v2"
+if TYPE_CHECKING:
+    from satn.models import AreaConfig
+
+CompilerPath = Literal["network", "reference", "strategic-reference"]
+
+MANIFEST_SCHEMA_VERSION: Final = "satn-compilation-dependency-manifest/v3"
+DEPENDENCY_SET_VERSION: Final = "satn-compiled-network/v3"
 PACKAGE_LABEL: Final = "satn"
 
-# The tuple is (kind, reason).  Keep this list intentionally flat and explicit:
-# it is the review surface for a change that can alter CompiledNetwork output.
+# The tuple is (kind, reason). Keep this complete registry explicit: it is the
+# review surface for a change that can alter CompiledNetwork output.
 # Labels are relative to the installed ``satn`` package, never a checkout's
 # ``src/satn`` path, so an installed wheel and an editable installation agree.
 COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
@@ -98,6 +104,32 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
     "satn/urban_school.py": ("module", "urban school access derivation"),
 }
 
+# Optional bundles remain classified and audited even when they cannot affect a
+# configured compiler path. New adapters must be added here or to the core set;
+# the complete package registry still rejects every unclassified file.
+OPTIONAL_COMPONENT_GROUPS: Final[dict[str, frozenset[str]]] = {
+    "atm-comparison": frozenset({"satn/atm.py"}),
+    "elevation-source": frozenset({"satn/ea_elevation.py"}),
+    "network-selection": frozenset(
+        {
+            "satn/alignment_selection.py",
+            "satn/existing_alignment.py",
+            "satn/network_selection.py",
+            "satn/population_reach.py",
+            "satn/psa_evidence_loaders.py",
+            "satn/spine_access_candidate_preparation.py",
+            "satn/strategic_corridors.py",
+        }
+    ),
+    "strategic-reference": frozenset({"satn/strategic_reference_replay.py"}),
+}
+_OPTIONAL_COMPONENT_PATHS: Final = frozenset().union(
+    *OPTIONAL_COMPONENT_GROUPS.values()
+)
+CORE_COMPILATION_COMPONENTS: Final = frozenset(COMPILATION_COMPONENTS).difference(
+    _OPTIONAL_COMPONENT_PATHS
+)
+
 # These paths are controlled SATN package files, but are intentionally excluded
 # because they cannot alter CompiledNetwork output.  Reasons are part of the
 # reviewable registry; their bytes are deliberately not compiler digest inputs.
@@ -162,6 +194,17 @@ COMPILER_RUNTIME_DISTRIBUTIONS: Final[dict[str, str]] = {
     "PyYAML": "Area Definition YAML parsing",
     "shapely": "geometry construction and spatial operations",
 }
+
+OPTIONAL_RUNTIME_DISTRIBUTION_GROUPS: Final[dict[str, frozenset[str]]] = {
+    "direct-agent-runtime": frozenset({"httpx", "openai", "pydantic-ai-slim"}),
+    "osm-source": frozenset({"osmnx"}),
+}
+_OPTIONAL_RUNTIME_DISTRIBUTIONS: Final = frozenset().union(
+    *OPTIONAL_RUNTIME_DISTRIBUTION_GROUPS.values()
+)
+CORE_RUNTIME_DISTRIBUTIONS: Final = frozenset(COMPILER_RUNTIME_DISTRIBUTIONS).difference(
+    _OPTIONAL_RUNTIME_DISTRIBUTIONS
+)
 
 _TEXT_SUFFIXES: Final = frozenset({".css", ".html", ".js", ".py", ".txt"})
 _NON_CONTROLLED_FILENAMES: Final = frozenset({".DS_Store"})
@@ -294,11 +337,61 @@ def _component_path(package_root: Path, label: str) -> Path:
     return path
 
 
-def _runtime_component_records() -> list[dict[str, str]]:
+def _active_dependency_groups(
+    config: AreaConfig | None,
+    compiler_path: CompilerPath,
+) -> set[str]:
+    """Resolve conservative optional bundles from one configured execution."""
+
+    if compiler_path not in {"network", "reference", "strategic-reference"}:
+        raise ValueError(f"unsupported compiler dependency path: {compiler_path}")
+    if config is None:
+        return {
+            *OPTIONAL_COMPONENT_GROUPS,
+            *OPTIONAL_RUNTIME_DISTRIBUTION_GROUPS,
+        }
+    groups: set[str] = set()
+    if config.atm.enabled:
+        groups.add("atm-comparison")
+    if config.source.national_elevation is not None:
+        groups.add("elevation-source")
+    if config.compilation.network_selection is not None:
+        groups.add("network-selection")
+    if compiler_path == "strategic-reference":
+        groups.add("strategic-reference")
+    if (
+        config.compilation.agent.response_mode == "direct-runtime"
+        and config.compilation.agent.review_statuses
+        and config.compilation.agent.provider != "fake"
+    ):
+        groups.add("direct-agent-runtime")
+    if config.source.kind == "osm":
+        groups.add("osm-source")
+    return groups
+
+
+def _selected_component_paths(active_groups: set[str]) -> set[str]:
+    selected = set(CORE_COMPILATION_COMPONENTS)
+    for group in active_groups:
+        selected.update(OPTIONAL_COMPONENT_GROUPS.get(group, ()))
+    return selected
+
+
+def _selected_runtime_distributions(active_groups: set[str]) -> set[str]:
+    selected = set(CORE_RUNTIME_DISTRIBUTIONS)
+    for group in active_groups:
+        selected.update(OPTIONAL_RUNTIME_DISTRIBUTION_GROUPS.get(group, ()))
+    return selected
+
+
+def _runtime_component_records(
+    selected_distributions: set[str],
+) -> list[dict[str, str]]:
     """Return the canonical installed-runtime projection used in the manifest."""
     labels: set[str] = set()
     records: list[dict[str, str]] = []
-    for distribution, reason in COMPILER_RUNTIME_DISTRIBUTIONS.items():
+    for distribution in sorted(selected_distributions):
+        reason = COMPILER_RUNTIME_DISTRIBUTIONS[distribution]
         canonical_name = _canonical_distribution_name(distribution)
         label = f"runtime-distribution/{canonical_name}"
         if label in labels:
@@ -320,7 +413,9 @@ def _runtime_component_records() -> list[dict[str, str]]:
 
 
 def compilation_dependency_manifest(
+    config: AreaConfig | None = None,
     *,
+    compiler_path: CompilerPath = "network",
     package_root: Path | None = None,
     components: Mapping[str, tuple[str, str]] | None = None,
     excluded: Mapping[str, str] | None = None,
@@ -329,7 +424,8 @@ def compilation_dependency_manifest(
 
     ``package_root`` and registry arguments exist for deterministic tests.  The
     normal compiler always discovers files beside this installed module and
-    versions from installed distribution metadata.
+    versions from installed distribution metadata. Omitting ``config`` returns
+    the complete registry projection for audits and compatibility tooling.
     """
     root = (package_root or _package_root()).resolve()
     compilation = dict(COMPILATION_COMPONENTS if components is None else components)
@@ -340,7 +436,15 @@ def compilation_dependency_manifest(
         compilation=compilation,
         excluded=exclusions,
     )
-    component_records = _runtime_component_records()
+    active_groups = _active_dependency_groups(config, compiler_path)
+    selected_paths = _selected_component_paths(active_groups)
+    if config is None:
+        selected_paths = set(compilation)
+    selected_paths.intersection_update(compilation)
+    selected_distributions = _selected_runtime_distributions(active_groups)
+    if config is None:
+        selected_distributions = set(COMPILER_RUNTIME_DISTRIBUTIONS)
+    component_records = _runtime_component_records(selected_distributions)
     component_records.extend(
         {
             "path": label,
@@ -350,14 +454,49 @@ def compilation_dependency_manifest(
                 _normalized_component_bytes(_component_path(root, label))
             ).hexdigest(),
         }
-        for label in sorted(compilation)
+        for label in sorted(selected_paths)
     )
     component_records.sort(key=lambda component: component["path"])
+    selection = {
+        "compiler_path": compiler_path,
+        "configuration_sensitive": config is not None,
+        "active_groups": ["core", *sorted(active_groups)],
+        "component_paths": [
+            str(component["path"]) for component in component_records
+        ],
+    }
     digest_payload = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "dependency_set_version": DEPENDENCY_SET_VERSION,
+        "selection": selection,
         "components": component_records,
     }
+    inactive_components = [
+        {
+            "path": path,
+            "groups": sorted(
+                group
+                for group, paths in OPTIONAL_COMPONENT_GROUPS.items()
+                if path in paths
+            ),
+            "reason": "registered optional compiler bundle is inactive",
+        }
+        for path in sorted(set(compilation).difference(selected_paths))
+    ]
+    inactive_components.extend(
+        {
+            "path": f"runtime-distribution/{_canonical_distribution_name(distribution)}",
+            "groups": sorted(
+                group
+                for group, distributions in OPTIONAL_RUNTIME_DISTRIBUTION_GROUPS.items()
+                if distribution in distributions
+            ),
+            "reason": "registered optional runtime bundle is inactive",
+        }
+        for distribution in sorted(
+            set(COMPILER_RUNTIME_DISTRIBUTIONS).difference(selected_distributions)
+        )
+    )
     return {
         **digest_payload,
         "sha256": hashlib.sha256(
@@ -366,4 +505,95 @@ def compilation_dependency_manifest(
         "excluded_components": [
             {"path": path, "reason": exclusions[path]} for path in sorted(exclusions)
         ],
+        "inactive_components": inactive_components,
     }
+
+
+def validate_compilation_dependency_manifest(
+    manifest: Mapping[str, object],
+) -> dict[str, object]:
+    """Validate one self-contained current manifest without resolving a config again.
+
+    Publication records carry the exact compiler-path projection used for that
+    compilation.  Their validation can therefore verify schema, canonical
+    selection structure and digest integrity, but must not replace the recorded
+    projection with a new default-path manifest.
+    """
+
+    selection = manifest.get("selection")
+    components = manifest.get("components")
+    if (
+        manifest.get("schema_version") != MANIFEST_SCHEMA_VERSION
+        or manifest.get("dependency_set_version") != DEPENDENCY_SET_VERSION
+        or not isinstance(selection, dict)
+        or not isinstance(components, list)
+    ):
+        raise ValueError("compilation dependency manifest schema is unsupported")
+
+    compiler_path = selection.get("compiler_path")
+    configuration_sensitive = selection.get("configuration_sensitive")
+    active_groups = selection.get("active_groups")
+    component_paths = selection.get("component_paths")
+    allowed_groups = {
+        "core",
+        *OPTIONAL_COMPONENT_GROUPS,
+        *OPTIONAL_RUNTIME_DISTRIBUTION_GROUPS,
+    }
+    if (
+        compiler_path not in {"network", "reference", "strategic-reference"}
+        or not isinstance(configuration_sensitive, bool)
+        or not isinstance(active_groups, list)
+        or not active_groups
+        or active_groups[0] != "core"
+        or any(not isinstance(group, str) for group in active_groups)
+        or active_groups != ["core", *sorted(active_groups[1:])]
+        or len(active_groups) != len(set(active_groups))
+        or not set(active_groups).issubset(allowed_groups)
+        or not isinstance(component_paths, list)
+        or any(not isinstance(path, str) for path in component_paths)
+    ):
+        raise ValueError("compilation dependency manifest selection is malformed")
+
+    record_paths: list[str] = []
+    for component in components:
+        if not isinstance(component, dict):
+            raise ValueError("compilation dependency manifest component is malformed")
+        path = component.get("path")
+        kind = component.get("kind")
+        reason = component.get("reason")
+        sha256 = component.get("sha256")
+        if (
+            not isinstance(path, str)
+            or not isinstance(kind, str)
+            or not kind
+            or not isinstance(reason, str)
+            or not reason
+            or not isinstance(sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", sha256) is None
+        ):
+            raise ValueError("compilation dependency manifest component is malformed")
+        if kind == "runtime-distribution" and not isinstance(
+            component.get("version"), str
+        ):
+            raise ValueError("compilation dependency manifest runtime is malformed")
+        record_paths.append(path)
+
+    if (
+        record_paths != sorted(record_paths)
+        or len(record_paths) != len(set(record_paths))
+        or component_paths != record_paths
+    ):
+        raise ValueError("compilation dependency manifest selection is stale")
+
+    digest_payload = {
+        "schema_version": manifest["schema_version"],
+        "dependency_set_version": manifest["dependency_set_version"],
+        "selection": selection,
+        "components": components,
+    }
+    expected = hashlib.sha256(
+        json.dumps(digest_payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    if manifest.get("sha256") != expected:
+        raise ValueError("compilation dependency manifest digest is stale")
+    return dict(manifest)

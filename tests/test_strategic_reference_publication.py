@@ -17,6 +17,7 @@ from test_strategic_reference_application import _resolved_reference_inputs
 from satn import compile
 from satn import compile_strategic_reference as public_compile_strategic_reference
 from satn.agents import FakeAgentRuntime
+from satn.compilation_dependencies import compilation_dependency_manifest
 from satn.pipeline import compile_strategic_reference, compile_strategic_reference_network
 from satn.publisher import (
     _strategic_candidate_evidence_html,
@@ -146,7 +147,7 @@ def _record_inputs(tmp_path):
         "snapshot_manifest_sha256": sha,
         "compilation_input_fingerprint": sha,
         "governed_input_fingerprint": sha,
-        "compilation_dependency_manifest": {"contract": "test"},
+        "compilation_dependency_manifest": compilation_dependency_manifest(),
         "decision_contract": "agent-decision-menu/v1",
         "decision_ledger_input": {"responses": []},
         "accepted_decisions": [],

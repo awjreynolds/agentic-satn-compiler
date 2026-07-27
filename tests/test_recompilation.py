@@ -61,7 +61,7 @@ def test_compiler_run_records_current_dependency_manifest_and_reuses_it(tmp_path
     run = json.loads(first.artifacts["run"].read_text())
     second = compile(config)
 
-    assert run["compilation_dependency_manifest"] == compilation_dependency_manifest()
+    assert run["compilation_dependency_manifest"] == compilation_dependency_manifest(config)
     assert second.metadata["publication_reused"] is True
 
 
