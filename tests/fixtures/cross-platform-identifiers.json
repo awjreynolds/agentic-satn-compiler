@@ -1,0 +1,204 @@
+{
+  "access_connections": [
+    {
+      "access_connection_id": "spine-access-1476f26f97eb",
+      "branch_id": "spine-access-branch-1fca325cdc90",
+      "parent_access_connection_id": null,
+      "parent_branch_id": null,
+      "provenance": {
+        "access_connection_id": "spine-access-1476f26f97eb",
+        "branch_id": "spine-access-branch-1fca325cdc90",
+        "obligation_kind": "community",
+        "parent_access_connection_id": null,
+        "parent_branch_id": null,
+        "parent_place_id": null,
+        "parent_role": "strategic-spine",
+        "parent_target_id": "strategic-spine-5140e43a389d",
+        "parent_target_name": "A1",
+        "place_id": "left-near",
+        "root_evidence_id": "strategic-spine-evidence-43b76ca0b781",
+        "root_source_id": "strategic-spine-sources-7023563c3d64",
+        "root_spine_id": "strategic-spine-5140e43a389d",
+        "source_ids": [
+          "left-feed",
+          "strategic-spine-evidence-43b76ca0b781",
+          "strategic-spine-sources-7023563c3d64"
+        ]
+      },
+      "root_spine_id": "strategic-spine-5140e43a389d"
+    },
+    {
+      "access_connection_id": "spine-access-4cd2e75b4972",
+      "branch_id": "spine-access-branch-1fca325cdc90",
+      "parent_access_connection_id": "spine-access-1476f26f97eb",
+      "parent_branch_id": "spine-access-branch-1fca325cdc90",
+      "provenance": {
+        "access_connection_id": "spine-access-4cd2e75b4972",
+        "branch_id": "spine-access-branch-1fca325cdc90",
+        "obligation_kind": "community",
+        "parent_access_connection_id": "spine-access-1476f26f97eb",
+        "parent_branch_id": "spine-access-branch-1fca325cdc90",
+        "parent_place_id": "left-near",
+        "parent_role": "spine-access-connection",
+        "parent_target_id": "spine-access-1476f26f97eb",
+        "parent_target_name": "Left Near",
+        "place_id": "hinterland",
+        "root_evidence_id": "strategic-spine-evidence-43b76ca0b781",
+        "root_source_id": "strategic-spine-sources-7023563c3d64",
+        "root_spine_id": "strategic-spine-5140e43a389d",
+        "source_ids": [
+          "hinterland-feed",
+          "strategic-spine-evidence-43b76ca0b781",
+          "strategic-spine-sources-7023563c3d64"
+        ]
+      },
+      "root_spine_id": "strategic-spine-5140e43a389d"
+    },
+    {
+      "access_connection_id": "spine-access-9378862e972b",
+      "branch_id": "spine-access-branch-2bc4146e7df9",
+      "parent_access_connection_id": null,
+      "parent_branch_id": null,
+      "provenance": {
+        "access_connection_id": "spine-access-9378862e972b",
+        "branch_id": "spine-access-branch-2bc4146e7df9",
+        "obligation_kind": "community",
+        "parent_access_connection_id": null,
+        "parent_branch_id": null,
+        "parent_place_id": null,
+        "parent_role": "strategic-spine",
+        "parent_target_id": "strategic-spine-3a83e21e8a5c",
+        "parent_target_name": "A2",
+        "place_id": "right-near",
+        "root_evidence_id": "strategic-spine-evidence-cfdf45c2a36c",
+        "root_source_id": "strategic-spine-sources-e03825e2f853",
+        "root_spine_id": "strategic-spine-3a83e21e8a5c",
+        "source_ids": [
+          "right-feed",
+          "strategic-spine-evidence-cfdf45c2a36c",
+          "strategic-spine-sources-e03825e2f853"
+        ]
+      },
+      "root_spine_id": "strategic-spine-3a83e21e8a5c"
+    }
+  ],
+  "branch_meetings": [
+    {
+      "from_branch_id": "spine-access-branch-2bc4146e7df9",
+      "from_place_id": "right-near",
+      "from_root_spine_id": "strategic-spine-3a83e21e8a5c",
+      "meeting_connection_id": "branch-meeting-873c1d275a5f",
+      "provenance": {
+        "from_branch_id": "spine-access-branch-2bc4146e7df9",
+        "from_place_id": "right-near",
+        "from_root_spine_id": "strategic-spine-3a83e21e8a5c",
+        "meeting_connection_id": "branch-meeting-873c1d275a5f",
+        "source_ids": [
+          "middle-feed"
+        ],
+        "to_branch_id": "spine-access-branch-1fca325cdc90",
+        "to_place_id": "hinterland",
+        "to_root_spine_id": "strategic-spine-5140e43a389d"
+      },
+      "to_branch_id": "spine-access-branch-1fca325cdc90",
+      "to_place_id": "hinterland",
+      "to_root_spine_id": "strategic-spine-5140e43a389d"
+    }
+  ],
+  "cross_spine_connectors": [
+    {
+      "branch_ids": [
+        "spine-access-branch-1fca325cdc90",
+        "spine-access-branch-2bc4146e7df9"
+      ],
+      "connection_ids": [
+        "branch-meeting-873c1d275a5f",
+        "spine-access-1476f26f97eb",
+        "spine-access-4cd2e75b4972",
+        "spine-access-9378862e972b"
+      ],
+      "cross_spine_connector_id": "cross-spine-connector-4f8167304315",
+      "from_root_spine_id": "strategic-spine-3a83e21e8a5c",
+      "meeting_connection_id": "branch-meeting-873c1d275a5f",
+      "provenance": {
+        "branch_ids": [
+          "spine-access-branch-1fca325cdc90",
+          "spine-access-branch-2bc4146e7df9"
+        ],
+        "community_ids": [
+          "hinterland",
+          "left-near",
+          "right-near"
+        ],
+        "connection_ids": [
+          "branch-meeting-873c1d275a5f",
+          "spine-access-1476f26f97eb",
+          "spine-access-4cd2e75b4972",
+          "spine-access-9378862e972b"
+        ],
+        "cross_spine_connector_id": "cross-spine-connector-4f8167304315",
+        "meeting_connection_id": "branch-meeting-873c1d275a5f",
+        "named_root_traversal": {
+          "from_root_distance_m": 0.0,
+          "from_root_spine_id": "strategic-spine-3a83e21e8a5c",
+          "noded_segment_count": 1,
+          "pruned_segment_count": 0,
+          "selected_segment_count": 1,
+          "to_root_distance_m": 0.0,
+          "to_root_spine_id": "strategic-spine-5140e43a389d"
+        },
+        "source_ids": [
+          "hinterland-feed",
+          "left-feed",
+          "middle-feed",
+          "right-feed",
+          "strategic-spine-evidence-43b76ca0b781",
+          "strategic-spine-evidence-cfdf45c2a36c",
+          "strategic-spine-sources-7023563c3d64",
+          "strategic-spine-sources-e03825e2f853"
+        ]
+      },
+      "to_root_spine_id": "strategic-spine-5140e43a389d"
+    }
+  ],
+  "strategic_spines": [
+    {
+      "evidence_id": "strategic-spine-evidence-cfdf45c2a36c",
+      "provenance": {
+        "canonical_geometry_contract": "satn-network-geometry-v1",
+        "canonical_geometry_sha256": "0ac9acc0254dc245c06f02cc0dcad04b1d29afcd31e0a08e66722898b47eb3e8",
+        "evidence_id": "strategic-spine-evidence-cfdf45c2a36c",
+        "evidence_ids": [
+          "right-a2"
+        ],
+        "network_scope": "rural",
+        "source_feature_type": "a-road-spine",
+        "source_id": "strategic-spine-sources-e03825e2f853",
+        "source_ids": [
+          "right-spine-edge"
+        ]
+      },
+      "source_id": "strategic-spine-sources-e03825e2f853",
+      "spine_id": "strategic-spine-3a83e21e8a5c"
+    },
+    {
+      "evidence_id": "strategic-spine-evidence-43b76ca0b781",
+      "provenance": {
+        "canonical_geometry_contract": "satn-network-geometry-v1",
+        "canonical_geometry_sha256": "0dfb22180aabd83369155b6691dcf5a33092753bbf47f51eb8d72d3443c1a16a",
+        "evidence_id": "strategic-spine-evidence-43b76ca0b781",
+        "evidence_ids": [
+          "left-a1"
+        ],
+        "network_scope": "rural",
+        "source_feature_type": "a-road-spine",
+        "source_id": "strategic-spine-sources-7023563c3d64",
+        "source_ids": [
+          "left-spine-edge"
+        ]
+      },
+      "source_id": "strategic-spine-sources-7023563c3d64",
+      "spine_id": "strategic-spine-5140e43a389d"
+    }
+  ]
+}

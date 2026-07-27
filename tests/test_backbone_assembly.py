@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import geopandas as gpd
 import networkx as nx
+import pandas as pd
 import pytest
 from geopandas.testing import assert_geodataframe_equal
 from shapely.geometry import LineString, Point, Polygon
@@ -515,6 +516,177 @@ def governed_semantic_snapshot(compiled: object) -> dict[str, list[dict[str, obj
             key=lambda item: repr(item),
         ),
     }
+
+
+def governed_identity_snapshot(compiled: object) -> dict[str, list[dict[str, object]]]:
+    """Capture the exact portable identifier and provenance contract."""
+
+    return {
+        "strategic_spines": sorted(
+            [
+                {
+                    "spine_id": row.spine_id,
+                    "evidence_id": row.evidence_id,
+                    "source_id": row.source_id,
+                    "provenance": json.loads(row.provenance),
+                }
+                for row in compiled.strategic_spines.itertuples()
+            ],
+            key=lambda item: str(item["spine_id"]),
+        ),
+        "access_connections": sorted(
+            [
+                {
+                    "access_connection_id": row.access_connection_id,
+                    "root_spine_id": row.root_spine_id,
+                    "branch_id": row.branch_id,
+                    "parent_branch_id": _fixture_optional(row.parent_branch_id),
+                    "parent_access_connection_id": _fixture_optional(
+                        row.parent_access_connection_id
+                    ),
+                    "provenance": json.loads(row.provenance),
+                }
+                for row in compiled.spine_access_connections.itertuples()
+            ],
+            key=lambda item: str(item["access_connection_id"]),
+        ),
+        "branch_meetings": sorted(
+            [
+                {
+                    "meeting_connection_id": row.meeting_connection_id,
+                    "from_place_id": row.from_place_id,
+                    "to_place_id": row.to_place_id,
+                    "from_branch_id": row.from_branch_id,
+                    "to_branch_id": row.to_branch_id,
+                    "from_root_spine_id": row.from_root_spine_id,
+                    "to_root_spine_id": row.to_root_spine_id,
+                    "provenance": json.loads(row.provenance),
+                }
+                for row in compiled.branch_meeting_connections.itertuples()
+            ],
+            key=lambda item: str(item["meeting_connection_id"]),
+        ),
+        "cross_spine_connectors": sorted(
+            [
+                {
+                    "cross_spine_connector_id": row.cross_spine_connector_id,
+                    "meeting_connection_id": row.meeting_connection_id,
+                    "from_root_spine_id": row.from_root_spine_id,
+                    "to_root_spine_id": row.to_root_spine_id,
+                    "branch_ids": json.loads(row.branch_ids),
+                    "connection_ids": json.loads(row.connection_ids),
+                    "provenance": json.loads(row.provenance),
+                }
+                for row in compiled.cross_spine_connectors.itertuples()
+            ],
+            key=lambda item: str(item["cross_spine_connector_id"]),
+        ),
+    }
+
+
+def test_cross_platform_identifier_and_provenance_fixture_is_exact() -> None:
+    expected = json.loads(
+        (PROJECT / "tests" / "fixtures" / "cross-platform-identifiers.json").read_text()
+    )
+    first = compile_network(config(), parallel_spine_source(), FakeAgentRuntime())
+    repeated = compile_network(config(), parallel_spine_source(), FakeAgentRuntime())
+    reordered = compile_network(
+        config(),
+        parallel_spine_source(reverse=True),
+        FakeAgentRuntime(),
+    )
+
+    assert governed_identity_snapshot(first) == expected
+    assert governed_identity_snapshot(repeated) == expected
+    assert governed_identity_snapshot(reordered) == expected
+
+
+def test_meeting_identity_and_provenance_ignore_candidate_traversal_orientation() -> None:
+    root_a = pd.Series(
+        {
+            "root_spine_id": "root-a",
+            "branch_id": "branch-a",
+            "place_id": "place-a",
+            "place_name": "Place A",
+        }
+    )
+    root_b = pd.Series(
+        {
+            "root_spine_id": "root-b",
+            "branch_id": "branch-b",
+            "place_id": "place-b",
+            "place_name": "Place B",
+        }
+    )
+
+    def candidate(
+        left: pd.Series,
+        right: pd.Series,
+        coordinates: list[tuple[float, float]],
+        start_node: str,
+        end_node: str,
+    ) -> object:
+        option = RouteOption(
+            role="direct",
+            geometry=LineString(coordinates),
+            length_km=1.0,
+            edge_ids=["middle-edge"],
+            a_road_share=0.0,
+            ncn_share=0.0,
+            bidirectional=True,
+            reverse_length_km=1.0,
+            reverse_edge_ids=["middle-edge"],
+            reverse_corridor_share=1.0,
+            impracticable_alongside=False,
+        )
+        return backbone_module._MeetingCandidate(
+            rank=(),
+            left=left,
+            right=right,
+            option=option,
+            options=(option,),
+            topography=None,
+            start_node=start_node,
+            end_node=end_node,
+            excluded_pairs=frozenset(),
+        )
+
+    from_b = backbone_module._meeting_row(
+        candidate(root_b, root_a, [(1, 0), (0, 0)], "node-b", "node-a"),
+        max_connection_km=5.0,
+    )
+    from_a = backbone_module._meeting_row(
+        candidate(root_a, root_b, [(0, 0), (1, 0)], "node-a", "node-b"),
+        max_connection_km=5.0,
+    )
+
+    for field in (
+        "meeting_connection_id",
+        "from_place_id",
+        "to_place_id",
+        "from_branch_id",
+        "to_branch_id",
+        "from_root_spine_id",
+        "to_root_spine_id",
+        "from_attachment_node",
+        "to_attachment_node",
+        "provenance",
+    ):
+        assert from_b[field] == from_a[field]
+    assert from_b["geometry"].wkb_hex == from_a["geometry"].wkb_hex
+
+
+def test_strategic_spine_identifier_collisions_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        compiler_module,
+        "_stable_role_id",
+        lambda prefix, *_parts: f"{prefix}-collision",
+    )
+
+    with pytest.raises(ValueError, match="canonical identifier collision"):
+        compiler_module._strategic_spines(parallel_spine_source()["context"])
 
 
 def assert_same_runtime_governed_frame_equal(

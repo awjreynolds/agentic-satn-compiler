@@ -13,11 +13,15 @@ from dataclasses import dataclass, field, replace
 import geopandas as gpd
 import networkx as nx
 import pandas as pd
-from shapely.geometry import MultiPoint, Point
+from shapely.geometry import LineString, MultiPoint, Point
 from shapely.ops import nearest_points
 
 from satn.agents import CompilationGate
 from satn.alignment_selection import CanonicalLineString
+from satn.content_identity import (
+    canonical_network_geometry_fingerprint,
+    canonical_undirected_pair,
+)
 from satn.identifiers import stable_id as _stable_id
 from satn.models import (
     ACCESS_OBLIGATION_COLUMNS,
@@ -1711,7 +1715,9 @@ def _direct_school_candidate(
         _, projected_attachment = nearest_points(projected_school, frontier.projected_geometry)
         attachment = gpd.GeoSeries([projected_attachment], crs=27700).to_crs(graph.crs).iloc[0]
         virtual_node = _stable_id(
-            "school-frontier-attachment", frontier.target_id, attachment.wkb_hex
+            "school-frontier-attachment",
+            frontier.target_id,
+            canonical_network_geometry_fingerprint(attachment, graph.crs),
         )
         if (virtual_node, virtual_node) not in excluded_pairs:
             nearby.append((distance_m, frontier, attachment, virtual_node))
@@ -2658,20 +2664,58 @@ def _meeting_row(
 ) -> dict[str, object]:
     left = candidate.left
     right = candidate.right
+    left_endpoint = (
+        str(left["root_spine_id"]),
+        str(left["branch_id"]),
+        str(left["place_id"]),
+    )
+    right_endpoint = (
+        str(right["root_spine_id"]),
+        str(right["branch_id"]),
+        str(right["place_id"]),
+    )
+    canonical_left, _canonical_right = canonical_undirected_pair(
+        left_endpoint,
+        right_endpoint,
+    )
+    reversed_orientation = left_endpoint != canonical_left
+    if reversed_orientation:
+        left, right = right, left
     left_root = str(left["root_spine_id"])
     right_root = str(right["root_spine_id"])
     left_place = str(left["place_id"])
     right_place = str(right["place_id"])
-    meeting_id = _stable_id("branch-meeting", left_root, right_root, left_place, right_place)
+    left_branch = str(left["branch_id"])
+    right_branch = str(right["branch_id"])
+    meeting_id = _stable_id(
+        "branch-meeting",
+        left_root,
+        left_branch,
+        left_place,
+        right_root,
+        right_branch,
+        right_place,
+    )
     source_ids = sorted({*candidate.option.edge_ids, *candidate.option.reverse_edge_ids})
     route_length_km = candidate.option.length_km
     distance_km = round(route_length_km, 3)
+    geometry = (
+        LineString(list(candidate.option.geometry.coords)[::-1])
+        if reversed_orientation
+        else candidate.option.geometry
+    )
+    from_attachment_node = (
+        candidate.end_node if reversed_orientation else candidate.start_node
+    )
+    to_attachment_node = (
+        candidate.start_node if reversed_orientation else candidate.end_node
+    )
     provenance = {
         "meeting_connection_id": meeting_id,
         "from_place_id": left_place,
         "to_place_id": right_place,
-        "from_branch_id": str(left["branch_id"]),
-        "to_branch_id": str(right["branch_id"]),
+        "from_branch_id": left_branch,
+        "to_branch_id": right_branch,
         "from_root_spine_id": left_root,
         "to_root_spine_id": right_root,
         "source_ids": source_ids,
@@ -2684,8 +2728,8 @@ def _meeting_row(
         "from_place_name": left["place_name"],
         "to_place_id": right_place,
         "to_place_name": right["place_name"],
-        "from_branch_id": left["branch_id"],
-        "to_branch_id": right["branch_id"],
+        "from_branch_id": left_branch,
+        "to_branch_id": right_branch,
         "from_root_spine_id": left_root,
         "to_root_spine_id": right_root,
         "distance_km": distance_km,
@@ -2706,8 +2750,8 @@ def _meeting_row(
             "routed OSM network alignment joining two served Community attachment nodes; "
             "not a general pairwise link or final design"
         ),
-        "from_attachment_node": candidate.start_node,
-        "to_attachment_node": candidate.end_node,
+        "from_attachment_node": from_attachment_node,
+        "to_attachment_node": to_attachment_node,
         "source_ids": json.dumps(source_ids),
         "provenance": json.dumps(provenance, sort_keys=True),
         "criterion_continuity": "green",
@@ -2719,7 +2763,7 @@ def _meeting_row(
             candidate.options,
             publish_alignment_options=True,
         ),
-        "geometry": candidate.option.geometry,
+        "geometry": geometry,
     }
 
 
