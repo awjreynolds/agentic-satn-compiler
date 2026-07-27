@@ -713,7 +713,8 @@ def _validate_criterion_sources(
     criterion_source = criterion.education.assessment.source_snapshot
     if (
         education_binding.source_content_sha256
-        != criterion_source.source_content_fingerprint
+        != criterion.education.governed_binding
+        .full_source_governed_fingerprint
     ):
         raise ValueError("education-access criterion source is foreign or stale")
     _validate_education_source_extension(education_source, criterion_source)

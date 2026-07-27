@@ -143,6 +143,47 @@ class PreparedStrategicUnitCriteria:
         expected_role = candidate_set.network_role
         if expected_role is not self.unit_role.network_role:
             raise ValueError("strategic criterion role is stale for its Candidate Set")
+        if isinstance(self.criteria, CandidateCriteria):
+            education_lineage = self.preparation_lineage.evidence_lineage.get(
+                "education"
+            )
+            if not isinstance(education_lineage, Mapping):
+                raise ValueError(
+                    "strategic criterion education preparation lineage is malformed"
+                )
+            governed_source = education_lineage.get(
+                "governed_source_fingerprint"
+            )
+            governed_binding = self.criteria.education.governed_binding
+            expected_input = _fingerprint(
+                {
+                    "schema": (
+                        "satn-governed-education-assessment-binding/v3"
+                    ),
+                    "governed_source_fingerprint": governed_source,
+                    "scope": {
+                        "school_ids": list(governed_binding.school_ids),
+                        "strategic_destination_ids": list(
+                            governed_binding.strategic_destination_ids
+                        ),
+                    },
+                    "assessment_content_sha256": (
+                        governed_binding.assessment_content_sha256
+                    ),
+                }
+            )
+            if (
+                not isinstance(governed_source, str)
+                or _SHA256.fullmatch(governed_source) is None
+                or governed_binding.full_source_governed_fingerprint
+                != governed_source
+                or governed_binding.governed_input_fingerprint
+                != expected_input
+            ):
+                raise ValueError(
+                    "strategic criterion education source is foreign to "
+                    "preparation lineage"
+                )
 
 
 @dataclass(frozen=True)

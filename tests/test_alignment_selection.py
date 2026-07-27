@@ -33,6 +33,7 @@ from satn.alignment_selection import (
     EducationCriterionSummary,
     ExistingAlignmentCriterionSummary,
     GovernedAssessmentBinding,
+    GovernedEducationCriterionBinding,
     GovernedEvidenceSnapshot,
     GovernedReferenceSelectionDecision,
     MaterialGeometryEquivalenceProfile,
@@ -73,6 +74,8 @@ from satn.education_access import (
     School,
     SchoolAccessEvidence,
     SchoolRegisterEvidence,
+    StrategicEducationDestination,
+    StrategicEducationDestinationEvidence,
     assess_education_access,
 )
 from satn.existing_alignment import (
@@ -384,6 +387,63 @@ def compile_education(
     option_by_candidate = {
         item.candidate_id: education_option_id_for_candidate(item, admitted) for item in items
     }
+    register = SchoolRegisterEvidence(
+        evidence_id="school-register",
+        source_name="test register",
+        as_of=AS_OF,
+    )
+    if admitted.network_role.value == "interurban-spine":
+        return assess_education_access(
+            register_evidence=register,
+            schools=(),
+            option_evidence=(),
+            option_ids=tuple(option_by_candidate.values()),
+        )
+    if admitted.network_role.value == "strategic-destination-access":
+        destinations = tuple(
+            StrategicEducationDestination(
+                record_id=f"admission-{destination_id}",
+                record_version="1.0",
+                strategic_destination_id=destination_id,
+                name=destination_id,
+                source_evidence_id="strategic-destination-register",
+                admitted_on=AS_OF,
+                rationale="configured-strategic-education-destination",
+                admission_evidence_ids=(
+                    f"admission-evidence-{destination_id}",
+                ),
+                review_trigger="governed-destination-record-changes",
+                access_evidence_ids=(
+                    f"access-evidence-{destination_id}",
+                ),
+            )
+            for destination_id in (
+                admitted.mandatory_strategic_destination_ids
+            )
+        )
+        destination_evidence = tuple(
+            StrategicEducationDestinationEvidence(
+                option_id=option_id,
+                strategic_destination_id=destination.strategic_destination_id,
+                connector_distance=MeasuredDistance(distance_m=120),
+                connector_continuity=ConnectorContinuity.CONTINUOUS,
+                access_point_status=AccessPointStatus.MAPPED,
+                destination_distance=MeasuredDistance(distance_m=900),
+                access_evidence_ids=destination.access_evidence_ids,
+                support_evidence_ids=(
+                    f"support-{destination.strategic_destination_id}",
+                ),
+            )
+            for option_id in option_by_candidate.values()
+            for destination in destinations
+        )
+        return assess_education_access(
+            register_evidence=register,
+            schools=(),
+            strategic_destinations=destinations,
+            option_evidence=destination_evidence,
+            option_ids=tuple(option_by_candidate.values()),
+        )
     completeness = completeness or {}
     ito = ito or {item.candidate_id: 1 for item in items}
     evidence = []
@@ -442,9 +502,7 @@ def compile_education(
             )
         )
     assessment = assess_education_access(
-        register_evidence=SchoolRegisterEvidence(
-            evidence_id="school-register", source_name="test register", as_of=AS_OF
-        ),
+        register_evidence=register,
         schools=(
             School(
                 school_id="secondary-school",
@@ -507,6 +565,40 @@ def criteria(
         completeness=completeness,
         ito=ito,
     )
+    education_content_sha256 = fingerprint(
+        education_assessment.model_dump(mode="json")
+    )
+    education_source_sha256 = digest("education-governed-source")
+    education_scope = {
+        "school_ids": [
+            item.school_id
+            for item in education_assessment.source_snapshot.schools
+        ],
+        "strategic_destination_ids": [
+            item.strategic_destination_id
+            for item in (
+                education_assessment.source_snapshot
+                .strategic_education_destinations
+            )
+        ],
+    }
+    education_governed_input = fingerprint(
+        {
+            "schema": "satn-governed-education-assessment-binding/v3",
+            "governed_source_fingerprint": education_source_sha256,
+            "scope": education_scope,
+            "assessment_content_sha256": education_content_sha256,
+        }
+    )
+    education_binding = GovernedEducationCriterionBinding(
+        school_ids=tuple(education_scope["school_ids"]),
+        strategic_destination_ids=tuple(
+            education_scope["strategic_destination_ids"]
+        ),
+        full_source_governed_fingerprint=education_source_sha256,
+        governed_input_fingerprint=education_governed_input,
+        assessment_content_sha256=education_content_sha256,
+    )
     bindings = [
         GovernedAssessmentBinding(
             kind=AssessmentKind.POPULATION_REACH,
@@ -518,9 +610,11 @@ def criteria(
         GovernedAssessmentBinding(
             kind=AssessmentKind.EDUCATION_ACCESS,
             assessment_id=education_assessment.assessment_id,
-            assessment_content_sha256=education_assessment.assessment_id,
-            source_content_sha256=(education_assessment.source_snapshot.source_content_fingerprint),
-            method_version="education-access/v1",
+            assessment_content_sha256=education_content_sha256,
+            source_content_sha256=education_source_sha256,
+            method_version=(
+                "satn-governed-full-education-assessment-binding/v3"
+            ),
         ),
         GovernedAssessmentBinding(
             kind=AssessmentKind.NETWORK_GEOMETRY,
@@ -563,6 +657,7 @@ def criteria(
             education_assessment,
             candidate_set=admitted,
             scenario_evidence_snapshot_fingerprint=snapshot.snapshot_fingerprint,
+            governed_binding=education_binding,
         ),
         existing_alignment=existing,
         directness=state_findings(

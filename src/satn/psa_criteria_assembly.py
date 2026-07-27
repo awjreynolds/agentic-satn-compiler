@@ -34,6 +34,7 @@ from satn.alignment_selection import (
     EducationCriterionSummary,
     ExistingAlignmentCriterionSummary,
     GovernedAssessmentBinding,
+    GovernedEducationCriterionBinding,
     GovernedEvidenceSnapshot,
     PopulationCriterionSummary,
     education_option_id_for_candidate,
@@ -406,17 +407,37 @@ def _assemble_connection(
             option_ids=tuple(sorted(expected_option_ids)),
             scope=education_scope,
         )
+        education_criterion_binding = GovernedEducationCriterionBinding(
+            school_ids=education.scope.school_ids,
+            strategic_destination_ids=(
+                education.scope.strategic_destination_ids
+            ),
+            full_source_governed_fingerprint=(
+                education.source_evidence.governed_source_fingerprint
+            ),
+            governed_input_fingerprint=(
+                education.governed_input_fingerprint
+            ),
+            assessment_content_sha256=(
+                education.assessment_content_sha256
+            ),
+        )
         snapshot = _snapshot(
             prepared,
             population_assessment_id=population.assessment.assessment_id,
             population_assessment_sha256=_fingerprint(population.assessment.canonical()),
             population_source_sha256=population.assessment.source.content_sha256,
             education_assessment_id=education.assessment.assessment_id,
-            # EducationCriterionSummary deliberately uses its canonical
-            # self-validating assessment ID as its content identity.
-            education_assessment_sha256=education.assessment.assessment_id,
+            education_assessment_sha256=(
+                education.assessment_content_sha256
+            ),
             education_source_sha256=(
-                education.assessment.source_snapshot.source_content_fingerprint
+                education.source_evidence.governed_source_fingerprint
+            ),
+            education_method_version=(
+                "satn-governed-education-assessment-binding/v3"
+                if education_scope is not None
+                else "satn-governed-full-education-assessment-binding/v3"
             ),
             existing_alignment=existing_alignment,
         )
@@ -436,6 +457,7 @@ def _assemble_connection(
             education.assessment,
             candidate_set=candidate_set,
             scenario_evidence_snapshot_fingerprint=snapshot.snapshot_fingerprint,
+            governed_binding=education_criterion_binding,
         )
         criterion = CandidateCriteria(
             evidence_snapshot=snapshot,
@@ -496,6 +518,7 @@ def _gap_criterion(
             }
         ),
         education_source_sha256=education_evidence.source_snapshot.source_content_fingerprint,
+        education_method_version="satn-education-access-assessment/v2",
         existing_alignment=None,
     )
     return CandidateSetGapEvidence(
@@ -524,6 +547,7 @@ def _snapshot(
     education_assessment_id: str,
     education_assessment_sha256: str,
     education_source_sha256: str,
+    education_method_version: str,
     existing_alignment: ExistingAlignmentCriterionSummary | None,
 ) -> GovernedEvidenceSnapshot:
     bindings = [
@@ -539,7 +563,7 @@ def _snapshot(
             assessment_id=education_assessment_id,
             assessment_content_sha256=education_assessment_sha256,
             source_content_sha256=education_source_sha256,
-            method_version="satn-education-access-assessment/v2",
+            method_version=education_method_version,
         ),
         GovernedAssessmentBinding(
             kind=AssessmentKind.NETWORK_GEOMETRY,

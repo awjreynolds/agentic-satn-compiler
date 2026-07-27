@@ -3,14 +3,25 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from bath_saltford_fixture import configured_bath_saltford
+from pydantic import ValidationError
 
 from satn.agents import FakeAgentRuntime
+from satn.alignment_selection import (
+    AssessmentKind,
+    CandidateCriteria,
+    EducationCriterionSummary,
+    GovernedAssessmentBinding,
+    GovernedEducationCriterionBinding,
+    GovernedEvidenceSnapshot,
+)
 from satn.compiler import compile_network
+from satn.education_access import assess_education_access
 from satn.evidence import mark_ncn_edges
 from satn.psa_evidence_loaders import (
     load_education_access_evidence,
@@ -23,6 +34,7 @@ from satn.strategic_corridors import (
     prepare_strategic_corridors,
 )
 from satn.strategic_criteria_scenario import (
+    PreparedStrategicUnitCriteria,
     StrategicCriteriaScenarioInput,
     compile_strategic_criteria_scenario,
 )
@@ -57,6 +69,18 @@ def _compiled_inputs(tmp_path: Path):
 def _area_fingerprint(source) -> str:
     return hashlib.sha256(
         b"".join(bytes(item.wkb) for item in source["boundary"].geometry)
+    ).hexdigest()
+
+
+def _canonical_sha256(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
     ).hexdigest()
 
 
@@ -183,6 +207,210 @@ def test_exact_governed_role_scope_offers_finite_candidate_actions(
         for packet in result.criteria
         for item in packet.criteria.education.completeness
     )
+
+
+def test_resealed_destination_criteria_cannot_erase_its_education_scope(
+    tmp_path: Path,
+) -> None:
+    _, source, compiled, population, education = _compiled_inputs(tmp_path)
+    preparation = compiled.strategic_corridor_preparation
+    assert preparation is not None
+    result = compile_strategic_criteria_scenario(
+        StrategicCriteriaScenarioInput(
+            preparation=preparation,
+            population_evidence=population,
+            education_evidence=education,
+            area_definition=source["boundary"],
+            area_fingerprint=_area_fingerprint(source),
+        )
+    )
+    destination_packet = next(
+        item
+        for item in result.criteria
+        if item.unit_role
+        is StrategicCorridorUnitRole.STRATEGIC_DESTINATION_ACCESS
+    )
+    destination = destination_packet.criteria
+    assert isinstance(destination, CandidateCriteria)
+    candidate_set = destination.education.candidate_set
+    assert candidate_set.mandatory_strategic_destination_ids == (
+        "bath-spa-university",
+    )
+    source_snapshot = destination.education.assessment.source_snapshot
+    erased_assessment = assess_education_access(
+        register_evidence=source_snapshot.register_evidence,
+        schools=(),
+        strategic_destinations=(),
+        option_evidence=(),
+        option_ids=source_snapshot.option_ids,
+    )
+    erased_content_sha256 = _canonical_sha256(
+        erased_assessment.model_dump(mode="json")
+    )
+    full_source_sha256 = (
+        destination.education.governed_binding
+        .full_source_governed_fingerprint
+    )
+    erased_governed_input = _canonical_sha256(
+        {
+            "schema": "satn-governed-education-assessment-binding/v3",
+            "governed_source_fingerprint": full_source_sha256,
+            "scope": {
+                "school_ids": [],
+                "strategic_destination_ids": [],
+            },
+            "assessment_content_sha256": erased_content_sha256,
+        }
+    )
+    erased_governed_binding = GovernedEducationCriterionBinding(
+        school_ids=(),
+        strategic_destination_ids=(),
+        full_source_governed_fingerprint=full_source_sha256,
+        governed_input_fingerprint=erased_governed_input,
+        assessment_content_sha256=erased_content_sha256,
+    )
+    erased_education_binding = GovernedAssessmentBinding(
+        kind=AssessmentKind.EDUCATION_ACCESS,
+        assessment_id=erased_assessment.assessment_id,
+        assessment_content_sha256=erased_content_sha256,
+        source_content_sha256=full_source_sha256,
+        method_version="satn-governed-education-assessment-binding/v3",
+    )
+    erased_snapshot = GovernedEvidenceSnapshot(
+        snapshot_id=destination.evidence_snapshot.snapshot_id,
+        assessments=tuple(
+            erased_education_binding
+            if item.kind is AssessmentKind.EDUCATION_ACCESS
+            else item
+            for item in destination.evidence_snapshot.assessments
+        ),
+    )
+    erased_population = destination.population.model_copy(
+        update={
+            "scenario_evidence_snapshot_fingerprint": (
+                erased_snapshot.snapshot_fingerprint
+            )
+        }
+    )
+    erased_education = EducationCriterionSummary.from_assessment(
+        erased_assessment,
+        candidate_set=candidate_set,
+        scenario_evidence_snapshot_fingerprint=(
+            erased_snapshot.snapshot_fingerprint
+        ),
+        governed_binding=erased_governed_binding,
+    )
+
+    with pytest.raises(ValidationError, match="education scope"):
+        CandidateCriteria(
+            evidence_snapshot=erased_snapshot,
+            population=erased_population,
+            education=erased_education,
+            existing_alignment=destination.existing_alignment,
+            directness=destination.directness,
+            gradient=destination.gradient,
+            uncertainty=destination.uncertainty,
+        )
+
+
+def test_resealed_destination_criteria_cannot_substitute_foreign_source_with_same_ids(
+    tmp_path: Path,
+) -> None:
+    _, source, compiled, population, education = _compiled_inputs(tmp_path)
+    preparation = compiled.strategic_corridor_preparation
+    assert preparation is not None
+    result = compile_strategic_criteria_scenario(
+        StrategicCriteriaScenarioInput(
+            preparation=preparation,
+            population_evidence=population,
+            education_evidence=education,
+            area_definition=source["boundary"],
+            area_fingerprint=_area_fingerprint(source),
+        )
+    )
+    destination_packet = next(
+        item
+        for item in result.criteria
+        if item.unit_role
+        is StrategicCorridorUnitRole.STRATEGIC_DESTINATION_ACCESS
+    )
+    destination = destination_packet.criteria
+    assert isinstance(destination, CandidateCriteria)
+    governed = destination.education.governed_binding
+    foreign_source_sha256 = "f" * 64
+    foreign_input = _canonical_sha256(
+        {
+            "schema": "satn-governed-education-assessment-binding/v3",
+            "governed_source_fingerprint": foreign_source_sha256,
+            "scope": {
+                "school_ids": list(governed.school_ids),
+                "strategic_destination_ids": list(
+                    governed.strategic_destination_ids
+                ),
+            },
+            "assessment_content_sha256": (
+                governed.assessment_content_sha256
+            ),
+        }
+    )
+    foreign_binding = GovernedEducationCriterionBinding(
+        school_ids=governed.school_ids,
+        strategic_destination_ids=(
+            governed.strategic_destination_ids
+        ),
+        full_source_governed_fingerprint=foreign_source_sha256,
+        governed_input_fingerprint=foreign_input,
+        assessment_content_sha256=governed.assessment_content_sha256,
+    )
+    foreign_summary = destination.education.model_copy(
+        update={
+            "governed_binding": foreign_binding,
+        }
+    )
+    foreign_education_snapshot_binding = next(
+        item
+        for item in destination.evidence_snapshot.assessments
+        if item.kind is AssessmentKind.EDUCATION_ACCESS
+    ).model_copy(update={"source_content_sha256": foreign_source_sha256})
+    foreign_snapshot = GovernedEvidenceSnapshot(
+        snapshot_id=destination.evidence_snapshot.snapshot_id,
+        assessments=tuple(
+            foreign_education_snapshot_binding
+            if item.kind is AssessmentKind.EDUCATION_ACCESS
+            else item
+            for item in destination.evidence_snapshot.assessments
+        ),
+    )
+    foreign_summary = foreign_summary.model_copy(
+        update={
+            "scenario_evidence_snapshot_fingerprint": (
+                foreign_snapshot.snapshot_fingerprint
+            )
+        }
+    )
+    foreign_criteria = CandidateCriteria(
+        evidence_snapshot=foreign_snapshot,
+        population=destination.population.model_copy(
+            update={
+                "scenario_evidence_snapshot_fingerprint": (
+                    foreign_snapshot.snapshot_fingerprint
+                )
+            }
+        ),
+        education=foreign_summary,
+        existing_alignment=destination.existing_alignment,
+        directness=destination.directness,
+        gradient=destination.gradient,
+        uncertainty=destination.uncertainty,
+    )
+
+    with pytest.raises(ValueError, match="foreign to preparation lineage"):
+        PreparedStrategicUnitCriteria(
+            unit_id=destination_packet.unit_id,
+            unit_role=destination_packet.unit_role,
+            criteria=foreign_criteria,
+            preparation_lineage=destination_packet.preparation_lineage,
+        )
 
 
 def test_missing_campus_binding_cannot_compile_or_be_adopted(tmp_path: Path) -> None:

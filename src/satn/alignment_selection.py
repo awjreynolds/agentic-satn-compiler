@@ -1275,6 +1275,73 @@ def _derive_education_findings(
     return tuple(completeness), tuple(opportunities)
 
 
+class GovernedEducationCriterionBinding(BaseModel):
+    """Serializable provenance for one exactly scoped education assessment."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    school_ids: tuple[str, ...] = ()
+    strategic_destination_ids: tuple[str, ...] = ()
+    full_source_governed_fingerprint: str = Field(pattern=_SHA256.pattern)
+    governed_input_fingerprint: str = Field(pattern=_SHA256.pattern)
+    assessment_content_sha256: str = Field(pattern=_SHA256.pattern)
+    binding_fingerprint: str = ""
+
+    @field_validator("school_ids", "strategic_destination_ids")
+    @classmethod
+    def canonical_scope_ids(
+        cls,
+        value: tuple[str, ...],
+        info: object,
+    ) -> tuple[str, ...]:
+        return _canonical_ids(
+            value,
+            getattr(info, "field_name", "education scope identifiers"),
+        )
+
+    @model_validator(mode="after")
+    def bind_governed_input(self) -> Self:
+        expected_input = _fingerprint(
+            {
+                "schema": "satn-governed-education-assessment-binding/v3",
+                "governed_source_fingerprint": (
+                    self.full_source_governed_fingerprint
+                ),
+                "scope": {
+                    "school_ids": list(self.school_ids),
+                    "strategic_destination_ids": list(
+                        self.strategic_destination_ids
+                    ),
+                },
+                "assessment_content_sha256": (
+                    self.assessment_content_sha256
+                ),
+            }
+        )
+        if self.governed_input_fingerprint != expected_input:
+            raise ValueError(
+                "education criterion governed input fingerprint is stale"
+            )
+        payload = self.model_dump(
+            mode="json",
+            exclude={"binding_fingerprint"},
+        )
+        expected_binding = _fingerprint(payload)
+        if (
+            self.binding_fingerprint
+            and self.binding_fingerprint != expected_binding
+        ):
+            raise ValueError(
+                "education criterion governed binding fingerprint is stale"
+            )
+        object.__setattr__(
+            self,
+            "binding_fingerprint",
+            expected_binding,
+        )
+        return self
+
+
 class EducationCriterionSummary(BaseModel):
     """Canonical EducationAccessAssessment plus its exact candidate adapter."""
 
@@ -1282,6 +1349,7 @@ class EducationCriterionSummary(BaseModel):
 
     assessment: EducationAccessAssessment
     candidate_set: AlignmentCandidateSet
+    governed_binding: GovernedEducationCriterionBinding
     option_bindings: tuple[CandidateEducationOptionBinding, ...] = Field(min_length=1)
     completeness: tuple[CriterionFinding, ...] = Field(min_length=1)
     independent_travel_opportunity: tuple[
@@ -1299,30 +1367,64 @@ class EducationCriterionSummary(BaseModel):
         *,
         candidate_set: AlignmentCandidateSet,
         scenario_evidence_snapshot_fingerprint: str,
+        governed_binding: GovernedEducationCriterionBinding,
     ) -> EducationCriterionSummary:
         candidate_set = AlignmentCandidateSet.model_validate(
             candidate_set.model_dump(mode="python")
         )
+        governed_binding = GovernedEducationCriterionBinding.model_validate(
+            governed_binding.model_dump(mode="python")
+        )
         option_bindings = _derive_education_option_bindings(assessment, candidate_set)
-        fingerprint = _education_assessment_fingerprint(assessment)
+        _education_assessment_fingerprint(assessment)
+        content_fingerprint = _fingerprint(
+            assessment.model_dump(mode="json")
+        )
         completeness, opportunities = _derive_education_findings(assessment, option_bindings)
         return cls(
             assessment=assessment,
             candidate_set=candidate_set,
+            governed_binding=governed_binding,
             option_bindings=option_bindings,
             completeness=completeness,
             independent_travel_opportunity=opportunities,
             assessment_id=assessment.assessment_id,
-            assessment_content_sha256=fingerprint,
+            assessment_content_sha256=content_fingerprint,
             scenario_evidence_snapshot_fingerprint=scenario_evidence_snapshot_fingerprint,
         )
 
     @model_validator(mode="after")
     def validate_sections(self) -> Self:
-        assessment_fingerprint = _education_assessment_fingerprint(self.assessment)
+        _education_assessment_fingerprint(self.assessment)
+        assessment_content_fingerprint = _fingerprint(
+            self.assessment.model_dump(mode="json")
+        )
         candidate_set = AlignmentCandidateSet.model_validate(
             self.candidate_set.model_dump(mode="python")
         )
+        governed_binding = GovernedEducationCriterionBinding.model_validate(
+            self.governed_binding.model_dump(mode="python")
+        )
+        assessment_scope = (
+            tuple(
+                item.school_id
+                for item in self.assessment.source_snapshot.schools
+            ),
+            tuple(
+                item.strategic_destination_id
+                for item in (
+                    self.assessment.source_snapshot
+                    .strategic_education_destinations
+                )
+            ),
+        )
+        if assessment_scope != (
+            governed_binding.school_ids,
+            governed_binding.strategic_destination_ids,
+        ):
+            raise ValueError(
+                "education criterion governed scope differs from assessment"
+            )
         bindings = tuple(sorted(self.option_bindings, key=lambda item: item.candidate_id))
         if len({item.candidate_id for item in bindings}) != len(bindings) or len(
             {item.option_id for item in bindings}
@@ -1344,11 +1446,15 @@ class EducationCriterionSummary(BaseModel):
             raise ValueError("education findings are not canonical assessment outputs")
         if (
             self.assessment_id != self.assessment.assessment_id
-            or self.assessment_content_sha256 != assessment_fingerprint
+            or self.assessment_content_sha256
+            != assessment_content_fingerprint
+            or governed_binding.assessment_content_sha256
+            != assessment_content_fingerprint
         ):
             raise ValueError("education assessment binding is stale")
         object.__setattr__(self, "option_bindings", bindings)
         object.__setattr__(self, "candidate_set", candidate_set)
+        object.__setattr__(self, "governed_binding", governed_binding)
         for findings in (self.completeness, self.independent_travel_opportunity):
             ids = tuple(item.candidate_id for item in findings)
             if ids != tuple(sorted(ids)) or len(set(ids)) != len(ids):
@@ -1446,12 +1552,54 @@ class CandidateCriteria(BaseModel):
             self.education.assessment_id != education_binding.assessment_id
             or self.education.assessment_content_sha256
             != education_binding.assessment_content_sha256
-            or self.education.assessment.source_snapshot.source_content_fingerprint
+            or self.education.governed_binding.assessment_content_sha256
+            != education_binding.assessment_content_sha256
+            or self.education.governed_binding.full_source_governed_fingerprint
             != education_binding.source_content_sha256
             or self.education.scenario_evidence_snapshot_fingerprint
             != self.evidence_snapshot.snapshot_fingerprint
         ):
             raise ValueError("education section is stale for the governed snapshot")
+        scoped_method = "satn-governed-education-assessment-binding/v3"
+        full_source_method = (
+            "satn-governed-full-education-assessment-binding/v3"
+        )
+        if education_binding.method_version not in {
+            scoped_method,
+            full_source_method,
+        }:
+            raise ValueError(
+                "education section uses an unsupported governed binding method"
+            )
+        education_scope = self.education.governed_binding
+        candidate_set = self.education.candidate_set
+        if (
+            candidate_set.network_role is NetworkRole.INTERURBAN_SPINE
+            and (
+                education_scope.school_ids
+                or education_scope.strategic_destination_ids
+            )
+        ):
+            raise ValueError(
+                "interurban education scope must be exactly empty"
+            )
+        if (
+            candidate_set.network_role
+            is NetworkRole.STRATEGIC_DESTINATION_ACCESS
+            and (
+                education_scope.school_ids
+                or education_scope.strategic_destination_ids
+                != candidate_set.mandatory_strategic_destination_ids
+                or len(
+                    candidate_set.mandatory_strategic_destination_ids
+                )
+                != 1
+            )
+        ):
+            raise ValueError(
+                "strategic destination education scope must exactly match "
+                "mandatory destinations"
+            )
         if any(
             item.assessment_id != education_binding.assessment_id
             for item in (
