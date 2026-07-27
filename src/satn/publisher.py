@@ -29,6 +29,7 @@ from shapely.geometry import LineString, MultiLineString, mapping, shape
 from satn.alignment_selection import CanonicalLineString
 from satn.compiler import CompiledNetwork
 from satn.constants import DISCLAIMER, SCHEMA_VERSION
+from satn.content_identity import content_fingerprint
 from satn.cross_spine import validate_cross_spine_publication
 from satn.ea_elevation import (
     SAMPLE_LEDGER_FILENAME,
@@ -121,6 +122,34 @@ class _ValidatedStrategicReferencePublication:
         if not isinstance(payload, dict):
             raise ValueError("validated strategic Reference payload is not an object")
         return payload
+
+
+def _strategic_binding_identity(value: object, *, application_plan: bool = False) -> dict[str, str]:
+    """Project a plan binding or replay record onto one canonical identity."""
+    getter = getattr(value, "get", None)
+    if not callable(getter):
+        raise ValueError("strategic binding identity source is not a mapping")
+    aliases = (
+        {
+            "binding_id": "binding_fingerprint",
+            "candidate_id": "selected_candidate_id",
+            "network_role": "unit_role",
+        }
+        if application_plan
+        else {}
+    )
+    return {
+        field: str(getter(aliases.get(field, field)))
+        for field in (
+            "binding_id",
+            "candidate_id",
+            "physical_alignment_id",
+            "routing_start_node_id",
+            "routing_end_node_id",
+            "geometry_fingerprint",
+            "network_role",
+        )
+    }
 
 
 def publication_artifacts(output: Path) -> dict[str, Path]:
@@ -617,10 +646,12 @@ def _validated_strategic_reference_publication(
             StrategicReferenceApplicationDisposition.COMPLEMENTARY_REQUIRED.value
         ),
     }
-    if not set(expected_roles).issubset(
-        {str(item.get("unit_role")) for item in bindings if isinstance(item, dict)}
+    if any(
+        expected_roles.get(str(item.get("unit_role"))) != item.get("application_disposition")
+        for item in bindings
+        if isinstance(item, dict)
     ):
-        raise ValueError("strategic publication omits a required role")
+        raise ValueError("strategic publication has unsupported role or disposition")
     rows = [
         *(row for _, row in compiled.strategic_interurban_connections.iterrows()),
         *(row for _, row in compiled.strategic_destination_access_connections.iterrows()),
@@ -639,18 +670,33 @@ def _validated_strategic_reference_publication(
             "application_disposition"
         ) != expected_roles.get(role):
             raise ValueError("strategic publication replay disposition or role is stale")
-        for field in (
-            "selected_candidate_id",
-            "physical_alignment_id",
-            "routing_start_node_id",
-            "routing_end_node_id",
-            "geometry_fingerprint",
+        if _strategic_binding_identity(row) != _strategic_binding_identity(
+            binding, application_plan=True
         ):
-            source = "candidate_id" if field == "selected_candidate_id" else field
-            if str(row.get(source)) != str(binding.get(field)):
-                raise ValueError(f"strategic publication replay binding differs for {field}")
+            raise ValueError("strategic publication replay binding identity differs")
+        for field in (
+            "routing_edge_ids",
+            "reverse_routing_edge_ids",
+            "source_ids",
+            "evidence_ids",
+            "generation_strategies",
+        ):
+            value = row.get(field)
+            try:
+                actual = json.loads(value) if isinstance(value, str) else list(value)
+            except (TypeError, json.JSONDecodeError) as error:
+                raise ValueError(f"strategic replay lineage is malformed for {field}") from error
+            if actual != binding.get(field):
+                raise ValueError(f"strategic publication replay lineage differs for {field}")
         if row.geometry is None or row.geometry.is_empty:
             raise ValueError("strategic publication replay geometry is missing")
+        actual_geometry = _strategic_geometry_fingerprint(
+            row.geometry,
+            getattr(row.geometry, "crs", None),
+            compiled.strategic_spines.crs,
+        )
+        if actual_geometry != binding.get("geometry_fingerprint"):
+            raise ValueError("strategic publication replay geometry differs from plan binding")
         if role == "interurban-spine":
             endpoints = binding.get("endpoint_binding", {})
             if [row.get("from_network_place_id"), row.get("to_network_place_id")] != endpoints.get(
@@ -682,6 +728,21 @@ def _validated_strategic_reference_publication(
         record=record,
         payload_json=json.dumps(payload, sort_keys=True, separators=(",", ":")),
     )
+
+
+def _strategic_geometry_fingerprint(
+    geometry: object, geometry_crs: object, fallback_crs: object
+) -> str:
+    """Use the replay/application canonical projected line identity."""
+    if geometry is None:
+        raise ValueError("strategic geometry is missing")
+    series = gpd.GeoSeries([geometry], crs=geometry_crs or fallback_crs).to_crs(27700)
+    projected = series.iloc[0]
+    if not isinstance(projected, LineString):
+        raise ValueError("strategic geometry must be one LineString")
+    return CanonicalLineString(
+        coordinates=tuple((float(x), float(y)) for x, y in projected.coords)
+    ).fingerprint
 
 
 def _ea_fixed_point_candidate_path(config: AreaConfig) -> Path:
@@ -1571,9 +1632,14 @@ def _strategic_authoritative_feature_records(
     return sorted(records, key=lambda record: record["feature_id"])
 
 
-def _strategic_replay_features(frame: gpd.GeoDataFrame, feature_type: str) -> dict[str, object]:
+def _strategic_replay_features(
+    frame: gpd.GeoDataFrame, feature_type: str, bindings: dict[str, dict[str, object]]
+) -> dict[str, object]:
     features = _features(frame, feature_type)
     for feature in features:
+        binding = bindings.get(str(feature["properties"].get("binding_id")))
+        if binding is None:
+            raise ValueError("strategic replay feature has no canonical plan binding")
         for name in (
             "routing_edge_ids",
             "reverse_routing_edge_ids",
@@ -1589,26 +1655,108 @@ def _strategic_replay_features(frame: gpd.GeoDataFrame, feature_type: str) -> di
                     continue
                 if isinstance(parsed, list):
                     feature["properties"][name] = parsed
+        for name in (
+            "mandatory_network_place_ids",
+            "mandatory_access_obligation_ids",
+            "mandatory_strategic_destination_ids",
+            "served_network_place_ids",
+            "served_access_obligation_ids",
+            "served_strategic_destination_ids",
+        ):
+            feature["properties"][name] = binding.get(name, [])
+        feature["properties"]["endpoint_binding"] = binding.get("endpoint_binding", {})
     return {"type": "FeatureCollection", "features": features}
 
 
 def _strategic_publication_view(
     compiled: CompiledNetwork, validated: _ValidatedStrategicReferencePublication
 ) -> dict[str, object]:
-    return {
+    plan = validated.payload()["application_plan"]
+    bindings = {str(item["binding_fingerprint"]): item for item in plan["bindings"]}
+    view = {
         "record": validated.payload(),
         "replay": {
             "diagnostics": compiled.strategic_reference_diagnostics,
             "interurban_connections": _strategic_replay_features(
-                compiled.strategic_interurban_connections, "strategic-interurban-connection"
+                compiled.strategic_interurban_connections,
+                "strategic-interurban-connection",
+                bindings,
             ),
             "destination_access_connections": _strategic_replay_features(
                 compiled.strategic_destination_access_connections,
                 "strategic-destination-access-connection",
+                bindings,
             ),
         },
+        "alignment_options": _strategic_alignment_options(plan),
         "authoritative_features": _strategic_authoritative_feature_records(compiled),
     }
+    view["cross_artifact_integrity"] = _strategic_integrity_report(view)
+    return view
+
+
+def _strategic_integrity_report(view: dict[str, object]) -> dict[str, object]:
+    """Deterministic local structural identity; never a signature or authority claim."""
+    replay = view["replay"]
+    assert isinstance(replay, dict)
+    payload = {
+        "contract": "satn-strategic-publication-integrity/v1",
+        "publication_record_fingerprint": view["record"]["record_fingerprint"],
+        "binding_count": sum(
+            len(replay[name]["features"])
+            for name in ("interurban_connections", "destination_access_connections")
+        ),
+        "interurban_count": len(replay["interurban_connections"]["features"]),
+        "destination_count": len(replay["destination_access_connections"]["features"]),
+        "registry_count": len(view["authoritative_features"]),
+        "alignment_option_count": len(view["alignment_options"]["features"]),
+    }
+    return {**payload, "report_fingerprint": content_fingerprint(payload)}
+
+
+def _strategic_alignment_options(plan: dict[str, object]) -> dict[str, object]:
+    """Expose governed selected and rejected Scenario options, never as network edges."""
+    reference = plan.get("reference", {})
+    scenario = reference.get("scenario", {}) if isinstance(reference, dict) else {}
+    selected = {
+        str(binding.get("selected_candidate_id")): str(binding.get("application_disposition"))
+        for binding in plan.get("bindings", [])
+        if isinstance(binding, dict)
+    }
+    features = []
+    for candidate_set in scenario.get("candidate_sets", []) if isinstance(scenario, dict) else []:
+        if not isinstance(candidate_set, dict):
+            continue
+        for candidate in candidate_set.get("candidates", []):
+            if not isinstance(candidate, dict) or not isinstance(candidate.get("geometry"), dict):
+                continue
+            identifier = str(candidate.get("candidate_id"))
+            canonical = candidate["geometry"]
+            coordinates = canonical.get("coordinates") if isinstance(canonical, dict) else None
+            if not isinstance(coordinates, list):
+                continue
+            projected = gpd.GeoSeries([LineString(coordinates)], crs=27700).to_crs(4326).iloc[0]
+            features.append(
+                {
+                    "type": "Feature",
+                    "id": identifier,
+                    "properties": {
+                        "candidate_id": identifier,
+                        "candidate_set_id": candidate_set.get("candidate_set_id"),
+                        "network_role": candidate_set.get("network_role"),
+                        "disposition": {
+                            "selected-substitute": "selected",
+                            "complementary-required": "complementary",
+                        }.get(selected.get(identifier), "rejected"),
+                        "default_visibility": "hidden",
+                    },
+                    "geometry": {
+                        "type": "LineString",
+                        "coordinates": [list(point) for point in projected.coords],
+                    },
+                }
+            )
+    return {"type": "FeatureCollection", "features": features}
 
 
 def _write_backbone_comparison(
@@ -2288,8 +2436,7 @@ def _strategic_population_html(criteria: object, candidate_id: object) -> str:
             (
                 item
                 for item in sensitivities
-                if isinstance(item, dict)
-                and float(item.get("corridor_distance_m", -1)) == radius
+                if isinstance(item, dict) and float(item.get("corridor_distance_m", -1)) == radius
             ),
             {},
         )
@@ -2320,9 +2467,7 @@ def _strategic_candidate_evidence_html(
     selected = selection.get("selected_candidate_id") == candidate_id
     complementary = candidate_id in selection.get("complementary_candidate_ids", [])
     disposition = "selected" if selected else "complementary" if complementary else "rejected"
-    comparison = _strategic_candidate_record(
-        selection.get("comparison_dispositions"), candidate_id
-    )
+    comparison = _strategic_candidate_record(selection.get("comparison_dispositions"), candidate_id)
     precomparison = _strategic_candidate_record(
         selection.get("precomparison_rejections"), candidate_id
     )
@@ -2342,22 +2487,44 @@ def _strategic_candidate_evidence_html(
     gradient = _strategic_candidate_record(criteria.get("gradient"), candidate_id)
     uncertainty = _strategic_candidate_record(criteria.get("uncertainty"), candidate_id)
     existing = criteria.get("existing_alignment")
-    existing_html = (
-        _reference_mapping_html(
-            existing,
+    existing = existing if isinstance(existing, dict) else {}
+    existing_proof = existing.get("proof")
+    existing_proof = existing_proof if isinstance(existing_proof, dict) else {}
+    existing_comparison = _strategic_candidate_record(
+        existing.get("comparison", {}).get("advantages")
+        if isinstance(existing.get("comparison"), dict)
+        else None,
+        candidate_id,
+    )
+    if existing:
+        existing_html = _reference_mapping_html(
+            {
+                "proof_id": existing_proof.get("proof_id"),
+                "near_equivalent_after_mandatory_gates": existing_proof.get(
+                    "near_equivalent_after_mandatory_gates"
+                ),
+                "matched_share": existing_comparison.get("matched_share"),
+                "recognised_current_share": existing_comparison.get("recognised_current_share"),
+                "reusable_asset_share": existing_comparison.get("reusable_asset_share"),
+                "unknown_length_m": existing_comparison.get("unknown_length_m"),
+                "unknown_reasons": existing_comparison.get("unknown_reasons"),
+                "evidence_fingerprint": existing_comparison.get("evidence_fingerprint"),
+            },
             preferred=(
-                "status",
+                "proof_id",
+                "near_equivalent_after_mandatory_gates",
                 "matched_share",
                 "recognised_current_share",
                 "reusable_asset_share",
                 "unknown_length_m",
                 "unknown_reasons",
-                "assessment_id",
+                "evidence_fingerprint",
             ),
         )
-        if isinstance(existing, dict)
-        else "<p>Existing-alignment assessment: unknown; no governed assessment was bound.</p>"
-    )
+    else:
+        existing_html = (
+            "<p>Existing-alignment assessment: unknown; no governed assessment was bound.</p>"
+        )
     mandatory_access = set(candidate_set.get("mandatory_access_obligation_ids", []))
     served_access = set(candidate.get("served_access_obligation_ids", []))
     mandatory_destinations = set(candidate_set.get("mandatory_strategic_destination_ids", []))
@@ -2369,6 +2536,13 @@ def _strategic_candidate_evidence_html(
     critique = envelope.get("critique")
     critique = critique if isinstance(critique, dict) else {}
     change_conditions = list(selection.get("change_conditions", []))
+    route_validity = (
+        comparison.get("validity")
+        or precomparison.get("validity")
+        or directness.get("state")
+        or candidate.get("topology_state")
+        or "unknown"
+    )
     for item in (comparison, precomparison):
         for condition in item.get("change_conditions", []):
             if condition not in change_conditions:
@@ -2391,7 +2565,7 @@ def _strategic_candidate_evidence_html(
             (
                 "<dt>Topology and route validity</dt><dd>"
                 f"{escape(_reference_text(candidate.get('topology_state')))}; "
-                f"{escape(_reference_text(comparison.get('validity')))}</dd>"
+                f"{escape(_reference_text(route_validity))}</dd>"
             ),
             "</dl>",
             "<h4>Population reach</h4>",
@@ -3254,6 +3428,297 @@ def _offset_linework(geometry: object, distance: float) -> object:
     return geometry
 
 
+def _validate_strategic_artifacts(
+    output: Path, strategic: dict[str, object], geojson: dict[str, object]
+) -> None:
+    strategic_registry = (
+        strategic.get("authoritative_features") if isinstance(strategic, dict) else None
+    )
+    if not isinstance(strategic, dict) or not isinstance(strategic_registry, list):
+        raise ValueError("strategic publication manifest is malformed")
+    record_payload = strategic.get("record")
+    if not isinstance(record_payload, dict):
+        raise ValueError("strategic publication record is malformed")
+    record = StrategicReferencePublicationRecord.from_publication_payload(record_payload)
+    if record.publication_payload() != record_payload:
+        raise ValueError("strategic publication manifest is not a canonical round-trip")
+    replay = strategic.get("replay")
+    integrity = strategic.get("cross_artifact_integrity")
+    if not isinstance(integrity, dict):
+        raise ValueError("strategic cross-artifact integrity report is malformed")
+    if not isinstance(replay, dict):
+        raise ValueError("strategic replay composite is malformed")
+    if replay.get("diagnostics") != record_payload.get("replay_diagnostics"):
+        raise ValueError("strategic replay diagnostics differ from the publication record")
+    plan = record.publication_payload()["application_plan"]
+    projection = dict(strategic)
+    projection.pop("cross_artifact_integrity", None)
+    if integrity != _strategic_integrity_report(projection):
+        raise ValueError("strategic cross-artifact integrity report differs from view")
+    if strategic.get("alignment_options") != _strategic_alignment_options(plan):
+        raise ValueError("strategic alignment options differ from governed scenario")
+    bindings = plan.get("bindings", []) if isinstance(plan, dict) else []
+    if (
+        not isinstance(bindings, list)
+        or not bindings
+        or not all(isinstance(item, dict) and item.get("binding_fingerprint") for item in bindings)
+    ):
+        raise ValueError("strategic publication bindings are malformed")
+    bindings_by_id = {str(item["binding_fingerprint"]): item for item in bindings}
+    binding_ids = set(bindings_by_id)
+    if len(bindings_by_id) != len(bindings):
+        raise ValueError("strategic publication binding identities are not unique")
+    replay_features = []
+    for name, role in (
+        ("interurban_connections", "interurban-spine"),
+        ("destination_access_connections", "strategic-destination-access"),
+    ):
+        collection = replay.get(name)
+        if not isinstance(collection, dict) or collection.get("type") != "FeatureCollection":
+            raise ValueError("strategic replay collection is malformed")
+        features = collection.get("features")
+        expected_role_bindings = {
+            str(item.get("binding_fingerprint"))
+            for item in bindings
+            if isinstance(item, dict) and item.get("unit_role") == role
+        }
+        if not isinstance(features, list) or len(features) != len(expected_role_bindings):
+            raise ValueError("strategic replay collection has incomplete bindings")
+        for feature in features:
+            properties = feature.get("properties", {}) if isinstance(feature, dict) else {}
+            if properties.get("network_role") != role or not feature.get("geometry"):
+                raise ValueError("strategic replay role or geometry is stale")
+            for field in (
+                "routing_edge_ids",
+                "reverse_routing_edge_ids",
+                "source_ids",
+                "evidence_ids",
+                "generation_strategies",
+            ):
+                if not isinstance(properties.get(field), list):
+                    raise ValueError("strategic replay arrays are not typed")
+            binding_id = str(properties.get("binding_id"))
+            binding = bindings_by_id.get(binding_id)
+            if binding is None:
+                raise ValueError("strategic replay contains a foreign binding")
+            if _strategic_binding_identity(properties) != _strategic_binding_identity(
+                binding, application_plan=True
+            ):
+                raise ValueError("strategic replay properties differ from the application plan")
+            for field in (
+                "routing_edge_ids",
+                "reverse_routing_edge_ids",
+                "source_ids",
+                "evidence_ids",
+                "generation_strategies",
+            ):
+                if properties.get(field) != binding.get(field):
+                    raise ValueError("strategic replay lineage differs from the application plan")
+            endpoints = binding.get("endpoint_binding", {})
+            if role == "interurban-spine":
+                actual_endpoints = [
+                    properties.get("from_network_place_id"),
+                    properties.get("to_network_place_id"),
+                ]
+                expected_endpoints = endpoints.get("network_place_ids")
+            else:
+                actual_endpoints = [properties.get("from_network_place_id")]
+                expected_endpoints = endpoints.get("network_place_ids")
+            if actual_endpoints != expected_endpoints:
+                raise ValueError("strategic replay endpoints differ from application plan")
+            if role == "strategic-destination-access" and [
+                properties.get("strategic_destination_id")
+            ] != endpoints.get("strategic_destination_ids"):
+                raise ValueError("strategic destination endpoints differ from application plan")
+            for field in (
+                "mandatory_network_place_ids",
+                "mandatory_access_obligation_ids",
+                "mandatory_strategic_destination_ids",
+                "served_network_place_ids",
+                "served_access_obligation_ids",
+                "served_strategic_destination_ids",
+                "endpoint_binding",
+            ):
+                if properties.get(field) != binding.get(field):
+                    raise ValueError("strategic replay obligations differ from application plan")
+            replay_features.append(feature)
+    replay_binding_ids = [str(item["properties"].get("binding_id")) for item in replay_features]
+    if set(replay_binding_ids) != binding_ids or len(replay_binding_ids) != len(binding_ids):
+        raise ValueError("strategic replay binding coverage differs from record")
+    if (
+        len(strategic_registry) != len(bindings)
+        or {str(item.get("binding_id")) for item in strategic_registry if isinstance(item, dict)}
+        != binding_ids
+        or not all(isinstance(item, dict) for item in strategic_registry)
+    ):
+        raise ValueError("strategic authoritative registry coverage differs from record")
+    registry_by_binding = {str(item["binding_id"]): item for item in strategic_registry}
+    destination_features = replay["destination_access_connections"]["features"]
+    interurban_features = replay["interurban_connections"]["features"]
+    typed_destinations = [
+        feature
+        for feature in geojson["features"]
+        if feature["properties"].get("feature_type") == "strategic-destination-access-connection"
+    ]
+    top_spines = {
+        str(feature["id"]): feature
+        for feature in geojson["features"]
+        if feature["properties"].get("feature_type") == "strategic-spine"
+    }
+    if any(
+        feature["properties"].get("feature_type") == "strategic-interurban-connection"
+        for feature in geojson["features"]
+    ):
+        raise ValueError("strategic interurban replay was duplicated in top-level GeoJSON")
+    destination_registry_ids = {
+        str(item["feature_id"])
+        for item in strategic_registry
+        if item.get("published_as") == "strategic-destination-access-connection"
+    }
+    if {str(item["id"]) for item in typed_destinations} != destination_registry_ids or len(
+        typed_destinations
+    ) != len(destination_features):
+        raise ValueError("strategic destination access registry differs from GeoJSON")
+    layers = set(gpd.list_layers(output / "network.gpkg")["name"])
+    destination_layer = "strategic_destination_access_connections"
+    if destination_features:
+        if destination_layer not in layers:
+            raise ValueError("GeoPackage is missing strategic destination access layer")
+        gpkg = gpd.read_file(output / "network.gpkg", layer=destination_layer)
+        if len(gpkg) != len(destination_features) or set(
+            gpkg["strategic_connection_id"].astype(str)
+        ) != {str(feature["id"]) for feature in destination_features}:
+            raise ValueError("GeoPackage destination access coverage differs from replay")
+    elif destination_layer in layers:
+        raise ValueError("GeoPackage has an unbound strategic destination access layer")
+    typed_by_id = {str(item["id"]): item for item in typed_destinations}
+    for destination in destination_features:
+        destination_id = str(destination["id"])
+        properties = destination["properties"]
+        binding_id = str(properties["binding_id"])
+        registry = registry_by_binding.get(binding_id)
+        top_destination = typed_by_id.get(destination_id)
+        if (
+            registry is None
+            or registry.get("feature_id") != destination_id
+            or registry.get("published_as") != "strategic-destination-access-connection"
+            or top_destination is None
+            or top_destination.get("geometry") != destination.get("geometry")
+            or any(
+                top_destination.get("properties", {}).get(field) != properties.get(field)
+                for field in (
+                    "binding_id",
+                    "candidate_id",
+                    "physical_alignment_id",
+                    "geometry_fingerprint",
+                    "network_role",
+                )
+            )
+        ):
+            raise ValueError("top-level destination access differs from replay")
+        gpkg_rows = gpkg.loc[gpkg["strategic_connection_id"].astype(str) == destination_id]
+        if len(gpkg_rows) != 1:
+            raise ValueError("GeoPackage destination access identity is ambiguous")
+        gpkg_row = gpkg_rows.iloc[0]
+        for field in (
+            "binding_id",
+            "candidate_id",
+            "physical_alignment_id",
+            "geometry_fingerprint",
+            "network_role",
+        ):
+            if str(gpkg_row[field]) != str(properties[field]):
+                raise ValueError("GeoPackage destination properties differ from replay")
+        projected = gpd.GeoSeries([gpkg_row.geometry], crs=gpkg.crs).to_crs(4326).iloc[0]
+        replay_geometry = shape(destination["geometry"])
+        if (
+            projected.is_empty
+            or replay_geometry.is_empty
+            or projected.hausdorff_distance(replay_geometry) > 1e-8
+            or not math.isclose(
+                projected.length, replay_geometry.length, rel_tol=1e-8, abs_tol=1e-8
+            )
+        ):
+            raise ValueError("GeoPackage destination geometry differs from replay")
+    for interurban in interurban_features:
+        properties = interurban["properties"]
+        binding_id = str(properties["binding_id"])
+        registry = registry_by_binding.get(binding_id)
+        if (
+            registry is None
+            or registry.get("published_as") != "strategic-spine"
+            or registry.get("feature_id") not in top_spines
+        ):
+            raise ValueError("strategic interurban registry has no published spine")
+        spine = top_spines[str(registry["feature_id"])]
+        replay_ids = spine["properties"].get("replay_binding_ids", [])
+        if isinstance(replay_ids, str):
+            try:
+                replay_ids = json.loads(replay_ids)
+            except json.JSONDecodeError as error:
+                raise ValueError("published strategic spine binding list is malformed") from error
+        if (
+            not isinstance(replay_ids, list)
+            or binding_id not in replay_ids
+            or spine["properties"].get("physical_alignment_id")
+            != properties.get("physical_alignment_id")
+            or (
+                spine["properties"].get("geometry_fingerprint") is not None
+                and spine["properties"].get("geometry_fingerprint")
+                != properties.get("geometry_fingerprint")
+            )
+        ):
+            raise ValueError("published strategic spine differs from replay binding")
+        spine_geometry = shape(spine["geometry"])
+        replay_geometry = shape(interurban["geometry"])
+        if spine_geometry.hausdorff_distance(replay_geometry) > 1e-8 or not math.isclose(
+            spine_geometry.length,
+            replay_geometry.length,
+            rel_tol=1e-8,
+            abs_tol=1e-8,
+        ):
+            raise ValueError("published strategic spine geometry differs from replay")
+    for registry in strategic_registry:
+        feature = next(
+            (
+                item
+                for item in replay_features
+                if item["properties"].get("binding_id") == registry.get("binding_id")
+            ),
+            None,
+        )
+        if feature is None or any(
+            feature["properties"].get(name) != registry.get(name)
+            for name in (
+                "candidate_id",
+                "physical_alignment_id",
+                "geometry_fingerprint",
+                "network_role",
+            )
+        ):
+            raise ValueError("strategic registry differs from replay binding")
+    data_text = (output / "review-map" / "data.js").read_text(encoding="utf-8")
+    prefix = "window.SATN_DATA = "
+    if not data_text.startswith(prefix) or not data_text.rstrip().endswith(";"):
+        raise ValueError("review-map data is not a SATN JSON assignment")
+    data = json.loads(data_text[len(prefix) :].strip().removesuffix(";"))
+    if data.get("strategic_reference") != strategic:
+        raise ValueError("review-map strategic composite differs from run")
+    strategic_assets = (
+        output / "review-map" / "assets" / "strategic-reference.css",
+        output / "review-map" / "assets" / "strategic-reference.js",
+    )
+    if not all(path.is_file() for path in strategic_assets):
+        raise ValueError("strategic review map is missing its presentation assets")
+    review_html = (output / "review-map" / "index.html").read_text(encoding="utf-8")
+    if (
+        "strategic-reference.css" not in review_html
+        or "strategic-reference.js" not in review_html
+        or "Strategic Reference review" not in review_html
+    ):
+        raise ValueError("strategic review map omits its accessible evidence")
+
+
 def _validate_artifacts(output: Path, config: AreaConfig) -> None:
     required = (
         "network.gpkg",
@@ -3294,266 +3759,11 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
     if run.get("disclaimer") != DISCLAIMER or run.get("network_model") != "backbone-outward":
         raise ValueError("run manifest does not describe the current publication")
     strategic = run.get("strategic_reference")
-    strategic_registry = (
-        strategic.get("authoritative_features") if isinstance(strategic, dict) else None
-    )
     if strategic is not None:
-        if not isinstance(strategic, dict) or not isinstance(strategic_registry, list):
-            raise ValueError("strategic publication manifest is malformed")
-        record_payload = strategic.get("record")
-        if not isinstance(record_payload, dict):
-            raise ValueError("strategic publication record is malformed")
-        record = StrategicReferencePublicationRecord.from_publication_payload(record_payload)
-        if record.publication_payload() != record_payload:
-            raise ValueError("strategic publication manifest is not a canonical round-trip")
-        replay = strategic.get("replay")
-        if not isinstance(replay, dict):
-            raise ValueError("strategic replay composite is malformed")
-        if replay.get("diagnostics") != record_payload.get("replay_diagnostics"):
-            raise ValueError("strategic replay diagnostics differ from the publication record")
-        plan = record.publication_payload()["application_plan"]
-        bindings = plan.get("bindings", []) if isinstance(plan, dict) else []
-        if not isinstance(bindings, list) or not bindings or not all(
-            isinstance(item, dict) and item.get("binding_fingerprint") for item in bindings
-        ):
-            raise ValueError("strategic publication bindings are malformed")
-        bindings_by_id = {str(item["binding_fingerprint"]): item for item in bindings}
-        binding_ids = set(bindings_by_id)
-        if len(bindings_by_id) != len(bindings):
-            raise ValueError("strategic publication binding identities are not unique")
-        replay_features = []
-        for name, role in (
-            ("interurban_connections", "interurban-spine"),
-            ("destination_access_connections", "strategic-destination-access"),
-        ):
-            collection = replay.get(name)
-            if not isinstance(collection, dict) or collection.get("type") != "FeatureCollection":
-                raise ValueError("strategic replay collection is malformed")
-            features = collection.get("features")
-            if not isinstance(features, list) or not features:
-                raise ValueError("strategic replay collection has incomplete bindings")
-            for feature in features:
-                properties = feature.get("properties", {}) if isinstance(feature, dict) else {}
-                if properties.get("network_role") != role or not feature.get("geometry"):
-                    raise ValueError("strategic replay role or geometry is stale")
-                for field in (
-                    "routing_edge_ids",
-                    "reverse_routing_edge_ids",
-                    "source_ids",
-                    "evidence_ids",
-                    "generation_strategies",
-                ):
-                    if not isinstance(properties.get(field), list):
-                        raise ValueError("strategic replay arrays are not typed")
-                binding_id = str(properties.get("binding_id"))
-                binding = bindings_by_id.get(binding_id)
-                if binding is None:
-                    raise ValueError("strategic replay contains a foreign binding")
-                expected = {
-                    "candidate_id": binding.get("selected_candidate_id"),
-                    "physical_alignment_id": binding.get("physical_alignment_id"),
-                    "geometry_fingerprint": binding.get("geometry_fingerprint"),
-                    "network_role": binding.get("unit_role"),
-                }
-                if any(properties.get(field) != value for field, value in expected.items()):
-                    raise ValueError("strategic replay properties differ from the application plan")
-                replay_features.append(feature)
-        replay_binding_ids = [
-            str(item["properties"].get("binding_id")) for item in replay_features
-        ]
-        if set(replay_binding_ids) != binding_ids or len(replay_binding_ids) != len(binding_ids):
-            raise ValueError("strategic replay binding coverage differs from record")
-        if (
-            len(strategic_registry) != len(bindings)
-            or {
-                str(item.get("binding_id")) for item in strategic_registry if isinstance(item, dict)
-            }
-            != binding_ids
-            or not all(isinstance(item, dict) for item in strategic_registry)
-        ):
-            raise ValueError("strategic authoritative registry coverage differs from record")
-        registry_by_binding = {
-            str(item["binding_id"]): item for item in strategic_registry
-        }
-        destination_features = replay["destination_access_connections"]["features"]
-        interurban_features = replay["interurban_connections"]["features"]
-        typed_destinations = [
-            feature
-            for feature in geojson["features"]
-            if feature["properties"].get("feature_type")
-            == "strategic-destination-access-connection"
-        ]
-        top_spines = {
-            str(feature["id"]): feature
-            for feature in geojson["features"]
-            if feature["properties"].get("feature_type") == "strategic-spine"
-        }
-        if any(
-            feature["properties"].get("feature_type")
-            == "strategic-interurban-connection"
-            for feature in geojson["features"]
-        ):
-            raise ValueError("strategic interurban replay was duplicated in top-level GeoJSON")
-        destination_registry_ids = {
-            str(item["feature_id"])
-            for item in strategic_registry
-            if item.get("published_as") == "strategic-destination-access-connection"
-        }
-        if (
-            {str(item["id"]) for item in typed_destinations} != destination_registry_ids
-            or len(typed_destinations) != len(destination_features)
-        ):
-            raise ValueError("strategic destination access registry differs from GeoJSON")
-        if "strategic_destination_access_connections" not in set(
-            gpd.list_layers(output / "network.gpkg")["name"]
-        ):
-            raise ValueError("GeoPackage is missing strategic destination access layer")
-        gpkg = gpd.read_file(
-            output / "network.gpkg", layer="strategic_destination_access_connections"
-        )
-        if len(gpkg) != len(destination_features) or set(
-            gpkg["strategic_connection_id"].astype(str)
-        ) != {str(feature["id"]) for feature in destination_features}:
-            raise ValueError("GeoPackage destination access coverage differs from replay")
-        typed_by_id = {str(item["id"]): item for item in typed_destinations}
-        for destination in destination_features:
-            destination_id = str(destination["id"])
-            properties = destination["properties"]
-            binding_id = str(properties["binding_id"])
-            registry = registry_by_binding.get(binding_id)
-            top_destination = typed_by_id.get(destination_id)
-            if (
-                registry is None
-                or registry.get("feature_id") != destination_id
-                or registry.get("published_as")
-                != "strategic-destination-access-connection"
-                or top_destination is None
-                or top_destination.get("geometry") != destination.get("geometry")
-                or any(
-                    top_destination.get("properties", {}).get(field)
-                    != properties.get(field)
-                    for field in (
-                        "binding_id",
-                        "candidate_id",
-                        "physical_alignment_id",
-                        "geometry_fingerprint",
-                        "network_role",
-                    )
-                )
-            ):
-                raise ValueError("top-level destination access differs from replay")
-            gpkg_rows = gpkg.loc[
-                gpkg["strategic_connection_id"].astype(str) == destination_id
-            ]
-            if len(gpkg_rows) != 1:
-                raise ValueError("GeoPackage destination access identity is ambiguous")
-            gpkg_row = gpkg_rows.iloc[0]
-            for field in (
-                "binding_id",
-                "candidate_id",
-                "physical_alignment_id",
-                "geometry_fingerprint",
-                "network_role",
-            ):
-                if str(gpkg_row[field]) != str(properties[field]):
-                    raise ValueError("GeoPackage destination properties differ from replay")
-            projected = gpd.GeoSeries([gpkg_row.geometry], crs=gpkg.crs).to_crs(4326).iloc[0]
-            replay_geometry = shape(destination["geometry"])
-            if (
-                projected.is_empty
-                or replay_geometry.is_empty
-                or projected.hausdorff_distance(replay_geometry) > 1e-8
-                or not math.isclose(
-                    projected.length, replay_geometry.length, rel_tol=1e-8, abs_tol=1e-8
-                )
-            ):
-                raise ValueError("GeoPackage destination geometry differs from replay")
-        for interurban in interurban_features:
-            properties = interurban["properties"]
-            binding_id = str(properties["binding_id"])
-            registry = registry_by_binding.get(binding_id)
-            if (
-                registry is None
-                or registry.get("published_as") != "strategic-spine"
-                or registry.get("feature_id") not in top_spines
-            ):
-                raise ValueError("strategic interurban registry has no published spine")
-            spine = top_spines[str(registry["feature_id"])]
-            replay_ids = spine["properties"].get("replay_binding_ids", [])
-            if isinstance(replay_ids, str):
-                try:
-                    replay_ids = json.loads(replay_ids)
-                except json.JSONDecodeError as error:
-                    raise ValueError(
-                        "published strategic spine binding list is malformed"
-                    ) from error
-            if (
-                not isinstance(replay_ids, list)
-                or binding_id not in replay_ids
-                or spine["properties"].get("physical_alignment_id")
-                != properties.get("physical_alignment_id")
-                or (
-                    spine["properties"].get("geometry_fingerprint") is not None
-                    and spine["properties"].get("geometry_fingerprint")
-                    != properties.get("geometry_fingerprint")
-                )
-            ):
-                raise ValueError("published strategic spine differs from replay binding")
-            spine_geometry = shape(spine["geometry"])
-            replay_geometry = shape(interurban["geometry"])
-            if (
-                spine_geometry.hausdorff_distance(replay_geometry) > 1e-8
-                or not math.isclose(
-                    spine_geometry.length,
-                    replay_geometry.length,
-                    rel_tol=1e-8,
-                    abs_tol=1e-8,
-                )
-            ):
-                raise ValueError("published strategic spine geometry differs from replay")
-        for registry in strategic_registry:
-            feature = next(
-                (
-                    item
-                    for item in replay_features
-                    if item["properties"].get("binding_id") == registry.get("binding_id")
-                ),
-                None,
-            )
-            if feature is None or any(
-                feature["properties"].get(name) != registry.get(name)
-                for name in (
-                    "candidate_id",
-                    "physical_alignment_id",
-                    "geometry_fingerprint",
-                    "network_role",
-                )
-            ):
-                raise ValueError("strategic registry differs from replay binding")
-        data_text = (output / "review-map" / "data.js").read_text(encoding="utf-8")
-        prefix = "window.SATN_DATA = "
-        if not data_text.startswith(prefix) or not data_text.rstrip().endswith(";"):
-            raise ValueError("review-map data is not a SATN JSON assignment")
-        data = json.loads(data_text[len(prefix) :].strip().removesuffix(";"))
-        if data.get("strategic_reference") != strategic:
-            raise ValueError("review-map strategic composite differs from run")
-        strategic_assets = (
-            output / "review-map" / "assets" / "strategic-reference.css",
-            output / "review-map" / "assets" / "strategic-reference.js",
-        )
-        if not all(path.is_file() for path in strategic_assets):
-            raise ValueError("strategic review map is missing its presentation assets")
-        review_html = (output / "review-map" / "index.html").read_text(encoding="utf-8")
-        if (
-            "strategic-reference.css" not in review_html
-            or "strategic-reference.js" not in review_html
-            or "Strategic Reference review" not in review_html
-        ):
-            raise ValueError("strategic review map omits its accessible evidence")
+        _validate_strategic_artifacts(output, strategic, geojson)
     else:
         if any(
-            feature["properties"].get("feature_type")
-            == "strategic-destination-access-connection"
+            feature["properties"].get("feature_type") == "strategic-destination-access-connection"
             for feature in geojson["features"]
         ):
             raise ValueError("ordinary publication contains strategic destination access")

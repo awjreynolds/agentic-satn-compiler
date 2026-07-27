@@ -18,12 +18,61 @@ from satn import compile
 from satn import compile_strategic_reference as public_compile_strategic_reference
 from satn.agents import FakeAgentRuntime
 from satn.pipeline import compile_strategic_reference, compile_strategic_reference_network
-from satn.publisher import _validate_artifacts, _validated_strategic_reference_publication
+from satn.publisher import (
+    _strategic_candidate_evidence_html,
+    _validate_artifacts,
+    _validated_strategic_reference_publication,
+)
 from satn.strategic_reference_application import build_strategic_reference_application_plan
 from satn.strategic_reference_publication import (
     StrategicReferencePublicationRecord,
     build_strategic_reference_publication_record,
 )
+
+
+def test_candidate_evidence_renders_existing_alignment_and_validity() -> None:
+    candidate = {
+        "candidate_id": "a",
+        "topology_state": "satisfied",
+        "served_access_obligation_ids": [],
+        "served_strategic_destination_ids": [],
+    }
+    candidate_set = {
+        "mandatory_access_obligation_ids": [],
+        "mandatory_strategic_destination_ids": [],
+    }
+    selection = {
+        "selected_candidate_id": "a",
+        "comparison_dispositions": [],
+        "precomparison_rejections": [],
+        "criteria": {
+            "directness": [{"candidate_id": "a", "state": "satisfied"}],
+            "existing_alignment": {
+                "proof": {"proof_id": "proof-1"},
+                "comparison": {
+                    "advantages": [
+                        {
+                            "candidate_id": "a",
+                            "recognised_current_share": 0.75,
+                            "reusable_asset_share": 0.5,
+                            "unknown_reasons": ["unknown"],
+                        }
+                    ]
+                },
+            },
+        },
+    }
+    html = _strategic_candidate_evidence_html(
+        candidate,
+        candidate_set,
+        selection,
+        {},
+    )
+    assert "0.75" in html
+    assert "0.5" in html
+    assert "unknown" in html
+    assert "proof-1" in html
+    assert "Topology and route validity</dt><dd>satisfied; satisfied" in html
 
 
 def _record_inputs(tmp_path):
@@ -95,6 +144,34 @@ def test_strategic_publisher_requires_record_and_replay_frames_together(tmp_path
         _validated_strategic_reference_publication(None, missing_record)
 
 
+def test_strategic_prepublication_translated_geometry_is_rejected(tmp_path) -> None:
+    _, _, reference, preparation = _resolved_reference_inputs(tmp_path)
+    compiled = compile_strategic_reference_network(
+        configured_bath_saltford(tmp_path),
+        FakeAgentRuntime(),
+        build_strategic_reference_application_plan(reference, preparation),
+    )
+    compiled.strategic_reference_publication = build_strategic_reference_publication_record(
+        plan=build_strategic_reference_application_plan(reference, preparation),
+        replay_diagnostics=compiled.strategic_reference_diagnostics,
+        area_definition_sha256=compiled.area_definition_sha256,
+        snapshot_manifest_sha256=compiled.snapshot_manifest_sha256,
+        compilation_input_fingerprint=compiled.compilation_input_fingerprint,
+        governed_input_fingerprint=compiled.governed_input_fingerprint,
+        compilation_dependency_manifest=compiled.compilation_dependency_manifest,
+        decision_contract=compiled.decision_contract,
+        decision_ledger_input=compiled.decision_ledger_input,
+        accepted_decisions=compiled.accepted_decisions,
+    )
+    frame = compiled.strategic_interurban_connections.copy()
+    frame.loc[frame.index[0], "geometry"] = translate(frame.geometry.iloc[0], xoff=100)
+    compiled.strategic_interurban_connections = frame
+    with pytest.raises(ValueError, match="geometry differs from plan binding"):
+        _validated_strategic_reference_publication(
+            compiled.strategic_reference_publication, compiled
+        )
+
+
 def test_bath_strategic_reference_publishes_typed_sibling_and_semantic_map(tmp_path) -> None:
     _, _, reference, preparation = _resolved_reference_inputs(tmp_path)
     config = configured_bath_saltford(tmp_path)
@@ -113,6 +190,16 @@ def test_bath_strategic_reference_publishes_typed_sibling_and_semantic_map(tmp_p
     assert "strategic-destination-access-connection" in {
         item["properties"]["feature_type"] for item in network["features"]
     }
+    options = run["strategic_reference"]["alignment_options"]
+    assert options["type"] == "FeatureCollection"
+    assert len(options["features"]) == 3
+    assert {item["geometry"]["type"] for item in options["features"]} == {"LineString"}
+    assert {item["properties"]["disposition"] for item in options["features"]} == {
+        "selected",
+        "complementary",
+        "rejected",
+    }
+    assert {item["properties"]["default_visibility"] for item in options["features"]} == {"hidden"}
     assert "Strategic Reference review" in html
     assert "Independent-travel opportunity is not" in html
     assert "<details>" in html
@@ -128,11 +215,18 @@ def test_bath_strategic_reference_publishes_typed_sibling_and_semantic_map(tmp_p
     assert "independent critique: accepted" in html
     assert "strategic-role-label" in html
     assert "not a safety" in html.lower()
+    assert "Topology and route validity</dt><dd>satisfied; satisfied" in html
+    assert "satisfied; unknown" not in html
     assert (result.output_dir / "review-map" / "assets" / "strategic-reference.css").is_file()
     assert (result.output_dir / "review-map" / "assets" / "strategic-reference.js").is_file()
     script = (result.output_dir / "review-map" / "assets" / "strategic-reference.js").read_text()
     assert "original_feature_type" in script
-    assert 'feature_type = "spine-access-connection"' in script
+    assert 'feature_type = "spine-access-connection"' not in script
+    assert "MutationObserver" in script and "data-map-ready" in script
+    assert "layer-strategic-destination-access" in script
+    assert "layer-strategic-alignment-options" in script
+    assert "setLayoutProperty" in script
+    assert '"match"' in script and '["get", "disposition"]' in script
     assert html.index("strategic-reference.js") < html.rindex("review-map.")
     _validate_artifacts(result.output_dir, config)
 
@@ -151,6 +245,30 @@ def test_strategic_data_composite_tamper_is_rejected(tmp_path) -> None:
     data_path = result.output_dir / "review-map" / "data.js"
     data_path.write_text(data_path.read_text().replace('"interurban-spine"', '"foreign-role"', 1))
     with pytest.raises(ValueError, match="differs from run"):
+        _validate_artifacts(result.output_dir, config)
+
+
+def test_strategic_run_and_data_lineage_tamper_is_rejected(tmp_path) -> None:
+    _, _, reference, preparation = _resolved_reference_inputs(tmp_path)
+    config = configured_bath_saltford(tmp_path)
+    result = compile_strategic_reference(
+        config, build_strategic_reference_application_plan(reference, preparation)
+    )
+    run_path = result.output_dir / "run.json"
+    run = json.loads(run_path.read_text())
+    run["strategic_reference"]["replay"]["interurban_connections"]["features"][0]["properties"][
+        "routing_edge_ids"
+    ] = ["tampered-edge"]
+    run_path.write_text(json.dumps(run))
+    data_path = result.output_dir / "review-map" / "data.js"
+    data = json.loads(
+        data_path.read_text().removeprefix("window.SATN_DATA = ").strip().removesuffix(";")
+    )
+    data["strategic_reference"]["replay"]["interurban_connections"]["features"][0]["properties"][
+        "routing_edge_ids"
+    ] = ["tampered-edge"]
+    data_path.write_text("window.SATN_DATA = " + json.dumps(data) + ";\n")
+    with pytest.raises(ValueError):
         _validate_artifacts(result.output_dir, config)
 
 
