@@ -443,6 +443,12 @@ def test_material_representative_prefers_current_asset_over_earlier_direct_route
     assert rejected.candidate.source_class.value == "other-routable"
     assert retained.candidate.source_class.value == "verified-existing-asset"
     assert rejected.retained_candidate_id == retained.candidate.candidate_id
+    assert retained.routing_edge_ids == ("ncn-left", "ncn-right")
+    assert retained.reverse_routing_edge_ids == ("ncn-right", "ncn-left")
+    assert retained.canonical()["reverse_routing_edge_ids"] == [
+        "ncn-right",
+        "ncn-left",
+    ]
 
 
 def test_material_clustering_prevents_profile_limit_dangling_duplicate_crash(

@@ -137,6 +137,7 @@ class PreparedCandidateRecord:
     candidate: AlignmentCandidateInput
     route_role: str
     routing_edge_ids: tuple[str, ...]
+    reverse_routing_edge_ids: tuple[str, ...]
     generation_rationale: str
     current_asset_share: float
     current_asset_evidence_json: str
@@ -174,6 +175,7 @@ class PreparedCandidateRecord:
             "directness_m": self.candidate.directness_m,
             "geometry_fingerprint": self.candidate.geometry.fingerprint,
             "routing_edge_ids": list(self.routing_edge_ids),
+            "reverse_routing_edge_ids": list(self.reverse_routing_edge_ids),
             "generation_rationale": self.generation_rationale,
             "current_asset_share": self.current_asset_share,
             "current_asset_evidence": json.loads(self.current_asset_evidence_json),
@@ -746,6 +748,7 @@ def _prepare_spine_access_candidate_sets(
                 candidate=candidate,
                 route_role=route_role,
                 routing_edge_ids=tuple(str(item) for item in option.edge_ids),
+                reverse_routing_edge_ids=tuple(str(item) for item in option.reverse_edge_ids),
                 generation_rationale=generation_rationale,
                 current_asset_share=current_asset_share,
                 current_asset_evidence_json=_canonical_json(existing_rows),
