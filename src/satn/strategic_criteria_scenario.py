@@ -28,7 +28,6 @@ from satn.alignment_selection import (
     DecisionProcessMode,
     ExistingAlignmentCriterionSummary,
     GovernedEvidenceSnapshot,
-    NetworkRole,
     PreferredStrategicAlignment,
     ScenarioCompilation,
     ScenarioCriteriaBinding,
@@ -594,9 +593,11 @@ def _build_scenario(
             )
             for item in selections
         ),
-        required_network_role_ids=(
-            NetworkRole.INTERURBAN_SPINE,
-            NetworkRole.STRATEGIC_DESTINATION_ACCESS,
+        required_network_role_ids=tuple(
+            sorted(
+                {item.candidate_set.network_role for item in selections},
+                key=str,
+            )
         ),
         mandatory_network_place_ids=tuple(
             sorted(
@@ -646,13 +647,19 @@ def _validate_preparation(preparation: StrategicCorridorPreparationResult) -> No
     unit_ids = tuple(item.unit_id for item in preparation.units)
     if len(set(unit_ids)) != len(unit_ids):
         raise ValueError("strategic corridor preparation has duplicate units")
-    if preparation.status == "prepared" and {
-        item.unit_role for item in preparation.units
-    } != {
+    roles = {item.unit_role for item in preparation.units}
+    allowed = {
         StrategicCorridorUnitRole.INTERURBAN_SPINE,
         StrategicCorridorUnitRole.STRATEGIC_DESTINATION_ACCESS,
-    }:
-        raise ValueError("prepared strategic corridor requires both role-specific units")
+    }
+    if preparation.status == "prepared" and (
+        StrategicCorridorUnitRole.INTERURBAN_SPINE not in roles
+        or not roles.issubset(allowed)
+    ):
+        raise ValueError(
+            "prepared strategic corridor requires an interurban unit and only "
+            "explicitly admitted supported role-specific units"
+        )
 
 
 def _validate_evidence_identity(

@@ -72,7 +72,64 @@ def test_candidate_evidence_renders_existing_alignment_and_validity() -> None:
     assert "0.5" in html
     assert "unknown" in html
     assert "proof-1" in html
-    assert "Topology and route validity</dt><dd>satisfied; satisfied" in html
+    assert "Topology and route validity</dt><dd>satisfied; valid" in html
+    assert "Route directness</dt><dd>satisfied" in html
+
+
+@pytest.mark.parametrize(
+    ("topology", "education", "expected"),
+    (
+        ("unknown", "satisfied", "unknown-hard-gate"),
+        ("unsatisfied", "satisfied", "invalid-topology"),
+        ("satisfied", "unsatisfied", "education-incomplete"),
+    ),
+)
+def test_candidate_evidence_rederives_exact_hard_gate_validity(
+    topology: str,
+    education: str,
+    expected: str,
+) -> None:
+    html = _strategic_candidate_evidence_html(
+        {
+            "candidate_id": "a",
+            "topology_state": topology,
+            "served_access_obligation_ids": [],
+            "served_strategic_destination_ids": [],
+        },
+        {"mandatory_access_obligation_ids": [], "mandatory_strategic_destination_ids": []},
+        {
+            "selected_candidate_id": "a",
+            "criteria": {
+                "education": {"completeness": [{"candidate_id": "a", "state": education}]},
+                "directness": [{"candidate_id": "a", "state": "satisfied"}],
+            },
+        },
+        {},
+    )
+    assert f"Topology and route validity</dt><dd>{topology}; {expected}" in html
+
+
+def test_candidate_evidence_prefers_recorded_selection_validity() -> None:
+    html = _strategic_candidate_evidence_html(
+        {
+            "candidate_id": "a",
+            "topology_state": "unsatisfied",
+            "served_access_obligation_ids": [],
+            "served_strategic_destination_ids": [],
+        },
+        {"mandatory_access_obligation_ids": [], "mandatory_strategic_destination_ids": []},
+        {
+            "selected_candidate_id": "a",
+            "comparison_dispositions": [{"candidate_id": "a", "validity": "valid"}],
+            "criteria": {
+                "education": {"completeness": [{"candidate_id": "a", "state": "satisfied"}]},
+                "directness": [{"candidate_id": "a", "state": "unsatisfied"}],
+            },
+        },
+        {},
+    )
+    assert "Topology and route validity</dt><dd>unsatisfied; valid" in html
+    assert "Route directness</dt><dd>unsatisfied" in html
 
 
 def _record_inputs(tmp_path):
@@ -215,8 +272,8 @@ def test_bath_strategic_reference_publishes_typed_sibling_and_semantic_map(tmp_p
     assert "independent critique: accepted" in html
     assert "strategic-role-label" in html
     assert "not a safety" in html.lower()
-    assert "Topology and route validity</dt><dd>satisfied; satisfied" in html
-    assert "satisfied; unknown" not in html
+    assert "Topology and route validity</dt><dd>satisfied; valid" in html
+    assert "Route directness</dt><dd>satisfied" in html
     assert (result.output_dir / "review-map" / "assets" / "strategic-reference.css").is_file()
     assert (result.output_dir / "review-map" / "assets" / "strategic-reference.js").is_file()
     script = (result.output_dir / "review-map" / "assets" / "strategic-reference.js").read_text()
@@ -224,9 +281,16 @@ def test_bath_strategic_reference_publishes_typed_sibling_and_semantic_map(tmp_p
     assert 'feature_type = "spine-access-connection"' not in script
     assert "MutationObserver" in script and "data-map-ready" in script
     assert "layer-strategic-destination-access" in script
+    assert "layer-strategic-reference-spine" in script
     assert "layer-strategic-alignment-options" in script
     assert "setLayoutProperty" in script
     assert '"match"' in script and '["get", "disposition"]' in script
+    assert "Solid selected authoritative Reference SATN interurban spine" in script
+    assert "Purple dashed complementary destination access" in script
+    assert "review-only" in script
+    assert 'id="legend-strategic-alignment-options" hidden' in script
+    assert '"strategic-network", "visibility", "none"' in script
+    assert "rawStrategicNetworkControl.checked = false" in script
     assert html.index("strategic-reference.js") < html.rindex("review-map.")
     _validate_artifacts(result.output_dir, config)
 

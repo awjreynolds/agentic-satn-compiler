@@ -26,7 +26,7 @@ from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.pdfgen.canvas import Canvas
 from shapely.geometry import LineString, MultiLineString, mapping, shape
 
-from satn.alignment_selection import CanonicalLineString
+from satn.alignment_selection import CandidateValidity, CanonicalLineString, CriterionState
 from satn.compiler import CompiledNetwork
 from satn.constants import DISCLAIMER, SCHEMA_VERSION
 from satn.content_identity import content_fingerprint
@@ -2455,6 +2455,36 @@ def _strategic_population_html(criteria: object, candidate_id: object) -> str:
     return '<ul class="strategic-population-evidence">' + "".join(rows) + "</ul>"
 
 
+def _strategic_route_validity(
+    candidate: dict[str, object],
+    completeness: dict[str, object],
+    comparison: dict[str, object],
+    precomparison: dict[str, object],
+) -> str:
+    """Render the selection hard-gate validity without inventing a fallback.
+
+    Selection records are authoritative when they contain a validity result.
+    Older or selected records can omit it, so rederive the same four-state
+    hard gate used by ``alignment_selection._derive_selection`` from the
+    published candidate topology and education-completeness evidence.  Route
+    directness is intentionally not a validity gate.
+    """
+
+    for record in (comparison, precomparison):
+        value = record.get("validity")
+        if isinstance(value, str) and value in CandidateValidity._value2member_map_:
+            return value
+    topology = candidate.get("topology_state")
+    education = completeness.get("state")
+    if topology == CriterionState.UNKNOWN.value or education == CriterionState.UNKNOWN.value:
+        return CandidateValidity.UNKNOWN_HARD_GATE.value
+    if topology == CriterionState.UNSATISFIED.value:
+        return CandidateValidity.INVALID_TOPOLOGY.value
+    if education == CriterionState.UNSATISFIED.value:
+        return CandidateValidity.EDUCATION_INCOMPLETE.value
+    return CandidateValidity.VALID.value
+
+
 def _strategic_candidate_evidence_html(
     candidate: dict[str, object],
     candidate_set: dict[str, object],
@@ -2536,12 +2566,11 @@ def _strategic_candidate_evidence_html(
     critique = envelope.get("critique")
     critique = critique if isinstance(critique, dict) else {}
     change_conditions = list(selection.get("change_conditions", []))
-    route_validity = (
-        comparison.get("validity")
-        or precomparison.get("validity")
-        or directness.get("state")
-        or candidate.get("topology_state")
-        or "unknown"
+    route_validity = _strategic_route_validity(
+        candidate,
+        completeness,
+        comparison,
+        precomparison,
     )
     for item in (comparison, precomparison):
         for condition in item.get("change_conditions", []):
@@ -2566,6 +2595,10 @@ def _strategic_candidate_evidence_html(
                 "<dt>Topology and route validity</dt><dd>"
                 f"{escape(_reference_text(candidate.get('topology_state')))}; "
                 f"{escape(_reference_text(route_validity))}</dd>"
+            ),
+            (
+                "<dt>Route directness</dt><dd>"
+                f"{escape(_reference_text(directness.get('state')))}</dd>"
             ),
             "</dl>",
             "<h4>Population reach</h4>",

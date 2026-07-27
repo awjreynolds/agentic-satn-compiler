@@ -124,6 +124,26 @@ def test_replay_materialises_both_roles_and_serves_endpoints_once(tmp_path) -> N
         )
 
 
+def test_replay_materialises_an_interurban_only_governed_plan(tmp_path) -> None:
+    _, _, reference, preparation = _resolved_reference_inputs(
+        tmp_path,
+        interurban_only=True,
+    )
+    _, source, compiled, _, _ = _compiled_inputs(tmp_path / "network")
+    plan = build_strategic_reference_application_plan(reference, preparation)
+    replay = materialise_replay(
+        validate_fresh_replay(plan, preparation),
+        compiled.strategic_spines,
+        compiled.places,
+        RoadGraph(mark_ncn_edges(source["network"], source["context"])),
+    )
+
+    assert len(plan.bindings) == 1
+    assert len(replay.interurban_connections) == 1
+    assert replay.destination_access_connections.empty
+    assert replay.diagnostics["consumed_binding_count"] == 1
+
+
 def test_replay_rederives_substitutions_from_the_validated_plan(tmp_path) -> None:
     plan, preparation, graph, strategic_spines, places = _replay_inputs(tmp_path)
     rejected_spine_id = strategic_spines.loc[

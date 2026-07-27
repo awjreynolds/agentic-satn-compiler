@@ -265,7 +265,7 @@ class StrategicReferenceApplicationPlan(BaseModel):
     evidence_snapshot_fingerprint: str = Field(pattern=_SHA256.pattern)
     area_fingerprint: str = Field(pattern=_SHA256.pattern)
     selection_run_fingerprint: str = Field(pattern=_SHA256.pattern)
-    bindings: tuple[StrategicReferenceCandidateBinding, ...] = Field(min_length=2)
+    bindings: tuple[StrategicReferenceCandidateBinding, ...] = Field(min_length=1)
     replay_directive: Literal["recompile-whole-network-on-ledger-change"] = (
         "recompile-whole-network-on-ledger-change"
     )
@@ -362,7 +362,12 @@ def adopt_strategic_reference_satn(
     *,
     governed_decision: GovernedReferenceSelectionDecision,
 ) -> ReferenceSATNSelection:
-    """Use existing human adoption authority for one exact strategic Scenario."""
+    """Use existing human adoption authority for one exact strategic Scenario.
+
+    Every strategic scenario has an interurban spine. Destination access is
+    present only when preparation explicitly admitted a governed destination
+    unit; it cannot be silently omitted from a scenario that contains one.
+    """
 
     result = replace(result)
     scenario = result.scenario
@@ -374,14 +379,19 @@ def adopt_strategic_reference_satn(
         or result.preparation_fingerprint not in scenario.lineage_fingerprints
         or scenario.network_gaps
         or {item.network_role for item in scenario.candidate_sets}
-        != {
-            NetworkRole.INTERURBAN_SPINE,
-            NetworkRole.STRATEGIC_DESTINATION_ACCESS,
-        }
+        not in (
+            {NetworkRole.INTERURBAN_SPINE},
+            {
+                NetworkRole.INTERURBAN_SPINE,
+                NetworkRole.STRATEGIC_DESTINATION_ACCESS,
+            },
+        )
+        or set(scenario.required_network_role_ids)
+        != {item.network_role for item in scenario.candidate_sets}
     ):
         raise ValueError(
             "strategic Reference adoption requires one exact fully resolved "
-            "interurban-and-destination Scenario"
+            "interurban Scenario and every explicitly admitted destination unit"
         )
     return adopt_reference_satn(
         scenario,
