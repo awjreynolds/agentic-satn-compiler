@@ -31,6 +31,17 @@ core network is not byte-identical to the compiler's full network and a manifest
 cannot hash itself. First build the deterministic lock-free deployment, then create
 the tracked lock from that exact directory, then rebuild normally and verify it:
 
+Compilation identity uses the Area Definition directory as its canonical path
+root. Every configured path and governed-file digest key is serialized as a
+POSIX relative path from that root; snapshot identity is additionally bound by
+the snapshot ID and manifest digest. Absolute checkout prefixes are operational
+locations and never enter the governed fingerprint. Moving a governed input
+changes its relative identity, and changing its bytes changes its digest, so
+both remain fail-closed. This normalization changes fingerprints created by
+earlier versions: existing compiler outputs and provenance locks must be
+regenerated once, using the controlled sequence below, rather than edited or
+accepted as equivalent.
+
 ```sh
 .venv/bin/python scripts/publish_site.py deployments/weca/area.yaml --bootstrap
 .venv/bin/python scripts/deployment_provenance.py generate deployments/weca/area.yaml \

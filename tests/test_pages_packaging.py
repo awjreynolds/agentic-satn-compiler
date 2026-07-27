@@ -627,10 +627,24 @@ deployments:
         encoding="utf-8",
     )
     generate_catalogue_lock(catalogue)
-    release = tmp_path / "satn-pages.zip"
-    package_pages(catalogue, bundles, tmp_path / "pages", release)
+    isolated = tmp_path / "isolated-checkout"
+    isolated_fixture = isolated / "fixture"
+    isolated_bundles = isolated / "bundles"
+    shutil.copytree(fixture, isolated_fixture)
+    shutil.copytree(bundles, isolated_bundles)
+    isolated_catalogue = isolated_fixture / "catalogue.yaml"
+    release = isolated / "satn-pages.zip"
+    package_pages(
+        isolated_catalogue,
+        isolated_bundles,
+        isolated / "pages",
+        release,
+    )
     validated = validate_pages_release(
-        release, tmp_path / "validated", catalogue, allow_non_production=True
+        release,
+        isolated / "validated",
+        isolated_catalogue,
+        allow_non_production=True,
     )
     assert (
         validated.pages_directory / f"deployments/{definition.deployment_slug}/review-map.zip"
