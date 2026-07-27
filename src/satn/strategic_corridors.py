@@ -128,12 +128,13 @@ class PhysicalAlignment:
 
 @dataclass(frozen=True)
 class StrategicCorridorEndpointBinding:
-    """Typed obligations behind candidate mechanics.
+    """Typed endpoint identity, separate from candidate-set obligations.
 
     ``AlignmentCandidateSet`` requires two mechanical endpoints.  A Strategic
     Education Destination is not a Network Place, so a stable surrogate is
-    used only for those mechanics while this binding preserves the exact
-    Network Place and Strategic Destination obligations.
+    used only for those mechanics.  For a destination-access unit the anchor
+    Network Place remains routing and provenance identity in this binding; its
+    only hard candidate-set obligation is the admitted destination.
     """
 
     candidate_endpoints: tuple[str, str]
@@ -213,8 +214,6 @@ class PreparedStrategicCorridorUnit:
         binding = self.endpoint_binding
         if (
             self.candidate_set.endpoints != binding.candidate_endpoints
-            or self.candidate_set.mandatory_network_place_ids
-            != binding.network_place_ids
             or self.candidate_set.mandatory_strategic_destination_ids
             != binding.strategic_destination_ids
             or (
@@ -224,18 +223,18 @@ class PreparedStrategicCorridorUnit:
             != binding.routing_node_ids
         ):
             raise ValueError("strategic corridor unit endpoint binding is stale")
-        if any(
-            candidate.served_network_place_ids != binding.network_place_ids
-            or candidate.served_strategic_destination_ids
-            != binding.strategic_destination_ids
-            for candidate in self.candidate_set.candidates
-        ):
-            raise ValueError("strategic corridor candidate obligations are not exact")
         if self.unit_role is StrategicCorridorUnitRole.INTERURBAN_SPINE:
             if (
                 len(binding.network_place_ids) != 2
                 or binding.strategic_destination_ids
                 or self.strategic_destination_id is not None
+                or self.candidate_set.mandatory_network_place_ids
+                != binding.network_place_ids
+                or any(
+                    candidate.served_network_place_ids != binding.network_place_ids
+                    or candidate.served_strategic_destination_ids
+                    for candidate in self.candidate_set.candidates
+                )
             ):
                 raise ValueError("interurban unit requires exactly two Network Places")
         elif (
@@ -244,9 +243,16 @@ class PreparedStrategicCorridorUnit:
             or (self.strategic_destination_id,)
             != binding.strategic_destination_ids
             or self.strategic_destination_id in binding.candidate_endpoints
+            or self.candidate_set.mandatory_network_place_ids
+            or any(
+                candidate.served_network_place_ids
+                or candidate.served_strategic_destination_ids
+                != binding.strategic_destination_ids
+                for candidate in self.candidate_set.candidates
+            )
         ):
             raise ValueError(
-                "destination unit requires one Network Place and one typed destination"
+                "destination unit requires anchor identity and one typed destination obligation"
             )
 
     def canonical(self) -> dict[str, object]:
@@ -473,7 +479,7 @@ def _interurban_units(
                 graph,
                 unit_role=StrategicCorridorUnitRole.INTERURBAN_SPINE,
                 endpoints=(left["place_id"], right["place_id"]),
-                network_place_ids=(left["place_id"], right["place_id"]),
+                mandatory_network_place_ids=(left["place_id"], right["place_id"]),
                 start_node=start,
                 end_node=end,
                 source_ids=tuple(sorted({left["source_id"], right["source_id"]})),
@@ -601,7 +607,7 @@ def _destination_units(
             graph,
             unit_role=StrategicCorridorUnitRole.STRATEGIC_DESTINATION_ACCESS,
             endpoints=(anchor["place_id"], destination_endpoint),
-            network_place_ids=(anchor["place_id"],),
+            mandatory_network_place_ids=(),
             start_node=anchor["routing_node"],
             end_node=destination_node,
             source_ids=tuple(sorted({anchor["source_id"], site["source_id"]})),
@@ -647,7 +653,7 @@ def _candidate_set(
     *,
     unit_role: StrategicCorridorUnitRole,
     endpoints: tuple[str, str],
-    network_place_ids: tuple[str, ...],
+    mandatory_network_place_ids: tuple[str, ...],
     start_node: str,
     end_node: str,
     source_ids: tuple[str, ...],
@@ -668,7 +674,7 @@ def _candidate_set(
         key = (
             unit_role.value,
             tuple(sorted(endpoints)),
-            tuple(sorted(network_place_ids)),
+            tuple(sorted(mandatory_network_place_ids)),
             strategic_destination_ids,
             tuple(option.edge_ids),
             tuple(option.reverse_edge_ids),
@@ -728,7 +734,7 @@ def _candidate_set(
                 if option.bidirectional
                 else CriterionState.UNSATISFIED
             ),
-            served_network_place_ids=tuple(sorted(network_place_ids)),
+            served_network_place_ids=tuple(sorted(mandatory_network_place_ids)),
             served_strategic_destination_ids=strategic_destination_ids,
             directness_m=float(option.length_km * 1000),
         )
@@ -739,7 +745,7 @@ def _candidate_set(
         network_role=unit_role.network_role,
         endpoints=endpoints,
         candidates=tuple(candidates),
-        mandatory_network_place_ids=tuple(sorted(network_place_ids)),
+        mandatory_network_place_ids=tuple(sorted(mandatory_network_place_ids)),
         mandatory_strategic_destination_ids=strategic_destination_ids,
     )
     admitted = {item.candidate_id for item in candidate_set.admitted_candidates}

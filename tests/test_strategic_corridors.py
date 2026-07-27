@@ -84,7 +84,7 @@ def test_bath_prepares_separate_interurban_and_destination_units(tmp_path: Path)
     assert destination.candidate_set.mandatory_strategic_destination_ids == (
         "bath-spa-university",
     )
-    assert destination.candidate_set.mandatory_network_place_ids == ("bath-edge",)
+    assert not destination.candidate_set.mandatory_network_place_ids
     assert not destination.candidate_set.mandatory_access_obligation_ids
     assert destination.endpoint_binding.network_place_ids == ("bath-edge",)
     assert destination.endpoint_binding.strategic_destination_ids == (
@@ -99,7 +99,7 @@ def test_bath_prepares_separate_interurban_and_destination_units(tmp_path: Path)
         for candidate in destination.candidate_set.candidates
     )
     assert all(
-        candidate.served_network_place_ids == ("bath-edge",)
+        not candidate.served_network_place_ids
         for candidate in destination.candidate_set.candidates
     )
     assert len(destination.candidate_set.candidates) == 1

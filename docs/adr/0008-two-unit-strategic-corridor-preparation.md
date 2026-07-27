@@ -28,10 +28,12 @@ The compiler prepares two sibling units:
 2. `STRATEGIC_DESTINATION_ACCESS` exists only for a current, explicit governed
    admission whose record/version, `site_id`, access-point evidence identifiers,
    current site geometry, explicit graph node, exact incident forward/reverse
-   edges and content binding all agree.  It has one anchor Network Place and
-   only the admitted destination as its Strategic Destination obligation.  A
-   canonical surrogate is used solely for `AlignmentCandidateSet` endpoint
-   mechanics; it is never published as a Network Place.
+   edges and content binding all agree.  Its anchor Network Place is retained
+   solely as typed endpoint/routing identity; it is not a Network Place
+   obligation or a served Network Place.  Its only hard and served obligation
+   is the admitted Strategic Destination.  A canonical surrogate is used
+   solely for `AlignmentCandidateSet` endpoint mechanics; it is never
+   published as a Network Place.
 
 Both units retain forward and reverse graph edges, canonical geometry, source
 and evidence identifiers, deterministic content identities and a physical-
