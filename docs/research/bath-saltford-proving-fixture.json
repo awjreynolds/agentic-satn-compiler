@@ -1,0 +1,46 @@
+{
+  "schema": "satn-bath-saltford-proving/v1",
+  "status": "blocked-before-reference-replay",
+  "scope": "synthetic-minimised-geography-not-current-design",
+  "benchmark": {
+    "candidate_count": 0,
+    "wall_time_seconds": null,
+    "wall_time_status": "not-persisted: test-host dependent; no B&NES or WECA performance claim",
+    "stages": [
+      "fixture-snapshot",
+      "strict-population-loader",
+      "strict-education-loader",
+      "population-500m-1000m-comparison",
+      "education-access-assessment",
+      "compiler-candidate-preparation"
+    ]
+  },
+  "observed_evidence": {
+    "population": {
+      "a4_related_500m_residents": 820,
+      "railway_path_500m_residents": 620,
+      "a4_related_1000m_residents": 820,
+      "railway_path_1000m_residents": 1420,
+      "shared_residents": {"500m": 420, "1000m": 820},
+      "ordering_flips_at_1000m": true,
+      "interpretation": "whole-OA population proximity, not demand, access or a walking-time claim"
+    },
+    "education": {
+      "strategic_destination": "Bath Spa University (synthetic admitted destination)",
+      "independent_travel": "separate evidence field; no safety or independent-access claim",
+      "existing_alignment": "current NCN recognition is retained; condition, legal access, cost and feasibility remain unknown"
+    }
+  },
+  "implementation_gap": {
+    "id": "direct-strategic-spine-psa-promotion",
+    "blocking_acceptance": ["14.1", "14.11", "14.12"],
+    "observed": "A current NCN/greenway is correctly derived as a Strategic Spine. Bath edge and Saltford therefore receive direct Strategic Spine attachments, and the current PSA preparer emits zero candidate sets.",
+    "exact_seam": "spine_access_candidate_preparation._prepare_spine_access_candidate_sets promotes only parent_role=spine-access-connection community rows; direct parent_role=strategic-spine rows are recorded as out-of-scope. CriteriaAssemblyInput accepts destination evidence supplied by a caller but neither routes destination access nor creates a complementary connection.",
+    "smallest_next_slice": "Add a governed destination-access/corridor candidate-preparation seam for declared Strategic Education Destinations and relevant direct-spine communities. It must generate finite route options, bind school/destination obligations, and classify substitute versus complementary from exact role/obligation coverage before Reference adoption/replay.",
+    "non_claims": [
+      "No route is asserted safe, feasible, funded, legally accessible or adopted.",
+      "No automatic Bath Spa University connection is claimed by the present compiler.",
+      "This fixture establishes no B&NES or WECA runtime baseline."
+    ]
+  }
+}

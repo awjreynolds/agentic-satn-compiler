@@ -1,0 +1,7 @@
+{"type":"FeatureCollection","crs":"EPSG:27700","features":[
+{"type":"Feature","properties":{"OA21CD":"E00013701"},"geometry":{"type":"Point","coordinates":[372300,165900]}},
+{"type":"Feature","properties":{"OA21CD":"E00013702"},"geometry":{"type":"Point","coordinates":[371920,167700]}},
+{"type":"Feature","properties":{"OA21CD":"E00013703"},"geometry":{"type":"Point","coordinates":[371460,166660]}},
+{"type":"Feature","properties":{"OA21CD":"E00013704"},"geometry":{"type":"Point","coordinates":[371800,168130]}},
+{"type":"Feature","properties":{"OA21CD":"E00013705"},"geometry":{"type":"Point","coordinates":[370030,166860]}}
+]}
