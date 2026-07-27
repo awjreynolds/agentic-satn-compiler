@@ -1286,8 +1286,8 @@
             referenceControl.checked ? "visible" : "none"
           );
         }
-        const legend = document.getElementById("legend-reference-options");
-        if (legend) legend.hidden = !referenceControl.checked;
+        const status = document.getElementById("reference-options-status");
+        if (status) status.hidden = !referenceControl.checked;
       });
     }
     document.querySelectorAll(".info-button").forEach((button) => {

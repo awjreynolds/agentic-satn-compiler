@@ -1386,6 +1386,8 @@ def _apply_reference_selection_provenance(
         "logical_connection_id": binding.logical_connection_id,
         "selected_candidate_id": binding.selected_candidate_id,
         "selected_route_role": binding.route_role,
+        "routing_edge_ids": list(candidate.option.edge_ids),
+        "reverse_routing_edge_ids": list(candidate.option.reverse_edge_ids),
         "deterministic_topography_status": comparison_status,
         "deterministic_recommended_role": recommendation,
     }

@@ -24,8 +24,9 @@ from reportlab.lib.colors import HexColor
 from reportlab.lib.pagesizes import A2, A3, A4, landscape
 from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.pdfgen.canvas import Canvas
-from shapely.geometry import MultiLineString, mapping, shape
+from shapely.geometry import LineString, MultiLineString, mapping, shape
 
+from satn.alignment_selection import CanonicalLineString
 from satn.compiler import CompiledNetwork
 from satn.constants import DISCLAIMER, SCHEMA_VERSION
 from satn.cross_spine import validate_cross_spine_publication
@@ -366,6 +367,11 @@ def _validated_reference_publication(
         raise ValueError("Reference publication application plan is unavailable")
     plan = ReferenceApplicationPlan.model_validate(plan_payload)
     bindings = {binding.logical_connection_id: binding for binding in plan.candidate_bindings}
+    selected_candidates = {
+        candidate.candidate_id: candidate
+        for candidate_set in record.reference_selection.scenario.candidate_sets
+        for candidate in candidate_set.admitted_candidates
+    }
     tagged_rows: dict[str, tuple[object, dict[str, object]]] = {}
     regenerated_ids: set[str] = set()
     for row in compiled.spine_access_connections.itertuples():
@@ -409,6 +415,8 @@ def _validated_reference_publication(
             "logical_connection_id": logical_id,
             "selected_candidate_id": binding.selected_candidate_id,
             "selected_route_role": binding.route_role,
+            "routing_edge_ids": list(binding.routing_edge_ids),
+            "reverse_routing_edge_ids": list(binding.reverse_routing_edge_ids),
         }
         for field, expected in expected_application.items():
             if application.get(field) != expected:
@@ -417,10 +425,63 @@ def _validated_reference_publication(
             "place_id": binding.community_place_id,
             "parent_place_id": binding.parent_place_id,
             "root_spine_id": binding.root_spine_id,
+            "community_attachment_node": binding.routing_start_node_id,
+            "target_attachment_node": binding.routing_end_node_id,
+            "topography_selected_role": binding.route_role,
         }
         for field, expected in expected_row_fields.items():
             if str(getattr(row, field)) != expected:
                 raise ValueError(f"Compiled Reference application row is stale for {field}")
+        try:
+            alignment_options = json.loads(str(row.alignment_options))
+        except json.JSONDecodeError as error:
+            raise ValueError("Compiled Reference alignment options are not valid JSON") from error
+        if not isinstance(alignment_options, list):
+            raise ValueError("Compiled Reference alignment options are not a list")
+        selected_options = [
+            option
+            for option in alignment_options
+            if isinstance(option, dict) and option.get("selected") is True
+        ]
+        selected_candidate = selected_candidates.get(binding.selected_candidate_id)
+        if selected_candidate is None:
+            raise ValueError("Compiled Reference binding has no selected Scenario candidate")
+        if (
+            len(selected_options) != 1
+            or selected_options[0].get("role") != binding.route_role
+            or selected_options[0].get("reverse_edge_ids") != list(binding.reverse_routing_edge_ids)
+            or selected_options[0].get("length_km")
+            != round(selected_candidate.directness_m / 1000, 3)
+        ):
+            raise ValueError("Compiled Reference selected alignment option is stale")
+        geometry = row.geometry
+        if (
+            compiled.spine_access_connections.crs is None
+            or not isinstance(geometry, LineString)
+            or geometry.is_empty
+            or not geometry.is_simple
+        ):
+            raise ValueError("Compiled Reference application geometry is empty or noncanonical")
+        try:
+            canonical_geometry = (
+                gpd.GeoSeries(
+                    [geometry],
+                    crs=compiled.spine_access_connections.crs,
+                )
+                .to_crs(27700)
+                .iloc[0]
+            )
+            geometry_fingerprint = CanonicalLineString(
+                coordinates=tuple((float(x), float(y)) for x, y in canonical_geometry.coords)
+            ).fingerprint
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "Compiled Reference application geometry is not canonical linework"
+            ) from error
+        if geometry_fingerprint != binding.geometry_fingerprint:
+            raise ValueError(
+                "Compiled Reference application geometry differs from its selected route"
+            )
         if binding.source_access_connection_id in source_to_regenerated:
             raise ValueError("Reference application plan duplicates a source access connection")
         source_to_regenerated[binding.source_access_connection_id] = str(row.access_connection_id)

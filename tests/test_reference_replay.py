@@ -569,6 +569,8 @@ def test_replay_applies_exact_route_only_after_its_parent_frontier_exists() -> N
         "plan_fingerprint": plan.plan_fingerprint,
         "selected_candidate_id": plan.candidate_bindings[0].selected_candidate_id,
         "selected_route_role": "ncn-informed",
+        "routing_edge_ids": ["child-parent"],
+        "reverse_routing_edge_ids": ["parent-child"],
     }
     assert assembly.compilation_diagnostics["reference_application"] == {
         "contract": "satn-reference-application-plan/v1",

@@ -8,7 +8,8 @@ from pathlib import Path
 
 import geopandas as gpd
 import pytest
-from shapely.geometry import Polygon
+from playwright.sync_api import sync_playwright
+from shapely.geometry import LineString, Polygon
 from test_backbone_assembly import parallel_spine_source
 from test_reference_application import reference_for_area
 from test_reference_replay import (
@@ -241,6 +242,132 @@ def test_publisher_rejects_freshly_refingerprinted_cross_lineage_records(
         with pytest.raises(ValueError, match="not anchored"):
             publish(config, compiled, "reference-forged")
         assert (config.publication.output_dir / "run.json").read_bytes() == previous
+
+
+def test_publisher_rejects_mutated_final_reference_route_rows_before_serialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, reference, preparation = _reference_fixture(tmp_path)
+    monkeypatch.setattr("satn.pipeline.load_snapshot", lambda area: _publishable_parallel_source())
+    compiled = compile_reference_network(
+        config,
+        FakeAgentRuntime(),
+        reference,
+        preparation,
+    )
+    publish(config, compiled, "reference-good")
+    previous = (config.publication.output_dir / "run.json").read_bytes()
+    original = compiled.spine_access_connections.copy(deep=True)
+    reference_indices = [
+        index
+        for index, row in original.iterrows()
+        if "reference_application" in json.loads(str(row["provenance"]))
+    ]
+    assert reference_indices
+    index = reference_indices[0]
+    temporary_before = set(
+        config.publication.output_dir.parent.glob(f".{config.publication.output_dir.name}-*")
+    )
+
+    for mutation in (
+        "geometry",
+        "community-node",
+        "target-node",
+        "row-role",
+        "provenance-role",
+        "forward-edges",
+        "reverse-edges",
+        "option-reverse-edges",
+        "option-directness",
+    ):
+        rows = original.copy(deep=True)
+        if mutation == "geometry":
+            geometry = rows.at[index, "geometry"]
+            rows.at[index, "geometry"] = LineString(
+                [(float(x) + 0.001, float(y)) for x, y in geometry.coords]
+            )
+        elif mutation == "community-node":
+            rows.at[index, "community_attachment_node"] = "forged-community-node"
+        elif mutation == "target-node":
+            rows.at[index, "target_attachment_node"] = "forged-target-node"
+        elif mutation == "row-role":
+            rows.at[index, "topography_selected_role"] = "forged-route-role"
+        elif mutation in {
+            "provenance-role",
+            "forward-edges",
+            "reverse-edges",
+        }:
+            provenance = json.loads(str(rows.at[index, "provenance"]))
+            application = provenance["reference_application"]
+            if mutation == "provenance-role":
+                application["selected_route_role"] = "forged-route-role"
+            elif mutation == "forward-edges":
+                application["routing_edge_ids"] = ["forged-forward-edge"]
+            else:
+                application["reverse_routing_edge_ids"] = ["forged-reverse-edge"]
+            rows.at[index, "provenance"] = json.dumps(provenance, sort_keys=True)
+        else:
+            options = json.loads(str(rows.at[index, "alignment_options"]))
+            selected = next(option for option in options if option.get("selected") is True)
+            if mutation == "option-reverse-edges":
+                selected["reverse_edge_ids"] = ["forged-reverse-edge"]
+            else:
+                selected["length_km"] = float(selected["length_km"]) + 0.001
+            rows.at[index, "alignment_options"] = json.dumps(options, sort_keys=True)
+        compiled.spine_access_connections = rows
+
+        with pytest.raises(ValueError, match="Compiled Reference"):
+            publish(config, compiled, f"reference-forged-{mutation}")
+        assert (config.publication.output_dir / "run.json").read_bytes() == previous
+        assert (
+            set(
+                config.publication.output_dir.parent.glob(
+                    f".{config.publication.output_dir.name}-*"
+                )
+            )
+            == temporary_before
+        )
+
+
+@pytest.mark.browser
+def test_reference_option_legend_remains_visible_while_layer_is_active(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, reference, preparation = _reference_fixture(tmp_path)
+    monkeypatch.setattr("satn.pipeline.load_snapshot", lambda area: _publishable_parallel_source())
+    result = compile_reference(config, reference, preparation)
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1440, "height": 900})
+        page.route("https://tile.openstreetmap.org/**", lambda route: route.abort())
+        page.goto(result.artifacts["review_map"].as_uri())
+        page.wait_for_function("document.documentElement.dataset.mapReady === 'true'")
+        control = page.locator("#layer-reference-options")
+        status = page.locator("#reference-options-status")
+        reference_information = page.get_by_role(
+            "button",
+            name="About reviewed Reference alternatives",
+        )
+
+        assert status.is_hidden()
+        control.check()
+        assert status.is_visible()
+        assert all(
+            meaning in status.inner_text() for meaning in ("selected", "complementary", "rejected")
+        )
+
+        reference_information.click()
+        page.locator("#map").hover()
+        assert status.is_visible()
+        page.get_by_role("button", name="About the strategic network").click()
+        assert status.is_visible()
+
+        control.uncheck()
+        assert status.is_hidden()
+        browser.close()
 
 
 def test_reference_publication_failure_preserves_previous_output(

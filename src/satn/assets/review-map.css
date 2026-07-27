@@ -35,6 +35,13 @@ legend, h2 { font-size: .9rem; font-weight: 750; }
 .layer-row { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 1.7rem; align-items: center; min-height: 2rem; }
 .layer-row label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .layer-load-status { display: block; margin-left: 1.45rem; color: var(--muted); font-size: .68rem; line-height: 1.2; white-space: normal; }
+.reference-options-status {
+  grid-column: 1 / -1;
+  margin: .25rem 0 .45rem 1.45rem;
+  color: #34495e;
+  font-size: .72rem;
+  line-height: 1.35;
+}
 #deployment-context h2 { margin: 0 0 .25rem; }
 #deployment-context p { margin: .35rem 0; font-size: .78rem; }
 .info-button {
