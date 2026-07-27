@@ -1013,4 +1013,6 @@ def _edge_row_sort_key(item: tuple[object, pd.Series]) -> tuple[str, ...]:
 
 
 def _coordinate_id(coordinate: tuple[float, ...]) -> str:
-    return f"xy:{coordinate[0]:.7f}:{coordinate[1]:.7f}"
+    x = round(float(coordinate[0]), 7)
+    y = round(float(coordinate[1]), 7)
+    return f"xy:{0.0 if x == 0 else x:.7f}:{0.0 if y == 0 else y:.7f}"

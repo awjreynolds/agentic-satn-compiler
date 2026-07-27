@@ -22,6 +22,10 @@ from satn.backbone import (
     _assemble_backbone_outward,
     assemble_backbone_outward,
 )
+from satn.content_identity import (
+    CANONICAL_GEOMETRY_VERSION,
+    canonical_network_geometry_fingerprint,
+)
 from satn.cross_spine import CrossSpineProgress, resolve_cross_spine_assembly
 from satn.evidence import (
     PUBLIC_CYCLE_ROUTE_TYPES,
@@ -1569,7 +1573,10 @@ def _strategic_spines(context: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
             )
             is_a_road = spine_kind == "a-road"
             for geometry in continuous_linework(corridor.geometry.union_all()):
-                segment_key = hashlib.sha256(geometry.wkb).hexdigest()[:12]
+                segment_fingerprint = canonical_network_geometry_fingerprint(
+                    geometry,
+                    context.crs,
+                )
                 rows.append(
                     {
                         "spine_id": _stable_role_id(
@@ -1577,7 +1584,7 @@ def _strategic_spines(context: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
                             spine_kind,
                             evidence_id,
                             source_id,
-                            segment_key,
+                            segment_fingerprint,
                         ),
                         "network_role": "strategic-spine",
                         "spine_kind": spine_kind,
@@ -1618,13 +1625,31 @@ def _strategic_spines(context: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
                                 "source_ids": source_ids,
                                 "source_feature_type": feature_type,
                                 "network_scope": NetworkScope.RURAL.value,
+                                "canonical_geometry_contract": (
+                                    CANONICAL_GEOMETRY_VERSION
+                                ),
+                                "canonical_geometry_sha256": segment_fingerprint,
                             },
                             sort_keys=True,
                         ),
                         "geometry": geometry,
                     }
                 )
-    return gpd.GeoDataFrame(rows, columns=columns, geometry="geometry", crs=context.crs)
+    strategic_spines = gpd.GeoDataFrame(
+        rows,
+        columns=columns,
+        geometry="geometry",
+        crs=context.crs,
+    )
+    duplicate_ids = strategic_spines[
+        strategic_spines["spine_id"].duplicated(keep=False)
+    ]["spine_id"].astype(str)
+    if not duplicate_ids.empty:
+        raise ValueError(
+            "Strategic Spine canonical identifier collision: "
+            f"{sorted(duplicate_ids)[0]}"
+        )
+    return strategic_spines
 
 
 def _network_scope(value: object) -> NetworkScope:

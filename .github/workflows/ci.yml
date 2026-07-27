@@ -24,3 +24,17 @@ jobs:
       - run: uv run playwright install --with-deps chromium
       - run: uv run pytest --browser -m browser tests/test_review_map_browser.py
       - run: uv build
+
+  portable-network-identifiers:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --frozen --all-groups
+      - run: >-
+          uv run pytest
+          tests/test_content_identity.py
+          tests/test_backbone_assembly.py::test_cross_platform_identifier_and_provenance_fixture_is_exact
