@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
 import geopandas as gpd
 import pytest
 from shapely.geometry import LineString, Point
+from test_alignment_selection import profile as scenario_profile
 from test_backbone_assembly import parallel_spine_source
+from test_reference_application import adopted_reference, reference_for_area
 
 from satn.agents import AgentRole, CompilationGate, FakeAgentRuntime
 from satn.alignment_selection import CanonicalLineString
@@ -18,6 +21,8 @@ from satn.models import CouncilConfig, TrafficLight
 from satn.reference_application import (
     ReferenceApplicationCandidateBinding,
     ReferenceApplicationPlan,
+    ValidatedReferenceApplication,
+    build_validated_reference_application,
 )
 from satn.routing import RoadGraph
 
@@ -121,6 +126,12 @@ def _empty() -> gpd.GeoDataFrame:
     return gpd.GeoDataFrame({"place_id": []}, geometry=[], crs="EPSG:27700")
 
 
+def _configured_area() -> CouncilConfig:
+    config = CouncilConfig.from_yaml(PROJECT / "examples" / "fixture" / "council.yaml")
+    config.compilation.network_selection = scenario_profile(review_when=[])
+    return config
+
+
 def _plan(graph: RoadGraph, *, route_role: str = "ncn-informed") -> ReferenceApplicationPlan:
     option = graph.option("child", "parent", route_role)
     assert option is not None
@@ -149,28 +160,43 @@ def _plan(graph: RoadGraph, *, route_role: str = "ncn-informed") -> ReferenceApp
         prepared_candidate_record_fingerprint="e" * 64,
         prepared_connection_fingerprint="f" * 64,
     )
+    config = _configured_area()
+    area_sha256 = hashlib.sha256(config.config_path.read_bytes()).hexdigest()
+    profile_fingerprint = config.compilation.network_selection_fingerprint
+    assert profile_fingerprint is not None
     return ReferenceApplicationPlan(
         reference_selection_fingerprint="1" * 64,
         reference_decision_fingerprint="2" * 64,
         preparation_fingerprint="3" * 64,
         preparation_evidence_fingerprints=("4" * 64,),
         scenario_fingerprint="5" * 64,
-        scenario_area_fingerprint="6" * 64,
-        profile_fingerprint="7" * 64,
+        scenario_area_fingerprint=area_sha256,
+        profile_fingerprint=profile_fingerprint,
         evidence_snapshot_fingerprint="8" * 64,
         selection_run_fingerprint="9" * 64,
         candidate_bindings=(binding,),
     )
 
 
+def _context(plan: ReferenceApplicationPlan) -> ValidatedReferenceApplication:
+    return ValidatedReferenceApplication(
+        plan=plan,
+        area_definition_sha256=plan.scenario_area_fingerprint,
+        profile_fingerprint=plan.profile_fingerprint,
+        baseline_preparation_fingerprint=plan.preparation_fingerprint,
+        baseline_evidence_fingerprints=plan.preparation_evidence_fingerprints,
+        governed_input_fingerprint="a" * 64,
+    )
+
+
 def _assembly(
-    plan: ReferenceApplicationPlan | None | object = _OMITTED,
+    context: ValidatedReferenceApplication | ReferenceApplicationPlan | None | object = _OMITTED,
     *,
     topography: bool = False,
     reject_reference: bool = False,
     crs: str = "EPSG:27700",
 ):
-    config = CouncilConfig.from_yaml(PROJECT / "examples" / "fixture" / "council.yaml")
+    config = _configured_area()
     runtime = FakeAgentRuntime()
     if reject_reference:
         config.compilation.agent.response_mode = "direct-runtime"
@@ -184,7 +210,13 @@ def _assembly(
             }
         )
     kwargs = (
-        {} if plan is _OMITTED else {"reference_application_plan": plan}
+        {}
+        if context is _OMITTED
+        else {
+            "validated_reference_application": context,
+            "area_config": config,
+            "governed_input_fingerprint": "a" * 64,
+        }
     )
     return assemble_backbone_outward(
         _communities(crs),
@@ -204,7 +236,7 @@ def test_replay_applies_exact_route_only_after_its_parent_frontier_exists() -> N
     graph = _graph()
     plan = _plan(graph)
 
-    assembly = _assembly(plan)
+    assembly = _assembly(_context(plan))
 
     child = assembly.connections.set_index("place_id").loc["child"]
     child_obligation = assembly.obligations.set_index("place_id").loc["child"]
@@ -275,7 +307,7 @@ def test_compile_network_omitted_plan_and_explicit_none_are_equivalent() -> None
         config,
         parallel_spine_source(),
         FakeAgentRuntime(),
-        reference_application_plan=None,
+        validated_reference_application=None,
     )
 
     assert omitted.spine_access_connections.equals(explicit.spine_access_connections)
@@ -283,6 +315,58 @@ def test_compile_network_omitted_plan_and_explicit_none_are_equivalent() -> None
     assert omitted.spine_access_branches.equals(explicit.spine_access_branches)
     assert omitted.compilation_diagnostics == explicit.compilation_diagnostics
     assert "reference_application" not in omitted.compilation_diagnostics
+
+
+def test_raw_reference_plan_has_no_public_compile_or_assembly_authority() -> None:
+    raw_plan = _plan(_graph())
+
+    with pytest.raises(TypeError, match="ValidatedReferenceApplication"):
+        _assembly(raw_plan)
+    config = CouncilConfig.from_yaml(PROJECT / "examples" / "fixture" / "council.yaml")
+    with pytest.raises(TypeError, match="ValidatedReferenceApplication"):
+        compile_network(
+            config,
+            parallel_spine_source(),
+            FakeAgentRuntime(),
+            governed_input_fingerprint="a" * 64,
+            validated_reference_application=raw_plan,  # type: ignore[arg-type]
+        )
+
+
+def test_exact_prepared_record_builds_context_and_replays_through_compile_network() -> None:
+    config = _configured_area()
+    source = parallel_spine_source()
+    baseline = compile_network(
+        config,
+        source,
+        FakeAgentRuntime(),
+        governed_input_fingerprint="a" * 64,
+    )
+    baseline_preparation = baseline.spine_access_candidate_preparation
+    assert baseline_preparation is not None
+    item = baseline_preparation.prepared_spine_access_connections[0]
+    reference, exact_preparation = adopted_reference(item)
+    reference = reference_for_area(reference, config)
+    context = build_validated_reference_application(
+        reference,
+        exact_preparation,
+        exact_preparation,
+        config,
+        "a" * 64,
+    )
+
+    replayed = compile_network(
+        config,
+        parallel_spine_source(),
+        FakeAgentRuntime(),
+        governed_input_fingerprint="a" * 64,
+        validated_reference_application=context,
+    )
+
+    diagnostics = replayed.compilation_diagnostics["reference_application"]
+    assert diagnostics["status"] == "applied"
+    assert diagnostics["plan_fingerprint"] == context.plan.plan_fingerprint
+    assert diagnostics["applied_count"] == 1
 
 
 def _rebuilt_plan(
@@ -303,20 +387,20 @@ def test_replay_fails_closed_for_a_route_edge_mismatch() -> None:
     plan = _rebuilt_plan(_plan(_graph()), routing_edge_ids=("drifted-edge",))
 
     with pytest.raises(ValueError, match="forward route edges"):
-        _assembly(plan)
+        _assembly(_context(plan))
 
 
 def test_replay_fails_closed_for_a_route_geometry_mismatch() -> None:
     plan = _rebuilt_plan(_plan(_graph()), geometry_fingerprint="0" * 64)
 
     with pytest.raises(ValueError, match="geometry fingerprint"):
-        _assembly(plan)
+        _assembly(_context(plan))
 
 
 def test_replay_geometry_verification_uses_preparation_canonical_crs() -> None:
     graph = _graph("EPSG:4326")
 
-    assembly = _assembly(_plan(graph), crs="EPSG:4326")
+    assembly = _assembly(_context(_plan(graph)), crs="EPSG:4326")
 
     assert assembly.connections.set_index("place_id").loc["child", "status"] == "validated"
 
@@ -339,28 +423,51 @@ def test_replay_rejects_duplicate_child_bindings_before_routing() -> None:
     duplicate_plan = ReferenceApplicationPlan.model_validate(plan_payload)
 
     with pytest.raises(ValueError, match="duplicate Community"):
-        _assembly(duplicate_plan)
+        _assembly(_context(duplicate_plan))
 
 
 def test_reference_route_remains_selected_despite_other_topography_role() -> None:
     plan = _plan(_graph(), route_role="direct")
 
-    assembly = _assembly(plan, topography=True)
+    assembly = _assembly(_context(plan), topography=True)
 
     child = assembly.connections.set_index("place_id").loc["child"]
     assert child["topography_comparison_status"] == "evidence-unavailable"
     assert child["topography_selected_role"] == "direct"
     assert "recommended ncn-informed" in child["selection_reason"]
     assert "governed Reference candidate" in child["topography_comparison_rationale"]
+    options = json.loads(child["alignment_options"])
+    assert [item["role"] for item in options if item["selected"]] == ["direct"]
+    assert next(item for item in options if item["role"] == "direct")[
+        "reference_selection_scope"
+    ] == "within-deterministic-comparison"
+
+
+@pytest.mark.parametrize("route_role", ("b-road-corridor", "other-routable-corridor"))
+def test_reference_only_role_is_selected_outside_deterministic_topography(
+    route_role: str,
+) -> None:
+    assembly = _assembly(
+        _context(_plan(_graph(), route_role=route_role)),
+        topography=True,
+    )
+
+    child = assembly.connections.set_index("place_id").loc["child"]
+    options = json.loads(child["alignment_options"])
+    selected = [item for item in options if item["selected"]]
+    assert [item["role"] for item in selected] == [route_role]
+    assert selected[0]["reference_selection_scope"] == "outside-deterministic-comparison"
+    assert selected[0]["topography"] is None
+    assert child["topography_comparison_status"] == "evidence-unavailable"
 
 
 def test_replay_fails_closed_when_a_planned_parent_cannot_become_a_frontier() -> None:
     plan = _rebuilt_plan(_plan(_graph()), parent_place_id="child")
 
     with pytest.raises(ValueError, match="unconsumed"):
-        _assembly(plan)
+        _assembly(_context(plan))
 
 
 def test_replay_does_not_fall_back_after_the_gate_rejects_a_planned_route() -> None:
     with pytest.raises(ValueError, match="gate rejected planned"):
-        _assembly(_plan(_graph()), reject_reference=True)
+        _assembly(_context(_plan(_graph())), reject_reference=True)

@@ -24,6 +24,7 @@ from satn.models import (
     AccessPointStatus,
     AccessServiceStatus,
     AgentRecord,
+    AreaConfig,
     PublishedFeatureReference,
     TopographyConfig,
     TrafficLight,
@@ -31,6 +32,8 @@ from satn.models import (
 from satn.reference_application import (
     ReferenceApplicationCandidateBinding,
     ReferenceApplicationPlan,
+    ValidatedReferenceApplication,
+    validate_reference_application_for_use,
 )
 from satn.routing import (
     RoadGraph,
@@ -583,7 +586,9 @@ def assemble_backbone_outward(
     elevation_evidence: gpd.GeoDataFrame | None = None,
     topography_config: TopographyConfig | None = None,
     *,
-    reference_application_plan: ReferenceApplicationPlan | None = None,
+    validated_reference_application: ValidatedReferenceApplication | None = None,
+    area_config: AreaConfig | None = None,
+    governed_input_fingerprint: str = "",
 ) -> BackboneAssembly:
     """Grow one deterministic served frontier from every Strategic Spine concurrently."""
     crs = communities.crs or schools.crs or strategic_spines.crs or graph.crs
@@ -597,10 +602,19 @@ def assemble_backbone_outward(
     rejected_by_place: dict[str, list[AgentRecord]] = {}
     candidate_heap: list[tuple[tuple[object, ...], int, _Candidate | _CandidateBound]] = []
     sequence = 0
-    reference_replay = (
-        _ReferenceReplayState.create(reference_application_plan)
-        if reference_application_plan is not None
+    if validated_reference_application is not None and area_config is None:
+        raise ValueError("Reference replay requires the current Area Configuration")
+    reference_plan = (
+        validate_reference_application_for_use(
+            validated_reference_application,
+            area_config,
+            governed_input_fingerprint,
+        )
+        if validated_reference_application is not None and area_config is not None
         else None
+    )
+    reference_replay = (
+        _ReferenceReplayState.create(reference_plan) if reference_plan is not None else None
     )
     if reference_replay is not None:
         foreign_children = sorted(set(reference_replay.bindings_by_child) - set(unserved))
@@ -1253,23 +1267,7 @@ def _reference_candidate(
         raise ValueError(
             "Reference application replay attachment drifted from the prepared routing nodes"
         )
-    option = graph.option(
-        binding.routing_start_node_id,
-        binding.routing_end_node_id,
-        binding.route_role,
-    )
-    if option is None or not option.bidirectional:
-        raise ValueError("Reference application replay route is absent or not bidirectional")
-    if tuple(option.edge_ids) != binding.routing_edge_ids:
-        raise ValueError("Reference application replay forward route edges no longer match")
-    if tuple(option.reverse_edge_ids) != binding.reverse_routing_edge_ids:
-        raise ValueError("Reference application replay reverse route edges no longer match")
-    canonical_geometry = gpd.GeoSeries([option.geometry], crs=graph.crs).to_crs(27700).iloc[0]
-    fingerprint = CanonicalLineString(
-        coordinates=tuple((float(x), float(y)) for x, y in canonical_geometry.coords)
-    ).fingerprint
-    if fingerprint != binding.geometry_fingerprint:
-        raise ValueError("Reference application replay route geometry fingerprint drifted")
+    option = _validated_reference_option(binding, graph, checkpoint="candidate creation")
     return _Candidate(
         rank=(
             round(choice.total_distance_km, 9),
@@ -1304,29 +1302,45 @@ def _reference_selected_candidate(
 ) -> _Candidate:
     """Keep deterministic topography evidence, but apply the governed exact route."""
 
+    option = _validated_reference_option(binding, graph, checkpoint="final selection")
+    return replace(candidate, option=option)
+
+
+def _validated_reference_option(
+    binding: ReferenceApplicationCandidateBinding,
+    graph: RoadGraph,
+    *,
+    checkpoint: str,
+) -> RouteOption:
+    """Recreate and exactly verify one adopted route at every mutation checkpoint."""
+
     option = graph.option(
         binding.routing_start_node_id,
         binding.routing_end_node_id,
         binding.route_role,
     )
-    if option is None or not option.bidirectional:
-        raise ValueError("Reference application replay route is absent or not bidirectional")
-    if (
-        tuple(option.edge_ids) != binding.routing_edge_ids
-        or tuple(option.reverse_edge_ids) != binding.reverse_routing_edge_ids
-    ):
-        raise ValueError("Reference application replay route edges drifted before selection")
+    if option is None or option.role != binding.route_role or not option.bidirectional:
+        raise ValueError(
+            f"Reference application replay route is absent, wrong-role or not "
+            f"bidirectional at {checkpoint}"
+        )
+    if tuple(option.edge_ids) != binding.routing_edge_ids:
+        raise ValueError(
+            f"Reference application replay forward route edges drifted at {checkpoint}"
+        )
+    if tuple(option.reverse_edge_ids) != binding.reverse_routing_edge_ids:
+        raise ValueError(
+            f"Reference application replay reverse route edges drifted at {checkpoint}"
+        )
     canonical_geometry = gpd.GeoSeries([option.geometry], crs=graph.crs).to_crs(27700).iloc[0]
     fingerprint = CanonicalLineString(
         coordinates=tuple((float(x), float(y)) for x, y in canonical_geometry.coords)
     ).fingerprint
     if fingerprint != binding.geometry_fingerprint:
-        raise ValueError("Reference application replay route geometry drifted before selection")
-    governed_options = {
-        (item.role, *item.edge_ids): item for item in candidate.options
-    }
-    governed_options.setdefault((option.role, *option.edge_ids), option)
-    return replace(candidate, option=option, options=tuple(governed_options.values()))
+        raise ValueError(
+            f"Reference application replay route geometry fingerprint drifted at {checkpoint}"
+        )
+    return option
 
 
 def _apply_reference_selection_provenance(
@@ -1352,6 +1366,7 @@ def _apply_reference_selection_provenance(
         f"{comparison_status} recommended {recommendation}; governed Reference candidate "
         f"{binding.selected_candidate_id} remains authoritative for this replay."
     )
+    _apply_reference_alignment_options(row, binding, candidate.option)
     provenance = json.loads(str(row["provenance"]))
     provenance["reference_application"] = {
         "plan_fingerprint": plan_fingerprint,
@@ -1363,6 +1378,38 @@ def _apply_reference_selection_provenance(
         "deterministic_recommended_role": recommendation,
     }
     row["provenance"] = json.dumps(provenance, sort_keys=True)
+
+
+def _apply_reference_alignment_options(
+    row: dict[str, object],
+    binding: ReferenceApplicationCandidateBinding,
+    adopted: RouteOption,
+) -> None:
+    """Mark the adopted option without widening deterministic topography assessments."""
+
+    raw = row.get("alignment_options")
+    options = json.loads(str(raw)) if raw is not None else []
+    if not isinstance(options, list):
+        raise ValueError("Reference application alignment options are not a finite list")
+    found = False
+    for item in options:
+        if not isinstance(item, dict):
+            raise ValueError("Reference application alignment option is malformed")
+        selected = item.get("role") == binding.route_role
+        item["selected"] = selected
+        if selected:
+            found = True
+            item["reference_selection_scope"] = "within-deterministic-comparison"
+    if not found:
+        options.append(
+            adopted.summary()
+            | {
+                "selected": True,
+                "reference_selection_scope": "outside-deterministic-comparison",
+                "topography": None,
+            }
+        )
+    row["alignment_options"] = json.dumps(options, sort_keys=True)
 
 
 def _candidate(

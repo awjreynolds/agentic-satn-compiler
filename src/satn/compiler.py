@@ -41,7 +41,10 @@ from satn.models import (
     TrafficLight,
     UrbanClassificationStatus,
 )
-from satn.reference_application import ReferenceApplicationPlan
+from satn.reference_application import (
+    ValidatedReferenceApplication,
+    validate_reference_application_for_use,
+)
 from satn.routing import RoadGraph
 from satn.school_street import assess_school_street_candidates
 from satn.settlement import (
@@ -143,8 +146,14 @@ def compile_network(
     decision_resolver: AgentDecisionResolver | None = None,
     heartbeat: StageHeartbeat | None = None,
     cross_spine_progress: CrossSpineProgress | None = None,
-    reference_application_plan: ReferenceApplicationPlan | None = None,
+    validated_reference_application: ValidatedReferenceApplication | None = None,
 ) -> CompiledNetwork:
+    if validated_reference_application is not None:
+        validate_reference_application_for_use(
+            validated_reference_application,
+            config,
+            governed_input_fingerprint,
+        )
     places = source["places"].copy().sort_values("place_id").reset_index(drop=True)
     context = source.get("context", empty_context(source["network"].crs)).copy()
     communities = places[places["kind"] == "community"].copy()
@@ -193,7 +202,9 @@ def compile_network(
         config.compilation.max_connection_km,
         source.get("elevation_evidence", empty_elevation_evidence(road_graph.crs)),
         config.compilation.topography,
-        reference_application_plan=reference_application_plan,
+        validated_reference_application=validated_reference_application,
+        area_config=config,
+        governed_input_fingerprint=governed_input_fingerprint,
     )
     spine_access_connections = backbone.connections
     access_obligations = backbone.obligations
