@@ -6,13 +6,20 @@ import hashlib
 import json
 import platform as platform_module
 import shutil
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
+from importlib.metadata import version
 from pathlib import Path
 from typing import Any, Literal
 
-from pyproj import Transformer
+import geopandas as gpd
+import pandas as pd
+import pyogrio
+import pyproj
+import shapely
+from pyproj import CRS, Transformer
 from shapely import from_wkb, to_wkb
+from shapely.geometry import box
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import transform
 
@@ -43,8 +50,8 @@ StoreState = Literal["uninitialised", "ready"]
 
 
 @dataclass(frozen=True)
-class EvidenceFeature:
-    """One source-specific feature supplied to the Local Evidence Store seam."""
+class _EvidenceFeature:
+    """One byte-grounded feature accepted by a closed source adapter."""
 
     logical_key: str
     geometry: BaseGeometry
@@ -52,14 +59,14 @@ class EvidenceFeature:
 
 
 @dataclass(frozen=True)
-class EvidencePartitionInput:
-    """A streamed, one-source-layer/one-BNG-cell refresh input."""
+class _EvidencePartitionInput:
+    """One prevalidated source-layer/BNG-cell input for the transaction seam."""
 
     source_export: SourceExport
     ingestion_contract: IngestionContract
     partition_key: EvidencePartitionKey
     availability: Availability
-    features: tuple[EvidenceFeature, ...]
+    features: tuple[_EvidenceFeature, ...]
 
 
 @dataclass(frozen=True)
@@ -230,25 +237,51 @@ class LocalEvidenceStore:
     def refresh(
         self,
         *,
-        requested_partition_keys: tuple[EvidencePartitionKey, ...],
-        partitions: Iterable[EvidencePartitionInput],
+        source_export: SourceExport,
+        ingestion_contract: IngestionContract,
+        partition_keys: tuple[EvidencePartitionKey, ...],
     ) -> RefreshResult:
-        """Transactionally materialise streamed source-layer partition attestations."""
+        """Read governed bytes and transactionally attest the requested BNG cells."""
 
+        if not partition_keys:
+            raise ValueError("refresh requires at least one Evidence Partition Key")
+        if len({key.fingerprint for key in partition_keys}) != len(partition_keys):
+            raise ValueError("refresh Evidence Partition Keys must be unique")
         connection = self._open_initialised(read_only=False)
         transaction_started = False
         try:
             connection.execute("BEGIN TRANSACTION")
             transaction_started = True
+            source_path = self._validated_source_path(source_export, ingestion_contract)
             self._create_staging_tables(connection)
             attestations: list[EvidencePartitionAttestation] = []
-            for partition in partitions:
+            observations: dict[str, str] = {}
+            for partition_key in partition_keys:
+                partition = self._read_open_roads_partition(
+                    source_path,
+                    source_export,
+                    ingestion_contract,
+                    partition_key,
+                )
                 attestation, rows = self._normalise_partition(partition)
+                for feature, feature_fingerprint in zip(
+                    attestation.partition_content.features,
+                    attestation.partition_content.feature_content_fingerprints,
+                    strict=True,
+                ):
+                    logical_key = str(feature["logical_key"])
+                    existing = observations.setdefault(logical_key, feature_fingerprint)
+                    if existing != feature_fingerprint:
+                        raise ValueError(
+                            "one source-export RoadLink id has conflicting feature content"
+                        )
                 self._stage_partition(connection, attestation, rows)
                 attestations.append(attestation)
+            if _sha256_file(source_path) != source_export.raw_bytes_sha256:
+                raise ValueError("governed Source Export changed while it was being read")
             coverage = EvidenceCoverage(
                 tuple(attestations),
-                requested_partition_keys=requested_partition_keys,
+                requested_partition_keys=partition_keys,
                 state="complete",
             )
             self._commit_staged_refresh(connection, coverage)
@@ -278,6 +311,7 @@ class LocalEvidenceStore:
                 coverage = self._coverage_by_fingerprint(connection, str(pointer[0]))
                 if verify:
                     self._verify_coverage(connection, coverage)
+                    self._verify_retained_source_bytes(coverage)
                 return EvidenceStoreStatus(state="ready", current_coverage=coverage)
             except EvidenceStoreSchemaError:
                 raise
@@ -365,8 +399,10 @@ class LocalEvidenceStore:
                 canonical_geometry_json VARCHAR NOT NULL,
                 crs VARCHAR NOT NULL CHECK (crs = 'EPSG:27700'),
                 geometry GEOMETRY NOT NULL,
-                road_name VARCHAR,
-                road_number VARCHAR,
+                road_classification VARCHAR NOT NULL,
+                road_function VARCHAR NOT NULL,
+                road_classification_number VARCHAR,
+                name_1 VARCHAR,
                 PRIMARY KEY (attestation_fingerprint, feature_content_fingerprint)
             );
             """
@@ -496,7 +532,7 @@ class LocalEvidenceStore:
             )
 
     def _normalise_partition(
-        self, partition: EvidencePartitionInput
+        self, partition: _EvidencePartitionInput
     ) -> tuple[EvidencePartitionAttestation, tuple[dict[str, object], ...]]:
         if partition.partition_key.source_layer != partition.ingestion_contract.source_layer:
             raise ValueError("partition input key and ingestion contract source_layer differ")
@@ -519,7 +555,7 @@ class LocalEvidenceStore:
                     "feature attributes must match the declared ingestion contract exactly"
                 )
             canonical_evidence_json(attributes)
-            geometry = _geometry_in_bng(feature.geometry, partition.source_export.declared_crs)
+            geometry = _geometry_in_bng(feature.geometry, "EPSG:27700")
             canonical_geometry = canonical_evidence_geometry(geometry, "EPSG:27700")
             geometry_fingerprint = evidence_geometry_fingerprint(geometry, "EPSG:27700")
             feature_payload = {
@@ -553,6 +589,152 @@ class LocalEvidenceStore:
             normalised[fingerprint] for fingerprint in content.feature_content_fingerprints
         )
         return attestation, ordered_rows
+
+    @staticmethod
+    def _validated_source_path(
+        source_export: SourceExport,
+        ingestion_contract: IngestionContract,
+    ) -> Path:
+        if (
+            source_export.source_family != "os-open-roads"
+            or source_export.dataset != "open-roads"
+            or source_export.layer != "RoadLink"
+        ):
+            raise ValueError("unsupported governed Source Export for Open Roads ingestion")
+        if source_export.format not in {"GeoPackage", "GeoJSON"}:
+            raise ValueError("Open Roads ingestion supports GeoPackage or GeoJSON exports only")
+        if ingestion_contract.canonical_payload() != _open_roads_contract_payload(
+            source_export.declared_crs
+        ):
+            raise ValueError("unsupported or untrusted Open Roads Ingestion Contract")
+        retained_path = source_export.provenance.get("retained_path")
+        if not isinstance(retained_path, str) or not retained_path:
+            raise ValueError("Source Export provenance requires retained_path")
+        source_path = Path(retained_path)
+        if not source_path.is_absolute():
+            raise ValueError("Source Export retained_path must be absolute")
+        if not source_path.is_file():
+            raise ValueError(f"governed Source Export is not retained at {source_path}")
+        if _sha256_file(source_path) != source_export.raw_bytes_sha256:
+            raise ValueError("governed Source Export checksum does not match retained bytes")
+        try:
+            layers = gpd.list_layers(source_path)
+            layer_names = set(layers["name"].astype(str))
+            if source_export.layer not in layer_names:
+                raise ValueError(
+                    f"governed Source Export does not contain layer {source_export.layer}"
+                )
+            info = pyogrio.read_info(source_path, layer=source_export.layer)
+        except ValueError:
+            raise
+        except Exception as error:
+            raise ValueError("cannot inspect governed Open Roads Source Export") from error
+        actual_crs = info.get("crs")
+        if actual_crs is None or CRS.from_user_input(actual_crs) != CRS.from_user_input(
+            source_export.declared_crs
+        ):
+            raise ValueError("governed Source Export CRS does not match its declaration")
+        expected_driver = {"GeoPackage": "GPKG", "GeoJSON": "GeoJSON"}[source_export.format]
+        if info.get("driver") != expected_driver:
+            raise ValueError("governed Source Export format does not match its declaration")
+        fields = tuple(str(field) for field in info.get("fields", ()))
+        missing = set(_OPEN_ROADS_SOURCE_SCHEMA) - set(fields)
+        if missing:
+            raise ValueError(
+                "governed Open Roads layer is missing required schema fields: "
+                + ", ".join(sorted(missing))
+            )
+        field_types = dict(
+            zip(fields, (str(dtype) for dtype in info.get("dtypes", ())), strict=True)
+        )
+        if any(field_types[field] != "object" for field in _OPEN_ROADS_SOURCE_SCHEMA):
+            raise ValueError("governed Open Roads layer has incompatible schema types")
+        geometry_type = str(info.get("geometry_type"))
+        if geometry_type not in {"LineString", "MultiLineString"}:
+            raise ValueError("governed Open Roads layer must contain line geometry")
+        return source_path
+
+    @staticmethod
+    def _read_open_roads_partition(
+        source_path: Path,
+        source_export: SourceExport,
+        ingestion_contract: IngestionContract,
+        partition_key: EvidencePartitionKey,
+    ) -> _EvidencePartitionInput:
+        if (
+            partition_key.source_layer != ingestion_contract.source_layer
+            or partition_key.partition_scheme != ingestion_contract.partition_scheme
+        ):
+            raise ValueError("requested partition does not match its Ingestion Contract")
+        cell_geometry = box(*_bng_10km_bounds(partition_key.cell))
+        source_bounds = _bounds_from_bng(cell_geometry.bounds, source_export.declared_crs)
+        try:
+            frame = gpd.read_file(
+                source_path,
+                layer=source_export.layer,
+                bbox=source_bounds,
+                columns=list(_OPEN_ROADS_SOURCE_SCHEMA),
+            )
+        except Exception as error:
+            raise ValueError("cannot read governed Open Roads partition") from error
+        if frame.crs is None or CRS.from_user_input(frame.crs) != CRS.from_user_input(
+            source_export.declared_crs
+        ):
+            raise ValueError("read Open Roads partition CRS does not match its declaration")
+        frame = frame.to_crs("EPSG:27700")
+        frame = frame[frame.geometry.intersects(cell_geometry)]
+        features: list[_EvidenceFeature] = []
+        logical_keys: set[str] = set()
+        for row in frame.itertuples(index=False):
+            geometry = row.geometry
+            if (
+                geometry is None
+                or geometry.is_empty
+                or geometry.geom_type not in {"LineString", "MultiLineString"}
+            ):
+                raise ValueError("Open Roads partition contains unsupported geometry")
+            source_id = _required_source_text(row.id, "id")
+            logical_key = f"roadlink:{source_id}"
+            if logical_key in logical_keys:
+                raise ValueError("Open Roads partition contains duplicate RoadLink ids")
+            logical_keys.add(logical_key)
+            attributes = {
+                name: _normalise_open_roads_value(
+                    getattr(row, name),
+                    name=name,
+                    required=name in {"road_classification", "road_function"},
+                )
+                for name in _LAYER_ATTRIBUTES[partition_key.source_layer]
+            }
+            features.append(
+                _EvidenceFeature(
+                    logical_key=logical_key,
+                    geometry=geometry,
+                    attributes=attributes,
+                )
+            )
+        return _EvidencePartitionInput(
+            source_export=source_export,
+            ingestion_contract=ingestion_contract,
+            partition_key=partition_key,
+            availability="available" if features else "no-data",
+            features=tuple(features),
+        )
+
+    @staticmethod
+    def _verify_retained_source_bytes(coverage: EvidenceCoverage) -> None:
+        checked: set[str] = set()
+        for attestation in coverage.attestations:
+            source_export = attestation.source_export
+            if source_export.fingerprint in checked:
+                continue
+            checked.add(source_export.fingerprint)
+            retained_path = source_export.provenance.get("retained_path")
+            if not isinstance(retained_path, str) or not retained_path:
+                raise _schema_error("Source Export retained_path provenance is missing")
+            path = Path(retained_path)
+            if not path.is_file() or _sha256_file(path) != source_export.raw_bytes_sha256:
+                raise _schema_error("retained Source Export bytes do not match their attestation")
 
     def _stage_partition(
         self,
@@ -613,12 +795,20 @@ class LocalEvidenceStore:
             [source_export.fingerprint],
         ).fetchone()
         if existing is not None:
-            if (str(existing[0]), str(existing[1]), str(existing[2])) != (
-                payload,
+            if str(existing[0]) != payload:
+                raise ValueError("Local Evidence Store Source Export registry collision")
+            if (str(existing[1]), str(existing[2])) != (
                 provenance,
                 provenance_fingerprint,
             ):
-                raise ValueError("Local Evidence Store Source Export registry collision")
+                connection.execute(
+                    """
+                    UPDATE source_export_registry
+                    SET provenance_json = ?, provenance_fingerprint = ?
+                    WHERE fingerprint = ?
+                    """,
+                    [provenance, provenance_fingerprint, source_export.fingerprint],
+                )
             return
         connection.execute(
             """
@@ -924,12 +1114,20 @@ class LocalEvidenceStore:
         self._verify_registry_closure(connection, coverage)
         for attestation in coverage.attestations:
             content = attestation.partition_content
+            if content.ingestion_contract.canonical_payload() != _open_roads_contract_payload(
+                attestation.source_export.declared_crs
+            ):
+                raise _schema_error(
+                    "stored Open Roads Ingestion Contract is not supported by this adapter"
+                )
             table = _LAYER_TABLES[content.partition_key.source_layer]
+            typed_columns = _LAYER_ATTRIBUTES[content.partition_key.source_layer]
+            selected_columns = ", ".join(typed_columns)
             rows = connection.execute(
                 f"""
                 SELECT source_export_fingerprint, feature_content_fingerprint, logical_key,
                        geometry_fingerprint, canonical_geometry_json, crs,
-                       ST_AsWKB(geometry), road_name, road_number
+                       ST_AsWKB(geometry), {selected_columns}
                 FROM {table}
                 WHERE attestation_fingerprint = ?
                 ORDER BY feature_content_fingerprint
@@ -961,10 +1159,9 @@ class LocalEvidenceStore:
                     geometry_fingerprint,
                     canonical_geometry_json,
                     "EPSG:27700",
-                    attributes.get("road_name"),
-                    attributes.get("road_number"),
+                    *(attributes.get(name) for name in typed_columns),
                 )
-                actual = (*row[:6], row[7], row[8])
+                actual = (*row[:6], *row[7:])
                 if (
                     actual != expected
                     or feature.get("geometry_fingerprint") != geometry_fingerprint
@@ -1197,7 +1394,7 @@ def _sql_literal(value: str) -> str:
     return value.replace("'", "''")
 
 
-_SCHEMA_CONTRACT = "satn-local-evidence-store-physical-schema/v1"
+_SCHEMA_CONTRACT = "satn-local-evidence-store-physical-schema/v2"
 _REBUILD_GUIDANCE = (
     "rebuild the Local Evidence Store from governed source inputs at a new store path"
 )
@@ -1240,8 +1437,10 @@ _EXPECTED_COLUMNS = {
         ("canonical_geometry_json", "VARCHAR", "NO"),
         ("crs", "VARCHAR", "NO"),
         ("geometry", "GEOMETRY", "NO"),
-        ("road_name", "VARCHAR", "YES"),
-        ("road_number", "VARCHAR", "YES"),
+        ("road_classification", "VARCHAR", "NO"),
+        ("road_function", "VARCHAR", "NO"),
+        ("road_classification_number", "VARCHAR", "YES"),
+        ("name_1", "VARCHAR", "YES"),
     ),
     "partition_attestation_registry": (
         ("fingerprint", "VARCHAR", "NO"),
@@ -1283,8 +1482,71 @@ _LAYER_TABLES = {
 }
 
 _LAYER_ATTRIBUTES = {
-    "os-open-roads/RoadLink": ("road_name", "road_number"),
+    "os-open-roads/RoadLink": (
+        "road_classification",
+        "road_function",
+        "road_classification_number",
+        "name_1",
+    ),
 }
+
+_OPEN_ROADS_SOURCE_SCHEMA = (
+    "id",
+    "road_classification",
+    "road_function",
+    "road_classification_number",
+    "name_1",
+)
+
+
+def _open_roads_contract_payload(source_crs: str) -> dict[str, object]:
+    return {
+        "contract": "satn-ingestion-contract/v1",
+        "source_layer": "os-open-roads/RoadLink",
+        "contract_version": "satn-open-roads-ingestion/v1",
+        "accepted_schema": {
+            "id": "string",
+            "name_1": "string|null",
+            "road_classification": "string",
+            "road_classification_number": "string|null",
+            "road_function": "string",
+        },
+        "stable_feature_key_policy": "source-export-roadlink-id/v1",
+        "selected_attributes": sorted(_LAYER_ATTRIBUTES["os-open-roads/RoadLink"]),
+        "normalisation": {"trim_strings": True},
+        "crs_transform": {
+            "source_crs": source_crs,
+            "target_crs": "EPSG:27700",
+            "axis_order": "always_xy",
+        },
+        "partition_scheme": "bng-10km/v1",
+        "spatial_predicate": "intersects",
+        "implementation_dependency_fingerprint": _open_roads_adapter_fingerprint(),
+    }
+
+
+def _open_roads_adapter_fingerprint() -> str:
+    return evidence_fingerprint(
+        {
+            "contract": "satn-open-roads-byte-adapter-implementation/v1",
+            "module_sha256": _sha256_file(Path(__file__)),
+            "runtime_versions": {
+                distribution: version(distribution)
+                for distribution in (
+                    "geopandas",
+                    "pandas",
+                    "pyogrio",
+                    "pyproj",
+                    "shapely",
+                )
+            },
+            "native_runtime_versions": {
+                "gdal": ".".join(str(part) for part in pyogrio.__gdal_version__),
+                "proj": pyproj.proj_version_str,
+                "geos": shapely.geos_version_string,
+            },
+        }
+    )
 
 
 def _geometry_in_bng(geometry: BaseGeometry, source_crs: str) -> BaseGeometry:
@@ -1292,6 +1554,57 @@ def _geometry_in_bng(geometry: BaseGeometry, source_crs: str) -> BaseGeometry:
         return geometry
     transformer = Transformer.from_crs(source_crs, "EPSG:27700", always_xy=True)
     return transform(transformer.transform, geometry)
+
+
+def _bounds_from_bng(
+    bounds: tuple[float, float, float, float],
+    target_crs: str,
+) -> tuple[float, float, float, float]:
+    if target_crs == "EPSG:27700":
+        return bounds
+    transformer = Transformer.from_crs("EPSG:27700", target_crs, always_xy=True)
+    return transformer.transform_bounds(*bounds, densify_pts=21)
+
+
+def _bng_10km_bounds(cell: str) -> tuple[int, int, int, int]:
+    first, second, east_digit, north_digit = cell
+    first_index = ord(first) - ord("A")
+    second_index = ord(second) - ord("A")
+    if first_index > 7:
+        first_index -= 1
+    if second_index > 7:
+        second_index -= 1
+    easting_100km = ((first_index - 2) % 5) * 5 + second_index % 5
+    northing_100km = 19 - (first_index // 5) * 5 - second_index // 5
+    easting = easting_100km * 100_000 + int(east_digit) * 10_000
+    northing = northing_100km * 100_000 + int(north_digit) * 10_000
+    return easting, northing, easting + 10_000, northing + 10_000
+
+
+def _required_source_text(value: object, name: str) -> str:
+    if value is None or pd.isna(value) or not isinstance(value, str) or not value.strip():
+        raise ValueError(f"Open Roads {name} must be a non-empty string")
+    return value.strip()
+
+
+def _normalise_open_roads_value(
+    value: object,
+    *,
+    name: str,
+    required: bool,
+) -> str | None:
+    if value is None or pd.isna(value):
+        if required:
+            raise ValueError(f"Open Roads {name} must be a non-empty string")
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"Open Roads {name} must be a string")
+    normalised = value.strip()
+    if not normalised:
+        if required:
+            raise ValueError(f"Open Roads {name} must be a non-empty string")
+        return None
+    return normalised
 
 
 def _registry_payload(connection: Any, table: str, fingerprint: str) -> dict[str, object]:
