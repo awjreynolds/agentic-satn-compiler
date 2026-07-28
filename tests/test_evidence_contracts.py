@@ -17,6 +17,7 @@ from satn.evidence_contracts import (
     SourceExport,
     canonical_evidence_geometry,
     canonical_evidence_json,
+    evidence_fingerprint,
     evidence_geometry_fingerprint,
 )
 
@@ -292,7 +293,6 @@ def test_partition_content_sorts_feature_content_without_fid_or_row_identity() -
     reordered = EvidencePartitionContent(key, contract, (first_feature, second_feature))
 
     assert content.fingerprint == reordered.fingerprint
-    assert content.features[0]["logical_key"] == "roadlink:100"
     with pytest.raises(ValueError, match="duplicate"):
         EvidencePartitionContent(key, contract, (first_feature, first_feature))
     with pytest.raises(ValueError, match="FID"):
@@ -329,6 +329,12 @@ def test_partition_content_orders_feature_fingerprints_by_full_digest() -> None:
     assert content.feature_content_fingerprints == tuple(
         sorted(content.feature_content_fingerprints)
     )
+    for feature, fingerprint in zip(
+        content.features, content.feature_content_fingerprints, strict=True
+    ):
+        assert evidence_fingerprint(
+            {"contract": "satn-evidence-feature-content/v1", "feature": feature}
+        ) == fingerprint
 
 
 def test_partition_attestation_requires_fresh_complete_content_and_export() -> None:

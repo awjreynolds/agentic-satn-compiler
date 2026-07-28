@@ -522,7 +522,7 @@ class EvidencePartitionContent:
             raise ValueError("partition key and ingestion contract source_layer differ")
         if self.partition_key.partition_scheme != self.ingestion_contract.partition_scheme:
             raise ValueError("partition key and ingestion contract partition_scheme differ")
-        canonical_features: list[tuple[str, Mapping[str, object], str]] = []
+        canonical_features: list[tuple[str, Mapping[str, object]]] = []
         payloads_by_fingerprint: dict[str, str] = {}
         logical_keys: set[str] = set()
         for feature in self.features:
@@ -540,7 +540,7 @@ class EvidencePartitionContent:
                 if logical_key in logical_keys:
                     raise ValueError("partition feature logical_key cannot contain duplicates")
                 logical_keys.add(logical_key)
-            canonical_features.append((payload, frozen, feature_fingerprint))
+            canonical_features.append((feature_fingerprint, frozen))
         canonical_features.sort(key=lambda item: item[0])
         object.__setattr__(
             self,
@@ -550,7 +550,7 @@ class EvidencePartitionContent:
         object.__setattr__(
             self,
             "feature_content_fingerprints",
-            tuple(sorted(item[2] for item in canonical_features)),
+            tuple(item[0] for item in canonical_features),
         )
         expected = evidence_fingerprint(self.canonical_payload())
         if self.fingerprint and self.fingerprint != expected:
