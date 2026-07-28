@@ -324,6 +324,18 @@ _Avoid_: final design, adopted network
 An immutable, versioned collection of governed evidence and rules supplied to an agent role for one compilation scope.
 _Avoid_: prompt context, live web research
 
+**Source Export**:
+The immutable governed received artifact selected as authoritative for one source family, dataset and layer. Its raw bytes and declared release provenance identify it; a download location or local cache does not.
+_Avoid_: download URL, cache file, latest source
+
+**Evidence Partition**:
+The stable source-layer and spatial-cell subset of a Source Export, represented by its content record and Source Export attestation. It is spatial coverage rather than a council or Area Definition.
+_Avoid_: council cache, database page, requested area
+
+**Scenario Configuration**:
+A frozen, data-only combination of an Area Definition, Criteria Set, Network Selection Profile and other declared choices for one Scenario Compilation. Accepted decisions are separate governed input, not mutable configuration.
+_Avoid_: live settings, decision ledger, user session
+
 **LCWIP Evidence Registry**:
 The governed catalogue of LCWIP baseline Evidence Items, their stable identities, provenance, permitted uses, access policy and reproducibility state. It describes evidence honestly; it does not acquire missing data or permit an agent to change source facts.
 _Avoid_: shared data folder, agent memory, evidence claim
