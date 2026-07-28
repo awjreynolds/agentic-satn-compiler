@@ -57,6 +57,10 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
         "School Access Obligation and destination evidence assessment",
     ),
     "satn/evidence.py": ("module", "network evidence derivation"),
+    "satn/evidence_contracts.py": (
+        "module",
+        "immutable Local Evidence identity contracts",
+    ),
     "satn/existing_alignment.py": (
         "module",
         "Existing-Alignment Advantage evidence derivation and tie-break records",
