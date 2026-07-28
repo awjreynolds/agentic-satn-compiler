@@ -27,6 +27,10 @@ LOCK_NAME = "provenance-lock.json"
 LOCK_SCHEMA_VERSION = "satn-deployment-provenance-lock/v2"
 CYCLIC_RUNTIME_FILES = frozenset({LOCK_NAME, "review-map.zip"})
 MAX_NESTED_COMPRESSION_RATIO = 100
+REQUIRED_PRODUCTION_URBAN_EVIDENCE = (
+    "official_main_road_spines",
+    "urban_a_road_evidence_coverage",
+)
 
 
 @dataclass(frozen=True)
@@ -41,6 +45,27 @@ class PagesPackage:
 
 def _deployment_destination(deployment_id: str) -> Path:
     return Path("deployments") / deployment_id
+
+
+def _assert_required_production_urban_evidence(
+    publication: dict[str, Any],
+    compiler_run: dict[str, Any],
+) -> None:
+    scope = publication.get("scope")
+    if not isinstance(scope, dict) or scope.get("audience") != "public":
+        return
+    criteria = compiler_run.get("criteria")
+    urban = criteria.get("urban_network") if isinstance(criteria, dict) else None
+    blockers = [
+        f"{criterion}={urban.get(criterion, 'missing') if isinstance(urban, dict) else 'missing'}"
+        for criterion in REQUIRED_PRODUCTION_URBAN_EVIDENCE
+        if not isinstance(urban, dict) or urban.get(criterion) != "green"
+    ]
+    if blockers:
+        raise ValueError(
+            "production promotion denied: incomplete required urban evidence: "
+            + ", ".join(blockers)
+        )
 
 
 def _files(directory: Path) -> list[Path]:
@@ -1142,6 +1167,7 @@ def package_pages(
                     / _relative_file_path(publication.get("compiler_run"), "compiler_run"),
                     "compiler run",
                 )
+                _assert_required_production_urban_evidence(publication, compiler_run)
                 decision_ledger_input = compiler_run.get("decision_ledger_input")
                 accepted_decisions = compiler_run.get("accepted_decisions")
                 if not isinstance(decision_ledger_input, dict) or not isinstance(

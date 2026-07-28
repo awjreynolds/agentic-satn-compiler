@@ -357,6 +357,96 @@ def _forge_self_consistent_production_governance(bundle: Path) -> None:
     )
 
 
+def _set_urban_criteria(bundle: Path, urban: dict[str, str]) -> None:
+    criteria = {"urban_network": urban}
+
+    compiler_run_path = bundle / "compiler-run.json"
+    compiler_run = json.loads(compiler_run_path.read_text(encoding="utf-8"))
+    compiler_run["criteria"] = criteria
+    compiler_run_path.write_text(json.dumps(compiler_run), encoding="utf-8")
+
+    publication_path = bundle / "publication.json"
+    publication = json.loads(publication_path.read_text(encoding="utf-8"))
+    publication["criteria"] = criteria
+    publication_path.write_text(json.dumps(publication), encoding="utf-8")
+
+    data_path = bundle / "data.js"
+    prefix = "window.SATN_DATA = "
+    data = json.loads(
+        data_path.read_text(encoding="utf-8").removeprefix(prefix).removesuffix(";\n")
+    )
+    data["criteria"] = criteria
+    data_path.write_text(prefix + json.dumps(data) + ";\n", encoding="utf-8")
+
+    lock_path = bundle / "provenance-lock.json"
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    lock["criteria"] = criteria
+    lock["artifacts"] = {
+        item.relative_to(bundle).as_posix(): {
+            "sha256": hashlib.sha256(item.read_bytes()).hexdigest(),
+            "size_bytes": item.stat().st_size,
+        }
+        for item in sorted(bundle.rglob("*"))
+        if item.is_file() and item.name != "provenance-lock.json"
+    }
+    serialized_lock = json.dumps(lock)
+    lock_path.write_text(serialized_lock, encoding="utf-8")
+    (bundle.parent.parent / "test-area" / "provenance-lock.json").write_text(
+        serialized_lock, encoding="utf-8"
+    )
+
+
+def test_required_urban_evidence_blocks_only_canonical_production_release(
+    tmp_path: Path,
+) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    write_catalogue(catalogue)
+    deployments = tmp_path / "deployments"
+    write_bundle(deployments)
+    bundle = deployments / "test-area"
+    _forge_self_consistent_production_governance(bundle)
+    _set_urban_criteria(
+        bundle,
+        {
+            "official_road_classification": "grey",
+            "official_main_road_spines": "grey",
+            "urban_a_road_evidence_coverage": "red",
+        },
+    )
+    blocking = (
+        "production promotion denied: incomplete required urban evidence: "
+        "official_main_road_spines=grey, urban_a_road_evidence_coverage=red"
+    )
+
+    with pytest.raises(ValueError, match=blocking):
+        package_pages(
+            catalogue,
+            deployments,
+            tmp_path / "production-pages",
+            tmp_path / "production-release.zip",
+            promote_production=True,
+        )
+
+    package_pages(
+        catalogue,
+        deployments,
+        tmp_path / "review-pages",
+        tmp_path / "review-release.zip",
+    )
+    with pytest.raises(ValueError, match=blocking):
+        validate_pages_release(
+            tmp_path / "review-release.zip",
+            tmp_path / "rejected-production-pages",
+            catalogue,
+        )
+    validate_pages_release(
+        tmp_path / "review-release.zip",
+        tmp_path / "validated-review-pages",
+        catalogue,
+        allow_non_production=True,
+    )
+
+
 def test_production_package_rejects_forged_self_consistent_runtime_and_lock(tmp_path: Path) -> None:
     catalogue = tmp_path / "catalogue.yaml"
     write_catalogue(catalogue)
@@ -395,21 +485,11 @@ def test_production_release_validator_cannot_be_bypassed_by_local_packaging(tmp_
 
 
 def test_published_pages_workflow_requires_the_independent_production_gate() -> None:
-    """Only an explicit manual preview may bypass the production runtime gate."""
+    """Canonical Pages publication never bypasses the production gate."""
 
     workflow = (PROJECT / ".github" / "workflows" / "pages.yml").read_text(encoding="utf-8")
-    assert "allow_non_production:" in workflow
-    assert "default: false" in workflow
-    assert "type: boolean" in workflow
-    assert (
-        "ALLOW_NON_PRODUCTION: ${{ github.event_name == 'workflow_dispatch' "
-        "&& inputs.allow_non_production }}"
-    ) in workflow
-    assert (
-        'if [[ "$ALLOW_NON_PRODUCTION" == "true" ]]; then\n'
-        "            validator_args+=(--allow-non-production)\n"
-        "          fi"
-    ) in workflow
+    assert "allow_non_production" not in workflow
+    assert "--allow-non-production" not in workflow
     validation_command = 'python scripts/validate_pages_release.py "${validator_args[@]}"'
     assert validation_command in workflow
 

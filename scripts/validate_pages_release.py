@@ -41,6 +41,10 @@ ROOT_LOCK_NAME = "catalogue-lock.json"
 ROOT_LOCK_SCHEMA_VERSION = "satn-pages-root-lock/v1"
 MAX_NESTED_COMPRESSION_RATIO = 100
 RUNTIME_GOVERNANCE_SCHEMA_VERSION = "satn-runtime-governance/v1"
+REQUIRED_PRODUCTION_URBAN_EVIDENCE = (
+    "official_main_road_spines",
+    "urban_a_road_evidence_coverage",
+)
 
 # This is a release-policy trust anchor, not data supplied by a deployment.
 # A person must add both digests after reviewing a real direct-runtime run.
@@ -828,6 +832,27 @@ def _assert_production_runtime_governance(
         )
 
 
+def _assert_required_production_urban_evidence(
+    publication: dict[str, Any],
+    compiler_run: dict[str, Any],
+) -> None:
+    scope = publication.get("scope")
+    if not isinstance(scope, dict) or scope.get("audience") != "public":
+        return
+    criteria = compiler_run.get("criteria")
+    urban = criteria.get("urban_network") if isinstance(criteria, dict) else None
+    blockers = [
+        f"{criterion}={urban.get(criterion, 'missing') if isinstance(urban, dict) else 'missing'}"
+        for criterion in REQUIRED_PRODUCTION_URBAN_EVIDENCE
+        if not isinstance(urban, dict) or urban.get(criterion) != "green"
+    ]
+    if blockers:
+        raise ValueError(
+            "production promotion denied: incomplete required urban evidence: "
+            + ", ".join(blockers)
+        )
+
+
 def _validate_pages_directory(
     pages: Path,
     expected_catalogue: dict[str, object],
@@ -1006,6 +1031,7 @@ def _validate_pages_directory(
         if copied_lock != expected_lock:
             raise ValueError("public deployment provenance lock does not match tracked lock")
         if require_production_governance:
+            _assert_required_production_urban_evidence(publication, compiler_run)
             _assert_production_runtime_governance(
                 publication,
                 compiler_run,

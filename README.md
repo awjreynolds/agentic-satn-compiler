@@ -1065,22 +1065,24 @@ uv run python scripts/package_pages.py
 workflow. Generated snapshots, compiled outputs, deployment directories, PDFs, ZIPs
 and Pages trees are reproducible process artifacts and are not committed to Git. The
 packager fails before publication if the configured Pages size budget would be
-exceeded. Production promotion is fail-closed on runtime governance: [#121](https://github.com/awjreynolds/banes-satn/issues/121)
+exceeded. Production promotion is fail-closed on runtime governance and required
+governed urban-road evidence: [#121](https://github.com/awjreynolds/banes-satn/issues/121)
 still blocks promotion until a production runtime is approved.
 
-To publish a clearly non-production preview of an already published release, a
-maintainer must explicitly opt in on manual dispatch:
+Canonical Pages publication always runs the production release gate; manual dispatch
+cannot bypass it. To inspect a non-production package locally, use the standalone
+validator's explicit review exception:
 
 ```shell
-gh workflow run pages.yml --repo awjreynolds/banes-satn --ref main \
-  --field release_tag=vX.Y.Z --field allow_non_production=true
+.venv/bin/python -I scripts/validate_pages_release.py build/satn-pages.zip \
+  build/validated-pages-review --catalogue deployments/catalogue.yaml \
+  --allow-non-production
 ```
 
-Replace `vX.Y.Z` with the published release tag. Automatic `release: released`
-runs never receive this exception, and this preview does not approve the runtime or
-turn the deployment into a production SATN. The interface is designed and recommended
-for desktop use; smaller devices receive the same data contract without being the
-primary supported experience.
+This local exception does not publish, approve the runtime or turn the deployment
+into a production SATN. The interface is designed and recommended for desktop use;
+smaller devices receive the same data contract without being the primary supported
+experience.
 
 ## Check
 
