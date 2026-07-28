@@ -19,7 +19,13 @@
   const places = data.places;
   const referenceRecord = data.reference_satn || null;
   const referenceOptions = data.reference_satn_options || { type: "FeatureCollection", features: [] };
-  const state = { pinned: null, active: null, inspectionPath: [], inspectionVersion: 0 };
+  const state = {
+    pinned: null,
+    pinnedArtifact: null,
+    active: null,
+    inspectionPath: [],
+    inspectionVersion: 0
+  };
   const gradientPathTypes = new Set([
     "strategic-spine",
     "spine-access-connection",
@@ -28,7 +34,11 @@
     "urban-spine"
   ]);
   const warningLayers = ["gaps", "crossing-warnings"];
-  const evidenceLayers = ["authority-boundaries", "strategic-network", "access-obligations", "school-access-obligations", "school-access-gaps", "school-street-assessments", "gradient-overview", "gradient-sections", "topography-unavailable", "urban-spines", "urban-classification-unknowns", "low-traffic-areas", "low-traffic-area-outlines", "low-traffic-area-portals", "schools", "retail-centres", "healthcare", "atm-reference"];
+  const nonArtifactSources = new Set(["osm", "mapterhorn-dem"]);
+  const presentationOnlyLayers = new Set([
+    "connections-highlight",
+    "gradient-section-highlight"
+  ]);
 
   const map = new maplibregl.Map({
     container: "map",
@@ -596,7 +606,7 @@
     const start = document.querySelector("#gradient-path-start");
     const append = document.querySelector("#gradient-path-append");
     if (!eligibleForGradientPath(candidate)) {
-      message.textContent = state.pinned
+      message.textContent = state.pinnedArtifact
         ? "Pinned feature is not an eligible analytical edge."
         : "Pin an eligible Published Feature, then start or append it.";
       start.disabled = true;
@@ -910,6 +920,179 @@
     list.append(dt, dd);
   }
 
+  function humanLabel(key) {
+    return String(key)
+      .replaceAll("_", " ")
+      .replaceAll("-", " ")
+      .replace(/\b(id|ids|osm|ncn|lta|crs)\b/gi, (token) => token.toUpperCase())
+      .replace(/\b\w/g, (letter) => letter.toUpperCase());
+  }
+
+  function contextualText(raw) {
+    let item = raw;
+    if (typeof item === "string" && /^[\[{]/.test(item.trim())) {
+      try { item = JSON.parse(item); }
+      catch (_) { return item; }
+    }
+    if (Array.isArray(item)) {
+      return item.length
+        ? item.map((value) => contextualText(value)).join(", ")
+        : "None";
+    }
+    if (item && typeof item === "object") {
+      return JSON.stringify(item, null, 2);
+    }
+    return String(value(item));
+  }
+
+  function stableArtifactId(feature) {
+    if (feature?.id !== null && feature?.id !== undefined && feature.id !== "") {
+      return String(feature.id);
+    }
+    const properties = feature?.properties || {};
+    const preferredKeys = [
+      "rendered_feature_id",
+      "section_id",
+      "profile_id",
+      "place_id",
+      "connection_id",
+      "structure_id",
+      "obligation_id",
+      "option_id",
+      "evidence_id"
+    ];
+    const preferred = preferredKeys.find((key) => value(properties[key], null) !== null);
+    if (preferred) return String(properties[preferred]);
+    const fallback = Object.keys(properties).find((key) => key.endsWith("_id"));
+    return fallback ? String(properties[fallback]) : "";
+  }
+
+  function artifactRecord(feature, sourceId, layerId) {
+    if (!feature) return null;
+    const id = stableArtifactId(feature);
+    if (!id) return null;
+    return {
+      key: `${sourceId}:${id}`,
+      id,
+      sourceId,
+      layerId,
+      feature
+    };
+  }
+
+  function sourceFeatures(sourceId) {
+    if (sourceId === "places") return places.features;
+    if (sourceId === "reference-satn-options") return referenceOptions.features;
+    if (["network", "topography"].includes(sourceId)) return network.features;
+    return [];
+  }
+
+  function resolveRenderedArtifact(rendered) {
+    const sourceId = rendered.source;
+    const layerId = rendered.layer?.id || "unknown";
+    const renderedId = stableArtifactId(rendered);
+    const original = sourceFeatures(sourceId).find(
+      (candidate) => stableArtifactId(candidate) === renderedId
+    );
+    return artifactRecord(original || rendered, sourceId, layerId);
+  }
+
+  function networkArtifact(id, layerId = "feature-index") {
+    const feature = network.features.find(
+      (candidate) => String(candidate.id) === String(id)
+    );
+    return artifactRecord(feature, "network", layerId);
+  }
+
+  function selectableArtifactLayers() {
+    return map.getStyle().layers
+      .filter((layer) =>
+        layer.source &&
+        !nonArtifactSources.has(layer.source) &&
+        !presentationOnlyLayers.has(layer.id) &&
+        map.getLayoutProperty(layer.id, "visibility") !== "none"
+      )
+      .map((layer) => layer.id);
+  }
+
+  function artifactAt(point) {
+    const layers = selectableArtifactLayers();
+    if (!layers.length) return null;
+    const rendered = map.queryRenderedFeatures(point, { layers })[0];
+    return rendered ? resolveRenderedArtifact(rendered) : null;
+  }
+
+  function renderEmptyArtifactPanel() {
+    const panel = document.querySelector("#feature-details");
+    panel.replaceChildren();
+    const heading = document.createElement("h2");
+    heading.id = "details-heading";
+    heading.textContent = "Artifact evidence";
+    const guidance = document.createElement("p");
+    guidance.textContent =
+      "Select any visible map artifact to inspect its context. Click to pin its evidence.";
+    panel.append(heading, guidance);
+  }
+
+  function appendArtifactContext(panel, artifact) {
+    const origin = document.createElement("dl");
+    origin.className = "artifact-origin";
+    addDefinition(origin, "Data source", artifact.sourceId);
+    addDefinition(origin, "Rendered layer", artifact.layerId);
+    addDefinition(origin, "Geometry type", value(artifact.feature.geometry?.type));
+    panel.append(origin);
+
+    const properties = artifact.feature.properties || {};
+    const entries = Object.entries(properties)
+      .filter(([, raw]) => raw !== null && raw !== undefined && raw !== "")
+      .sort(([left], [right]) => left.localeCompare(right));
+    const disclosure = document.createElement("details");
+    disclosure.className = "artifact-context";
+    disclosure.open = !["network", "topography"].includes(artifact.sourceId);
+    const summary = document.createElement("summary");
+    summary.textContent = `All contextual properties (${entries.length})`;
+    const list = document.createElement("dl");
+    entries.forEach(([key, raw]) => {
+      addDefinition(list, humanLabel(key), contextualText(raw));
+    });
+    disclosure.append(summary, list);
+    panel.append(disclosure);
+  }
+
+  function renderGenericArtifact(artifact) {
+    const properties = artifact.feature.properties || {};
+    const panel = document.querySelector("#feature-details");
+    panel.replaceChildren();
+    const heading = document.createElement("h2");
+    heading.id = "details-heading";
+    heading.textContent = value(
+      properties.name,
+      properties.label || properties.title || humanLabel(
+        properties.feature_type || artifact.layerId
+      )
+    );
+    const list = document.createElement("dl");
+    addDefinition(list, "Stable ID", artifact.id);
+    panel.append(heading, list);
+    return panel;
+  }
+
+  function showArtifactDetails(artifact) {
+    if (!artifact) return;
+    const canonical = ["network", "topography"].includes(artifact.sourceId)
+      ? network.features.find(
+        (candidate) => stableArtifactId(candidate) === artifact.id
+      )
+      : null;
+    if (canonical) {
+      showDetails(canonical.id);
+    } else {
+      renderGenericArtifact(artifact);
+      setHighlight(null);
+    }
+    appendArtifactContext(document.querySelector("#feature-details"), artifact);
+  }
+
   function setHighlight(id) {
     state.active = id;
     document.querySelectorAll(".connection").forEach((item) => {
@@ -1091,33 +1274,28 @@
   }
 
   function clearTransient() {
-    if (!state.pinned) {
-      document.querySelector("#feature-details").innerHTML = '<h2 id="details-heading">Details</h2><p>Hover or focus a route. Click to pin its details.</p>';
+    if (!state.pinnedArtifact) {
+      renderEmptyArtifactPanel();
       setHighlight(null);
     }
   }
 
-  function showPlaceDetails(feature) {
-    if (state.pinned) return;
-    const properties = feature.properties;
-    const panel = document.querySelector("#feature-details");
-    panel.replaceChildren();
-    const heading = document.createElement("h2");
-    heading.id = "details-heading";
-    heading.textContent = value(properties.name, "Unnamed Network Place");
-    const list = document.createElement("dl");
-    addDefinition(list, "Stable ID", value(properties.place_id));
-    addDefinition(list, "Place role", value(properties.kind));
-    addDefinition(list, "OSM place class", value(properties.place_class));
-    addDefinition(list, "Source identifier", value(properties.source_id));
-    panel.append(heading, list);
+  function toggleArtifactPin(artifact) {
+    const unpin = state.pinnedArtifact?.key === artifact.key;
+    state.pinnedArtifact = unpin ? null : artifact;
+    state.pinned = !unpin && artifact.sourceId === "network" ? artifact.id : null;
+    if (state.pinnedArtifact) {
+      showArtifactDetails(state.pinnedArtifact);
+    } else {
+      clearTransient();
+    }
+    setHighlight(state.pinned || state.active);
+    updateGradientCandidate();
   }
 
   function togglePin(id) {
-    state.pinned = state.pinned === id ? null : id;
-    if (state.pinned) showDetails(id); else clearTransient();
-    setHighlight(state.pinned || state.active);
-    updateGradientCandidate();
+    const artifact = networkArtifact(id);
+    if (artifact) toggleArtifactPin(artifact);
   }
 
   function renderCards() {
@@ -1534,18 +1712,22 @@
       if (feature.geometry) extendBounds(bounds, feature.geometry.coordinates);
     });
     if (!bounds.isEmpty()) map.fitBounds(bounds, { padding: 60 });
-    ["spine-access-connections", "school-access-connections", "cross-spine-connectors"].forEach((layer) => {
-      map.on("mousemove", layer, (event) => { if (!state.pinned) showDetails(event.features[0].id); });
-      map.on("mouseleave", layer, clearTransient);
-      map.on("click", layer, (event) => togglePin(event.features[0].id));
+    map.on("mousemove", (event) => {
+      const artifact = artifactAt(event.point);
+      map.getCanvas().style.cursor = artifact ? "pointer" : "";
+      if (artifact && !state.pinnedArtifact) {
+        showArtifactDetails(artifact);
+      } else if (!artifact) {
+        clearTransient();
+      }
     });
-    map.on("mousemove", "places", (event) => showPlaceDetails(event.features[0]));
-    map.on("mouseleave", "places", clearTransient);
-    evidenceLayers.forEach((layer) => {
-      if (!map.getLayer(layer)) return;
-      map.on("mousemove", layer, (event) => { if (!state.pinned) showDetails(event.features[0].id); });
-      map.on("mouseleave", layer, clearTransient);
-      map.on("click", layer, (event) => togglePin(event.features[0].id));
+    map.on("click", (event) => {
+      const artifact = artifactAt(event.point);
+      if (artifact) toggleArtifactPin(artifact);
+    });
+    map.getCanvas().addEventListener("mouseleave", () => {
+      map.getCanvas().style.cursor = "";
+      clearTransient();
     });
     map.on("moveend", () => {
       if (document.querySelector("#layer-gradient-sections")?.checked) {
