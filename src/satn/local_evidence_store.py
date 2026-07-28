@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import platform as platform_module
 import re
 import shutil
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Literal
 
-from shapely import from_wkb, to_wkb
+from shapely import from_geojson, from_wkb, to_wkb
+from shapely.geometry import box
 from shapely.geometry.base import BaseGeometry
 
 from satn.evidence_contracts import (
@@ -92,6 +95,147 @@ class EvidenceStoreStatus:
 
     state: StoreState
     current_coverage: EvidenceCoverage | None
+
+
+QueryPredicate = Literal["intersects", "within", "contains"]
+
+
+@dataclass(frozen=True)
+class EvidenceQueryRow:
+    """One exact, deduplicated row from a pinned Evidence Coverage state."""
+
+    source_export_fingerprint: str
+    logical_key: str
+    feature_content_fingerprint: str
+    geometry_fingerprint: str
+    geometry: BaseGeometry
+    crs: str
+    attributes: Mapping[str, object]
+    attestation_fingerprints: tuple[str, ...]
+    fingerprint: str = ""
+
+    def __post_init__(self) -> None:
+        if self.crs != "EPSG:27700":
+            raise ValueError("Evidence query rows must use EPSG:27700")
+        if not isinstance(self.logical_key, str) or not self.logical_key:
+            raise ValueError("Evidence query row logical_key must be non-empty")
+        for name, value in (
+            ("source_export_fingerprint", self.source_export_fingerprint),
+            ("feature_content_fingerprint", self.feature_content_fingerprint),
+            ("geometry_fingerprint", self.geometry_fingerprint),
+        ):
+            if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+                raise ValueError(f"Evidence query row {name} must be a full SHA-256")
+        if evidence_geometry_fingerprint(self.geometry, self.crs) != self.geometry_fingerprint:
+            raise ValueError("Evidence query row geometry does not match its fingerprint")
+        attributes = dict(self.attributes)
+        canonical_evidence_json(attributes)
+        attestations = tuple(sorted(self.attestation_fingerprints))
+        if not attestations:
+            raise ValueError("Evidence query rows require an attestation")
+        if len(set(attestations)) != len(attestations):
+            raise ValueError("Evidence query row attestation fingerprints must be unique")
+        if any(re.fullmatch(r"[0-9a-f]{64}", item) is None for item in attestations):
+            raise ValueError("Evidence query row attestations must be full SHA-256 values")
+        payload = self.canonical_payload(
+            attributes=attributes, attestation_fingerprints=attestations
+        )
+        expected = evidence_fingerprint(payload)
+        if self.fingerprint and self.fingerprint != expected:
+            raise ValueError("Evidence query row fingerprint is stale")
+        object.__setattr__(self, "attributes", _freeze_mapping(attributes))
+        object.__setattr__(self, "attestation_fingerprints", attestations)
+        object.__setattr__(self, "fingerprint", expected)
+
+    def canonical_payload(
+        self,
+        *,
+        attributes: Mapping[str, object] | None = None,
+        attestation_fingerprints: tuple[str, ...] | None = None,
+    ) -> dict[str, object]:
+        """Return the response identity, including the exact spatial provenance."""
+
+        return {
+            "contract": "satn-evidence-query-row/v1",
+            "source_export_fingerprint": self.source_export_fingerprint,
+            "logical_key": self.logical_key,
+            "feature_content_fingerprint": self.feature_content_fingerprint,
+            "geometry_fingerprint": self.geometry_fingerprint,
+            "crs": self.crs,
+            "attributes": dict(self.attributes if attributes is None else attributes),
+            "attestation_fingerprints": list(
+                self.attestation_fingerprints
+                if attestation_fingerprints is None
+                else attestation_fingerprints
+            ),
+        }
+
+
+@dataclass(frozen=True)
+class EvidenceQueryResult:
+    """Immutable response and replay manifest for one exact current or historical query."""
+
+    rows: tuple[EvidenceQueryRow, ...]
+    manifest: Mapping[str, object]
+    fingerprint: str = ""
+
+    def __post_init__(self) -> None:
+        if any(not isinstance(row, EvidenceQueryRow) for row in self.rows):
+            raise ValueError("Evidence query results require EvidenceQueryRow values")
+        rows = tuple(
+            sorted(self.rows, key=lambda row: (row.source_export_fingerprint, row.logical_key))
+        )
+        if len({(row.source_export_fingerprint, row.logical_key) for row in rows}) != len(rows):
+            raise ValueError("Evidence query result rows must be deduplicated")
+        manifest = dict(self.manifest)
+        manifest.pop("result_fingerprint", None)
+        required_manifest_fields = {
+            "contract",
+            "query_contract",
+            "coverage_contract",
+            "coverage_state_fingerprint",
+            "source_layer",
+            "selector_geometry_fingerprint",
+            "selector_crs",
+            "predicate",
+            "predicate_operand_order",
+            "filters",
+            "projection",
+            "required_partition_key_fingerprints",
+            "required_bng_10km_cells",
+            "consulted_attestation_fingerprints",
+            "availability_counts",
+            "row_count",
+            "row_fingerprints",
+        }
+        if not required_manifest_fields <= set(manifest):
+            raise ValueError("Evidence query result manifest is incomplete")
+        if manifest["row_count"] != len(rows) or manifest["row_fingerprints"] != [
+            row.fingerprint for row in rows
+        ]:
+            raise ValueError("Evidence query result manifest rows do not match its result")
+        canonical_evidence_json(manifest)
+        expected = evidence_fingerprint(
+            {
+                "contract": "satn-evidence-query-result/v1",
+                "manifest": manifest,
+                "row_fingerprints": [row.fingerprint for row in rows],
+            }
+        )
+        if self.fingerprint and self.fingerprint != expected:
+            raise ValueError("Evidence query result fingerprint is stale")
+        manifest["result_fingerprint"] = expected
+        object.__setattr__(self, "rows", rows)
+        object.__setattr__(self, "manifest", _freeze_mapping(manifest))
+        object.__setattr__(self, "fingerprint", expected)
+
+
+@dataclass(frozen=True)
+class _NormalisedQueryFields:
+    """Closed, deterministic attribute selection for a typed evidence layer."""
+
+    filters: tuple[tuple[str, object], ...]
+    projection: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -370,6 +514,183 @@ class LocalEvidenceStore:
                 raise _schema_error(
                     "Local Evidence Store requested coverage registry is invalid"
                 ) from error
+        finally:
+            connection.close()
+
+    def query(
+        self,
+        *,
+        state_fingerprint: str | None = None,
+        source_layer: str,
+        selector: BaseGeometry | None = None,
+        bbox: tuple[object, object, object, object] | None = None,
+        selector_crs: str = "EPSG:27700",
+        predicate: QueryPredicate = "intersects",
+        filters: Mapping[str, object] | None = None,
+        projection: tuple[str, ...] = (),
+    ) -> EvidenceQueryResult:
+        """Read an exact subset from current or explicitly pinned historical coverage.
+
+        Predicates always use ``feature_geometry PREDICATE selector_geometry``:
+        ``within`` therefore means that the returned road feature lies within the
+        selector, while ``contains`` means that the feature contains it.
+        """
+
+        if state_fingerprint is not None:
+            _validate_query_state_fingerprint(state_fingerprint)
+        selector = _query_selector_input(selector=selector, bbox=bbox)
+        selector_geometry, selector_fingerprint = _canonical_query_selector(
+            selector, selector_crs
+        )
+        table = _LAYER_TABLES.get(source_layer)
+        if table is None:
+            raise ValueError(f"unsupported Local Evidence query source layer: {source_layer}")
+        predicate_sql = _QUERY_PREDICATES.get(predicate)
+        if predicate_sql is None:
+            raise ValueError("query predicate must be intersects, within, or contains")
+        fields = _normalise_query_fields(
+            source_layer=source_layer,
+            filters={} if filters is None else filters,
+            projection=projection,
+        )
+        if not self._store_path.is_file():
+            raise ValueError("Local Evidence Store has no coverage state")
+        connection = self._open_initialised(read_only=True)
+        transaction_started = False
+        try:
+            connection.execute("BEGIN TRANSACTION")
+            transaction_started = True
+            if state_fingerprint is None:
+                coverage = self._current_coverage(connection)
+                if coverage is None:
+                    raise ValueError("Local Evidence Store has no current coverage state")
+                resolved_state_fingerprint = coverage.fingerprint
+            else:
+                coverage = self._coverage_by_fingerprint(connection, state_fingerprint)
+                resolved_state_fingerprint = state_fingerprint
+            self._verify_coverage(connection, coverage)
+            self._verify_retained_source_bytes(coverage)
+            required_keys, consulted = _query_attestations_for_selector(
+                coverage, source_layer, selector_geometry
+            )
+            _validate_query_contracts(consulted, fields)
+            availability_counts = {
+                availability: sum(
+                    item.partition_content.availability == availability for item in consulted
+                )
+                for availability in ("available", "no-data", "explicit-unknown")
+            }
+            attestation_fingerprints = tuple(item.fingerprint for item in consulted)
+            if not attestation_fingerprints:
+                result = EvidenceQueryResult(
+                    rows=(),
+                    manifest=_query_manifest(
+                        state_fingerprint=resolved_state_fingerprint,
+                        source_layer=source_layer,
+                        selector_fingerprint=selector_fingerprint,
+                        predicate=predicate,
+                        filters=fields.filters,
+                        projection=fields.projection,
+                        required_partition_keys=required_keys,
+                        consulted_attestations=(),
+                        availability_counts=availability_counts,
+                        rows=(),
+                    ),
+                )
+                connection.execute("COMMIT")
+                transaction_started = False
+                return result
+            sql, parameters = _query_sql(
+                table=table,
+                attestation_fingerprints=attestation_fingerprints,
+                selector_wkb=to_wkb(selector_geometry),
+                selector_envelope_wkb=to_wkb(box(*selector_geometry.bounds)),
+                predicate_sql=predicate_sql,
+                filters=fields.filters,
+            )
+            raw_rows = connection.execute(sql, parameters).fetchall()
+            deduplicated: dict[tuple[str, str], EvidenceQueryRow] = {}
+            full_attributes = _LAYER_ATTRIBUTES[source_layer]
+            for raw in raw_rows:
+                (
+                    attestation_fingerprint,
+                    source_export_fingerprint,
+                    feature_content_fingerprint,
+                    logical_key,
+                    geometry_fingerprint,
+                    crs,
+                    geometry_wkb,
+                    *attribute_values,
+                ) = raw
+                all_attributes = dict(zip(full_attributes, attribute_values, strict=True))
+                result_attributes = {
+                    field: all_attributes[field] for field in fields.projection
+                }
+                row = EvidenceQueryRow(
+                    source_export_fingerprint=str(source_export_fingerprint),
+                    logical_key=str(logical_key),
+                    feature_content_fingerprint=str(feature_content_fingerprint),
+                    geometry_fingerprint=str(geometry_fingerprint),
+                    geometry=from_wkb(bytes(geometry_wkb)),
+                    crs=str(crs),
+                    attributes=result_attributes,
+                    attestation_fingerprints=(
+                        str(attestation_fingerprint),
+                    ),
+                )
+                key = (row.source_export_fingerprint, row.logical_key)
+                existing = deduplicated.get(key)
+                if existing is None:
+                    deduplicated[key] = row
+                elif _query_row_content(existing) != _query_row_content(row):
+                    raise _schema_error("Local Evidence Store duplicate query rows conflict")
+                else:
+                    deduplicated[key] = EvidenceQueryRow(
+                        source_export_fingerprint=existing.source_export_fingerprint,
+                        logical_key=existing.logical_key,
+                        feature_content_fingerprint=existing.feature_content_fingerprint,
+                        geometry_fingerprint=existing.geometry_fingerprint,
+                        geometry=existing.geometry,
+                        crs=existing.crs,
+                        attributes=existing.attributes,
+                        attestation_fingerprints=(
+                            *existing.attestation_fingerprints,
+                            *row.attestation_fingerprints,
+                        ),
+                    )
+            rows = tuple(deduplicated.values())
+            result = EvidenceQueryResult(
+                rows=rows,
+                manifest=_query_manifest(
+                    state_fingerprint=resolved_state_fingerprint,
+                    source_layer=source_layer,
+                    selector_fingerprint=selector_fingerprint,
+                    predicate=predicate,
+                    filters=fields.filters,
+                    projection=fields.projection,
+                    required_partition_keys=required_keys,
+                    consulted_attestations=attestation_fingerprints,
+                    availability_counts=availability_counts,
+                    rows=rows,
+                ),
+            )
+            connection.execute("COMMIT")
+            transaction_started = False
+            return result
+        except EvidenceStoreSchemaError:
+            if transaction_started:
+                connection.execute("ROLLBACK")
+            raise
+        except LookupError as error:
+            if transaction_started:
+                connection.execute("ROLLBACK")
+            raise ValueError(
+                f"Local Evidence Store coverage state {state_fingerprint} is not found"
+            ) from error
+        except Exception:
+            if transaction_started:
+                connection.execute("ROLLBACK")
+            raise
         finally:
             connection.close()
 
@@ -1504,6 +1825,369 @@ _LAYER_TABLES = {
 _LAYER_ATTRIBUTES = {
     _OPEN_ROADS_SOURCE_LAYER: _OPEN_ROADS_ATTRIBUTES,
 }
+
+_LAYER_FIELD_TYPES = {
+    _OPEN_ROADS_SOURCE_LAYER: {
+        "road_classification": ("string", False),
+        "road_function": ("string", False),
+        "road_classification_number": ("string|null", True),
+        "name_1": ("string|null", True),
+    },
+}
+
+_QUERY_PREDICATES = {
+    "intersects": "ST_Intersects",
+    "within": "ST_Within",
+    "contains": "ST_Contains",
+}
+
+
+def _freeze_mapping(value: Mapping[str, object]) -> Mapping[str, object]:
+    frozen = _freeze_query_value(dict(value))
+    assert isinstance(frozen, Mapping)
+    return frozen
+
+
+def _freeze_query_value(value: object) -> object:
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {str(key): _freeze_query_value(item) for key, item in sorted(value.items())}
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_query_value(item) for item in value)
+    return value
+
+
+def _validate_query_state_fingerprint(state_fingerprint: str) -> None:
+    if (
+        not isinstance(state_fingerprint, str)
+        or re.fullmatch(r"[0-9a-f]{64}", state_fingerprint) is None
+    ):
+        raise ValueError("coverage state fingerprint must be a full lowercase SHA-256")
+
+
+def _query_selector_input(
+    *,
+    selector: BaseGeometry | None,
+    bbox: tuple[object, object, object, object] | None,
+) -> BaseGeometry:
+    if (selector is None) == (bbox is None):
+        raise ValueError("evidence query requires exactly one selector geometry or BNG bbox")
+    if selector is not None:
+        return selector
+    if not isinstance(bbox, tuple) or len(bbox) != 4:
+        raise ValueError("evidence query BNG bbox must contain exactly four numbers")
+    coordinates: list[float] = []
+    for value in bbox:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("evidence query BNG bbox values must be numbers")
+        coordinate = float(value)
+        if not math.isfinite(coordinate):
+            raise ValueError("evidence query BNG bbox values must be finite")
+        coordinates.append(coordinate)
+    min_x, min_y, max_x, max_y = coordinates
+    if min_x >= max_x or min_y >= max_y:
+        raise ValueError("evidence query BNG bbox must have increasing bounds")
+    return box(min_x, min_y, max_x, max_y)
+
+
+def _canonical_query_selector(
+    selector: BaseGeometry, selector_crs: str
+) -> tuple[BaseGeometry, str]:
+    if not isinstance(selector, BaseGeometry):
+        raise ValueError("evidence query selector must be a Shapely geometry")
+    canonical = canonical_evidence_geometry(selector, selector_crs)
+    geometry_payload = canonical["geometry"]
+    assert isinstance(geometry_payload, Mapping)
+    geometry_type = str(geometry_payload["type"])
+
+    def metres(coordinates: object) -> object:
+        if (
+            isinstance(coordinates, (list, tuple))
+            and len(coordinates) == 2
+            and all(type(value) is int for value in coordinates)
+        ):
+            return [value / 1000 for value in coordinates]
+        if isinstance(coordinates, (list, tuple)):
+            return [metres(value) for value in coordinates]
+        raise ValueError("canonical query selector coordinates are invalid")
+
+    if geometry_type in {"Point", "LineString", "MultiLineString"}:
+        geojson_geometry = {
+            "type": geometry_type,
+            "coordinates": metres(geometry_payload["coordinates"]),
+        }
+    elif geometry_type == "Polygon":
+        geojson_geometry = {
+            "type": geometry_type,
+            "coordinates": [
+                metres(geometry_payload["exterior"]),
+                *(metres(ring) for ring in geometry_payload["holes"]),
+            ],
+        }
+    elif geometry_type == "MultiPolygon":
+        geojson_geometry = {
+            "type": geometry_type,
+            "coordinates": [
+                [
+                    metres(polygon["exterior"]),
+                    *(metres(ring) for ring in polygon["holes"]),
+                ]
+                for polygon in geometry_payload["polygons"]
+            ],
+        }
+    else:  # pragma: no cover - canonical_evidence_geometry owns this closed set.
+        raise ValueError(f"unsupported evidence query selector geometry: {geometry_type}")
+    canonical_selector = from_geojson(
+        json.dumps(geojson_geometry, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    )
+    return canonical_selector, evidence_fingerprint(canonical)
+
+
+def _normalise_query_fields(
+    *,
+    source_layer: str,
+    filters: Mapping[str, object],
+    projection: tuple[str, ...],
+) -> _NormalisedQueryFields:
+    field_types = _LAYER_FIELD_TYPES.get(source_layer)
+    if field_types is None:
+        raise ValueError(f"unsupported Local Evidence query source layer: {source_layer}")
+    if not isinstance(filters, Mapping):
+        raise ValueError("evidence query filters must be a mapping")
+    if not isinstance(projection, tuple):
+        raise ValueError("evidence query projection must be a tuple")
+    if any(not isinstance(field, str) for field in filters):
+        raise ValueError("evidence query filter field names must be strings")
+    if any(not isinstance(field, str) for field in projection):
+        raise ValueError("evidence query projection field names must be strings")
+    if len(set(projection)) != len(projection):
+        raise ValueError("evidence query projection cannot contain duplicates")
+    unknown = (set(filters) | set(projection)) - set(field_types)
+    if unknown:
+        raise ValueError(
+            "evidence query uses unsupported fields: " + ", ".join(sorted(unknown))
+        )
+    normalised_filters: list[tuple[str, object]] = []
+    for field, value in sorted(filters.items()):
+        _, nullable = field_types[field]
+        if value is None:
+            if not nullable:
+                raise ValueError(f"evidence query field {field} is not nullable")
+        elif not isinstance(value, str):
+            raise ValueError(f"evidence query field {field} requires a string or null")
+        normalised_filters.append((field, value))
+    return _NormalisedQueryFields(
+        filters=tuple(normalised_filters),
+        projection=tuple(sorted(projection)),
+    )
+
+
+def _query_attestations_for_selector(
+    coverage: EvidenceCoverage,
+    source_layer: str,
+    selector: BaseGeometry,
+) -> tuple[
+    tuple[EvidencePartitionKey, ...],
+    tuple[EvidencePartitionAttestation, ...],
+]:
+    required_cells = _bng_cells_intersecting(selector)
+    required_keys = tuple(
+        sorted(
+            (
+                EvidencePartitionKey(source_layer, "bng-10km/v1", cell)
+                for cell in required_cells
+            ),
+            key=lambda key: key.fingerprint,
+        )
+    )
+    by_key = {
+        attestation.partition_content.partition_key.fingerprint: attestation
+        for attestation in coverage.attestations
+    }
+    missing = tuple(key.cell for key in required_keys if key.fingerprint not in by_key)
+    if missing:
+        raise ValueError(
+            "pinned Evidence Coverage does not cover selector BNG cells: "
+            + ", ".join(sorted(missing))
+        )
+    return required_keys, tuple(
+        sorted(
+            (by_key[key.fingerprint] for key in required_keys),
+            key=lambda item: item.fingerprint,
+        )
+    )
+
+
+def _bng_cells_intersecting(selector: BaseGeometry) -> tuple[str, ...]:
+    min_x, min_y, max_x, max_y = selector.bounds
+    bounds = (min_x, min_y, max_x, max_y)
+    if not all(math.isfinite(value) for value in bounds):
+        raise ValueError("evidence query selector bounds must be finite")
+    grid_mm = 10_000_000
+    bounds_mm = tuple(round(value * 1000) for value in bounds)
+    min_easting = bounds_mm[0] // grid_mm - (bounds_mm[0] % grid_mm == 0)
+    min_northing = bounds_mm[1] // grid_mm - (bounds_mm[1] % grid_mm == 0)
+    max_easting = bounds_mm[2] // grid_mm
+    max_northing = bounds_mm[3] // grid_mm
+    cells: list[str] = []
+    for easting_index in range(max(0, min_easting), min(69, max_easting) + 1):
+        for northing_index in range(max(0, min_northing), min(129, max_northing) + 1):
+            cell_bounds = (
+                easting_index * 10_000,
+                northing_index * 10_000,
+                (easting_index + 1) * 10_000,
+                (northing_index + 1) * 10_000,
+            )
+            if box(*cell_bounds).intersects(selector):
+                cells.append(_bng_10km_cell(easting_index, northing_index))
+    if not cells:
+        raise ValueError("evidence query selector is outside the supported BNG extent")
+    return tuple(sorted(cells))
+
+
+def _bng_10km_cell(easting_index: int, northing_index: int) -> str:
+    easting_100km, east_digit = divmod(easting_index, 10)
+    northing_100km, north_digit = divmod(northing_index, 10)
+    first_index = (
+        (19 - northing_100km)
+        - (19 - northing_100km) % 5
+        + (easting_100km + 10) // 5
+    )
+    second_index = ((19 - northing_100km) * 5) % 25 + easting_100km % 5
+    if first_index > 7:
+        first_index += 1
+    if second_index > 7:
+        second_index += 1
+    return (
+        f"{chr(first_index + ord('A'))}{chr(second_index + ord('A'))}"
+        f"{east_digit}{north_digit}"
+    )
+
+
+def _validate_query_contracts(
+    attestations: tuple[EvidencePartitionAttestation, ...],
+    fields: _NormalisedQueryFields,
+) -> None:
+    used_fields = {field for field, _ in fields.filters} | set(fields.projection)
+    for attestation in attestations:
+        contract = attestation.partition_content.ingestion_contract
+        if not used_fields <= set(contract.selected_attributes):
+            raise _schema_error(
+                "query fields are not selected by every consulted Ingestion Contract"
+            )
+        for field in used_fields:
+            expected_type = _LAYER_FIELD_TYPES[contract.source_layer][field][0]
+            if contract.accepted_schema.get(field) != expected_type:
+                raise _schema_error(
+                    "query field type differs from a consulted Ingestion Contract"
+                )
+
+
+def _query_sql(
+    *,
+    table: str,
+    attestation_fingerprints: tuple[str, ...],
+    selector_wkb: bytes,
+    selector_envelope_wkb: bytes,
+    predicate_sql: str,
+    filters: tuple[tuple[str, object], ...],
+) -> tuple[str, list[object]]:
+    if table not in _LAYER_TABLES.values():
+        raise ValueError("unsupported Local Evidence query table")
+    if predicate_sql not in _QUERY_PREDICATES.values():
+        raise ValueError("unsupported Local Evidence query predicate")
+    source_layer = next(layer for layer, candidate in _LAYER_TABLES.items() if candidate == table)
+    attributes = _LAYER_ATTRIBUTES[source_layer]
+    placeholders = ", ".join("?" for _ in attestation_fingerprints)
+    clauses = [f"{predicate_sql}(feature.geometry, ST_GeomFromWKB(?))"]
+    parameters: list[object] = [
+        *attestation_fingerprints,
+        selector_envelope_wkb,
+        selector_wkb,
+    ]
+    for field, value in filters:
+        if field not in attributes:
+            raise ValueError(f"unsupported Local Evidence query field: {field}")
+        if value is None:
+            clauses.append(f"feature.{field} IS NULL")
+        else:
+            clauses.append(f"feature.{field} = ?")
+            parameters.append(value)
+    selected_attributes = ", ".join(f"feature.{field}" for field in attributes)
+    sql = f"""
+        SELECT feature.attestation_fingerprint,
+               feature.source_export_fingerprint,
+               feature.feature_content_fingerprint,
+               feature.logical_key,
+               feature.geometry_fingerprint,
+               feature.crs,
+               ST_AsWKB(feature.geometry),
+               {selected_attributes}
+        FROM (
+            SELECT *
+            FROM {table} AS indexed_feature
+            WHERE indexed_feature.attestation_fingerprint IN ({placeholders})
+              AND ST_Intersects(indexed_feature.geometry, ST_GeomFromWKB(?))
+        ) AS feature
+        WHERE {" AND ".join(clauses)}
+        ORDER BY feature.source_export_fingerprint,
+                 feature.logical_key,
+                 feature.attestation_fingerprint
+    """
+    return sql, parameters
+
+
+def _query_row_content(row: EvidenceQueryRow) -> tuple[object, ...]:
+    return (
+        row.feature_content_fingerprint,
+        row.geometry_fingerprint,
+        to_wkb(row.geometry),
+        row.crs,
+        canonical_evidence_json(row.attributes),
+    )
+
+
+def _query_manifest(
+    *,
+    state_fingerprint: str,
+    source_layer: str,
+    selector_fingerprint: str,
+    predicate: QueryPredicate,
+    filters: tuple[tuple[str, object], ...],
+    projection: tuple[str, ...],
+    required_partition_keys: tuple[EvidencePartitionKey, ...],
+    consulted_attestations: tuple[str, ...],
+    availability_counts: Mapping[str, int],
+    rows: tuple[EvidenceQueryRow, ...],
+) -> dict[str, object]:
+    ordered_rows = tuple(
+        sorted(rows, key=lambda row: (row.source_export_fingerprint, row.logical_key))
+    )
+    return {
+        "contract": "satn-evidence-query-manifest/v1",
+        "query_contract": "satn-local-evidence-exact-spatial-query/v1",
+        "coverage_contract": "satn-evidence-coverage/v1",
+        "coverage_state_fingerprint": state_fingerprint,
+        "source_layer": source_layer,
+        "selector_geometry_fingerprint": selector_fingerprint,
+        "selector_crs": "EPSG:27700",
+        "predicate": predicate,
+        "predicate_operand_order": "feature_geometry predicate selector_geometry",
+        "filters": {field: value for field, value in filters},
+        "projection": list(projection),
+        "required_partition_key_fingerprints": [
+            key.fingerprint for key in required_partition_keys
+        ],
+        "required_bng_10km_cells": sorted(key.cell for key in required_partition_keys),
+        "consulted_attestation_fingerprints": sorted(consulted_attestations),
+        "availability_counts": {
+            name: int(availability_counts.get(name, 0))
+            for name in ("available", "no-data", "explicit-unknown")
+        },
+        "row_count": len(ordered_rows),
+        "row_fingerprints": [row.fingerprint for row in ordered_rows],
+    }
 
 
 def _registry_payload(connection: Any, table: str, fingerprint: str) -> dict[str, object]:

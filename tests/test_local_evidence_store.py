@@ -11,7 +11,7 @@ from typing import Any
 
 import geopandas as gpd
 import pytest
-from shapely.geometry import LineString
+from shapely.geometry import LineString, MultiPolygon, Point, Polygon, box
 
 import satn.local_evidence_store as local_evidence_store
 from satn.evidence_contracts import (
@@ -170,6 +170,40 @@ def _seeded_real_store(tmp_path: Path) -> tuple[LocalEvidenceStore, EvidenceCove
         partition_keys=(key,),
     )
     return store, refreshed.coverage
+
+
+@pytest.mark.skipif(
+    not LOCAL_SPATIAL_ARCHIVE.is_file() or importlib.util.find_spec("duckdb") is None,
+    reason="pinned local Spatial archive or DuckDB package absent",
+)
+def test_query_reads_one_exact_pinned_open_roads_subset(tmp_path: Path) -> None:
+    store, coverage = _seeded_real_store(tmp_path)
+
+    result = store.query(
+        state_fingerprint=coverage.fingerprint,
+        source_layer="os-open-roads/RoadLink",
+        selector=box(354000, 164000, 356000, 166000),
+        selector_crs="EPSG:27700",
+        predicate="intersects",
+        filters={"road_classification": "A Road"},
+        projection=("name_1", "road_classification_number"),
+    )
+
+    assert [(row.source_export_fingerprint, row.logical_key) for row in result.rows] == [
+        (coverage.attestations[0].source_export.fingerprint, "roadlink:100")
+    ]
+    assert result.rows[0].attributes == {
+        "name_1": "London Road",
+        "road_classification_number": "A4",
+    }
+    assert result.rows[0].geometry.equals(
+        LineString([(349000, 165000), (361000, 165000)])
+    )
+    assert result.manifest["coverage_state_fingerprint"] == coverage.fingerprint
+    assert result.manifest["predicate_operand_order"] == (
+        "feature_geometry predicate selector_geometry"
+    )
+    assert result.manifest["row_fingerprints"] == (result.rows[0].fingerprint,)
 
 
 def _mutate_store(
@@ -1135,3 +1169,408 @@ def test_refresh_rejects_conflicting_source_observation_across_reused_and_new_ce
         )
 
     assert store.status(verify=True).current_coverage == prior
+
+
+def test_query_returns_an_exact_immutable_subset_with_replay_manifest(
+    tmp_path: Path,
+) -> None:
+    store, coverage = _seeded_real_store(tmp_path)
+    database_checksum = hashlib.sha256((tmp_path / "evidence.duckdb").read_bytes()).hexdigest()
+
+    result = store.query(
+        state_fingerprint=coverage.fingerprint,
+        source_layer="os-open-roads/RoadLink",
+        selector=box(350_001, 160_001, 359_999, 169_999),
+        selector_crs="EPSG:27700",
+        predicate="intersects",
+        filters={"road_classification": "A Road"},
+        projection=("name_1", "road_classification"),
+    )
+
+    assert len(result.rows) == 1
+    row = result.rows[0]
+    assert row.logical_key == "roadlink:100"
+    assert row.crs == "EPSG:27700"
+    assert row.geometry.equals(LineString([(349_000, 165_000), (361_000, 165_000)]))
+    assert dict(row.attributes) == {
+        "name_1": "London Road",
+        "road_classification": "A Road",
+    }
+    assert row.attestation_fingerprints == (coverage.attestations[0].fingerprint,)
+    assert result.manifest["coverage_state_fingerprint"] == coverage.fingerprint
+    assert result.manifest["required_bng_10km_cells"] == ("ST56",)
+    assert result.manifest["row_fingerprints"] == (row.fingerprint,)
+    assert result.manifest["result_fingerprint"] == result.fingerprint
+    assert hashlib.sha256((tmp_path / "evidence.duckdb").read_bytes()).hexdigest() == (
+        database_checksum
+    )
+
+    with pytest.raises(TypeError):
+        result.manifest["row_count"] = 0  # type: ignore[index]
+    with pytest.raises(TypeError):
+        row.attributes["name_1"] = "changed"  # type: ignore[index]
+
+
+def test_query_deduplicates_one_source_feature_across_partition_boundaries(
+    tmp_path: Path,
+) -> None:
+    store = _real_store(tmp_path)
+    store.initialise()
+    source_path = _write_open_roads_fixture(tmp_path / "RoadLink.geojson")
+    source_export = _source_export_for(source_path, format="GeoJSON")
+    coverage = store.refresh(
+        source_export=source_export,
+        ingestion_contract=_open_roads_contract(),
+        partition_keys=(
+            EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST56"),
+            EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST66"),
+        ),
+    ).coverage
+
+    result = store.query(
+        state_fingerprint=coverage.fingerprint,
+        source_layer="os-open-roads/RoadLink",
+        selector=box(359_999, 160_001, 360_001, 169_999),
+        selector_crs="EPSG:27700",
+        predicate="intersects",
+        filters={},
+        projection=(),
+    )
+
+    assert len(result.rows) == 1
+    assert result.rows[0].logical_key == "roadlink:100"
+    assert result.rows[0].attestation_fingerprints == tuple(
+        sorted(attestation.fingerprint for attestation in coverage.attestations)
+    )
+    assert result.manifest["required_bng_10km_cells"] == ("ST56", "ST66")
+    assert result.manifest["availability_counts"] == {
+        "available": 2,
+        "explicit-unknown": 0,
+        "no-data": 0,
+    }
+
+
+def test_query_treats_covered_no_data_as_an_exact_empty_result(tmp_path: Path) -> None:
+    store = _real_store(tmp_path)
+    store.initialise()
+    source_path = _write_open_roads_fixture(tmp_path / "RoadLink.geojson")
+    coverage = store.refresh(
+        source_export=_source_export_for(source_path, format="GeoJSON"),
+        ingestion_contract=_open_roads_contract(),
+        partition_keys=(
+            EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST58"),
+        ),
+    ).coverage
+
+    result = store.query(
+        state_fingerprint=coverage.fingerprint,
+        source_layer="os-open-roads/RoadLink",
+        selector=box(350_001, 180_001, 359_999, 189_999),
+        selector_crs="EPSG:27700",
+        predicate="intersects",
+        filters={},
+        projection=("name_1",),
+    )
+
+    assert result.rows == ()
+    assert result.manifest["availability_counts"] == {
+        "available": 0,
+        "explicit-unknown": 0,
+        "no-data": 1,
+    }
+
+
+def test_query_fails_closed_for_missing_coverage_or_invalid_inputs(tmp_path: Path) -> None:
+    store, coverage = _seeded_real_store(tmp_path)
+    arguments: dict[str, object] = {
+        "state_fingerprint": coverage.fingerprint,
+        "source_layer": "os-open-roads/RoadLink",
+        "selector": box(350_001, 160_001, 359_999, 169_999),
+        "selector_crs": "EPSG:27700",
+        "predicate": "intersects",
+        "filters": {},
+        "projection": (),
+    }
+
+    with pytest.raises(ValueError, match=r"does not cover.*ST66"):
+        store.query(
+            **{
+                **arguments,
+                "selector": box(360_001, 160_001, 369_999, 169_999),
+            }
+        )
+    with pytest.raises(ValueError, match="lowercase SHA-256"):
+        store.query(**{**arguments, "state_fingerprint": "F" * 64})
+    with pytest.raises(ValueError, match="explicit EPSG:27700"):
+        store.query(**{**arguments, "selector_crs": "EPSG:4326"})
+    with pytest.raises(ValueError, match="unsupported fields"):
+        store.query(**{**arguments, "filters": {"not_a_field": "value"}})
+    with pytest.raises(ValueError, match="requires a string or null"):
+        store.query(**{**arguments, "filters": {"name_1": 42}})
+    with pytest.raises(ValueError, match="not nullable"):
+        store.query(**{**arguments, "filters": {"road_function": None}})
+
+
+def test_query_is_deterministic_and_independent_of_the_current_pointer(
+    tmp_path: Path,
+) -> None:
+    store, first = _seeded_real_store(tmp_path)
+    arguments = {
+        "state_fingerprint": first.fingerprint,
+        "source_layer": "os-open-roads/RoadLink",
+        "selector": box(350_001, 160_001, 359_999, 169_999),
+        "selector_crs": "EPSG:27700",
+        "predicate": "intersects",
+        "filters": {"name_1": "London Road", "road_function": "A Road"},
+        "projection": ("road_function", "name_1"),
+    }
+    before = store.query(**arguments)
+    source_path = Path(first.attestations[0].source_export.provenance["retained_path"])
+    store.refresh(
+        source_export=_source_export_for(source_path, format="GeoJSON"),
+        ingestion_contract=_open_roads_contract(),
+        partition_keys=(
+            EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST58"),
+        ),
+    )
+    after = store.query(
+        **{
+            **arguments,
+            "filters": {"road_function": "A Road", "name_1": "London Road"},
+            "projection": ("name_1", "road_function"),
+        }
+    )
+
+    assert after == before
+    assert after.fingerprint == before.fingerprint
+
+
+def test_query_null_filter_uses_is_null_and_predicate_operand_order_is_explicit(
+    tmp_path: Path,
+) -> None:
+    store, coverage = _seeded_real_store(tmp_path)
+
+    result = store.query(
+        state_fingerprint=coverage.fingerprint,
+        source_layer="os-open-roads/RoadLink",
+        selector=box(350_001, 164_999, 359_999, 165_001),
+        selector_crs="EPSG:27700",
+        predicate="within",
+        filters={"road_classification_number": None},
+        projection=(),
+    )
+
+    assert result.rows == ()
+    assert result.manifest["predicate_operand_order"] == (
+        "feature_geometry predicate selector_geometry"
+    )
+    sql, parameters = local_evidence_store._query_sql(
+        table="open_roads_roadlink",
+        attestation_fingerprints=("a" * 64,),
+        selector_wkb=b"geometry",
+        selector_envelope_wkb=b"envelope",
+        predicate_sql="ST_Intersects",
+        filters=(("name_1", None), ("road_function", "A Road")),
+    )
+    assert "ST_Intersects(feature.geometry, ST_GeomFromWKB(?))" in sql
+    assert "feature.name_1 IS NULL" in sql
+    assert "feature.road_function = ?" in sql
+    assert "A Road" not in sql
+    assert parameters == ["a" * 64, b"envelope", b"geometry", "A Road"]
+
+
+def test_query_supports_current_state_and_explicit_bng_bbox(tmp_path: Path) -> None:
+    store, coverage = _seeded_real_store(tmp_path)
+
+    result = store.query(
+        source_layer="os-open-roads/RoadLink",
+        bbox=(350_001, 160_001, 359_999, 169_999),
+        filters={"road_function": "A Road"},
+        projection=("name_1",),
+    )
+
+    assert result.manifest["coverage_state_fingerprint"] == coverage.fingerprint
+    assert [row.logical_key for row in result.rows] == ["roadlink:100"]
+    with pytest.raises(ValueError, match="exactly one selector"):
+        store.query(
+            source_layer="os-open-roads/RoadLink",
+            selector=box(350_001, 160_001, 359_999, 169_999),
+            bbox=(350_001, 160_001, 359_999, 169_999),
+        )
+    with pytest.raises(ValueError, match="increasing bounds"):
+        store.query(
+            source_layer="os-open-roads/RoadLink",
+            bbox=(359_999, 160_001, 350_001, 169_999),
+        )
+
+
+def test_query_plan_uses_the_pinned_open_roads_rtree(tmp_path: Path) -> None:
+    store, coverage = _seeded_real_store(tmp_path)
+    selector = box(350_001, 160_001, 359_999, 169_999)
+    sql, parameters = local_evidence_store._query_sql(
+        table="open_roads_roadlink",
+        attestation_fingerprints=(coverage.attestations[0].fingerprint,),
+        selector_wkb=local_evidence_store.to_wkb(selector),
+        selector_envelope_wkb=local_evidence_store.to_wkb(box(*selector.bounds)),
+        predicate_sql="ST_Intersects",
+        filters=(),
+    )
+    connection = store._open_initialised(read_only=True)
+    try:
+        plan_rows = connection.execute(f"EXPLAIN {sql}", parameters).fetchall()
+    finally:
+        connection.close()
+    plan = "\n".join(str(value) for row in plan_rows for value in row)
+
+    assert "RTREE_INDEX_SCAN" in plan
+    assert "SEQ_SCAN" not in plan
+
+
+def test_query_applies_all_closed_predicates_to_non_box_selectors(tmp_path: Path) -> None:
+    store = _real_store(tmp_path)
+    store.initialise()
+    source_path = _write_open_roads_fixture(tmp_path / "RoadLink.geojson")
+    coverage = store.refresh(
+        source_export=_source_export_for(source_path, format="GeoJSON"),
+        ingestion_contract=_open_roads_contract(),
+        partition_keys=tuple(
+            EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", cell)
+            for cell in ("ST46", "ST56", "ST66")
+        ),
+    ).coverage
+    common = {
+        "state_fingerprint": coverage.fingerprint,
+        "source_layer": "os-open-roads/RoadLink",
+        "selector_crs": "EPSG:27700",
+    }
+
+    intersecting = store.query(
+        **common,
+        selector=Polygon([(354_000, 164_000), (356_000, 165_000), (354_000, 166_000)]),
+        predicate="intersects",
+    )
+    containing = store.query(
+        **common,
+        selector=Point(355_000, 165_000),
+        predicate="contains",
+    )
+    within = store.query(
+        **common,
+        selector=box(348_000, 164_000, 362_000, 166_000),
+        predicate="within",
+    )
+
+    assert [row.logical_key for row in intersecting.rows] == ["roadlink:100"]
+    assert [row.logical_key for row in containing.rows] == ["roadlink:100"]
+    assert [row.logical_key for row in within.rows] == ["roadlink:100"]
+    assert len(within.rows[0].attestation_fingerprints) == 3
+
+
+def test_query_keeps_the_same_logical_key_from_distinct_source_exports(
+    tmp_path: Path,
+) -> None:
+    first_path = tmp_path / "first.geojson"
+    second_path = tmp_path / "second.geojson"
+    for path, geometry, name in (
+        (first_path, LineString([(351_000, 165_000), (352_000, 165_000)]), "First"),
+        (second_path, LineString([(371_000, 165_000), (372_000, 165_000)]), "Second"),
+    ):
+        gpd.GeoDataFrame(
+            {
+                "id": ["shared"],
+                "road_classification": ["A Road"],
+                "road_function": ["A Road"],
+                "road_classification_number": ["A4"],
+                "name_1": [name],
+            },
+            geometry=[geometry],
+            crs="EPSG:27700",
+        ).to_file(path, layer="RoadLink", driver="GeoJSON", index=False)
+    first_export = _source_export_for(first_path, format="GeoJSON")
+    second_export = _source_export_for(second_path, format="GeoJSON")
+    store = _real_store(tmp_path)
+    store.initialise()
+    store.refresh(
+        source_export=first_export,
+        ingestion_contract=_open_roads_contract(),
+        partition_keys=(
+            EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST56"),
+        ),
+    )
+    coverage = store.refresh(
+        source_export=second_export,
+        ingestion_contract=_open_roads_contract(),
+        partition_keys=(
+            EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST76"),
+        ),
+    ).coverage
+
+    result = store.query(
+        state_fingerprint=coverage.fingerprint,
+        source_layer="os-open-roads/RoadLink",
+        selector=MultiPolygon(
+            [
+                box(350_500, 164_500, 352_500, 165_500),
+                box(370_500, 164_500, 372_500, 165_500),
+            ]
+        ),
+        projection=("name_1",),
+    )
+
+    assert len(result.rows) == 2
+    assert {row.logical_key for row in result.rows} == {"roadlink:shared"}
+    assert {row.source_export_fingerprint for row in result.rows} == {
+        first_export.fingerprint,
+        second_export.fingerprint,
+    }
+    assert {row.attributes["name_1"] for row in result.rows} == {"First", "Second"}
+
+
+def test_query_reports_explicit_unknown_and_detects_retained_source_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _real_store(tmp_path)
+    store.initialise()
+    source_path = _write_open_roads_fixture(tmp_path / "RoadLink.geojson")
+    source_export = _source_export_for(source_path, format="GeoJSON")
+    contract = _open_roads_contract()
+    unknown_key = EvidencePartitionKey(
+        "os-open-roads/RoadLink", "bng-10km/v1", "ST58"
+    )
+    monkeypatch.setattr(
+        store,
+        "_read_open_roads_partition",
+        lambda *_: local_evidence_store._EvidencePartitionInput(
+            source_export=source_export,
+            ingestion_contract=contract,
+            partition_key=unknown_key,
+            availability="explicit-unknown",
+            features=(),
+        ),
+    )
+    coverage = store.refresh(
+        source_export=source_export,
+        ingestion_contract=contract,
+        partition_keys=(unknown_key,),
+    ).coverage
+
+    result = store.query(
+        state_fingerprint=coverage.fingerprint,
+        source_layer="os-open-roads/RoadLink",
+        bbox=(350_001, 180_001, 359_999, 189_999),
+    )
+    assert result.rows == ()
+    assert result.manifest["availability_counts"] == {
+        "available": 0,
+        "explicit-unknown": 1,
+        "no-data": 0,
+    }
+
+    source_path.write_text("mutated after attestation", encoding="utf-8")
+    with pytest.raises(EvidenceStoreSchemaError, match="retained Source Export bytes"):
+        store.query(
+            state_fingerprint=coverage.fingerprint,
+            source_layer="os-open-roads/RoadLink",
+            bbox=(350_001, 180_001, 359_999, 189_999),
+        )
