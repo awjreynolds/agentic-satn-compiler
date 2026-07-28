@@ -143,6 +143,10 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     "satn/assets/__init__.py": "review-map resource package marker",
     "satn/assets/maplibre-gl.css": "review-map presentation asset",
     "satn/assets/maplibre-gl.js": "review-map presentation asset",
+    "satn/assets/osm-network-osmconf.ini": (
+        "closed OpenStreetMap OGR tag mapping for the additive Local Evidence adapter; "
+        "not a compiler input before equivalence cutover"
+    ),
     "satn/assets/review-map.css": "review-map presentation asset",
     "satn/assets/review-map.html": "review-map presentation asset",
     "satn/assets/review-map.js": "review-map presentation asset",
@@ -158,6 +162,10 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     ),
     "satn/open_roads_adapter.py": (
         "additive Local Evidence source adapter; not a compiler input before equivalence cutover"
+    ),
+    "satn/osm_network_adapter.py": (
+        "additive OpenStreetMap Local Evidence source adapter; "
+        "not a compiler input before equivalence cutover"
     ),
     "satn/pages_packaging.py": "Pages release packaging",
     "satn/psa_criteria_assembly.py": (

@@ -49,7 +49,13 @@ def test_manifest_is_explicit_complete_and_records_component_digests() -> None:
     assert "satn/pages_packaging.py" not in components
     assert "satn/local_evidence_store.py" not in components
     assert "satn/open_roads_adapter.py" not in components
+    assert "satn/osm_network_adapter.py" not in components
     assert "satn/assets/review-map.js" not in components
+    excluded = {component["path"] for component in manifest["excluded_components"]}
+    assert {
+        "satn/assets/osm-network-osmconf.ini",
+        "satn/osm_network_adapter.py",
+    } <= excluded
     population_component = next(
         component
         for component in manifest["components"]
