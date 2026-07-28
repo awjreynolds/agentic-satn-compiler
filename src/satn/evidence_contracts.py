@@ -21,6 +21,16 @@ from shapely.geometry import LineString, MultiLineString, MultiPolygon, Point, P
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _BNG_10KM_CELL = re.compile(r"^[A-HJ-NP-Z]{2}[0-9]{2}$")
+_BNG_500KM_ORIGINS = {
+    "S": (0, 0),
+    "T": (500_000, 0),
+    "N": (0, 500_000),
+    "O": (500_000, 500_000),
+    "H": (0, 1_000_000),
+}
+_BNG_100KM_LETTERS = "ABCDEFGHJKLMNOPQRSTUVWXYZ"
+_BNG_MAX_EASTING_M = 700_000
+_BNG_MAX_NORTHING_M = 1_300_000
 
 
 def canonical_evidence_json(value: object) -> str:
@@ -111,6 +121,30 @@ def _sorted_text_set(values: tuple[str, ...], name: str) -> tuple[str, ...]:
     return tuple(sorted(canonical))
 
 
+def _source_layer_binding(source_family: str, layer: str) -> str:
+    """Return the one v1 source-layer binding shared by exports and partitions."""
+
+    _required_text(source_family, "source_family")
+    _required_text(layer, "layer")
+    if "/" in source_family or "/" in layer:
+        raise ValueError("source_family and layer cannot contain '/' in a source_layer binding")
+    return f"{source_family}/{layer}"
+
+
+def _is_real_bng_10km_cell(cell: str) -> bool:
+    """Return whether a grid reference falls inside the Great Britain BNG extent."""
+
+    if _BNG_10KM_CELL.fullmatch(cell) is None:
+        return False
+    origin = _BNG_500KM_ORIGINS.get(cell[0])
+    if origin is None:
+        return False
+    letter_index = _BNG_100KM_LETTERS.index(cell[1])
+    easting_m = origin[0] + (letter_index % 5) * 100_000
+    northing_m = origin[1] + (4 - letter_index // 5) * 100_000
+    return 0 <= easting_m < _BNG_MAX_EASTING_M and 0 <= northing_m < _BNG_MAX_NORTHING_M
+
+
 def canonical_evidence_geometry(geometry: object, crs: object) -> dict[str, object]:
     """Return the BNG-millimetre payload for geometry already transformed to EPSG:27700.
 
@@ -136,6 +170,8 @@ def canonical_evidence_geometry(geometry: object, crs: object) -> dict[str, obje
             (_canonical_evidence_line(line) for line in geometry.geoms),
             key=canonical_evidence_json,
         )
+        _reject_duplicate_geometry_members(lines, "MultiLineString")
+        _validate_quantized_geometry(MultiLineString(lines))
         value = {"type": "MultiLineString", "coordinates": lines}
     elif isinstance(geometry, Polygon):
         value = _canonical_evidence_polygon(geometry)
@@ -145,6 +181,10 @@ def canonical_evidence_geometry(geometry: object, crs: object) -> dict[str, obje
         polygons = sorted(
             (_canonical_evidence_polygon(polygon) for polygon in geometry.geoms),
             key=canonical_evidence_json,
+        )
+        _reject_duplicate_geometry_members(polygons, "MultiPolygon")
+        _validate_quantized_geometry(
+            MultiPolygon([Polygon(item["exterior"], item["holes"]) for item in polygons])
         )
         value = {"type": "MultiPolygon", "polygons": polygons}
     else:
@@ -171,9 +211,12 @@ def evidence_geometry_fingerprint(geometry: object, crs: object) -> str:
 
 def _millimetre_coordinate(coordinate: object) -> list[int]:
     try:
-        x, y = tuple(coordinate)[:2]  # type: ignore[arg-type]
+        values = tuple(coordinate)  # type: ignore[arg-type]
     except (TypeError, ValueError) as error:
         raise ValueError("evidence geometry requires two-dimensional coordinates") from error
+    if len(values) != 2:
+        raise ValueError("evidence geometry requires two-dimensional coordinates")
+    x, y = values
     result: list[int] = []
     for value in (x, y):
         number = float(value)
@@ -230,11 +273,24 @@ def _canonical_evidence_polygon(polygon: Polygon) -> dict[str, object]:
         (_canonical_evidence_ring(ring) for ring in polygon.interiors),
         key=canonical_evidence_json,
     )
-    return {
+    value = {
         "type": "Polygon",
         "exterior": _canonical_evidence_ring(polygon.exterior),
         "holes": holes,
     }
+    _validate_quantized_geometry(Polygon(value["exterior"], value["holes"]))
+    return value
+
+
+def _reject_duplicate_geometry_members(members: list[object], geometry_type: str) -> None:
+    canonical_members = [canonical_evidence_json(member) for member in members]
+    if len(set(canonical_members)) != len(canonical_members):
+        raise ValueError(f"evidence geometry {geometry_type} cannot contain duplicate members")
+
+
+def _validate_quantized_geometry(geometry: object) -> None:
+    if not geometry.is_valid or geometry.is_empty:  # type: ignore[union-attr]
+        raise ValueError("evidence geometry must be valid after millimetre quantization")
 
 
 @dataclass(frozen=True)
@@ -392,8 +448,8 @@ class EvidencePartitionKey:
         _required_text(self.source_layer, "source_layer")
         if self.partition_scheme != "bng-10km/v1":
             raise ValueError("evidence partition v1 requires partition_scheme bng-10km/v1")
-        if not isinstance(self.cell, str) or _BNG_10KM_CELL.fullmatch(self.cell) is None:
-            raise ValueError("evidence partition cell must be an uppercase BNG 10km cell")
+        if not isinstance(self.cell, str) or not _is_real_bng_10km_cell(self.cell):
+            raise ValueError("evidence partition cell must be a valid BNG 10km cell")
         expected = evidence_fingerprint(self.canonical_payload())
         if self.fingerprint and self.fingerprint != expected:
             raise ValueError(
@@ -494,7 +550,7 @@ class EvidencePartitionContent:
         object.__setattr__(
             self,
             "feature_content_fingerprints",
-            tuple(item[2] for item in canonical_features),
+            tuple(sorted(item[2] for item in canonical_features)),
         )
         expected = evidence_fingerprint(self.canonical_payload())
         if self.fingerprint and self.fingerprint != expected:
@@ -528,6 +584,19 @@ class EvidencePartitionAttestation:
             raise ValueError("partition attestation requires an EvidencePartitionContent")
         if not isinstance(self.source_export, SourceExport):
             raise ValueError("partition attestation requires a SourceExport")
+        content = self.partition_content
+        source_layer = _source_layer_binding(
+            self.source_export.source_family,
+            self.source_export.layer,
+        )
+        if source_layer != content.partition_key.source_layer:
+            raise ValueError("source export source_layer must match partition content")
+        if self.source_export.declared_crs != content.ingestion_contract.crs_transform[
+            "source_crs"
+        ]:
+            raise ValueError(
+                "source export declared_crs must match ingestion contract source_crs"
+            )
         expected = evidence_fingerprint(self.canonical_payload())
         if self.fingerprint and self.fingerprint != expected:
             raise ValueError(
@@ -638,12 +707,11 @@ class EvidenceCoverage:
 
 @dataclass(frozen=True)
 class ScenarioConfiguration:
-    """Frozen data-only configuration for a Scenario Compilation input."""
+    """The closed, frozen governed inputs for a Scenario Compilation."""
 
     area_definition_fingerprint: str
     criteria_set_fingerprint: str
     network_selection_profile_fingerprint: str
-    data_choices: Mapping[str, object]
     fingerprint: str = ""
 
     contract: str = field(init=False, default="satn-scenario-configuration/v1")
@@ -655,7 +723,6 @@ class ScenarioConfiguration:
             "network_selection_profile_fingerprint",
         ):
             _sha256(getattr(self, name), name)
-        object.__setattr__(self, "data_choices", _freeze_mapping(self.data_choices, "data_choices"))
         expected = evidence_fingerprint(self.canonical_payload())
         if self.fingerprint and self.fingerprint != expected:
             raise ValueError(
@@ -664,14 +731,13 @@ class ScenarioConfiguration:
         object.__setattr__(self, "fingerprint", expected)
 
     def canonical_payload(self) -> dict[str, object]:
-        """Return data choices only; decisions and Local Evidence Store state are separate."""
+        """Return governed inputs only; decisions and store state are separate."""
 
         return {
             "contract": self.contract,
             "area_definition_fingerprint": self.area_definition_fingerprint,
             "criteria_set_fingerprint": self.criteria_set_fingerprint,
             "network_selection_profile_fingerprint": self.network_selection_profile_fingerprint,
-            "data_choices": dict(self.data_choices),
         }
 
 

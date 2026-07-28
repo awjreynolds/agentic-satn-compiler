@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from shapely.geometry import LineString, MultiPolygon, Polygon
+from shapely.geometry import LineString, MultiLineString, MultiPolygon, Point, Polygon
 
 import satn.evidence_contracts as evidence_contracts
 from satn.evidence_contracts import (
@@ -183,6 +183,42 @@ def test_evidence_polygon_geometry_ignores_ring_direction_start_and_part_order()
         )
 
 
+def test_evidence_geometry_rejects_non_2d_and_post_quantisation_collapse() -> None:
+    with pytest.raises(ValueError, match="two-dimensional"):
+        canonical_evidence_geometry(Point(0, 0, 1), "EPSG:27700")
+    with pytest.raises(ValueError, match="collapses"):
+        canonical_evidence_geometry(
+            Polygon([(0, 0), (1, 0), (0.0004, 0.0004), (0, 0)]),
+            "EPSG:27700",
+        )
+    with pytest.raises(ValueError, match="valid after millimetre quantization"):
+        canonical_evidence_geometry(
+            MultiPolygon(
+                [
+                    Polygon([(0, 0), (0, 1), (1, 1), (1, 0), (0, 0)]),
+                    Polygon(
+                        [
+                            (1.0004, 0),
+                            (1.0004, 1),
+                            (2, 1),
+                            (2, 0),
+                            (1.0004, 0),
+                        ]
+                    ),
+                ]
+            ),
+            "EPSG:27700",
+        )
+
+
+def test_evidence_geometry_rejects_duplicate_canonical_multiline_members() -> None:
+    with pytest.raises(ValueError, match="duplicate"):
+        canonical_evidence_geometry(
+            MultiLineString([[(0, 0), (1, 0)], [(1, 0), (0, 0)]]),
+            "EPSG:27700",
+        )
+
+
 def test_evidence_partition_key_is_a_bng_spatial_address_not_a_council() -> None:
     key = EvidencePartitionKey(
         source_layer="os-open-roads/RoadLink",
@@ -201,6 +237,25 @@ def test_evidence_partition_key_is_a_bng_spatial_address_not_a_council() -> None
             source_layer="os-open-roads/RoadLink",
             partition_scheme="council/v1",
             cell="Bath-and-North-East-Somerset",
+        )
+
+
+@pytest.mark.parametrize("cell", ("ST56", "HP99"))
+def test_evidence_partition_key_accepts_real_bng_10km_cells(cell: str) -> None:
+    assert EvidencePartitionKey(
+        source_layer="os-open-roads/RoadLink",
+        partition_scheme="bng-10km/v1",
+        cell=cell,
+    ).cell == cell
+
+
+@pytest.mark.parametrize("cell", ("ZZ99", "HA00", "OS00"))
+def test_evidence_partition_key_rejects_out_of_range_bng_10km_cells(cell: str) -> None:
+    with pytest.raises(ValueError, match="valid BNG 10km cell"):
+        EvidencePartitionKey(
+            source_layer="os-open-roads/RoadLink",
+            partition_scheme="bng-10km/v1",
+            cell=cell,
         )
 
 
@@ -248,6 +303,34 @@ def test_partition_content_sorts_feature_content_without_fid_or_row_identity() -
         )
 
 
+def test_partition_content_orders_feature_fingerprints_by_full_digest() -> None:
+    contract = IngestionContract(
+        source_layer="os-open-roads/RoadLink",
+        contract_version="satn-open-roads-ingestion/v1",
+        accepted_schema={"road_name": "string"},
+        stable_feature_key_policy="publisher-roadlink-id/v1",
+        selected_attributes=("road_name",),
+        normalisation={"trim_road_name": True},
+        crs_transform={
+            "source_crs": "EPSG:27700",
+            "target_crs": "EPSG:27700",
+            "axis_order": "always_xy",
+        },
+        partition_scheme="bng-10km/v1",
+        spatial_predicate="intersects",
+        implementation_dependency_fingerprint="b" * 64,
+    )
+    content = EvidencePartitionContent(
+        EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST56"),
+        contract,
+        ({"attributes": {"name": "a"}}, {"attributes": {"name": "d"}}),
+    )
+
+    assert content.feature_content_fingerprints == tuple(
+        sorted(content.feature_content_fingerprints)
+    )
+
+
 def test_partition_attestation_requires_fresh_complete_content_and_export() -> None:
     export = SourceExport(
         source_family="os-open-roads",
@@ -291,6 +374,64 @@ def test_partition_attestation_requires_fresh_complete_content_and_export() -> N
         EvidencePartitionAttestation(None, export)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="stale"):
         EvidencePartitionAttestation(content, export, fingerprint="e" * 64)
+
+
+def test_partition_attestation_binds_exact_source_layer_and_declared_crs() -> None:
+    contract = IngestionContract(
+        source_layer="os-open-roads/RoadLink",
+        contract_version="satn-open-roads-ingestion/v1",
+        accepted_schema={"road_name": "string"},
+        stable_feature_key_policy="publisher-roadlink-id/v1",
+        selected_attributes=("road_name",),
+        normalisation={"trim_road_name": True},
+        crs_transform={
+            "source_crs": "EPSG:27700",
+            "target_crs": "EPSG:27700",
+            "axis_order": "always_xy",
+        },
+        partition_scheme="bng-10km/v1",
+        spatial_predicate="intersects",
+        implementation_dependency_fingerprint="b" * 64,
+    )
+    key = EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST56")
+    content = EvidencePartitionContent(key, contract, ({"attributes": {}},))
+    shared_export = {
+        "dataset": "open-roads",
+        "layer": "RoadLink",
+        "publisher_release": "2026-04",
+        "effective_date": "2026-04-07",
+        "licence": "OS-PSGA",
+        "format": "GeoPackage",
+        "raw_bytes_sha256": "a" * 64,
+    }
+
+    with pytest.raises(ValueError, match="source_layer"):
+        EvidencePartitionAttestation(
+            content,
+            SourceExport(
+                **shared_export,
+                source_family="another-source",
+                declared_crs="EPSG:27700",
+            ),
+        )
+    with pytest.raises(ValueError, match="source_layer"):
+        EvidencePartitionAttestation(
+            content,
+            SourceExport(
+                **(shared_export | {"layer": "OtherLayer"}),
+                source_family="os-open-roads",
+                declared_crs="EPSG:27700",
+            ),
+        )
+    with pytest.raises(ValueError, match="declared_crs"):
+        EvidencePartitionAttestation(
+            content,
+            SourceExport(
+                **shared_export,
+                source_family="os-open-roads",
+                declared_crs="EPSG:4326",
+            ),
+        )
 
 
 def test_evidence_coverage_is_a_sorted_partition_set_with_explicit_state() -> None:
@@ -354,18 +495,22 @@ def test_scenario_configuration_is_immutable_data_only_identity() -> None:
         "criteria_set_fingerprint": "b" * 64,
         "network_selection_profile_fingerprint": "c" * 64,
     }
-    first = ScenarioConfiguration(
-        **shared,
-        data_choices={"publication_mode": "review", "include_urban": True},
-    )
-    reordered = ScenarioConfiguration(
-        **shared,
-        data_choices={"include_urban": True, "publication_mode": "review"},
-    )
+    first = ScenarioConfiguration(**shared)
+    rebuilt = ScenarioConfiguration(**shared)
 
-    assert first.fingerprint == reordered.fingerprint
-    with pytest.raises(ValueError, match="cannot contain JSON floats"):
-        ScenarioConfiguration(**shared, data_choices={"sample_spacing_mm": 500.0})
+    assert first.fingerprint == rebuilt.fingerprint
+    for prohibited_field in (
+        "accepted_decision_fingerprint",
+        "data_choices",
+        "store_path",
+        "database_bytes",
+        "database_path",
+        "query_plan",
+        "cache_state",
+        "rtree_state",
+    ):
+        with pytest.raises(TypeError, match="unexpected keyword argument"):
+            ScenarioConfiguration(**shared, **{prohibited_field: {"nested": "value"}})
 
 
 def test_edge_enrichment_header_binds_full_dependencies_and_base_unit_parameters() -> None:
