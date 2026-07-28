@@ -116,13 +116,25 @@ def test_any_visible_map_artifact_can_pin_its_context(tmp_path: Path) -> None:
         assert map_box is not None
         artifact_x = map_box["x"] + selection["x"]
         artifact_y = map_box["y"] + selection["y"]
+        panel = page.locator("#feature-details")
+
+        page.mouse.move(artifact_x, artifact_y)
+        hover_text = panel.inner_text()
+        assert selection["name"] in hover_text
+        assert selection["id"] in hover_text
+        assert selection["kind"] in hover_text
+        assert "places" in hover_text
+        assert "Point" in hover_text
+        assert "All contextual properties" in hover_text
+
+        page.mouse.move(map_box["x"] + 2, map_box["y"] + 2)
+        assert "Select any visible map artifact" in panel.inner_text()
 
         page.mouse.move(artifact_x, artifact_y)
         page.mouse.click(artifact_x, artifact_y)
         page.mouse.move(map_box["x"] + 2, map_box["y"] + 2)
 
         assert not page_errors
-        panel = page.locator("#feature-details")
         panel_text = panel.inner_text()
         assert selection["name"] in panel_text
         assert selection["id"] in panel_text
