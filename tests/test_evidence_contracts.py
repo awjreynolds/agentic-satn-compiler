@@ -60,6 +60,7 @@ def test_partition_content_rejects_a_digest_collision_between_distinct_payloads(
                 {"logical_key": "roadlink:100", "attributes": {"road_name": "A4"}},
                 {"logical_key": "roadlink:101", "attributes": {"road_name": "A36"}},
             ),
+            availability="available",
         )
 
 
@@ -289,17 +290,24 @@ def test_partition_content_sorts_feature_content_without_fid_or_row_identity() -
         "attributes": {"road_name": "A4"},
     }
 
-    content = EvidencePartitionContent(key, contract, (second_feature, first_feature))
-    reordered = EvidencePartitionContent(key, contract, (first_feature, second_feature))
+    content = EvidencePartitionContent(
+        key, contract, (second_feature, first_feature), availability="available"
+    )
+    reordered = EvidencePartitionContent(
+        key, contract, (first_feature, second_feature), availability="available"
+    )
 
     assert content.fingerprint == reordered.fingerprint
     with pytest.raises(ValueError, match="duplicate"):
-        EvidencePartitionContent(key, contract, (first_feature, first_feature))
+        EvidencePartitionContent(
+            key, contract, (first_feature, first_feature), availability="available"
+        )
     with pytest.raises(ValueError, match="FID"):
         EvidencePartitionContent(
             key,
             contract,
             ({"fid": 42, "geometry_fingerprint": "e" * 64, "attributes": {}},),
+            availability="available",
         )
 
 
@@ -324,6 +332,7 @@ def test_partition_content_orders_feature_fingerprints_by_full_digest() -> None:
         EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST56"),
         contract,
         ({"attributes": {"name": "a"}}, {"attributes": {"name": "d"}}),
+        availability="available",
     )
 
     assert content.feature_content_fingerprints == tuple(
@@ -335,6 +344,82 @@ def test_partition_content_orders_feature_fingerprints_by_full_digest() -> None:
         assert evidence_fingerprint(
             {"contract": "satn-evidence-feature-content/v1", "feature": feature}
         ) == fingerprint
+
+
+def test_partition_content_availability_distinguishes_empty_content_and_attestations() -> None:
+    export = SourceExport(
+        source_family="os-open-roads",
+        dataset="open-roads",
+        layer="RoadLink",
+        publisher_release="2026-04",
+        effective_date="2026-04-07",
+        licence="OS-PSGA",
+        format="GeoPackage",
+        declared_crs="EPSG:27700",
+        raw_bytes_sha256="a" * 64,
+    )
+    contract = IngestionContract(
+        source_layer="os-open-roads/RoadLink",
+        contract_version="satn-open-roads-ingestion/v1",
+        accepted_schema={"road_name": "string"},
+        stable_feature_key_policy="publisher-roadlink-id/v1",
+        selected_attributes=("road_name",),
+        normalisation={"trim_road_name": True},
+        crs_transform={
+            "source_crs": "EPSG:27700",
+            "target_crs": "EPSG:27700",
+            "axis_order": "always_xy",
+        },
+        partition_scheme="bng-10km/v1",
+        spatial_predicate="intersects",
+        implementation_dependency_fingerprint="b" * 64,
+    )
+    key = EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST56")
+    no_data = EvidencePartitionContent(key, contract, (), availability="no-data")
+    explicit_unknown = EvidencePartitionContent(
+        key, contract, (), availability="explicit-unknown"
+    )
+
+    assert no_data.canonical_payload()["availability"] == "no-data"
+    assert explicit_unknown.canonical_payload()["availability"] == "explicit-unknown"
+    assert no_data.fingerprint != explicit_unknown.fingerprint
+    assert (
+        EvidencePartitionAttestation(no_data, export).fingerprint
+        != EvidencePartitionAttestation(explicit_unknown, export).fingerprint
+    )
+
+
+def test_partition_content_availability_requires_a_matching_feature_count() -> None:
+    contract = IngestionContract(
+        source_layer="os-open-roads/RoadLink",
+        contract_version="satn-open-roads-ingestion/v1",
+        accepted_schema={"road_name": "string"},
+        stable_feature_key_policy="publisher-roadlink-id/v1",
+        selected_attributes=("road_name",),
+        normalisation={"trim_road_name": True},
+        crs_transform={
+            "source_crs": "EPSG:27700",
+            "target_crs": "EPSG:27700",
+            "axis_order": "always_xy",
+        },
+        partition_scheme="bng-10km/v1",
+        spatial_predicate="intersects",
+        implementation_dependency_fingerprint="b" * 64,
+    )
+    key = EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST56")
+    feature = {"logical_key": "roadlink:100", "attributes": {"road_name": "A4"}}
+
+    with pytest.raises(
+        ValueError, match="available partition content requires at least one feature"
+    ):
+        EvidencePartitionContent(key, contract, (), availability="available")
+    for availability in ("no-data", "explicit-unknown"):
+        with pytest.raises(ValueError, match="require zero features"):
+            EvidencePartitionContent(key, contract, (feature,), availability=availability)
+    with pytest.raises(ValueError, match="availability must be"):
+        EvidencePartitionContent(key, contract, (), availability="not-available")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="required positional argument: 'availability'"):
+        EvidencePartitionContent(key, contract, ())
 
 
 def test_partition_attestation_requires_fresh_complete_content_and_export() -> None:
@@ -370,6 +455,7 @@ def test_partition_attestation_requires_fresh_complete_content_and_export() -> N
         key,
         contract,
         ({"logical_key": "roadlink:100", "attributes": {"road_name": "A4"}},),
+        availability="available",
     )
 
     attestation = EvidencePartitionAttestation(content, export)
@@ -400,7 +486,9 @@ def test_partition_attestation_binds_exact_source_layer_and_declared_crs() -> No
         implementation_dependency_fingerprint="b" * 64,
     )
     key = EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST56")
-    content = EvidencePartitionContent(key, contract, ({"attributes": {}},))
+    content = EvidencePartitionContent(
+        key, contract, ({"attributes": {}},), availability="available"
+    )
     shared_export = {
         "dataset": "open-roads",
         "layer": "RoadLink",
@@ -474,6 +562,7 @@ def test_evidence_coverage_is_a_sorted_partition_set_with_explicit_state() -> No
         present,
         contract,
         ({"logical_key": "roadlink:100", "attributes": {"road_name": "A4"}},),
+        availability="available",
     )
     attestation = EvidencePartitionAttestation(content, export)
 
@@ -552,6 +641,7 @@ def test_edge_enrichment_header_binds_full_dependencies_and_base_unit_parameters
         key,
         contract,
         ({"logical_key": "roadlink:100", "attributes": {"road_name": "A4"}},),
+        availability="available",
     )
     attestation = EvidencePartitionAttestation(content, export)
     parameters = EdgeEnrichmentParameters((BaseUnitParameter("sample_spacing", 500, "mm"),))

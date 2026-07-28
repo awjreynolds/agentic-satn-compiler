@@ -101,20 +101,24 @@ Partition content and source provenance deliberately have different fingerprints
     "cell": "ST56"
   },
   "ingestion_contract_fingerprint": "<sha256>",
-  "partition_content_fingerprint": "<sha256 of sorted normalised feature content>",
+  "availability": "available | no-data | explicit-unknown",
+  "partition_content_fingerprint": "<sha256 of availability + sorted normalised feature content>",
   "source_export_fingerprint": "<sha256 of the raw governed export>",
   "partition_attestation_fingerprint": "<sha256 of export + content + contract>"
 }
 ```
 
-The content fingerprint includes the key, contract and the sorted feature-content
-fingerprints, including cardinality.  The attestation proves that exact content was
-obtained from one exact Source Export.  An Evidence Coverage/evidence snapshot is a
-sorted set of attestations, so it can replay the selected raw exports.  Version 1
-uses the attestation, not cross-export content equality, as an enrichment dependency:
-a newer export creates a new attestation and therefore a new dependent enrichment.
-The content fingerprint remains useful for deterministic validation and later
-benchmark-led refinement; it is not a v1 cross-export cache hit.
+The content fingerprint includes the key, contract, required closed availability
+state and the sorted feature-content fingerprints, including cardinality.
+`available` requires one or more features; `no-data` and `explicit-unknown` require
+zero, so an empty result cannot silently conflate absence with an unresolved fact.
+The attestation proves that exact content was obtained from one exact Source Export.
+An Evidence Coverage/evidence snapshot is a sorted set of attestations, so it can
+replay the selected raw exports.  Version 1 uses the attestation, not cross-export
+content equality, as an enrichment dependency: a newer export creates a new
+attestation and therefore a new dependent enrichment.  The content fingerprint
+remains useful for deterministic validation and later benchmark-led refinement; it
+is not a v1 cross-export cache hit.
 
 ### Edges and enrichments
 

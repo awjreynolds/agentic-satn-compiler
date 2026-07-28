@@ -15,6 +15,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import ROUND_HALF_EVEN, Decimal
 from types import MappingProxyType
+from typing import Literal
 
 from pyproj import CRS
 from shapely.geometry import LineString, MultiLineString, MultiPolygon, Point, Polygon
@@ -508,6 +509,7 @@ class EvidencePartitionContent:
     partition_key: EvidencePartitionKey
     ingestion_contract: IngestionContract
     features: tuple[Mapping[str, object], ...]
+    availability: Literal["available", "no-data", "explicit-unknown"]
     fingerprint: str = ""
 
     contract: str = field(init=False, default="satn-evidence-partition-content/v1")
@@ -522,6 +524,14 @@ class EvidencePartitionContent:
             raise ValueError("partition key and ingestion contract source_layer differ")
         if self.partition_key.partition_scheme != self.ingestion_contract.partition_scheme:
             raise ValueError("partition key and ingestion contract partition_scheme differ")
+        if self.availability not in ("available", "no-data", "explicit-unknown"):
+            raise ValueError(
+                "partition content availability must be available, no-data, or explicit-unknown"
+            )
+        if self.availability == "available" and not self.features:
+            raise ValueError("available partition content requires at least one feature")
+        if self.availability != "available" and self.features:
+            raise ValueError("no-data and explicit-unknown partition content require zero features")
         canonical_features: list[tuple[str, Mapping[str, object]]] = []
         payloads_by_fingerprint: dict[str, str] = {}
         logical_keys: set[str] = set()
@@ -564,6 +574,7 @@ class EvidencePartitionContent:
             "contract": self.contract,
             "partition_key": self.partition_key.canonical_payload(),
             "ingestion_contract_fingerprint": self.ingestion_contract.fingerprint,
+            "availability": self.availability,
             "feature_content_fingerprints": list(self.feature_content_fingerprints),
             "feature_count": len(self.feature_content_fingerprints),
         }
