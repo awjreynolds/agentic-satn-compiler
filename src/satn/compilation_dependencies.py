@@ -156,6 +156,9 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     "satn/local_evidence_store.py": (
         "additive Local Evidence Store sidecar; not a compiler input before equivalence cutover"
     ),
+    "satn/open_roads_adapter.py": (
+        "additive Local Evidence source adapter; not a compiler input before equivalence cutover"
+    ),
     "satn/pages_packaging.py": "Pages release packaging",
     "satn/psa_criteria_assembly.py": (
         "post-compile governed criteria assembly without CompiledNetwork mutation"

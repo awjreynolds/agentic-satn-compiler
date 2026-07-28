@@ -47,6 +47,8 @@ def test_manifest_is_explicit_complete_and_records_component_digests() -> None:
     assert all(len(component["sha256"]) == 64 for component in manifest["components"])
     assert "satn/publisher.py" not in components
     assert "satn/pages_packaging.py" not in components
+    assert "satn/local_evidence_store.py" not in components
+    assert "satn/open_roads_adapter.py" not in components
     assert "satn/assets/review-map.js" not in components
     population_component = next(
         component

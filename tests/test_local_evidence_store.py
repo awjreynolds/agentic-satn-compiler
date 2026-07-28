@@ -577,15 +577,17 @@ def test_export_identity_is_separate_from_equal_normalised_partition_content(
     first_export = _source_export_for(first_path, format="GeoJSON")
     second_export = _source_export_for(second_path, format="GeoJSON")
     key = EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST56")
-    store = _real_store(tmp_path)
-    store.initialise()
+    first_store = _real_store(tmp_path / "first-store")
+    first_store.initialise()
+    second_store = _real_store(tmp_path / "second-store")
+    second_store.initialise()
 
-    first = store.refresh(
+    first = first_store.refresh(
         source_export=first_export,
         ingestion_contract=_open_roads_contract(),
         partition_keys=(key,),
     ).coverage.attestations[0]
-    second = store.refresh(
+    second = second_store.refresh(
         source_export=second_export,
         ingestion_contract=_open_roads_contract(),
         partition_keys=(key,),
@@ -868,12 +870,8 @@ def test_late_refresh_failure_rolls_back_before_advancing_the_current_pointer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store, prior_coverage = _seeded_real_store(tmp_path)
-    source_path = _write_open_roads_fixture(
-        tmp_path / "RoadLink-late-failure.geojson",
-        inside_id="late-failure",
-    )
-    source_export = _source_export_for(source_path, format="GeoJSON")
-    key = EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST56")
+    source_export = _source_export_for(tmp_path / "RoadLink.geojson", format="GeoJSON")
+    key = EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST76")
     original_insert_coverage_state = store._insert_coverage_state
 
     def fail_before_pointer(connection: Any, coverage: EvidenceCoverage) -> None:
@@ -894,7 +892,7 @@ def test_late_refresh_failure_rolls_back_before_advancing_the_current_pointer(
     try:
         leaked = connection.execute(
             "SELECT logical_key FROM open_roads_roadlink WHERE logical_key = ?",
-            ["roadlink:late-failure"],
+            ["roadlink:outside"],
         ).fetchone()
     finally:
         connection.close()
@@ -910,13 +908,9 @@ def test_refresh_rolls_back_staged_rows_and_preserves_the_prior_current_coverage
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store, prior_coverage = _seeded_real_store(tmp_path)
-    available = EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST56")
-    no_data = EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST57")
-    source_path = _write_open_roads_fixture(
-        tmp_path / "RoadLink-rollback.geojson",
-        inside_id="101",
-    )
-    source_export = _source_export_for(source_path, format="GeoJSON")
+    available = EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST76")
+    no_data = EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST66")
+    source_export = _source_export_for(tmp_path / "RoadLink.geojson", format="GeoJSON")
     original_reader = store._read_open_roads_partition
 
     def fail_second_partition(
@@ -948,8 +942,196 @@ def test_refresh_rolls_back_staged_rows_and_preserves_the_prior_current_coverage
     try:
         leaked = connection.execute(
             "SELECT logical_key FROM open_roads_roadlink WHERE logical_key = ?",
-            ["roadlink:101"],
+            ["roadlink:outside"],
         ).fetchone()
     finally:
         connection.close()
     assert leaked is None
+
+
+@pytest.mark.skipif(
+    not LOCAL_SPATIAL_ARCHIVE.is_file() or importlib.util.find_spec("duckdb") is None,
+    reason="pinned local Spatial archive or DuckDB package absent",
+)
+def test_refresh_reuses_exact_partitions_and_unions_disconnected_coverage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _real_store(tmp_path)
+    store.initialise()
+    source_path = _write_open_roads_fixture(tmp_path / "RoadLink.geojson")
+    source_export = _source_export_for(source_path, format="GeoJSON")
+    contract = _open_roads_contract()
+    first_key = EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST56")
+    disconnected_key = EvidencePartitionKey(
+        "os-open-roads/RoadLink", "bng-10km/v1", "ST76"
+    )
+    first = store.refresh(
+        source_export=source_export,
+        ingestion_contract=contract,
+        partition_keys=(first_key,),
+    ).coverage
+    original_reader = store._read_open_roads_partition
+
+    def reader_must_not_run(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("exact cache hit must not reread a partition")
+
+    monkeypatch.setattr(store, "_read_open_roads_partition", reader_must_not_run)
+    repeated = store.refresh(
+        source_export=source_export,
+        ingestion_contract=contract,
+        partition_keys=(first_key,),
+    ).coverage
+    assert repeated == first
+
+    calls: list[str] = []
+
+    def tracking_reader(
+        path: Path,
+        export: SourceExport,
+        current_contract: IngestionContract,
+        key: EvidencePartitionKey,
+    ) -> object:
+        calls.append(key.cell)
+        return original_reader(path, export, current_contract, key)
+
+    monkeypatch.setattr(store, "_read_open_roads_partition", tracking_reader)
+    union = store.refresh(
+        source_export=source_export,
+        ingestion_contract=contract,
+        partition_keys=(disconnected_key,),
+    ).coverage
+
+    assert calls == ["ST76"]
+    assert {key.cell for key in union.requested_partition_keys} == {"ST56", "ST76"}
+    assert store.resolve_coverage(state_fingerprint=first.fingerprint) == first
+    assert store.resolve_coverage(state_fingerprint=union.fingerprint) == union
+
+    reverse_store = _real_store(tmp_path / "reverse-store")
+    reverse_store.initialise()
+    reverse_store.refresh(
+        source_export=source_export,
+        ingestion_contract=contract,
+        partition_keys=(disconnected_key,),
+    )
+    reverse = reverse_store.refresh(
+        source_export=source_export,
+        ingestion_contract=contract,
+        partition_keys=(first_key,),
+    ).coverage
+    assert reverse.fingerprint == union.fingerprint
+
+
+@pytest.mark.skipif(
+    not LOCAL_SPATIAL_ARCHIVE.is_file() or importlib.util.find_spec("duckdb") is None,
+    reason="pinned local Spatial archive or DuckDB package absent",
+)
+def test_refresh_rejects_source_replacement_and_preserves_current_state(tmp_path: Path) -> None:
+    store, prior = _seeded_real_store(tmp_path)
+    replacement_path = _write_open_roads_fixture(tmp_path / "RoadLink-replacement.geojson")
+    replacement_path.write_bytes(replacement_path.read_bytes() + b" ")
+    replacement_export = _source_export_for(replacement_path, format="GeoJSON")
+    key = EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST56")
+
+    with pytest.raises(ValueError, match="source replacement"):
+        store.refresh(
+            source_export=replacement_export,
+            ingestion_contract=_open_roads_contract(),
+            partition_keys=(key,),
+        )
+
+    assert store.status(verify=True).current_coverage == prior
+
+
+@pytest.mark.skipif(
+    not LOCAL_SPATIAL_ARCHIVE.is_file() or importlib.util.find_spec("duckdb") is None,
+    reason="pinned local Spatial archive or DuckDB package absent",
+)
+def test_resolve_coverage_never_falls_back_to_current_or_tampered_history(
+    tmp_path: Path,
+) -> None:
+    store = _real_store(tmp_path)
+    store.initialise()
+    source_path = _write_open_roads_fixture(tmp_path / "RoadLink.geojson")
+    source_export = _source_export_for(source_path, format="GeoJSON")
+    contract = _open_roads_contract()
+    old_key = EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST56")
+    new_key = EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST76")
+    old = store.refresh(
+        source_export=source_export,
+        ingestion_contract=contract,
+        partition_keys=(old_key,),
+    ).coverage
+    current = store.refresh(
+        source_export=source_export,
+        ingestion_contract=contract,
+        partition_keys=(new_key,),
+    ).coverage
+
+    assert store.resolve_coverage(state_fingerprint=old.fingerprint) == old
+    assert store.resolve_coverage(state_fingerprint=current.fingerprint) == current
+    with pytest.raises(ValueError, match="full lowercase"):
+        store.resolve_coverage(state_fingerprint="F" * 64)
+    with pytest.raises(ValueError, match="not found"):
+        store.resolve_coverage(state_fingerprint="f" * 64)
+
+    _mutate_store(
+        store,
+        "DELETE FROM coverage_state_attestation WHERE coverage_fingerprint = ?",
+        [old.fingerprint],
+    )
+    with pytest.raises(EvidenceStoreSchemaError, match="rebuild"):
+        store.resolve_coverage(state_fingerprint=old.fingerprint)
+    assert store.resolve_coverage(state_fingerprint=current.fingerprint) == current
+
+
+@pytest.mark.skipif(
+    not LOCAL_SPATIAL_ARCHIVE.is_file() or importlib.util.find_spec("duckdb") is None,
+    reason="pinned local Spatial archive or DuckDB package absent",
+)
+def test_refresh_rejects_conflicting_source_observation_across_reused_and_new_cells(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, prior = _seeded_real_store(tmp_path)
+    source_export = _source_export_for(tmp_path / "RoadLink.geojson", format="GeoJSON")
+    contract = _open_roads_contract()
+    new_key = EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST76")
+    original_reader = store._read_open_roads_partition
+
+    def conflicting_reader(
+        source_path: Path,
+        export: SourceExport,
+        current_contract: IngestionContract,
+        partition_key: EvidencePartitionKey,
+    ) -> object:
+        if partition_key != new_key:
+            return original_reader(source_path, export, current_contract, partition_key)
+        return local_evidence_store._EvidencePartitionInput(
+            source_export=export,
+            ingestion_contract=current_contract,
+            partition_key=partition_key,
+            availability="available",
+            features=(
+                local_evidence_store._EvidenceFeature(
+                    logical_key="roadlink:100",
+                    geometry=LineString([(370000, 165000), (371000, 165000)]),
+                    attributes={
+                        "road_classification": "A Road",
+                        "road_function": "A Road",
+                        "road_classification_number": "A4",
+                        "name_1": "London Road",
+                    },
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(store, "_read_open_roads_partition", conflicting_reader)
+    with pytest.raises(ValueError, match="conflicting feature content"):
+        store.refresh(
+            source_export=source_export,
+            ingestion_contract=contract,
+            partition_keys=(new_key,),
+        )
+
+    assert store.status(verify=True).current_coverage == prior
