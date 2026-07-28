@@ -43,6 +43,8 @@ from satn.ea_elevation import (
 )
 from satn.ea_elevation import (
     FIXED_POINT_PRIMARY_FIELD,
+    LEGACY_CONTRACT_SCHEMA_VERSION,
+    LEGACY_SAMPLE_LEDGER_SCHEMA_VERSION,
     SAMPLE_LEDGER_FILENAME,
     SAMPLE_LEDGER_SCHEMA_VERSION,
     canonical_ea_elevation_evidence_bytes,
@@ -1095,12 +1097,20 @@ def _recompute_ea_sample_ledger(
     authority_boundaries_path: Path,
     survey_index_path: Path,
     elevation_field: str = "elevation_m",
+    ledger_schema_version: str = SAMPLE_LEDGER_SCHEMA_VERSION,
+    tile_requests: dict[str, str] | None = None,
 ) -> dict[str, object]:
     """Derive EA coverage solely from retained evidence and ledger bytes.
 
     The acquisition sidecar is deliberately not an authority for these values:
     it is useful operational context, but it may have changed after acquisition.
     """
+    if ledger_schema_version not in {
+        LEGACY_SAMPLE_LEDGER_SCHEMA_VERSION,
+        SAMPLE_LEDGER_SCHEMA_VERSION,
+    }:
+        raise ValueError("EA sample ledger schema version is unsupported")
+    is_legacy = ledger_schema_version == LEGACY_SAMPLE_LEDGER_SCHEMA_VERSION
     rows = read_sample_ledger(ledger_path)
     evidence = gpd.read_file(evidence_path).to_crs(27700)
     boundaries = gpd.read_file(authority_boundaries_path).to_crs(27700)
@@ -1153,12 +1163,17 @@ def _recompute_ea_sample_ledger(
             "previous_sample_index",
             "next_sample_index",
         }
-        if not required <= set(row) or row["schema_version"] != SAMPLE_LEDGER_SCHEMA_VERSION:
+        if not is_legacy:
+            required.update({"tile_request_fingerprint", "tile_raw_sha256", "tile_pixel_status"})
+        if not required <= set(row) or row["schema_version"] != ledger_schema_version:
             raise ValueError("EA sample ledger lacks required immutable fields")
-        if row["bucket"] not in {"authority", "routing-buffer"} or row["availability"] not in {
-            "available",
-            "nodata",
-        }:
+        allowed_availability = {"available", "nodata"}
+        if not is_legacy:
+            allowed_availability.add("explicit-unknown")
+        if (
+            row["bucket"] not in {"authority", "routing-buffer"}
+            or row["availability"] not in allowed_availability
+        ):
             raise ValueError("EA sample ledger has invalid availability or authority bucket")
         identity = (str(row["route_id"]), int(row["sample_index"]))
         evidence_hash = row["evidence_row_sha256"]
@@ -1241,7 +1256,46 @@ def _recompute_ea_sample_ledger(
                     "EA sample ledger available observation lacks official survey evidence"
                 )
         elif evidence_hash is not None or identity in observed:
-            raise ValueError("EA sample ledger nodata observation conflicts with retained evidence")
+            raise ValueError(
+                "EA sample ledger missing observation conflicts with retained evidence"
+            )
+        if not is_legacy:
+            tile_fingerprint = row["tile_request_fingerprint"]
+            tile_digest = row["tile_raw_sha256"]
+            pixel_status = row["tile_pixel_status"]
+            if row["availability"] == "nodata":
+                if (
+                    selected is None
+                    or row["elevation_m"] is not None
+                    or evidence_hash is not None
+                    or pixel_status != "validated-nodata"
+                    or not isinstance(tile_fingerprint, str)
+                    or not isinstance(tile_digest, str)
+                    or tile_requests is None
+                    or tile_requests.get(tile_fingerprint) != tile_digest
+                ):
+                    raise ValueError(
+                        "EA sample ledger NoData lacks a governed validated tile/pixel proof"
+                    )
+            elif row["availability"] == "explicit-unknown":
+                if (
+                    row["elevation_m"] is not None
+                    or evidence_hash is not None
+                    or pixel_status != "unavailable"
+                    or tile_fingerprint is not None
+                    or tile_digest is not None
+                ):
+                    raise ValueError(
+                        "EA sample ledger explicit-unknown observation is inconsistent"
+                    )
+            elif (
+                pixel_status != "validated-value"
+                or not isinstance(tile_fingerprint, str)
+                or not isinstance(tile_digest, str)
+                or tile_requests is None
+                or tile_requests.get(tile_fingerprint) != tile_digest
+            ):
+                raise ValueError("EA sample ledger available observation lacks governed tile proof")
         key = str(row["authority_id"])
         bucket = buckets.setdefault(
             key,
@@ -1250,13 +1304,18 @@ def _recompute_ea_sample_ledger(
                 "requested_sample_count": 0,
                 "available_sample_count": 0,
                 "nodata_sample_count": 0,
+                **({} if is_legacy else {"explicit_unknown_sample_count": 0}),
             },
         )
         bucket["requested_sample_count"] = int(bucket["requested_sample_count"]) + 1
         if row["availability"] == "available":
             bucket["available_sample_count"] = int(bucket["available_sample_count"]) + 1
-        else:
+        elif row["availability"] == "nodata":
             bucket["nodata_sample_count"] = int(bucket["nodata_sample_count"]) + 1
+        elif not is_legacy:
+            bucket["explicit_unknown_sample_count"] = (
+                int(bucket["explicit_unknown_sample_count"]) + 1
+            )
         by_route.setdefault(identity[0], []).append(row)
     if set(observed) != {
         (str(row["route_id"]), int(row["sample_index"]))
@@ -1314,11 +1373,15 @@ def _recompute_ea_sample_ledger(
             )
     available_total = sum(int(item["available_sample_count"]) for item in summary)
     requested_total = len(rows)
-    return {
+    nodata_total = sum(int(item["nodata_sample_count"]) for item in summary)
+    explicit_unknown_total = (
+        sum(int(item["explicit_unknown_sample_count"]) for item in summary) if not is_legacy else 0
+    )
+    result: dict[str, object] = {
         "sample_ledger_sha256": sha256_file(ledger_path),
         "requested_point_count": requested_total,
         "evidence_sample_count": len(observed),
-        "nodata_sample_count": requested_total - len(observed),
+        "nodata_sample_count": nodata_total,
         "coverage_status": "available"
         if requested_total and available_total == requested_total
         else "partial"
@@ -1331,6 +1394,25 @@ def _recompute_ea_sample_ledger(
         "evidence_row_count": len(observed),
         "evidence_row_sha256s": sorted(value[0] for value in observed.values()),
     }
+    if not is_legacy:
+        result["explicit_unknown_sample_count"] = explicit_unknown_total
+        result["availability_outcome"] = _ea_availability_outcome(
+            available_total, nodata_total, explicit_unknown_total
+        )
+    return result
+
+
+def _ea_availability_outcome(available: int, nodata: int, explicit_unknown: int) -> str:
+    requested = available + nodata + explicit_unknown
+    if requested and available == requested:
+        return "available"
+    if available:
+        return "partial"
+    if requested and nodata == requested:
+        return "all-nodata"
+    if requested and explicit_unknown == requested:
+        return "all-explicit-unknown"
+    return "all-missing-mixed"
 
 
 def _validate_ea_ledger_completeness(*, rows: list[dict[str, object]], route_path: Path) -> None:
@@ -1379,10 +1461,17 @@ def _ea_elevation_acquisition_provenance(
         acquisition = json.loads(sidecar.read_text(encoding="utf-8"))
     except json.JSONDecodeError as error:
         raise ValueError("EA Elevation Evidence acquisition manifest is invalid JSON") from error
+    contract_schema_version = acquisition.get("contract_schema_version")
+    if contract_schema_version not in {
+        LEGACY_CONTRACT_SCHEMA_VERSION,
+        EA_ELEVATION_CONTRACT_VERSION,
+    }:
+        raise ValueError("EA Elevation Evidence acquisition manifest has invalid contract schema")
+    is_legacy = contract_schema_version == LEGACY_CONTRACT_SCHEMA_VERSION
     required = {
         "source_id": EA_LIDAR_SOURCE_ID,
         "acquisition_protocol": "two-pass-fixed-point/v1",
-        "contract_schema_version": EA_ELEVATION_CONTRACT_VERSION,
+        "contract_schema_version": contract_schema_version,
         "dataset_id": EA_LIDAR_DATASET_ID,
         "coverage_id": EA_LIDAR_COVERAGE_ID,
         "endpoint": EA_LIDAR_ENDPOINT,
@@ -1409,8 +1498,11 @@ def _ea_elevation_acquisition_provenance(
         raise ValueError("EA Elevation Evidence acquisition manifest does not bind its output")
     ledger_name = acquisition.get("sample_ledger_path")
     ledger_digest = acquisition.get("sample_ledger_sha256")
+    expected_ledger_schema = (
+        LEGACY_SAMPLE_LEDGER_SCHEMA_VERSION if is_legacy else SAMPLE_LEDGER_SCHEMA_VERSION
+    )
     if (
-        acquisition.get("sample_ledger_schema_version") != SAMPLE_LEDGER_SCHEMA_VERSION
+        acquisition.get("sample_ledger_schema_version") != expected_ledger_schema
         or not isinstance(ledger_name, str)
         or Path(ledger_name).name != ledger_name
         or not isinstance(ledger_digest, str)
@@ -1479,12 +1571,36 @@ def _ea_elevation_acquisition_provenance(
         raise ValueError(
             "EA Elevation Evidence acquisition manifest has forged survey-index preflight"
         )
+    tile_requests: dict[str, str] | None = None
+    if not is_legacy:
+        requests = acquisition.get("requests")
+        if not isinstance(requests, list):
+            raise ValueError(
+                "EA Elevation Evidence acquisition manifest lacks governed tile receipts"
+            )
+        tile_requests = {}
+        for request in requests:
+            if (
+                not isinstance(request, dict)
+                or request.get("status") != "available"
+                or not isinstance(request.get("request_fingerprint"), str)
+                or not isinstance(request.get("sha256"), str)
+                or len(str(request["sha256"])) != 64
+            ):
+                continue
+            fingerprint = str(request["request_fingerprint"])
+            digest = str(request["sha256"])
+            if fingerprint in tile_requests and tile_requests[fingerprint] != digest:
+                raise ValueError("EA Elevation Evidence governed tile receipt is ambiguous")
+            tile_requests[fingerprint] = digest
     recomputed = _recompute_ea_sample_ledger(
         evidence_path,
         ledger_path,
         authority_boundaries_path=authority_path,
         survey_index_path=survey_index,
         elevation_field=("elevation_m" if snapshot_dir is not None else governed.elevation_field),
+        ledger_schema_version=expected_ledger_schema,
+        tile_requests=tile_requests,
     )
     if sha256_file(route_path) != route_digest:
         raise ValueError("EA Elevation Evidence sampled routes are missing or tampered")
@@ -1497,19 +1613,24 @@ def _ea_elevation_acquisition_provenance(
             "EA Elevation Evidence sampled routes detach the fixed-point primary route set"
         )
     _validate_ea_ledger_completeness(rows=read_sample_ledger(ledger_path), route_path=route_path)
-    for field in (
+    comparison_fields = [
         "requested_point_count",
         "evidence_sample_count",
         "nodata_sample_count",
         "effective_survey_date",
-    ):
+    ]
+    if not is_legacy:
+        comparison_fields.extend(["explicit_unknown_sample_count", "availability_outcome"])
+    for field in comparison_fields:
         if acquisition.get(field) != recomputed[field]:
             raise ValueError(f"EA Elevation Evidence acquisition sidecar forges {field}")
     if acquisition.get("sample_validation", {}).get("status") != recomputed["coverage_status"]:
         raise ValueError(
             "EA Elevation Evidence acquisition sidecar forges sample validation status"
         )
-    sample_validation = preflight.get("sample_validation")
+    sample_validation = (
+        preflight.get("sample_validation") if is_legacy else acquisition.get("sample_validation")
+    )
     if not isinstance(sample_validation, dict):
         sample_validation = acquisition.get("sample_validation")
     if not isinstance(sample_validation, dict) or sample_validation.get("status") not in {
@@ -1525,14 +1646,16 @@ def _ea_elevation_acquisition_provenance(
         raise ValueError(
             "EA Elevation Evidence acquisition manifest lacks authority sample evidence"
         )
+    count_fields = [
+        "requested_sample_count",
+        "available_sample_count",
+        "nodata_sample_count",
+    ]
+    if not is_legacy:
+        count_fields.append("explicit_unknown_sample_count")
     try:
         sample_totals = {
-            field: sum(int(row.get(field, 0)) for row in authorities)
-            for field in (
-                "requested_sample_count",
-                "available_sample_count",
-                "nodata_sample_count",
-            )
+            field: sum(int(row.get(field, 0)) for row in authorities) for field in count_fields
         }
     except (AttributeError, TypeError, ValueError) as error:
         raise ValueError("EA Elevation Evidence authority sample evidence is invalid") from error
@@ -1557,6 +1680,15 @@ def _ea_elevation_acquisition_provenance(
         or sample_totals["requested_sample_count"] != recomputed["requested_point_count"]
         or sample_totals["available_sample_count"] != recomputed["evidence_sample_count"]
         or sample_totals["nodata_sample_count"] != recomputed["nodata_sample_count"]
+        or (
+            not is_legacy
+            and sample_totals["explicit_unknown_sample_count"]
+            != recomputed["explicit_unknown_sample_count"]
+        )
+        or (
+            not is_legacy
+            and sample_validation.get("availability_outcome") != recomputed["availability_outcome"]
+        )
         or len(transitions) != len(transition_identity(transitions))
         or transition_identity(transitions)
         != transition_identity(recomputed["cross_boundary_transitions"])
@@ -1572,7 +1704,7 @@ def _ea_elevation_acquisition_provenance(
         raise ValueError(
             "EA Elevation Evidence acquisition manifest lacks governed input fingerprint"
         )
-    return {
+    provenance = {
         "ea_acquisition_manifest_sha256": hashlib.sha256(sidecar.read_bytes()).hexdigest(),
         "acquisition_output_sha256": output_digest,
         "pre_elevation_network_sha256": network_digest,
@@ -1610,6 +1742,10 @@ def _ea_elevation_acquisition_provenance(
             },
         },
     }
+    if not is_legacy:
+        provenance["explicit_unknown_sample_count"] = recomputed["explicit_unknown_sample_count"]
+        provenance["availability_outcome"] = recomputed["availability_outcome"]
+    return provenance
 
 
 def _validated_ea_snapshot_replay_inputs(snapshot_dir: Path) -> dict[str, Path]:

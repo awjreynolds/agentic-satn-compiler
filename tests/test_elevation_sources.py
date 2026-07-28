@@ -18,10 +18,13 @@ from satn.compilation_dependencies import compilation_dependency_manifest
 from satn.compiler import compile_network
 from satn.ea_elevation import (
     DTM_ATTRIBUTION,
+    LEGACY_CONTRACT_SCHEMA_VERSION,
+    LEGACY_SAMPLE_LEDGER_SCHEMA_VERSION,
     SAMPLE_LEDGER_FILENAME,
     canonical_ea_elevation_evidence_bytes,
     eligible_route_fingerprint,
     evidence_row_sha256,
+    read_sample_ledger,
     write_sample_ledger,
 )
 from satn.models import (
@@ -601,26 +604,31 @@ def _write_synthetic_ea_snapshot(
                     "requested_sample_count": 1,
                     "available_sample_count": 1,
                     "nodata_sample_count": 0,
+                    "explicit_unknown_sample_count": 0,
                 },
                 {
                     "requested_sample_count": 0,
                     "available_sample_count": 0,
                     "nodata_sample_count": 0,
+                    "explicit_unknown_sample_count": 0,
                 },
                 {
                     "requested_sample_count": 0,
                     "available_sample_count": 0,
                     "nodata_sample_count": 0,
+                    "explicit_unknown_sample_count": 0,
                 },
                 {
                     "requested_sample_count": 0,
                     "available_sample_count": 0,
                     "nodata_sample_count": 0,
+                    "explicit_unknown_sample_count": 0,
                 },
                 {
                     "requested_sample_count": 0,
                     "available_sample_count": 0,
                     "nodata_sample_count": 0,
+                    "explicit_unknown_sample_count": 0,
                 },
             ],
             "cross_boundary_transitions": [],
@@ -654,6 +662,7 @@ def _write_synthetic_ea_snapshot(
                 "authority_boundaries_path": "authorities.geojson",
                 "evidence_sample_count": 1,
                 "nodata_sample_count": 0,
+                "explicit_unknown_sample_count": 0,
                 "survey_coverage_preflight": preflight,
                 "sample_validation": {"status": "available"},
                 "survey_index_path": index.name,
@@ -712,6 +721,13 @@ def test_ea_acquisition_sidecar_binds_pre_elevation_network_to_snapshot(
         assert manifest["file_sha256"][record["path"]] == record["sha256"]
         assert manifest["provenance_file_sha256"][record["path"]] == record["sha256"]
     copied_sidecar = json.loads((path / "elevation-evidence.manifest.json").read_text())
+    assert copied_sidecar["contract_schema_version"] == LEGACY_CONTRACT_SCHEMA_VERSION
+    assert copied_sidecar["sample_ledger_schema_version"] == LEGACY_SAMPLE_LEDGER_SCHEMA_VERSION
+    assert "explicit_unknown_sample_count" not in elevation
+    assert all(
+        row["schema_version"] == LEGACY_SAMPLE_LEDGER_SCHEMA_VERSION
+        for row in read_sample_ledger(path / SAMPLE_LEDGER_FILENAME)
+    )
     assert copied_sidecar["authority_boundaries_path"] == "ea-authority-boundaries.geojson"
     assert copied_sidecar["survey_index_path"] == "ea-survey-index.geojson"
 

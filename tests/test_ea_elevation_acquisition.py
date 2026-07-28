@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import json
 import urllib.parse
 from pathlib import Path
@@ -22,6 +23,7 @@ from satn.ea_elevation import (
     eligible_route_samples,
     fixed_point_route_fingerprint,
     read_sample_ledger,
+    write_sample_ledger,
 )
 from satn.models import NationalElevationConfig
 from satn.sources import _ea_elevation_acquisition_provenance, _validate_ea_ledger_completeness
@@ -31,6 +33,57 @@ SPEC = importlib.util.spec_from_file_location("acquire_ea_elevation", SCRIPT)
 assert SPEC and SPEC.loader
 acquisition = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(acquisition)
+
+
+class _TileResponse:
+    def __init__(self, payload: bytes) -> None:
+        self._payload = payload
+
+    def __enter__(self) -> _TileResponse:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self._payload
+
+
+def _valid_tile_bytes(
+    key: tuple[int, int],
+    *,
+    tile_size_m: int = 20,
+    spacing_m: int = 10,
+    value: float = 42,
+    nodata_tag: str = "-3.402823466e+38",
+) -> bytes:
+    image = Image.new("F", (tile_size_m // spacing_m, tile_size_m // spacing_m))
+    image.putdata([value] * (image.width * image.height))
+    minimum_east, minimum_north = key[0] * tile_size_m, key[1] * tile_size_m
+    tags = TiffImagePlugin.ImageFileDirectory_v2()
+    tags[34264] = (
+        float(spacing_m),
+        0.0,
+        0.0,
+        float(minimum_east),
+        0.0,
+        -float(spacing_m),
+        0.0,
+        float(minimum_north + tile_size_m),
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    )
+    tags[34735] = (1, 1, 0, 1, 3072, 0, 1, 27700)
+    tags[42113] = nodata_tag
+    output = io.BytesIO()
+    image.save(output, format="TIFF", tiffinfo=tags)
+    return output.getvalue()
 
 
 def test_supplemental_routes_break_a_two_cycle_without_changing_the_fixed_point(
@@ -291,6 +344,345 @@ def test_exhausted_wcs_tile_is_bounded_and_retained_as_nodata_provenance(
     assert failure == "OSError: persistent 500"
 
 
+def test_arbitrary_endpoint_cannot_mint_a_governed_tile_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        acquisition.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: pytest.fail(
+            "an unpinned endpoint must fail before network access"
+        ),
+    )
+
+    with pytest.raises(ValueError, match="pinned official WCS endpoint"):
+        acquisition.acquire_tile(
+            (70, 30),
+            tmp_path / "cache",
+            tile_size_m=20,
+            spacing_m=10,
+            endpoint="https://example.test/untrusted-wcs",
+            max_attempts=1,
+        )
+    assert not (tmp_path / "cache" / "receipts").exists()
+
+
+def test_tile_receipt_publishes_a_content_addressed_object_and_reuses_it_offline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = tmp_path / "cache"
+    key = (70, 30)
+    payload = _valid_tile_bytes(key)
+    monkeypatch.setattr(
+        acquisition.urllib.request, "urlopen", lambda *_args, **_kwargs: _TileResponse(payload)
+    )
+
+    _key, path, _url, digest, attempts, failure = acquisition.acquire_tile(
+        key, cache, tile_size_m=20, spacing_m=10, max_attempts=1
+    )
+
+    assert failure is None and attempts == 1 and digest is not None and path is not None
+    assert path == cache / "objects" / "sha256" / f"{digest}.tif"
+    request = acquisition._tile_request_payload(
+        key, tile_size_m=20, spacing_m=10, endpoint=acquisition.ENDPOINT
+    )
+    request_fingerprint = acquisition._request_fingerprint(request)
+    receipt = cache / "receipts" / f"{request_fingerprint}.json"
+    observed = {
+        "crs": "EPSG:27700",
+        "dimensions": [2, 2],
+        "model_transformation": [
+            10.0,
+            0.0,
+            0.0,
+            1400.0,
+            0.0,
+            -10.0,
+            0.0,
+            620.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        ],
+        "nodata": "-3.402823466e+38",
+        "nodata_observed": "-3.402823466e+38",
+    }
+    assert receipt.read_bytes() == acquisition._canonical_receipt_bytes(
+        {
+            **request,
+            "request_fingerprint": request_fingerprint,
+            "raw_sha256": digest,
+            "byte_count": len(payload),
+            "observed_raster_metadata": observed,
+        }
+    )
+
+    def offline(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("an intact governed receipt must be reused without network access")
+
+    monkeypatch.setattr(acquisition.urllib.request, "urlopen", offline)
+    assert acquisition.acquire_tile(key, cache, tile_size_m=20, spacing_m=10, max_attempts=1) == (
+        key,
+        path,
+        acquisition.build_getcoverage_url(70, 30, tile_size_m=20, spacing_m=10),
+        digest,
+        0,
+        None,
+    )
+
+
+def test_disconnected_route_tile_requests_reuse_real_cache_without_network(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two disconnected route tiles are independently reusable from one receipt cache."""
+
+    cache = tmp_path / "cache"
+    disconnected_route_tiles = [(70, 30), (73, 31)]
+    calls = 0
+
+    def online(*_args: object, **_kwargs: object) -> _TileResponse:
+        nonlocal calls
+        key = disconnected_route_tiles[calls]
+        calls += 1
+        return _TileResponse(_valid_tile_bytes(key))
+
+    monkeypatch.setattr(acquisition.urllib.request, "urlopen", online)
+    warmed = [
+        acquisition.acquire_tile(key, cache, tile_size_m=20, spacing_m=10, max_attempts=1)
+        for key in disconnected_route_tiles
+    ]
+    assert calls == 2 and all(result[1] is not None for result in warmed)
+
+    monkeypatch.setattr(
+        acquisition.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: pytest.fail("both disconnected route tiles must reuse cache"),
+    )
+    reused = [
+        acquisition.acquire_tile(key, cache, tile_size_m=20, spacing_m=10, max_attempts=1)
+        for key in disconnected_route_tiles
+    ]
+    assert [result[4] for result in reused] == [0, 0]
+    assert [result[5] for result in reused] == [None, None]
+
+
+def test_tile_receipts_are_distinct_per_request_and_deterministic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = tmp_path / "cache"
+    first_key, second_key = (70, 30), (71, 30)
+    monkeypatch.setattr(
+        acquisition.urllib.request,
+        "urlopen",
+        lambda request, **_kwargs: _TileResponse(
+            _valid_tile_bytes(
+                (70, 30)
+                if urllib.parse.parse_qs(urllib.parse.urlparse(request.full_url).query)["subset"][0]
+                == "E(1400,1420)"
+                else (71, 30),
+                value=43,
+            )
+        ),
+    )
+
+    acquisition.acquire_tile(first_key, cache, tile_size_m=20, spacing_m=10, max_attempts=1)
+    acquisition.acquire_tile(second_key, cache, tile_size_m=20, spacing_m=10, max_attempts=1)
+
+    receipts = sorted((cache / "receipts").glob("*.json"))
+    assert len(receipts) == 2
+    assert receipts[0].read_bytes() == acquisition._canonical_receipt_bytes(
+        json.loads(receipts[0].read_bytes())
+    )
+    assert receipts[1].read_bytes() == acquisition._canonical_receipt_bytes(
+        json.loads(receipts[1].read_bytes())
+    )
+    eastings = {json.loads(path.read_bytes())["request"]["tile_key"][0] for path in receipts}
+    assert eastings == {70, 71}
+
+
+def test_tampered_tile_object_reacquires_matching_bytes_and_receipt_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = tmp_path / "cache"
+    key = (70, 30)
+    payload = _valid_tile_bytes(key)
+    monkeypatch.setattr(
+        acquisition.urllib.request, "urlopen", lambda *_args, **_kwargs: _TileResponse(payload)
+    )
+    _key, object_path, _url, _digest, _attempts, _failure = acquisition.acquire_tile(
+        key, cache, tile_size_m=20, spacing_m=10, max_attempts=1
+    )
+    assert object_path is not None
+    object_path.write_bytes(b"tampered")
+
+    reacquired = acquisition.acquire_tile(key, cache, tile_size_m=20, spacing_m=10, max_attempts=1)
+    assert reacquired[4:] == (
+        1,
+        None,
+    )
+    request_fingerprint = acquisition._request_fingerprint(
+        acquisition._tile_request_payload(
+            key, tile_size_m=20, spacing_m=10, endpoint=acquisition.ENDPOINT
+        )
+    )
+    receipt_path = cache / "receipts" / f"{request_fingerprint}.json"
+    original_receipt = receipt_path.read_bytes()
+    receipt_path.write_text("not-json", encoding="utf-8")
+    monkeypatch.setattr(
+        acquisition.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: pytest.fail("a malformed receipt must fail before WCS access"),
+    )
+
+    malformed_receipt = acquisition.acquire_tile(
+        key, cache, tile_size_m=20, spacing_m=10, max_attempts=1
+    )
+    assert malformed_receipt[1] is None and malformed_receipt[3] is None
+    assert malformed_receipt[4:] == (0, "ValueError: EA tile receipt is invalid JSON")
+    assert receipt_path.read_text(encoding="utf-8") == "not-json"
+
+    receipt_with_extra = json.loads(original_receipt)
+    receipt_with_extra["unrecognised"] = True
+    receipt_path.write_bytes(acquisition._canonical_receipt_bytes(receipt_with_extra))
+    unexpected_field = acquisition.acquire_tile(
+        key, cache, tile_size_m=20, spacing_m=10, max_attempts=1
+    )
+    assert unexpected_field[1] is None and unexpected_field[3] is None
+    assert unexpected_field[4:] == (
+        0,
+        "ValueError: EA tile receipt does not match the v1 schema",
+    )
+
+
+def test_incomplete_and_legacy_coordinate_tiffs_are_never_reused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = tmp_path / "cache"
+    key = (70, 30)
+    cache.mkdir()
+    legacy = cache / "ea-dtm-70-30-10m.tif"
+    legacy.write_bytes(_valid_tile_bytes(key))
+    (cache / "receipts").mkdir()
+    (cache / "receipts" / "incomplete.json.part").write_text("partial", encoding="utf-8")
+    payload = _valid_tile_bytes(key)
+    calls = 0
+
+    def response(*_args: object, **_kwargs: object) -> _TileResponse:
+        nonlocal calls
+        calls += 1
+        return _TileResponse(payload)
+
+    monkeypatch.setattr(acquisition.urllib.request, "urlopen", response)
+    result = acquisition.acquire_tile(key, cache, tile_size_m=20, spacing_m=10, max_attempts=1)
+
+    assert calls == 1 and result[1] is not None
+    assert legacy.exists()
+    assert not legacy.with_name(legacy.name + ".legacy").exists()
+    assert (cache / "receipts" / "incomplete.json.part").exists()
+
+
+def test_existing_request_receipt_rejects_different_wcs_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = tmp_path / "cache"
+    key = (70, 30)
+    first = _valid_tile_bytes(key, value=42)
+    monkeypatch.setattr(
+        acquisition.urllib.request, "urlopen", lambda *_args, **_kwargs: _TileResponse(first)
+    )
+    _key, object_path, _url, _digest, _attempts, _failure = acquisition.acquire_tile(
+        key, cache, tile_size_m=20, spacing_m=10, max_attempts=1
+    )
+    assert object_path is not None
+    object_path.unlink()
+    monkeypatch.setattr(
+        acquisition.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _TileResponse(_valid_tile_bytes(key, value=99)),
+    )
+
+    _key, path, _url, digest, attempts, failure = acquisition.acquire_tile(
+        key, cache, tile_size_m=20, spacing_m=10, max_attempts=1
+    )
+
+    assert path is None and digest is None and attempts == 1
+    assert failure == "ValueError: EA WCS returned different bytes for an existing request receipt"
+
+
+def test_receipt_publication_never_clobbers_a_conflicting_writer(tmp_path: Path) -> None:
+    receipt = tmp_path / "receipt.json"
+    first = {"contract": "test", "raw_sha256": "a" * 64}
+    second = {"contract": "test", "raw_sha256": "b" * 64}
+
+    acquisition._publish_receipt(receipt, first)
+
+    with pytest.raises(ValueError, match="publication conflicts"):
+        acquisition._publish_receipt(receipt, second)
+    assert receipt.read_bytes() == acquisition._canonical_receipt_bytes(first)
+
+
+def test_wcs_tile_with_wrong_transform_is_not_published(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = tmp_path / "cache"
+    key = (70, 30)
+    monkeypatch.setattr(
+        acquisition.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _TileResponse(_valid_tile_bytes((71, 30))),
+    )
+
+    _key, path, _url, digest, attempts, failure = acquisition.acquire_tile(
+        key, cache, tile_size_m=20, spacing_m=10, max_attempts=1
+    )
+
+    assert path is None and digest is None and attempts == 1
+    assert failure is not None and failure.startswith(
+        "ValueError: GeoTIFF transform does not match requested WCS tile:"
+    )
+    assert not (cache / "receipts").exists()
+
+
+def test_real_ea_nodata_spelling_is_canonicalised_and_wrong_value_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    key = (70, 30)
+    real_ea_spelling = "-3.4028234663852886E38"
+    monkeypatch.setattr(
+        acquisition.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _TileResponse(
+            _valid_tile_bytes(key, nodata_tag=real_ea_spelling)
+        ),
+    )
+
+    _key, path, _url, _digest, attempts, failure = acquisition.acquire_tile(
+        key, tmp_path / "accepted", tile_size_m=20, spacing_m=10, max_attempts=1
+    )
+
+    assert path is not None and attempts == 1 and failure is None
+    receipt = next((tmp_path / "accepted" / "receipts").glob("*.json"))
+    metadata = json.loads(receipt.read_text(encoding="utf-8"))["observed_raster_metadata"]
+    assert metadata["nodata"] == acquisition._GEOTIFF_NODATA
+    assert metadata["nodata_observed"] == real_ea_spelling
+
+    monkeypatch.setattr(
+        acquisition.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _TileResponse(_valid_tile_bytes(key, nodata_tag="-3.3E38")),
+    )
+    _key, path, _url, digest, attempts, failure = acquisition.acquire_tile(
+        key, tmp_path / "rejected", tile_size_m=20, spacing_m=10, max_attempts=1
+    )
+    assert path is None and digest is None and attempts == 1
+    assert failure is not None and "unsupported NoData representation" in failure
+
+
 def test_eligible_route_fingerprint_is_semantic_not_wkb_or_direction_sensitive() -> None:
     from satn.ea_elevation import eligible_route_fingerprint
 
@@ -467,6 +859,8 @@ def test_float_geotiff_sampling_uses_embedded_model_transform(tmp_path: Path) ->
         0.0,
         1.0,
     )
+    tags[34735] = (1, 1, 0, 1, 3072, 0, 1, 27700)
+    tags[42113] = "-3.402823466e+38"
     image.save(path, tiffinfo=tags)
 
     assert acquisition.sample_tile(path, Point(350005, 150015)) == pytest.approx(10)
@@ -590,6 +984,7 @@ def test_banes_cross_boundary_samples_beyond_authority_buffer_are_retained_repor
     assert manifest["requested_point_count"] == 3001
     assert manifest["evidence_sample_count"] == 3001
     assert manifest["nodata_sample_count"] == 0
+    assert manifest["explicit_unknown_sample_count"] == 0
     assert outside == {
         "authority": "routing-buffer/outside-authority",
         "status": "available",
@@ -597,6 +992,7 @@ def test_banes_cross_boundary_samples_beyond_authority_buffer_are_retained_repor
         "requested_sample_count": 2962,
         "available_sample_count": 2962,
         "nodata_sample_count": 0,
+        "explicit_unknown_sample_count": 0,
     }
     assert manifest["survey_coverage_preflight"]["official_survey_index"] == official_index
     assert manifest["sample_validation"]["cross_boundary_transitions"][-1] == {
@@ -630,7 +1026,7 @@ def test_banes_cross_boundary_samples_beyond_authority_buffer_are_retained_repor
     assert len(ledger) == manifest["requested_point_count"]
 
 
-def test_banes_wcs_pixel_without_pinned_survey_is_nodata_before_immutable_provenance(
+def test_banes_wcs_pixel_without_pinned_survey_is_explicit_unknown_before_immutable_provenance(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An unattributed WCS value remains a ledger observation, never evidence."""
@@ -709,9 +1105,14 @@ def test_banes_wcs_pixel_without_pinned_survey_is_nodata_before_immutable_proven
 
     assert manifest["requested_point_count"] == len(ledger) == 3
     assert manifest["evidence_sample_count"] == len(evidence) == 2
-    assert manifest["nodata_sample_count"] == 1
+    assert manifest["nodata_sample_count"] == 0
+    assert manifest["explicit_unknown_sample_count"] == 1
     assert manifest["sample_validation"]["status"] == "partial"
-    assert [row["availability"] for row in ledger] == ["available", "available", "nodata"]
+    assert [row["availability"] for row in ledger] == [
+        "available",
+        "available",
+        "explicit-unknown",
+    ]
     assert {
         field: ledger[-1][field]
         for field in (
@@ -723,7 +1124,7 @@ def test_banes_wcs_pixel_without_pinned_survey_is_nodata_before_immutable_proven
             "evidence_row_sha256",
         )
     } == {
-        "availability": "nodata",
+        "availability": "explicit-unknown",
         "elevation_m": None,
         "survey_feature_id": None,
         "ed_flown": None,
@@ -749,8 +1150,318 @@ def test_banes_wcs_pixel_without_pinned_survey_is_nodata_before_immutable_proven
     )
 
     assert provenance["coverage_status"] == "partial"
+    assert provenance["explicit_unknown_sample_count"] == 1
     assert provenance["sample_ledger_sha256"] == manifest["sample_ledger_sha256"]
     assert len(provenance["evidence_row_sha256s"]) == 2
+
+
+def test_valid_raster_nodata_is_proven_and_kept_distinct_from_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    routes = tmp_path / "routes.geojson"
+    boundaries = tmp_path / "authorities.geojson"
+    survey_index = tmp_path / "survey-index.geojson"
+    output = tmp_path / "elevation-evidence.geojson"
+    gpd.GeoDataFrame(
+        [
+            {
+                "feature_id": "nodata-route",
+                "feature_type": "strategic-spine",
+                "topography_profile_id": "profile",
+                "geometry": LineString([(350050, 150000), (350060, 150000)]),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    ).to_file(routes, driver="GeoJSON")
+    gpd.GeoDataFrame(
+        [
+            {
+                "authority": authority,
+                "authority_id": f"authority-{position}",
+                "source_query": "synthetic-boundary/v1",
+                "geometry": box(350000, 149900, 350100, 150100)
+                if position == 0
+                else box(400000 + position, 0, 400001 + position, 1),
+            }
+            for position, authority in enumerate(acquisition.WECA_AUTHORITIES)
+        ],
+        geometry="geometry",
+        crs=27700,
+    ).to_file(boundaries, driver="GeoJSON")
+    gpd.GeoDataFrame(
+        [
+            {
+                "id": "survey-1",
+                "resolution": 1,
+                "ed_flown": "2022-01-02",
+                "geometry": box(350000, 149900, 350100, 150100),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    ).to_file(survey_index, driver="GeoJSON")
+    official_index = {
+        "raw_sha256": hashlib.sha256(survey_index.read_bytes()).hexdigest(),
+        "canonical_feature_sha256": "b" * 64,
+    }
+    monkeypatch.setattr(
+        acquisition, "validate_official_weca_survey_index", lambda _path: official_index
+    )
+    monkeypatch.setattr(
+        "satn.sources.validate_official_weca_survey_index", lambda _path: official_index
+    )
+    tile = tmp_path / "tile.tif"
+    tile.write_bytes(
+        _valid_tile_bytes(
+            (70, 30),
+            tile_size_m=5000,
+            value=float(acquisition._GEOTIFF_NODATA),
+        )
+    )
+    monkeypatch.setattr(
+        acquisition,
+        "acquire_tile",
+        lambda key, *_args, **_kwargs: (key, tile, "url", "a" * 64, 1, None),
+    )
+
+    manifest = acquisition.write_evidence(
+        routes,
+        output,
+        tmp_path / "cache",
+        spacing_m=10,
+        authority_boundaries_path=boundaries,
+        survey_index_path=survey_index,
+        governed_input_fingerprint="c" * 64,
+    )
+    ledger_path = output.with_name("elevation-evidence.sample-ledger.jsonl")
+    ledger = read_sample_ledger(ledger_path)
+
+    assert manifest["availability_outcome"] == "all-nodata"
+    assert manifest["sample_validation"]["availability_outcome"] == "all-nodata"
+    assert all(row["availability"] == "nodata" for row in ledger)
+    assert all(
+        row["elevation_m"] is None
+        and row["evidence_row_sha256"] is None
+        and row["survey_feature_id"] == "survey-1"
+        and row["tile_pixel_status"] == "validated-nodata"
+        for row in ledger
+    )
+    provenance = _ea_elevation_acquisition_provenance(
+        NationalElevationConfig(
+            provider="local-geojson",
+            path=output,
+            source_id="ea-lidar-composite-dtm-1m",
+            acquisition_contract="ea-lidar-weca-v1",
+            licence=acquisition.LICENCE,
+            attribution=acquisition.ATTRIBUTION,
+        )
+    )
+    assert provenance["availability_outcome"] == "all-nodata"
+
+    ledger[0]["survey_feature_id"] = None
+    digest = write_sample_ledger(ledger_path, ledger)
+    sidecar_path = output.with_suffix(".manifest.json")
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    sidecar["sample_ledger_sha256"] = digest
+    sidecar_path.write_text(json.dumps(sidecar, sort_keys=True), encoding="utf-8")
+    with pytest.raises(ValueError, match="survey selection differs"):
+        _ea_elevation_acquisition_provenance(
+            NationalElevationConfig(
+                provider="local-geojson",
+                path=output,
+                source_id="ea-lidar-composite-dtm-1m",
+                acquisition_contract="ea-lidar-weca-v1",
+                licence=acquisition.LICENCE,
+                attribution=acquisition.ATTRIBUTION,
+            )
+        )
+
+
+def test_wcs_failure_is_explicit_unknown_end_to_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    routes = tmp_path / "routes.geojson"
+    boundaries = tmp_path / "authorities.geojson"
+    survey_index = tmp_path / "survey-index.geojson"
+    output = tmp_path / "elevation-evidence.geojson"
+    gpd.GeoDataFrame(
+        [
+            {
+                "feature_id": "unknown-route",
+                "feature_type": "strategic-spine",
+                "topography_profile_id": "profile",
+                "geometry": LineString([(350050, 150000), (350060, 150000)]),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    ).to_file(routes, driver="GeoJSON")
+    gpd.GeoDataFrame(
+        [
+            {
+                "authority": authority,
+                "authority_id": f"authority-{position}",
+                "source_query": "synthetic-boundary/v1",
+                "geometry": box(350000, 149900, 350100, 150100)
+                if position == 0
+                else box(400000 + position, 0, 400001 + position, 1),
+            }
+            for position, authority in enumerate(acquisition.WECA_AUTHORITIES)
+        ],
+        geometry="geometry",
+        crs=27700,
+    ).to_file(boundaries, driver="GeoJSON")
+    gpd.GeoDataFrame(
+        [
+            {
+                "id": "survey-1",
+                "resolution": 1,
+                "ed_flown": "2022-01-02",
+                "geometry": box(350000, 149900, 350100, 150100),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    ).to_file(survey_index, driver="GeoJSON")
+    official_index = {
+        "raw_sha256": hashlib.sha256(survey_index.read_bytes()).hexdigest(),
+        "canonical_feature_sha256": "b" * 64,
+    }
+    monkeypatch.setattr(
+        acquisition, "validate_official_weca_survey_index", lambda _path: official_index
+    )
+    monkeypatch.setattr(
+        "satn.sources.validate_official_weca_survey_index", lambda _path: official_index
+    )
+    monkeypatch.setattr(
+        acquisition,
+        "acquire_tile",
+        lambda key, *_args, **_kwargs: (key, None, "url", None, 1, "OSError: unavailable"),
+    )
+
+    manifest = acquisition.write_evidence(
+        routes,
+        output,
+        tmp_path / "cache",
+        spacing_m=10,
+        authority_boundaries_path=boundaries,
+        survey_index_path=survey_index,
+        governed_input_fingerprint="c" * 64,
+    )
+    ledger = read_sample_ledger(output.with_name("elevation-evidence.sample-ledger.jsonl"))
+    assert manifest["availability_outcome"] == "all-explicit-unknown"
+    assert all(row["availability"] == "explicit-unknown" for row in ledger)
+    assert all(row["tile_request_fingerprint"] is None for row in ledger)
+    provenance = _ea_elevation_acquisition_provenance(
+        NationalElevationConfig(
+            provider="local-geojson",
+            path=output,
+            source_id="ea-lidar-composite-dtm-1m",
+            acquisition_contract="ea-lidar-weca-v1",
+            licence=acquisition.LICENCE,
+            attribution=acquisition.ATTRIBUTION,
+        )
+    )
+    assert provenance["availability_outcome"] == "all-explicit-unknown"
+
+
+def test_multi_tile_ledger_binds_each_sample_to_its_own_tile_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    routes = tmp_path / "routes.geojson"
+    boundaries = tmp_path / "authorities.geojson"
+    survey_index = tmp_path / "survey-index.geojson"
+    output = tmp_path / "elevation-evidence.geojson"
+    gpd.GeoDataFrame(
+        [
+            {
+                "feature_id": "first-tile",
+                "feature_type": "strategic-spine",
+                "topography_profile_id": "profile",
+                "geometry": LineString([(350050, 150000), (350060, 150000)]),
+            },
+            {
+                "feature_id": "second-tile",
+                "feature_type": "strategic-spine",
+                "topography_profile_id": "profile",
+                "geometry": LineString([(355050, 150000), (355060, 150000)]),
+            },
+        ],
+        geometry="geometry",
+        crs=27700,
+    ).to_file(routes, driver="GeoJSON")
+    gpd.GeoDataFrame(
+        [
+            {
+                "authority": authority,
+                "authority_id": f"authority-{position}",
+                "source_query": "synthetic-boundary/v1",
+                "geometry": box(350000, 149900, 355100, 150100)
+                if position == 0
+                else box(400000 + position, 0, 400001 + position, 1),
+            }
+            for position, authority in enumerate(acquisition.WECA_AUTHORITIES)
+        ],
+        geometry="geometry",
+        crs=27700,
+    ).to_file(boundaries, driver="GeoJSON")
+    gpd.GeoDataFrame(
+        [
+            {
+                "id": "survey-1",
+                "resolution": 1,
+                "ed_flown": "2022-01-02",
+                "geometry": box(350000, 149900, 355100, 150100),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    ).to_file(survey_index, driver="GeoJSON")
+    official_index = {
+        "raw_sha256": hashlib.sha256(survey_index.read_bytes()).hexdigest(),
+        "canonical_feature_sha256": "b" * 64,
+    }
+    monkeypatch.setattr(
+        acquisition, "validate_official_weca_survey_index", lambda _path: official_index
+    )
+    tile_digests = {(70, 30): "a" * 64, (71, 30): "b" * 64}
+    monkeypatch.setattr(
+        acquisition,
+        "acquire_tile",
+        lambda key, *_args, **_kwargs: (
+            key,
+            tmp_path / f"{key[0]}-{key[1]}.tif",
+            "url",
+            tile_digests[key],
+            1,
+            None,
+        ),
+    )
+    monkeypatch.setattr(acquisition, "load_tile", lambda _path: object())
+    monkeypatch.setattr(acquisition, "sample_grid", lambda _grid, _point: 42.0)
+
+    acquisition.write_evidence(
+        routes,
+        output,
+        tmp_path / "cache",
+        spacing_m=10,
+        authority_boundaries_path=boundaries,
+        survey_index_path=survey_index,
+        governed_input_fingerprint="c" * 64,
+    )
+    ledger = read_sample_ledger(output.with_name("elevation-evidence.sample-ledger.jsonl"))
+    expected = {
+        "first-tile": ((70, 30), "a" * 64),
+        "second-tile": ((71, 30), "b" * 64),
+    }
+    for row in ledger:
+        key, digest = expected[row["route_id"]]
+        request = acquisition._tile_request_payload(
+            key, tile_size_m=5000, spacing_m=10, endpoint=acquisition.ENDPOINT
+        )
+        assert row["tile_request_fingerprint"] == acquisition._request_fingerprint(request)
+        assert row["tile_raw_sha256"] == digest
 
 
 def test_weca_pinned_route_extent_fails_closed_when_eligible_route_changes(

@@ -71,7 +71,11 @@ WECA_SURVEY_REQUEST = {
 # feature-derived dates in any particular WFS subset.
 DATASET_DECLARED_SURVEY_START = "2000-06-06"
 DATASET_DECLARED_SURVEY_END = "2022-04-02"
-CONTRACT_SCHEMA_VERSION = "ea-lidar-composite-dtm-contract/v2"
+# v2 is retained for historical fixed-point snapshots.  v3 adds a closed
+# availability outcome plus evidence that distinguishes a decoded NoData pixel
+# from an unavailable WCS request; it must never be inferred for a v2 artifact.
+LEGACY_CONTRACT_SCHEMA_VERSION = "ea-lidar-composite-dtm-contract/v2"
+CONTRACT_SCHEMA_VERSION = "ea-lidar-composite-dtm-contract/v3"
 SURVEY_FIELDS = (
     "id",
     "filename",
@@ -92,7 +96,8 @@ ELIGIBLE_FEATURE_TYPES = frozenset(
         "urban-spine",
     }
 )
-SAMPLE_LEDGER_SCHEMA_VERSION = "ea-lidar-sample-ledger/v1"
+LEGACY_SAMPLE_LEDGER_SCHEMA_VERSION = "ea-lidar-sample-ledger/v1"
+SAMPLE_LEDGER_SCHEMA_VERSION = "ea-lidar-sample-ledger/v2"
 SAMPLE_LEDGER_FILENAME = "ea-elevation-sample-ledger.jsonl"
 FIXED_POINT_PRIMARY_FIELD = "ea_fixed_point_primary"
 EA_ELEVATION_EVIDENCE_FIELDS = (
