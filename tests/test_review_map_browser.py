@@ -65,6 +65,142 @@ def test_mobile_map_has_a_visible_compact_legend(tmp_path: Path) -> None:
 
 
 @pytest.mark.browser
+def test_any_visible_map_artifact_can_pin_its_context(tmp_path: Path) -> None:
+    fixture = tmp_path / "fixture"
+    shutil.copytree(
+        PROJECT / "examples" / "fixture",
+        fixture,
+        ignore=shutil.ignore_patterns("work", ".satn-cache"),
+    )
+    config = CouncilConfig.from_yaml(fixture / "council.yaml")
+    snapshot(config)
+    result = compile(config)
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1440, "height": 900})
+        page_errors: list[str] = []
+        page.on("pageerror", lambda error: page_errors.append(str(error)))
+        page.route("https://tile.openstreetmap.org/**", lambda route: route.abort())
+        page.goto(result.artifacts["review_map"].as_uri())
+        page.wait_for_function("document.documentElement.dataset.mapReady === 'true'")
+        page.wait_for_function("!window.SATN_REVIEW_MAP.isMoving()")
+
+        selection = page.evaluate(
+            """() => {
+              const map = window.SATN_REVIEW_MAP;
+              map.getStyle().layers
+                .filter((layer) => layer.source && layer.source !== "places")
+                .forEach((layer) => {
+                  map.setLayoutProperty(layer.id, "visibility", "none");
+                });
+              const places = map.getSource("places")._data.features;
+              for (const feature of places) {
+                const point = map.project(feature.geometry.coordinates);
+                const rendered = map.queryRenderedFeatures(point, {layers: ["places"]});
+                if (rendered.length) {
+                  return {
+                    x: point.x,
+                    y: point.y,
+                    id: feature.properties.place_id,
+                    name: feature.properties.name,
+                    kind: feature.properties.kind
+                  };
+                }
+              }
+              return null;
+            }"""
+        )
+        assert selection is not None
+        map_box = page.locator("#map").bounding_box()
+        assert map_box is not None
+        artifact_x = map_box["x"] + selection["x"]
+        artifact_y = map_box["y"] + selection["y"]
+
+        page.mouse.move(artifact_x, artifact_y)
+        page.mouse.click(artifact_x, artifact_y)
+        page.mouse.move(map_box["x"] + 2, map_box["y"] + 2)
+
+        assert not page_errors
+        panel = page.locator("#feature-details")
+        panel_text = panel.inner_text()
+        assert selection["name"] in panel_text
+        assert selection["id"] in panel_text
+        assert selection["kind"] in panel_text
+        assert "places" in panel_text
+        assert "Point" in panel_text
+        assert "All contextual properties" in panel_text
+
+        page.mouse.move(artifact_x, artifact_y)
+        page.mouse.click(artifact_x, artifact_y)
+        page.mouse.move(map_box["x"] + 2, map_box["y"] + 2)
+        assert "Select any visible map artifact" in panel.inner_text()
+
+        reference_selection = page.evaluate(
+            """() => {
+              const map = window.SATN_REVIEW_MAP;
+              map.setLayoutProperty("places", "visibility", "none");
+              const center = map.getCenter();
+              const feature = {
+                type: "Feature",
+                id: "reference-option-test",
+                properties: {
+                  option_id: "reference-option-test",
+                  name: "Reference option test",
+                  disposition: "complementary",
+                  rationale: "Retained as contextual reference evidence."
+                },
+                geometry: {
+                  type: "LineString",
+                  coordinates: [
+                    [center.lng - 0.001, center.lat],
+                    [center.lng + 0.001, center.lat]
+                  ]
+                }
+              };
+              const collection = {type: "FeatureCollection", features: [feature]};
+              if (map.getSource("reference-satn-options")) {
+                map.getSource("reference-satn-options").setData(collection);
+                map.setLayoutProperty(
+                  "reference-satn-options",
+                  "visibility",
+                  "visible"
+                );
+              } else {
+                map.addSource("reference-satn-options", {
+                  type: "geojson",
+                  data: collection
+                });
+                map.addLayer({
+                  id: "reference-satn-options",
+                  type: "line",
+                  source: "reference-satn-options",
+                  paint: {"line-color": "#c0392b", "line-width": 12}
+                });
+              }
+              const point = map.project(center);
+              return {x: point.x, y: point.y};
+            }"""
+        )
+        page.wait_for_function(
+            "window.SATN_REVIEW_MAP.queryRenderedFeatures("
+            "{layers: ['reference-satn-options']}).length > 0"
+        )
+        reference_x = map_box["x"] + reference_selection["x"]
+        reference_y = map_box["y"] + reference_selection["y"]
+        page.mouse.move(reference_x, reference_y)
+        page.mouse.click(reference_x, reference_y)
+
+        reference_text = panel.inner_text()
+        assert "Reference option test" in reference_text
+        assert "reference-option-test" in reference_text
+        assert "complementary" in reference_text
+        assert "Retained as contextual reference evidence." in reference_text
+        assert "reference-satn-options" in reference_text
+        browser.close()
+
+
+@pytest.mark.browser
 def test_gradient_inspection_path_popovers_and_linear_evidence(tmp_path: Path) -> None:
     fixture = tmp_path / "fixture"
     shutil.copytree(

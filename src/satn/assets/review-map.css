@@ -82,8 +82,16 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 #complete-region-controls { margin: .65rem 0; padding: .55rem; border: 1px solid #ccd1d1; border-radius: .35rem; background: #f8f9f9; }
 #complete-region-controls h2 { margin: 0; font-size: .92rem; }
 #complete-region-controls p { margin: .35rem 0; font-size: .76rem; }
-#feature-details { max-height: 12rem; overflow: auto; }
+#feature-details { max-height: min(24rem, 42vh); overflow: auto; }
 #feature-details h2 { margin-top: 0; }
+.artifact-origin {
+  margin-top: .65rem;
+  padding-top: .55rem;
+  border-top: 1px solid #d5dbdb;
+}
+.artifact-context { margin-top: .65rem; }
+.artifact-context summary { cursor: pointer; font-weight: 700; }
+.artifact-context dd { white-space: pre-wrap; }
 dt { font-weight: 700; }
 dd { margin: 0 0 .45rem; overflow-wrap: anywhere; }
 #feature-index { margin: .65rem 0; }
