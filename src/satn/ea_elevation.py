@@ -94,6 +94,7 @@ ELIGIBLE_FEATURE_TYPES = frozenset(
 )
 SAMPLE_LEDGER_SCHEMA_VERSION = "ea-lidar-sample-ledger/v1"
 SAMPLE_LEDGER_FILENAME = "ea-elevation-sample-ledger.jsonl"
+FIXED_POINT_PRIMARY_FIELD = "ea_fixed_point_primary"
 EA_ELEVATION_EVIDENCE_FIELDS = (
     "evidence_id",
     "source_id",
@@ -372,6 +373,22 @@ def eligible_route_fingerprint(routes: gpd.GeoDataFrame) -> str:
         separators=(",", ":"),
     )
     return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def fixed_point_route_fingerprint(routes: gpd.GeoDataFrame) -> str:
+    """Fingerprint the canonical route set inside a retained superset.
+
+    A two-pass elevation compile can alternate between two route sets when each
+    pass only has samples for the previously selected alignment.  Acquisition
+    may retain the union for comparable evidence, while this marker keeps one
+    route set authoritative for the publication fixed-point check.
+    """
+    if FIXED_POINT_PRIMARY_FIELD not in routes:
+        return eligible_route_fingerprint(routes)
+    primary = routes[routes[FIXED_POINT_PRIMARY_FIELD].eq(True)].copy()
+    if primary.empty:
+        raise ValueError("EA sampled routes do not mark a fixed-point primary route set")
+    return eligible_route_fingerprint(primary)
 
 
 def canonical_survey_index(index: gpd.GeoDataFrame) -> str:

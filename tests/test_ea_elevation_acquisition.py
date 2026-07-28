@@ -12,12 +12,15 @@ from PIL import Image, TiffImagePlugin
 from shapely.geometry import LineString, MultiLineString, MultiPolygon, Point, Polygon, box
 
 from satn.ea_elevation import (
+    FIXED_POINT_PRIMARY_FIELD,
     WECA_SURVEY_BBOX,
     WECA_SURVEY_INDEX_FEATURE_COUNT,
     WECA_SURVEY_INDEX_FEATURE_SHA256,
     WECA_SURVEY_REQUEST,
     WECA_SURVEY_REQUEST_BBOX,
+    eligible_route_fingerprint,
     eligible_route_samples,
+    fixed_point_route_fingerprint,
     read_sample_ledger,
 )
 from satn.models import NationalElevationConfig
@@ -28,6 +31,52 @@ SPEC = importlib.util.spec_from_file_location("acquire_ea_elevation", SCRIPT)
 assert SPEC and SPEC.loader
 acquisition = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(acquisition)
+
+
+def test_supplemental_routes_break_a_two_cycle_without_changing_the_fixed_point(
+    tmp_path: Path,
+) -> None:
+    primary = tmp_path / "primary.geojson"
+    supplemental = tmp_path / "supplemental.geojson"
+
+    def write_routes(path: Path, second_line: LineString) -> None:
+        gpd.GeoDataFrame(
+            [
+                {
+                    "id": "shared",
+                    "feature_type": "strategic-spine",
+                    "topography_profile_id": "profile-shared",
+                    "geometry": LineString([(350000, 150000), (350010, 150000)]),
+                },
+                {
+                    "id": "choice",
+                    "feature_type": "spine-access-connection",
+                    "topography_profile_id": "profile-choice",
+                    "geometry": second_line,
+                },
+            ],
+            geometry="geometry",
+            crs=27700,
+        ).to_file(path, driver="GeoJSON")
+
+    write_routes(primary, LineString([(350010, 150000), (350020, 150000)]))
+    write_routes(supplemental, LineString([(350010, 150000), (350010, 150010)]))
+
+    combined = acquisition._combined_sample_routes(primary, [supplemental])
+
+    assert combined[FIXED_POINT_PRIMARY_FIELD].tolist() == [True, True, False]
+    assert combined.iloc[-1]["feature_id"].startswith("supplemental-")
+    assert fixed_point_route_fingerprint(combined) == eligible_route_fingerprint(
+        gpd.read_file(primary)
+    )
+    samples, feature_ids = eligible_route_samples(combined, spacing_m=10)
+    assert len(feature_ids) == 3
+    assert {(sample["geometry"].x, sample["geometry"].y) for sample in samples} == {
+        (350000, 150000),
+        (350010, 150000),
+        (350020, 150000),
+        (350010, 150010),
+    }
 
 
 def test_route_sampling_is_generic_bounded_and_deduplicated(tmp_path: Path) -> None:

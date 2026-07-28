@@ -42,11 +42,13 @@ from satn.ea_elevation import (
     DTM_LICENCE as EA_LIDAR_LICENCE,
 )
 from satn.ea_elevation import (
+    FIXED_POINT_PRIMARY_FIELD,
     SAMPLE_LEDGER_FILENAME,
     SAMPLE_LEDGER_SCHEMA_VERSION,
     canonical_ea_elevation_evidence_bytes,
     eligible_route_samples,
     evidence_row_sha256,
+    fixed_point_route_fingerprint,
     read_sample_ledger,
     sha256_file,
     validate_official_weca_survey_index,
@@ -1486,6 +1488,14 @@ def _ea_elevation_acquisition_provenance(
     )
     if sha256_file(route_path) != route_digest:
         raise ValueError("EA Elevation Evidence sampled routes are missing or tampered")
+    retained_routes = gpd.read_file(route_path)
+    if (
+        FIXED_POINT_PRIMARY_FIELD in retained_routes
+        and fixed_point_route_fingerprint(retained_routes) != network_digest
+    ):
+        raise ValueError(
+            "EA Elevation Evidence sampled routes detach the fixed-point primary route set"
+        )
     _validate_ea_ledger_completeness(rows=read_sample_ledger(ledger_path), route_path=route_path)
     for field in (
         "requested_point_count",

@@ -18,6 +18,7 @@ from pathlib import Path
 
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 from PIL import Image, ImageFile
 from shapely.geometry import Point
 
@@ -25,13 +26,14 @@ from satn.ea_elevation import (
     CONTRACT_SCHEMA_VERSION,
     DTM_VERTICAL_ACCURACY,
     ELIGIBLE_FEATURE_TYPES,
+    FIXED_POINT_PRIMARY_FIELD,
     WECA_PINNED_ELIGIBLE_ROUTE_BBOX,
     WECA_ROUTING_BUFFER_M,
     WECA_SURVEY_REQUEST_BBOX,
     canonical_polygon_geometry,
-    eligible_route_fingerprint,
     eligible_route_samples,
     evidence_row_sha256,
+    fixed_point_route_fingerprint,
     governed_survey_request_bbox,
     sha256_file,
     validate_official_weca_survey_index,
@@ -95,6 +97,83 @@ def route_samples(path: Path, spacing_m: float) -> tuple[list[dict[str, object]]
     still de-duplicate tile requests and evidence points separately.
     """
     return eligible_route_samples(gpd.read_file(path), spacing_m)
+
+
+def _route_identifier(row: pd.Series, position: object) -> str:
+    for field in ("feature_id", "id"):
+        value = row.get(field)
+        if value is not None and not pd.isna(value) and str(value):
+            return str(value)
+    return str(position)
+
+
+def _combined_sample_routes(
+    primary_path: Path,
+    supplemental_paths: list[Path],
+) -> gpd.GeoDataFrame:
+    """Retain unique alternate geometries while keeping one primary route set."""
+    primary = gpd.read_file(primary_path)
+    if primary.crs is None:
+        raise ValueError("EA fixed-point primary routes require a CRS")
+    combined = primary.copy()
+    combined["feature_id"] = [
+        _route_identifier(row, position) for position, row in combined.iterrows()
+    ]
+    if FIXED_POINT_PRIMARY_FIELD not in combined:
+        combined[FIXED_POINT_PRIMARY_FIELD] = True
+    elif not combined[FIXED_POINT_PRIMARY_FIELD].eq(True).any():
+        raise ValueError("EA sampled routes do not mark a fixed-point primary route set")
+
+    seen: set[bytes] = set()
+    for _position, row in combined.to_crs(27700).iterrows():
+        if (
+            row.get("feature_type") in ELIGIBLE_FEATURE_TYPES
+            and not pd.isna(row.get("topography_profile_id"))
+            and row.geometry is not None
+            and not row.geometry.is_empty
+        ):
+            seen.add(bytes(row.geometry.normalize().wkb))
+
+    additions: list[gpd.GeoDataFrame] = []
+    for supplemental_path in supplemental_paths:
+        supplemental = gpd.read_file(supplemental_path)
+        if supplemental.crs is None:
+            raise ValueError("EA supplemental sampled routes require a CRS")
+        metric = supplemental.to_crs(27700)
+        retained_positions: list[object] = []
+        for position, row in metric.iterrows():
+            if (
+                row.get("feature_type") not in ELIGIBLE_FEATURE_TYPES
+                or pd.isna(row.get("topography_profile_id"))
+                or row.geometry is None
+                or row.geometry.is_empty
+            ):
+                continue
+            geometry_key = bytes(row.geometry.normalize().wkb)
+            if geometry_key in seen:
+                continue
+            seen.add(geometry_key)
+            retained_positions.append(position)
+        if not retained_positions:
+            continue
+        retained = supplemental.loc[retained_positions].to_crs(primary.crs).copy()
+        source_digest = sha256_file(supplemental_path)[:12]
+        retained[FIXED_POINT_PRIMARY_FIELD] = False
+        retained["feature_id"] = [
+            (
+                f"supplemental-{source_digest}-{sequence}-"
+                f"{_route_identifier(row, position)}"
+            )
+            for sequence, (position, row) in enumerate(retained.iterrows())
+        ]
+        additions.append(retained)
+    if additions:
+        combined = gpd.GeoDataFrame(
+            pd.concat([combined, *additions], ignore_index=True),
+            geometry="geometry",
+            crs=primary.crs,
+        )
+    return combined
 
 
 def tile_key(point: Point, tile_size_m: int) -> tuple[int, int]:
@@ -626,7 +705,16 @@ def write_evidence(
     routing_buffer_m: float = 15_000,
     governed_input_fingerprint: str | None = None,
     max_wcs_attempts: int = MAX_WCS_ATTEMPTS,
+    supplemental_route_paths: list[Path] | None = None,
 ) -> dict[str, object]:
+    supplemental_route_paths = supplemental_route_paths or []
+    route_copy = output_path.with_name(f"{output_path.stem}.sampled-routes.geojson")
+    sampling_route_path = route_path
+    if supplemental_route_paths:
+        _combined_sample_routes(route_path, supplemental_route_paths).to_file(
+            route_copy, driver="GeoJSON"
+        )
+        sampling_route_path = route_copy
     if require_weca_preflight and (authority_boundaries_path is None or survey_index_path is None):
         raise ValueError(
             "WECA elevation acquisition requires authority boundaries and an EA survey index"
@@ -636,14 +724,14 @@ def write_evidence(
     if require_weca_preflight and endpoint != ENDPOINT:
         raise ValueError("WECA elevation acquisition requires the governed EA WCS endpoint")
     if require_weca_preflight:
-        validate_weca_route_extent(route_path, routing_buffer_m=routing_buffer_m)
+        validate_weca_route_extent(sampling_route_path, routing_buffer_m=routing_buffer_m)
     if require_weca_preflight and (
         not isinstance(governed_input_fingerprint, str) or len(governed_input_fingerprint) != 64
     ):
         raise ValueError("WECA elevation acquisition requires the governed input fingerprint")
     preflight = (
         preflight_weca_coverage(
-            route_path,
+            sampling_route_path,
             authority_boundaries_path,
             survey_index_path,
             spacing_m=spacing_m,
@@ -654,7 +742,7 @@ def write_evidence(
     # Tile reads may be deduplicated by coordinate, but accounting and evidence
     # are deliberately per (route_id, sample_index): coincident route endpoints
     # are distinct observations in the strategic network.
-    ordered_samples, feature_ids = route_samples(route_path, spacing_m)
+    ordered_samples, feature_ids = route_samples(sampling_route_path, spacing_m)
     points = _acquisition_points(ordered_samples)
     keys = sorted({tile_key(point, tile_size_m) for point in points})
     with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -750,8 +838,7 @@ def write_evidence(
         crs=27700,
     ).to_crs(4326)
     evidence.sort_values("evidence_id").to_file(output_path, driver="GeoJSON")
-    route_copy = output_path.with_name(f"{output_path.stem}.sampled-routes.geojson")
-    if route_copy.resolve() != route_path.resolve():
+    if not supplemental_route_paths and route_copy.resolve() != route_path.resolve():
         shutil.copy2(route_path, route_copy)
     # An acquisition directory may contain multiple outputs.  The sidecar owns
     # an output-specific sibling; snapshotting normalises the internal name.
@@ -840,7 +927,9 @@ def write_evidence(
         "sample_ledger_schema_version": "ea-lidar-sample-ledger/v1" if ledger_sha256 else None,
         "sample_route_path": route_copy.name if ledger_sha256 else None,
         "sample_route_sha256": sha256_file(route_copy) if ledger_sha256 else None,
-        "pre_elevation_network_sha256": eligible_route_fingerprint(gpd.read_file(route_path)),
+        "pre_elevation_network_sha256": fixed_point_route_fingerprint(
+            gpd.read_file(sampling_route_path)
+        ),
         "acquisition_protocol": "two-pass-fixed-point/v1",
         "survey_coverage_preflight": preflight,
         "sample_validation": sample_validation,
@@ -913,6 +1002,7 @@ def main() -> None:
     parser.add_argument("--routing-buffer-m", type=float, default=15_000)
     parser.add_argument("--governed-input-fingerprint")
     parser.add_argument("--max-wcs-attempts", type=int, default=MAX_WCS_ATTEMPTS)
+    parser.add_argument("--supplemental-routes", type=Path, action="append", default=[])
     args = parser.parse_args()
     manifest = write_evidence(
         args.routes,
@@ -927,6 +1017,7 @@ def main() -> None:
         routing_buffer_m=args.routing_buffer_m,
         governed_input_fingerprint=args.governed_input_fingerprint,
         max_wcs_attempts=args.max_wcs_attempts,
+        supplemental_route_paths=args.supplemental_routes,
     )
     print(
         f"Wrote {manifest['evidence_sample_count']} governed elevation samples "
