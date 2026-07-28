@@ -8,16 +8,16 @@
 ## Context
 
 Evidence Refresh must make independently requested, possibly disconnected council
-areas available without making a local SQLite/GeoPackage file authoritative.  A
-whole-store checksum, a council-name cache key, a SQLite `rowid`, or raw GEOS WKB
+areas available without making a Local Evidence Store file authoritative.  A
+whole-store checksum, a council-name cache key, a database row ID, or raw GEOS WKB
 would either couple unrelated areas or make provenance platform-dependent.  At the
 same time, a Scenario Compilation must replay the exact evidence it used, and an
 Edge Enrichment must be reusable only while its source-layer spatial partitions,
 geometry, algorithm and parameters remain valid.
 
-This is an identity contract, not a storage or GPU implementation.  It retains the
-disposable, atomically replaced local GeoPackage recommended by #187 and the
-portable network-geometry contract in ADR 0009.
+This is an identity contract, not a storage or GPU implementation. Physical storage
+is selected separately by ADR 0013; the portable network-geometry contract remains
+ADR 0009.
 
 ## Decision
 
@@ -75,7 +75,7 @@ The source's identifier is used only as the source declares it:
 - a source feature observation is scoped to one Source Export and layer;
 - a publisher feature key becomes a cross-release logical key only when the
   Ingestion Contract records the publisher's stability guarantee; and
-- an SQLite/GeoPackage FID, row number, filename and geometric-nearest-match are
+- a database FID/row ID, row number, filename and geometric-nearest-match are
   never feature identities.  Without a stable publisher key, the canonical feature
   content is its only reusable key.  Ambiguous identical features without a unique
   source key fail closed rather than acquiring an invented order.
@@ -171,8 +171,8 @@ store paths, database bytes, creation time, query plan, RTree state and cache hi
 A **Logical Artifact** is any immutable semantic record such as a partition content
 record, partition attestation, Edge Enrichment or Scenario Compilation.  It carries
 its contract, full fingerprint and complete dependency/provenance references.  A
-GeoPackage row, table, RTree or exported file is only a materialisation of one or
-more Logical Artifacts.
+database row, table, RTree or exported file is only a materialisation of one or more
+Logical Artifacts.
 
 ### Invalidation and reuse
 
@@ -186,14 +186,13 @@ more Logical Artifacts.
 | Algorithm or relevant dependency change | Invalidate only that algorithm-contract's enrichments and their dependants. |
 | Parameter change | Create a distinct enrichment; all other parameter sets remain reusable. |
 | Scenario configuration or accepted-decision change | Create a new Scenario Compilation; reuse enrichments whose partition attestations, geometry, algorithm and parameters exactly match. |
-| SQLite/GeoPackage rebuild, index change or file-byte change | No semantic invalidation. Verify manifests and source checksums; replace the cache atomically. |
+| Local Evidence Store rebuild, index change or file-byte change | No semantic invalidation. Verify manifests and source checksums; replace or transactionally refresh the cache. |
 
-The Local Evidence Store may keep a union of disconnected partition records or build
-per-requested-area assemblies.  In both cases it builds a complete replacement in a
-sibling temporary directory, validates the manifest/source checksums/CRS/indexes,
-then atomically replaces the usable assembly.  Its `store.gpkg` bytes are never an
-identity, authority or input to a Scenario Compilation; deleting the store and
-rebuilding the same Logical Artifacts is valid.
+The Local Evidence Store keeps a union of disconnected partition records. It
+validates manifest/source checksums/CRS/indexes before a transactional refresh;
+database-format migrations use an atomically replaced sibling file. Its bytes are
+never an identity, authority or input to a Scenario Compilation; deleting the store
+and rebuilding the same Logical Artifacts is valid.
 
 ## Invariants
 
@@ -212,8 +211,8 @@ rebuilding the same Logical Artifacts is valid.
 
 ## Rejected alternatives
 
-- **Hash the SQLite/GeoPackage file or RTree.** Timestamps, page layout, index build
-  order and engine versions are operational; this would make a cache authoritative
+- **Hash the database file or RTree.** Page layout, index build order and engine
+  versions are operational; this would make a cache authoritative
   and non-portable.
 - **Use one council/Area Definition as a partition.** It cannot reuse an overlap,
   couples disconnected requests, and re-ingests too much after a small change.
@@ -234,7 +233,7 @@ This introduces new contracts rather than reinterpreting existing cache values.
 Existing compiled artifacts and their ADR-0009 network identifiers remain historical
 and valid under their recorded contracts.  A future Evidence Refresh implementation
 must create fresh Source Export, partition and attestation manifests; it must not
-infer them from legacy GeoPackage bytes, FIDs or cache paths.  Existing
+infer them from legacy database bytes, FIDs or cache paths.  Existing
 `satn-network-geometry-v1` identities are retained unchanged.  Any later semantic
 change to this decision receives a new contract version and causes the affected
 derived artifacts to be recomputed rather than silently aliased.
