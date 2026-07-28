@@ -144,6 +144,26 @@ _Avoid_: every education site, School Access Obligation, implied destination
 One immutable compilation defined by an Area Definition, evidence snapshot, Criteria Set, Network Selection Profile and accepted decisions. It may be compared with other scenarios but does not itself create authority for a Reference SATN.
 _Avoid_: mutable scenario, adopted network, live policy view
 
+**Local Evidence Store**:
+A single-user, embedded and rebuildable query store derived from already-downloaded authoritative source exports. It supports fast spatial and attribute subset selection for Scenario Compilation without becoming the authoritative source, requiring a managed service, or repeatedly parsing whole national datasets.
+_Avoid_: source of record, managed database, mandatory daemon, multi-user platform, opaque cache
+
+**Evidence Refresh**:
+The explicit local phase that imports, normalises and spatially indexes already-downloaded authoritative source exports in the Local Evidence Store. It runs only when governed source content or its ingestion contract changes, not when a Scenario Compilation configuration changes.
+_Avoid_: scenario build, automatic re-download, per-compilation import
+
+**Evidence Coverage**:
+The recorded set of spatial partitions and source versions currently available in a Local Evidence Store. Coverage may contain disconnected council or study areas; adding Oxfordshire, for example, does not require importing the geography between Oxfordshire and an existing B&NES partition.
+_Avoid_: continuous expansion frontier, national preload, Area Definition
+
+**Scenario Iteration**:
+The repeated compilation and comparison of different governed configurations against one unchanged Local Evidence Store. It reuses indexed source evidence and dependency-valid derived facts so changing scenario configuration does not trigger Evidence Refresh or whole-dataset parsing.
+_Avoid_: evidence ingestion, mutable scenario, full source rebuild
+
+**Edge Enrichment**:
+A reusable derived fact bound to a stable network-edge identity, geometry fingerprint, governed source fingerprints, algorithm version and the parameters that affect the result. Scenario Compilations consume dependency-valid Edge Enrichments without owning them; only a changed dependency invalidates or creates a different enrichment.
+_Avoid_: scenario-owned statistic, unversioned cache value, whole-network recomputation
+
 **Reference SATN**:
 The Scenario Compilation selected through the applicable governed human process as the clear default strategic network for review and publication. Other Scenario Compilations remain comparisons.
 _Avoid_: automatically adopted network, only possible network, final scheme
