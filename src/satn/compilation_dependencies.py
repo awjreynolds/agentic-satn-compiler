@@ -153,6 +153,9 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     "satn/deployment_catalogue.py": "deployment catalogue assembly",
     "satn/deployment_provenance.py": "deployment lock validation",
     "satn/heartbeat.py": "operational progress reporting",
+    "satn/local_evidence_store.py": (
+        "additive Local Evidence Store sidecar; not a compiler input before equivalence cutover"
+    ),
     "satn/pages_packaging.py": "Pages release packaging",
     "satn/psa_criteria_assembly.py": (
         "post-compile governed criteria assembly without CompiledNetwork mutation"
