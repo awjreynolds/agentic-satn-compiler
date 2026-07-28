@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from pyproj import Transformer
-from shapely import to_wkb
+from shapely import from_wkb, to_wkb
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import transform
 
@@ -34,7 +34,12 @@ class SpatialRuntimeError(RuntimeError):
     """The explicitly provisioned local DuckDB Spatial runtime is unusable."""
 
 
+class EvidenceStoreSchemaError(RuntimeError):
+    """An existing Local Evidence Store cannot be trusted or used."""
+
+
 Availability = Literal["available", "no-data", "explicit-unknown"]
+StoreState = Literal["uninitialised", "ready"]
 
 
 @dataclass(frozen=True)
@@ -68,6 +73,7 @@ class RefreshResult:
 class EvidenceStoreStatus:
     """The current immutable Evidence Coverage, if a refresh has completed."""
 
+    state: StoreState
     current_coverage: EvidenceCoverage | None
 
 
@@ -80,6 +86,24 @@ class SpatialRuntimeLock:
     platform: str
     extension_relative_path: str
     extension_sha256: str
+
+    def canonical_payload(self) -> dict[str, str]:
+        """Return the exact offline runtime identity recorded in each store."""
+
+        return {
+            "contract": "satn-duckdb-spatial-runtime/v1",
+            "duckdb_version": self.duckdb_version,
+            "spatial_version": self.spatial_version,
+            "platform": self.platform,
+            "extension_relative_path": self.extension_relative_path,
+            "extension_sha256": self.extension_sha256,
+        }
+
+    @property
+    def fingerprint(self) -> str:
+        """Return the full fingerprint of the exact runtime-lock payload."""
+
+        return evidence_fingerprint(self.canonical_payload())
 
     @classmethod
     def from_json(cls, path: Path) -> SpatialRuntimeLock:
@@ -179,13 +203,27 @@ class LocalEvidenceStore:
         self._extension_cache = extension_cache
 
     def initialise(self) -> None:
-        """Verify the runtime and create an empty local database if required."""
+        """Create a new exact store, or validate an exact existing store."""
 
         self._verify_runtime()
+        if self._store_path.exists():
+            connection = self._open_initialised(read_only=True)
+            connection.close()
+            return
         self._store_path.parent.mkdir(parents=True, exist_ok=True)
-        connection = self._connect()
+        connection = self._connect(read_only=False)
+        transaction_started = False
         try:
+            connection.execute("BEGIN TRANSACTION")
+            transaction_started = True
             self._create_schema(connection)
+            self._record_store_metadata(connection)
+            connection.execute("COMMIT")
+            transaction_started = False
+        except Exception:
+            if transaction_started:
+                connection.execute("ROLLBACK")
+            raise
         finally:
             connection.close()
 
@@ -197,10 +235,9 @@ class LocalEvidenceStore:
     ) -> RefreshResult:
         """Transactionally materialise streamed source-layer partition attestations."""
 
-        connection = self._connect()
+        connection = self._open_initialised(read_only=False)
         transaction_started = False
         try:
-            self._create_schema(connection)
             connection.execute("BEGIN TRANSACTION")
             transaction_started = True
             self._create_staging_tables(connection)
@@ -228,18 +265,26 @@ class LocalEvidenceStore:
     def status(self, *, verify: bool = False) -> EvidenceStoreStatus:
         """Return the current immutable coverage and optionally revalidate it."""
 
-        connection = self._connect()
+        if not self._store_path.is_file():
+            return EvidenceStoreStatus(state="uninitialised", current_coverage=None)
+        connection = self._open_initialised(read_only=True)
         try:
-            self._create_schema(connection)
-            pointer = connection.execute(
-                "SELECT coverage_fingerprint FROM current_coverage_state WHERE singleton = true"
-            ).fetchone()
-            if pointer is None:
-                return EvidenceStoreStatus(current_coverage=None)
-            coverage = self._coverage_by_fingerprint(connection, str(pointer[0]))
-            if verify:
-                self._verify_coverage_rows(connection, coverage)
-            return EvidenceStoreStatus(current_coverage=coverage)
+            try:
+                pointer = connection.execute(
+                    "SELECT coverage_fingerprint FROM current_coverage_state WHERE singleton = true"
+                ).fetchone()
+                if pointer is None:
+                    return EvidenceStoreStatus(state="ready", current_coverage=None)
+                coverage = self._coverage_by_fingerprint(connection, str(pointer[0]))
+                if verify:
+                    self._verify_coverage(connection, coverage)
+                return EvidenceStoreStatus(state="ready", current_coverage=coverage)
+            except EvidenceStoreSchemaError:
+                raise
+            except Exception as error:
+                raise _schema_error(
+                    "Local Evidence Store current coverage registry is invalid"
+                ) from error
         finally:
             connection.close()
 
@@ -247,9 +292,20 @@ class LocalEvidenceStore:
     def _create_schema(connection: Any) -> None:
         connection.execute(
             """
-            CREATE TABLE IF NOT EXISTS source_export_registry (
+            CREATE TABLE local_evidence_store_metadata (
+                singleton BOOLEAN PRIMARY KEY CHECK (singleton),
+                schema_contract VARCHAR NOT NULL,
+                runtime_lock_fingerprint VARCHAR NOT NULL
+            );
+            CREATE TABLE spatial_runtime_registry (
                 fingerprint VARCHAR PRIMARY KEY,
                 canonical_payload_json VARCHAR NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS source_export_registry (
+                fingerprint VARCHAR PRIMARY KEY,
+                canonical_payload_json VARCHAR NOT NULL,
+                provenance_json VARCHAR NOT NULL,
+                provenance_fingerprint VARCHAR NOT NULL
             );
             CREATE TABLE IF NOT EXISTS ingestion_contract_registry (
                 fingerprint VARCHAR PRIMARY KEY,
@@ -320,6 +376,117 @@ class LocalEvidenceStore:
                 f"CREATE INDEX IF NOT EXISTS {table}_geometry_rtree "
                 f"ON {table} USING RTREE (geometry)"
             )
+
+    def _record_store_metadata(self, connection: Any) -> None:
+        runtime_lock = self._runtime_lock()
+        connection.execute(
+            """
+            INSERT INTO spatial_runtime_registry (fingerprint, canonical_payload_json)
+            VALUES (?, ?)
+            """,
+            [
+                runtime_lock.fingerprint,
+                canonical_evidence_json(runtime_lock.canonical_payload()),
+            ],
+        )
+        connection.execute(
+            """
+            INSERT INTO local_evidence_store_metadata
+            (singleton, schema_contract, runtime_lock_fingerprint)
+            VALUES (true, ?, ?)
+            """,
+            [_SCHEMA_CONTRACT, runtime_lock.fingerprint],
+        )
+
+    def _open_initialised(self, *, read_only: bool) -> Any:
+        if not self._store_path.is_file():
+            raise _schema_error("Local Evidence Store is uninitialised")
+        try:
+            connection = self._connect(read_only=read_only)
+        except (EvidenceStoreSchemaError, SpatialRuntimeError):
+            raise
+        except Exception as error:
+            raise _schema_error("Local Evidence Store database cannot be opened") from error
+        try:
+            self._validate_store_schema(connection)
+        except Exception:
+            connection.close()
+            raise
+        return connection
+
+    def _validate_store_schema(self, connection: Any) -> None:
+        try:
+            column_rows = connection.execute(
+                """
+                SELECT table_name, column_name, data_type, is_nullable
+                FROM information_schema.columns
+                WHERE table_schema = 'main'
+                ORDER BY table_name, ordinal_position
+                """
+            ).fetchall()
+            actual_columns: dict[str, list[tuple[str, str, str]]] = {}
+            for table, column, data_type, nullable in column_rows:
+                actual_columns.setdefault(str(table), []).append(
+                    (str(column), str(data_type), str(nullable))
+                )
+            if {
+                table: tuple(columns) for table, columns in actual_columns.items()
+            } != _EXPECTED_COLUMNS:
+                raise _schema_error("Local Evidence Store physical schema is incomplete or changed")
+
+            runtime_lock = self._runtime_lock()
+            metadata_rows = connection.execute(
+                """
+                SELECT schema_contract, runtime_lock_fingerprint
+                FROM local_evidence_store_metadata
+                WHERE singleton = true
+                """
+            ).fetchall()
+            expected_metadata = [(_SCHEMA_CONTRACT, runtime_lock.fingerprint)]
+            if metadata_rows != expected_metadata:
+                raise _schema_error(
+                    "Local Evidence Store schema contract or runtime lock is incompatible"
+                )
+            runtime_rows = connection.execute(
+                """
+                SELECT fingerprint, canonical_payload_json
+                FROM spatial_runtime_registry
+                ORDER BY fingerprint
+                """
+            ).fetchall()
+            expected_runtime = [
+                (
+                    runtime_lock.fingerprint,
+                    canonical_evidence_json(runtime_lock.canonical_payload()),
+                )
+            ]
+            if runtime_rows != expected_runtime:
+                raise _schema_error("Local Evidence Store runtime registry is invalid")
+            self._verify_open_roads_rtree(connection)
+        except EvidenceStoreSchemaError:
+            raise
+        except Exception as error:
+            raise _schema_error("Local Evidence Store physical schema is unreadable") from error
+
+    @staticmethod
+    def _verify_open_roads_rtree(connection: Any) -> None:
+        rows = connection.execute(
+            """
+            SELECT table_name, expressions, sql
+            FROM duckdb_indexes()
+            WHERE schema_name = 'main' AND index_name = 'open_roads_roadlink_geometry_rtree'
+            """
+        ).fetchall()
+        if len(rows) != 1:
+            raise _schema_error("Local Evidence Store Open Roads RTree is missing")
+        table_name, expressions, sql = rows[0]
+        normalised_sql = " ".join(str(sql).upper().split())
+        if (
+            str(table_name) != "open_roads_roadlink"
+            or str(expressions) != "[geometry]"
+            or " USING RTREE (GEOMETRY)" not in normalised_sql
+        ):
+            raise _schema_error("Local Evidence Store Open Roads RTree binding is invalid")
 
     @staticmethod
     def _create_staging_tables(connection: Any) -> None:
@@ -394,12 +561,7 @@ class LocalEvidenceStore:
         rows: tuple[dict[str, object], ...],
     ) -> None:
         content = attestation.partition_content
-        self._insert_immutable(
-            connection,
-            "source_export_registry",
-            attestation.source_export.fingerprint,
-            canonical_evidence_json(attestation.source_export.canonical_payload()),
-        )
+        self._insert_source_export(connection, attestation.source_export)
         self._insert_immutable(
             connection,
             "ingestion_contract_registry",
@@ -435,6 +597,36 @@ class LocalEvidenceStore:
         connection.execute(
             f"INSERT INTO {table} (fingerprint, canonical_payload_json) VALUES (?, ?)",
             [fingerprint, payload],
+        )
+
+    @staticmethod
+    def _insert_source_export(connection: Any, source_export: SourceExport) -> None:
+        payload = canonical_evidence_json(source_export.canonical_payload())
+        provenance = canonical_evidence_json(source_export.provenance)
+        provenance_fingerprint = _provenance_fingerprint(source_export.provenance)
+        existing = connection.execute(
+            """
+            SELECT canonical_payload_json, provenance_json, provenance_fingerprint
+            FROM source_export_registry
+            WHERE fingerprint = ?
+            """,
+            [source_export.fingerprint],
+        ).fetchone()
+        if existing is not None:
+            if (str(existing[0]), str(existing[1]), str(existing[2])) != (
+                payload,
+                provenance,
+                provenance_fingerprint,
+            ):
+                raise ValueError("Local Evidence Store Source Export registry collision")
+            return
+        connection.execute(
+            """
+            INSERT INTO source_export_registry
+            (fingerprint, canonical_payload_json, provenance_json, provenance_fingerprint)
+            VALUES (?, ?, ?, ?)
+            """,
+            [source_export.fingerprint, payload, provenance, provenance_fingerprint],
         )
 
     @staticmethod
@@ -532,9 +724,6 @@ class LocalEvidenceStore:
         assert isinstance(attributes, Mapping)
         columns = _LAYER_ATTRIBUTES[attestation.partition_content.partition_key.source_layer]
         values = [attributes.get(column) for column in columns]
-        if table == "elevation_observation" and "elevation_m" in columns:
-            index = columns.index("elevation_m")
-            values[index] = float(str(values[index]))
         column_names = ", ".join(columns)
         placeholders = ", ".join("?" for _ in columns)
         connection.execute(
@@ -701,8 +890,25 @@ class LocalEvidenceStore:
 
     @staticmethod
     def _source_export_by_fingerprint(connection: Any, fingerprint: str) -> SourceExport:
-        payload = _registry_payload(connection, "source_export_registry", fingerprint)
-        return SourceExport(**_without_contract(payload), fingerprint=fingerprint)
+        row = connection.execute(
+            """
+            SELECT canonical_payload_json, provenance_json, provenance_fingerprint
+            FROM source_export_registry
+            WHERE fingerprint = ?
+            """,
+            [fingerprint],
+        ).fetchone()
+        if row is None:
+            raise ValueError("Local Evidence Store Source Export registry record is missing")
+        payload = _json_object(str(row[0]), "Source Export canonical payload")
+        provenance = _json_object(str(row[1]), "Source Export provenance")
+        if str(row[2]) != _provenance_fingerprint(provenance):
+            raise ValueError("Local Evidence Store Source Export provenance fingerprint is invalid")
+        return SourceExport(
+            **_without_contract(payload),
+            provenance=provenance,
+            fingerprint=fingerprint,
+        )
 
     @staticmethod
     def _ingestion_contract_by_fingerprint(connection: Any, fingerprint: str) -> IngestionContract:
@@ -714,21 +920,187 @@ class LocalEvidenceStore:
         payload = _registry_payload(connection, "partition_key_registry", fingerprint)
         return EvidencePartitionKey(**_without_contract(payload), fingerprint=fingerprint)
 
-    @staticmethod
-    def _verify_coverage_rows(connection: Any, coverage: EvidenceCoverage) -> None:
+    def _verify_coverage(self, connection: Any, coverage: EvidenceCoverage) -> None:
+        self._verify_registry_closure(connection, coverage)
         for attestation in coverage.attestations:
             content = attestation.partition_content
-            if content.availability != "available":
-                continue
             table = _LAYER_TABLES[content.partition_key.source_layer]
-            count = connection.execute(
-                f"SELECT COUNT(*) FROM {table} WHERE attestation_fingerprint = ?",
+            rows = connection.execute(
+                f"""
+                SELECT source_export_fingerprint, feature_content_fingerprint, logical_key,
+                       geometry_fingerprint, canonical_geometry_json, crs,
+                       ST_AsWKB(geometry), road_name, road_number
+                FROM {table}
+                WHERE attestation_fingerprint = ?
+                ORDER BY feature_content_fingerprint
+                """,
                 [attestation.fingerprint],
-            ).fetchone()
-            if count is None or int(count[0]) != len(content.features):
-                raise ValueError(
-                    "Local Evidence Store typed partition rows do not match attestation"
+            ).fetchall()
+            if len(rows) != len(content.features):
+                raise _schema_error(
+                    "Local Evidence Store typed partition rows do not match their attestation"
                 )
+            for row, feature, feature_fingerprint in zip(
+                rows,
+                content.features,
+                content.feature_content_fingerprints,
+                strict=True,
+            ):
+                attributes = feature.get("attributes")
+                if not isinstance(attributes, Mapping):
+                    raise _schema_error("Local Evidence Store feature attributes are invalid")
+                geometry = from_wkb(bytes(row[6]))
+                canonical_geometry_json = canonical_evidence_json(
+                    canonical_evidence_geometry(geometry, "EPSG:27700")
+                )
+                geometry_fingerprint = evidence_geometry_fingerprint(geometry, "EPSG:27700")
+                expected = (
+                    attestation.source_export.fingerprint,
+                    feature_fingerprint,
+                    feature.get("logical_key"),
+                    geometry_fingerprint,
+                    canonical_geometry_json,
+                    "EPSG:27700",
+                    attributes.get("road_name"),
+                    attributes.get("road_number"),
+                )
+                actual = (*row[:6], row[7], row[8])
+                if (
+                    actual != expected
+                    or feature.get("geometry_fingerprint") != geometry_fingerprint
+                ):
+                    raise _schema_error(
+                        "Local Evidence Store typed values or physical geometry are invalid"
+                    )
+
+    def _verify_registry_closure(self, connection: Any, coverage: EvidenceCoverage) -> None:
+        self._assert_payload(
+            connection,
+            "coverage_state_registry",
+            coverage.fingerprint,
+            coverage.canonical_payload(),
+        )
+        expected_attestations = [
+            (item.fingerprint, position) for position, item in enumerate(coverage.attestations)
+        ]
+        actual_attestations = connection.execute(
+            """
+            SELECT attestation_fingerprint, position
+            FROM coverage_state_attestation
+            WHERE coverage_fingerprint = ?
+            ORDER BY position
+            """,
+            [coverage.fingerprint],
+        ).fetchall()
+        if actual_attestations != expected_attestations:
+            raise _schema_error("Local Evidence Store coverage attestation closure is invalid")
+        expected_keys = [
+            (item.fingerprint, position)
+            for position, item in enumerate(coverage.requested_partition_keys)
+        ]
+        actual_keys = connection.execute(
+            """
+            SELECT partition_key_fingerprint, position
+            FROM coverage_state_requested_partition
+            WHERE coverage_fingerprint = ?
+            ORDER BY position
+            """,
+            [coverage.fingerprint],
+        ).fetchall()
+        if actual_keys != expected_keys:
+            raise _schema_error("Local Evidence Store requested partition closure is invalid")
+        for key in coverage.requested_partition_keys:
+            self._assert_payload(
+                connection,
+                "partition_key_registry",
+                key.fingerprint,
+                key.canonical_payload(),
+            )
+        for attestation in coverage.attestations:
+            content = attestation.partition_content
+            source_export = attestation.source_export
+            self._assert_source_export(connection, source_export)
+            self._assert_payload(
+                connection,
+                "ingestion_contract_registry",
+                content.ingestion_contract.fingerprint,
+                content.ingestion_contract.canonical_payload(),
+            )
+            self._assert_payload(
+                connection,
+                "partition_key_registry",
+                content.partition_key.fingerprint,
+                content.partition_key.canonical_payload(),
+            )
+            self._assert_payload(
+                connection,
+                "partition_content_registry",
+                content.fingerprint,
+                content.canonical_payload(),
+            )
+            self._assert_payload(
+                connection,
+                "partition_attestation_registry",
+                attestation.fingerprint,
+                attestation.canonical_payload(),
+            )
+            feature_rows = connection.execute(
+                """
+                SELECT feature_content_fingerprint, canonical_feature_json, position
+                FROM partition_feature_registry
+                WHERE partition_content_fingerprint = ?
+                ORDER BY position
+                """,
+                [content.fingerprint],
+            ).fetchall()
+            expected_features = [
+                (
+                    fingerprint,
+                    canonical_evidence_json(feature),
+                    position,
+                )
+                for position, (fingerprint, feature) in enumerate(
+                    zip(
+                        content.feature_content_fingerprints,
+                        content.features,
+                        strict=True,
+                    )
+                )
+            ]
+            if feature_rows != expected_features:
+                raise _schema_error("Local Evidence Store feature registry closure is invalid")
+
+    @staticmethod
+    def _assert_payload(
+        connection: Any,
+        table: str,
+        fingerprint: str,
+        payload: Mapping[str, object],
+    ) -> None:
+        row = connection.execute(
+            f"SELECT canonical_payload_json FROM {table} WHERE fingerprint = ?",
+            [fingerprint],
+        ).fetchone()
+        if row is None or str(row[0]) != canonical_evidence_json(payload):
+            raise _schema_error(f"Local Evidence Store canonical payload is invalid in {table}")
+
+    @staticmethod
+    def _assert_source_export(connection: Any, source_export: SourceExport) -> None:
+        row = connection.execute(
+            """
+            SELECT canonical_payload_json, provenance_json, provenance_fingerprint
+            FROM source_export_registry
+            WHERE fingerprint = ?
+            """,
+            [source_export.fingerprint],
+        ).fetchone()
+        expected = (
+            canonical_evidence_json(source_export.canonical_payload()),
+            canonical_evidence_json(source_export.provenance),
+            _provenance_fingerprint(source_export.provenance),
+        )
+        if row is None or (str(row[0]), str(row[1]), str(row[2])) != expected:
+            raise _schema_error("Local Evidence Store Source Export registry is invalid")
 
     def _verify_runtime(self) -> None:
         runtime_lock, extension_path, duckdb = self._validated_runtime()
@@ -738,9 +1110,9 @@ class LocalEvidenceStore:
         finally:
             connection.close()
 
-    def _connect(self) -> Any:
+    def _connect(self, *, read_only: bool) -> Any:
         runtime_lock, extension_path, duckdb = self._validated_runtime()
-        connection = duckdb.connect(str(self._store_path))
+        connection = duckdb.connect(str(self._store_path), read_only=read_only)
         try:
             self._load_spatial(connection, extension_path, runtime_lock)
         except Exception:
@@ -825,6 +1197,87 @@ def _sql_literal(value: str) -> str:
     return value.replace("'", "''")
 
 
+_SCHEMA_CONTRACT = "satn-local-evidence-store-physical-schema/v1"
+_REBUILD_GUIDANCE = (
+    "rebuild the Local Evidence Store from governed source inputs at a new store path"
+)
+
+_EXPECTED_COLUMNS = {
+    "coverage_state_attestation": (
+        ("coverage_fingerprint", "VARCHAR", "NO"),
+        ("attestation_fingerprint", "VARCHAR", "NO"),
+        ("position", "BIGINT", "NO"),
+    ),
+    "coverage_state_registry": (
+        ("fingerprint", "VARCHAR", "NO"),
+        ("coverage_state", "VARCHAR", "NO"),
+        ("canonical_payload_json", "VARCHAR", "NO"),
+    ),
+    "coverage_state_requested_partition": (
+        ("coverage_fingerprint", "VARCHAR", "NO"),
+        ("partition_key_fingerprint", "VARCHAR", "NO"),
+        ("position", "BIGINT", "NO"),
+    ),
+    "current_coverage_state": (
+        ("singleton", "BOOLEAN", "NO"),
+        ("coverage_fingerprint", "VARCHAR", "NO"),
+    ),
+    "ingestion_contract_registry": (
+        ("fingerprint", "VARCHAR", "NO"),
+        ("canonical_payload_json", "VARCHAR", "NO"),
+    ),
+    "local_evidence_store_metadata": (
+        ("singleton", "BOOLEAN", "NO"),
+        ("schema_contract", "VARCHAR", "NO"),
+        ("runtime_lock_fingerprint", "VARCHAR", "NO"),
+    ),
+    "open_roads_roadlink": (
+        ("attestation_fingerprint", "VARCHAR", "NO"),
+        ("source_export_fingerprint", "VARCHAR", "NO"),
+        ("feature_content_fingerprint", "VARCHAR", "NO"),
+        ("logical_key", "VARCHAR", "NO"),
+        ("geometry_fingerprint", "VARCHAR", "NO"),
+        ("canonical_geometry_json", "VARCHAR", "NO"),
+        ("crs", "VARCHAR", "NO"),
+        ("geometry", "GEOMETRY", "NO"),
+        ("road_name", "VARCHAR", "YES"),
+        ("road_number", "VARCHAR", "YES"),
+    ),
+    "partition_attestation_registry": (
+        ("fingerprint", "VARCHAR", "NO"),
+        ("partition_content_fingerprint", "VARCHAR", "NO"),
+        ("source_export_fingerprint", "VARCHAR", "NO"),
+        ("canonical_payload_json", "VARCHAR", "NO"),
+    ),
+    "partition_content_registry": (
+        ("fingerprint", "VARCHAR", "NO"),
+        ("partition_key_fingerprint", "VARCHAR", "NO"),
+        ("ingestion_contract_fingerprint", "VARCHAR", "NO"),
+        ("availability", "VARCHAR", "NO"),
+        ("canonical_payload_json", "VARCHAR", "NO"),
+    ),
+    "partition_feature_registry": (
+        ("partition_content_fingerprint", "VARCHAR", "NO"),
+        ("feature_content_fingerprint", "VARCHAR", "NO"),
+        ("canonical_feature_json", "VARCHAR", "NO"),
+        ("position", "BIGINT", "NO"),
+    ),
+    "partition_key_registry": (
+        ("fingerprint", "VARCHAR", "NO"),
+        ("canonical_payload_json", "VARCHAR", "NO"),
+    ),
+    "source_export_registry": (
+        ("fingerprint", "VARCHAR", "NO"),
+        ("canonical_payload_json", "VARCHAR", "NO"),
+        ("provenance_json", "VARCHAR", "NO"),
+        ("provenance_fingerprint", "VARCHAR", "NO"),
+    ),
+    "spatial_runtime_registry": (
+        ("fingerprint", "VARCHAR", "NO"),
+        ("canonical_payload_json", "VARCHAR", "NO"),
+    ),
+}
+
 _LAYER_TABLES = {
     "os-open-roads/RoadLink": "open_roads_roadlink",
 }
@@ -847,11 +1300,28 @@ def _registry_payload(connection: Any, table: str, fingerprint: str) -> dict[str
     ).fetchone()
     if row is None:
         raise ValueError(f"Local Evidence Store registry record is missing from {table}")
-    payload = json.loads(str(row[0]))
-    if not isinstance(payload, dict):
-        raise ValueError(f"Local Evidence Store registry record is invalid in {table}")
-    return payload
+    return _json_object(str(row[0]), f"registry record in {table}")
 
 
 def _without_contract(payload: Mapping[str, object]) -> dict[str, object]:
     return {key: value for key, value in payload.items() if key != "contract"}
+
+
+def _json_object(payload_json: str, name: str) -> dict[str, object]:
+    payload = json.loads(payload_json)
+    if not isinstance(payload, dict):
+        raise ValueError(f"Local Evidence Store {name} is invalid")
+    return payload
+
+
+def _provenance_fingerprint(provenance: Mapping[str, object]) -> str:
+    return evidence_fingerprint(
+        {
+            "contract": "satn-source-export-provenance/v1",
+            "provenance": provenance,
+        }
+    )
+
+
+def _schema_error(detail: str) -> EvidenceStoreSchemaError:
+    return EvidenceStoreSchemaError(f"{detail}; {_REBUILD_GUIDANCE}")
