@@ -123,18 +123,29 @@ def build_topography_profiles(
     )
     if evidence.crs is None:
         evidence = evidence.set_crs(crs)
+    metric_evidence = (
+        evidence
+        if evidence.crs is not None and evidence.crs.to_epsg() == 27700
+        else evidence.to_crs(27700)
+    )
     profile_rows: list[dict[str, object]] = []
     section_rows: list[dict[str, object]] = []
     for edge_type, id_column, frame in edge_frames:
         _ensure_edge_columns(frame)
-        for index, edge in frame.iterrows():
+        metric_geometry = (
+            frame.geometry
+            if frame.crs is not None and frame.crs.to_epsg() == 27700
+            else frame.geometry.to_crs(27700)
+        )
+        for position, (index, edge) in enumerate(frame.iterrows()):
             edge_id = str(edge[id_column])
             profile, sections = _profile_edge(
                 edge_id,
                 edge_type,
                 edge.geometry,
                 frame.crs,
-                evidence,
+                metric_geometry.iloc[position],
+                metric_evidence,
                 thresholds,
                 evidence_tolerance_m,
                 maximum_sample_spacing_m,
@@ -164,14 +175,14 @@ def _profile_edge(
     edge_type: str,
     geometry: object,
     crs: object,
-    evidence: gpd.GeoDataFrame,
+    metric_line: object,
+    metric_evidence: gpd.GeoDataFrame,
     thresholds: GradientThresholds,
     tolerance_m: float,
     maximum_sample_spacing_m: float,
     minimum_sustained_spacing_m: float,
 ) -> tuple[dict[str, object], list[dict[str, object]]]:
     profile_id = _stable_id("topography-profile", edge_type, edge_id)
-    metric_line, metric_evidence = _metric_inputs(geometry, crs, evidence)
     if isinstance(metric_line, MultiLineString):
         merged = linemerge(metric_line)
         if isinstance(merged, LineString):
@@ -328,20 +339,6 @@ def _profile_edge(
         },
         section_rows,
     )
-
-
-def _metric_inputs(
-    geometry: object,
-    crs: object,
-    evidence: gpd.GeoDataFrame,
-) -> tuple[object, gpd.GeoDataFrame]:
-    edge = gpd.GeoSeries([geometry], crs=crs)
-    if edge.crs is not None and edge.crs.to_epsg() != 27700:
-        edge = edge.to_crs(27700)
-        evidence = evidence.to_crs(27700)
-    elif evidence.crs != edge.crs:
-        evidence = evidence.to_crs(edge.crs)
-    return edge.iloc[0], evidence
 
 
 def _samples_on_line(

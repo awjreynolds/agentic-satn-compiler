@@ -548,21 +548,24 @@ def mark_ncn_edges(network: gpd.GeoDataFrame, context: gpd.GeoDataFrame) -> gpd.
         result["satn_ncn"] = False
         return result
     projected = result.to_crs(27700)
-    projected_corridor = gpd.GeoSeries(
-        [ncn.to_crs(27700).geometry.buffer(20).union_all()],
-        crs=27700,
+    corridor = ncn.to_crs(27700).geometry.buffer(20).union_all()
+    candidate_positions = sorted(
+        int(position)
+        for position in projected.sindex.query(corridor, predicate="intersects")
     )
-    result["satn_ncn"] = [
-        corridor_overlap_share(
-            geometry,
-            projected_corridor,
-            route_crs=projected.crs,
-            corridor_crs=projected_corridor.crs,
-            buffer_m=0,
-        )
-        >= 0.5
-        for geometry in projected.geometry
-    ]
+    marked = [False] * len(result)
+    if candidate_positions:
+        candidate_geometry = projected.geometry.iloc[candidate_positions]
+        candidate_lengths = candidate_geometry.length
+        overlap_shares = candidate_geometry.intersection(corridor).length / candidate_lengths
+        for position, length, overlap_share in zip(
+            candidate_positions,
+            candidate_lengths,
+            overlap_shares,
+            strict=True,
+        ):
+            marked[position] = bool(length and overlap_share >= 0.5)
+    result["satn_ncn"] = marked
     return result
 
 
