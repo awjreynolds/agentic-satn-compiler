@@ -220,6 +220,7 @@ def test_publisher_rejects_freshly_refingerprinted_cross_lineage_records(
             {
                 "schema_version": manifest["schema_version"],
                 "dependency_set_version": manifest["dependency_set_version"],
+                "selection": manifest["selection"],
                 "components": components,
             },
             sort_keys=True,

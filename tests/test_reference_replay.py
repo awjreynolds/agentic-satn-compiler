@@ -38,6 +38,7 @@ from satn.alignment_selection import (
     education_option_id_for_candidate,
 )
 from satn.backbone import _assemble_backbone_outward, assemble_backbone_outward
+from satn.compilation_dependencies import compilation_dependency_manifest
 from satn.compiler import compile_network
 from satn.education_access import (
     ConnectorContinuity,
@@ -739,7 +740,14 @@ def test_complete_baseline_ledger_replays_fresh_without_runtime_double_use(
     config.compilation.agent.review_statuses = (TrafficLight.GREEN,)
     config.compilation.agent.max_requests = 100
     config.compilation.agent.max_tokens = 10_000
-    governed_input = compilation_governed_input_fingerprint(config)
+    reference_manifest = compilation_dependency_manifest(
+        config,
+        compiler_path="reference",
+    )
+    governed_input = compilation_governed_input_fingerprint(
+        config,
+        dependency_manifest=reference_manifest,
+    )
     source = parallel_spine_source()
     baseline = compile_network(
         config,

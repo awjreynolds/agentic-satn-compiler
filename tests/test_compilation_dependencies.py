@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 import satn.compilation_dependencies as dependencies
+from satn.models import AreaDefinition
 from satn.pipeline import _compiler_digest
 
 PROJECT = Path(__file__).parents[1]
@@ -21,8 +22,8 @@ def copied_compiler_tree(tmp_path: Path) -> Path:
 def test_manifest_is_explicit_complete_and_records_component_digests() -> None:
     manifest = dependencies.compilation_dependency_manifest()
 
-    assert manifest["schema_version"] == "satn-compilation-dependency-manifest/v2"
-    assert manifest["dependency_set_version"] == "satn-compiled-network/v2"
+    assert manifest["schema_version"] == "satn-compilation-dependency-manifest/v3"
+    assert manifest["dependency_set_version"] == "satn-compiled-network/v3"
     assert manifest["sha256"] == _compiler_digest()
     components = {component["path"] for component in manifest["components"]}
     assert {
@@ -71,6 +72,122 @@ def test_manifest_is_explicit_complete_and_records_component_digests() -> None:
         assert runtime_components[f"runtime-distribution/{distribution}"]["version"] == (
             dependencies.metadata.version(distribution)
         )
+
+
+def test_banes_manifest_records_resolved_configuration_sensitive_dependency_set() -> None:
+    config = AreaDefinition.from_yaml(PROJECT / "deployments" / "banes" / "area.yaml")
+
+    manifest = dependencies.compilation_dependency_manifest(config)
+    selected = {component["path"] for component in manifest["components"]}
+    inactive = {component["path"] for component in manifest["inactive_components"]}
+
+    assert manifest["selection"]["compiler_path"] == "network"
+    assert manifest["selection"]["configuration_sensitive"] is True
+    assert manifest["selection"]["active_groups"] == [
+        "core",
+        "elevation-source",
+        "osm-source",
+    ]
+    assert manifest["selection"]["component_paths"] == sorted(selected)
+    assert "satn/routing.py" in selected
+    assert "satn/ea_elevation.py" in selected
+    assert "runtime-distribution/openai" in inactive
+    assert "satn/psa_evidence_loaders.py" in inactive
+    assert "satn/network_selection.py" in inactive
+
+
+def test_manifest_self_validation_binds_the_resolved_selection_and_digest() -> None:
+    config = AreaDefinition.from_yaml(PROJECT / "deployments" / "banes" / "area.yaml")
+    manifest = dependencies.compilation_dependency_manifest(config)
+
+    assert dependencies.validate_compilation_dependency_manifest(manifest) == manifest
+
+    tampered = dict(manifest)
+    tampered_selection = dict(manifest["selection"])
+    tampered_selection["compiler_path"] = "reference"
+    tampered["selection"] = tampered_selection
+    with pytest.raises(ValueError, match="digest is stale"):
+        dependencies.validate_compilation_dependency_manifest(tampered)
+
+
+def test_unused_validator_change_does_not_invalidate_banes_but_core_change_does(
+    tmp_path: Path,
+) -> None:
+    root = copied_compiler_tree(tmp_path)
+    config = AreaDefinition.from_yaml(PROJECT / "deployments" / "banes" / "area.yaml")
+    original = dependencies.compilation_dependency_manifest(config, package_root=root)
+    unused_validator = root / "psa_evidence_loaders.py"
+    validator_bytes = unused_validator.read_bytes()
+    unused_validator.write_bytes(
+        validator_bytes + b"\n# inactive dependency regression probe\n"
+    )
+
+    unchanged = dependencies.compilation_dependency_manifest(config, package_root=root)
+    assert unchanged["sha256"] == original["sha256"]
+
+    unused_validator.write_bytes(validator_bytes)
+    routing = root / "routing.py"
+    routing.write_bytes(routing.read_bytes() + b"\n# core dependency regression probe\n")
+    changed = dependencies.compilation_dependency_manifest(config, package_root=root)
+    assert changed["sha256"] != original["sha256"]
+
+
+def test_active_network_selection_validator_change_invalidates_fixture(
+    tmp_path: Path,
+) -> None:
+    root = copied_compiler_tree(tmp_path)
+    config = AreaDefinition.from_yaml(
+        PROJECT / "tests" / "fixtures" / "bath-saltford" / "bath-saltford.yaml"
+    )
+    original = dependencies.compilation_dependency_manifest(config, package_root=root)
+    validator = root / "psa_evidence_loaders.py"
+    validator.write_bytes(validator.read_bytes() + b"\n# active dependency regression probe\n")
+
+    changed = dependencies.compilation_dependency_manifest(config, package_root=root)
+
+    assert "network-selection" in changed["selection"]["active_groups"]
+    assert changed["sha256"] != original["sha256"]
+
+
+def test_strategic_reference_path_adds_replay_dependency() -> None:
+    config = AreaDefinition.from_yaml(
+        PROJECT / "tests" / "fixtures" / "bath-saltford" / "bath-saltford.yaml"
+    )
+
+    ordinary = dependencies.compilation_dependency_manifest(config)
+    strategic = dependencies.compilation_dependency_manifest(
+        config,
+        compiler_path="strategic-reference",
+    )
+
+    ordinary_paths = {component["path"] for component in ordinary["components"]}
+    strategic_paths = {component["path"] for component in strategic["components"]}
+    assert "satn/strategic_reference_replay.py" not in ordinary_paths
+    assert "satn/strategic_reference_replay.py" in strategic_paths
+    assert strategic["sha256"] != ordinary["sha256"]
+
+
+def test_external_direct_runtime_versions_are_selected_only_when_configured() -> None:
+    fixture = AreaDefinition.from_yaml(PROJECT / "examples" / "fixture" / "council.yaml")
+    external_agent = fixture.compilation.agent.model_copy(
+        update={"provider": "openai", "model": "test-model", "response_mode": "direct-runtime"}
+    )
+    external_config = fixture.model_copy(
+        update={
+            "compilation": fixture.compilation.model_copy(
+                update={"agent": external_agent}
+            )
+        }
+    )
+
+    caller_manifest = dependencies.compilation_dependency_manifest(fixture)
+    external_manifest = dependencies.compilation_dependency_manifest(external_config)
+    caller_paths = {component["path"] for component in caller_manifest["components"]}
+    external_paths = {component["path"] for component in external_manifest["components"]}
+
+    assert "runtime-distribution/openai" not in caller_paths
+    assert "runtime-distribution/openai" in external_paths
+    assert "direct-agent-runtime" in external_manifest["selection"]["active_groups"]
 
 
 def test_network_selection_contract_is_a_controlled_compilation_component(

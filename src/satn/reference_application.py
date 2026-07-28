@@ -29,6 +29,7 @@ from satn.alignment_selection import (
     ReferenceSATNSelection,
     ResolvedPreferredStrategicAlignment,
 )
+from satn.compilation_dependencies import validate_compilation_dependency_manifest
 from satn.identifiers import stable_id
 from satn.models import AgentDecisionLedger, AreaConfig, canonical_decision_ledger_payload
 from satn.spine_access_candidate_preparation import (
@@ -474,19 +475,12 @@ def _canonical_preparation_publication_payload(
 
 def _canonical_dependency_manifest(value: str) -> dict[str, object]:
     manifest = _canonical_json_object(value, "compilation dependency manifest")
-    digest_payload = {
-        "schema_version": manifest.get("schema_version"),
-        "dependency_set_version": manifest.get("dependency_set_version"),
-        "components": manifest.get("components"),
-    }
-    if (
-        not isinstance(digest_payload["schema_version"], str)
-        or not isinstance(digest_payload["dependency_set_version"], str)
-        or not isinstance(digest_payload["components"], list)
-        or manifest.get("sha256") != _fingerprint(digest_payload)
-    ):
-        raise ValueError("Reference publication compilation dependency manifest is stale")
-    return manifest
+    try:
+        return validate_compilation_dependency_manifest(manifest)
+    except ValueError as error:
+        raise ValueError(
+            "Reference publication compilation dependency manifest is stale"
+        ) from error
 
 
 def _validate_publication_diagnostics(

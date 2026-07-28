@@ -23,7 +23,7 @@ from satn.agents import (
 )
 from satn.alignment_selection import ReferenceSATNSelection
 from satn.atm import compare_atm, load_atm
-from satn.compilation_dependencies import compilation_dependency_manifest
+from satn.compilation_dependencies import CompilerPath, compilation_dependency_manifest
 from satn.compiler import (
     CompiledNetwork,
     _compile_network_with_reference,
@@ -81,6 +81,7 @@ def _fresh_reference_baseline(
     decision_ledger: AgentDecisionLedger | str | Path | None,
     heartbeat: StageHeartbeat | None,
     *,
+    compiler_path: CompilerPath,
     label: str,
 ) -> _FreshReferenceBaseline:
     council = (
@@ -89,7 +90,10 @@ def _fresh_reference_baseline(
         else AreaDefinition.from_yaml(config)
     )
     ledger = _load_decision_ledger(decision_ledger)
-    dependency_manifest = compilation_dependency_manifest()
+    dependency_manifest = compilation_dependency_manifest(
+        council,
+        compiler_path=compiler_path,
+    )
     governed_input_fingerprint = compilation_governed_input_fingerprint(
         council,
         dependency_manifest=dependency_manifest,
@@ -202,6 +206,7 @@ def compile_reference_network(
         config,
         decision_ledger,
         heartbeat,
+        compiler_path="reference",
         label="Reference",
     )
     current_preparation = baseline.compiled.spine_access_candidate_preparation
@@ -271,6 +276,7 @@ def compile_strategic_reference_network(
         config,
         decision_ledger,
         heartbeat,
+        compiler_path="strategic-reference",
         label="strategic Reference",
     )
     current_preparation = baseline.compiled.strategic_corridor_preparation
@@ -485,7 +491,7 @@ def _compile(
     started = time.perf_counter()
     council = config
     ledger = _load_decision_ledger(decision_ledger)
-    dependency_manifest = compilation_dependency_manifest()
+    dependency_manifest = compilation_dependency_manifest(council)
     governed_input_fingerprint = compilation_governed_input_fingerprint(
         council,
         dependency_manifest=dependency_manifest,
@@ -1240,7 +1246,7 @@ def compilation_governed_input_fingerprint(
         raise ValueError(
             "configured governed input file is missing: " + ", ".join(missing_paths)
         )
-    manifest = dependency_manifest or compilation_dependency_manifest()
+    manifest = dependency_manifest or compilation_dependency_manifest(council)
     payload = {
         "schema_version": SCHEMA_VERSION,
         "configuration": config_payload,

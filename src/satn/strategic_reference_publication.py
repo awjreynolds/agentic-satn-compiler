@@ -14,6 +14,7 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from satn.compilation_dependencies import validate_compilation_dependency_manifest
 from satn.content_identity import canonical_json as _canonical_json
 from satn.content_identity import content_fingerprint as _fingerprint
 from satn.strategic_reference_application import StrategicReferenceApplicationPlan
@@ -72,6 +73,12 @@ class StrategicReferencePublicationRecord(BaseModel):
             _canonical_object(self.application_plan_json, "application plan")
         )
         diagnostics = _canonical_object(self.replay_diagnostics_json, "replay diagnostics")
+        validate_compilation_dependency_manifest(
+            _canonical_object(
+                self.compilation_dependency_manifest_json,
+                "dependency manifest",
+            )
+        )
         if plan.publication_created or diagnostics.get("plan_fingerprint") != plan.plan_fingerprint:
             raise ValueError("strategic Reference publication replay diagnostics are stale")
         ledger = _canonical_object(self.decision_ledger_input_json, "decision ledger")
