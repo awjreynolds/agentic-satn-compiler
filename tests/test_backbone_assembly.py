@@ -689,6 +689,53 @@ def test_strategic_spine_identifier_collisions_fail_closed(
         compiler_module._strategic_spines(parallel_spine_source()["context"])
 
 
+def test_strategic_spines_ignore_only_precision_collapsed_union_fragments() -> None:
+    context = parallel_spine_source()["context"].copy()
+    template = context.loc[context["feature_type"] == "a-road-spine"].iloc[0].copy()
+    valid = template.copy()
+    valid.update(
+        {
+            "feature_type": "ncn-route",
+            "name": "NCN 24.0",
+            "evidence_id": "ncn-24-valid",
+            "source_id": "ncn-24",
+            "geometry": LineString([(-2.382, 51.32), (-2.38, 51.32)]),
+        }
+    )
+    collapsed = template.copy()
+    collapsed.update(
+        {
+            "feature_type": "ncn-route",
+            "name": "NCN 24.0",
+            "evidence_id": "ncn-24-union-sliver",
+            "source_id": "ncn-24",
+            "geometry": LineString(
+                [
+                    (-2.381811057610917, 51.32019913258663),
+                    (-2.381811057609699, 51.32019913258042),
+                ]
+            ),
+        }
+    )
+    context = gpd.GeoDataFrame(
+        pd.concat(
+            [
+                context,
+                gpd.GeoDataFrame([valid, collapsed], geometry="geometry", crs=context.crs),
+            ],
+            ignore_index=True,
+        ),
+        geometry="geometry",
+        crs=context.crs,
+    )
+
+    spines = compiler_module._strategic_spines(context)
+
+    ncn_24 = spines.loc[spines["name"] == "NCN 24.0"]
+    assert len(ncn_24) == 1
+    assert ncn_24.iloc[0].geometry.equals(valid["geometry"])
+
+
 def assert_same_runtime_governed_frame_equal(
     actual: gpd.GeoDataFrame,
     expected: gpd.GeoDataFrame,

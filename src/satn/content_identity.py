@@ -14,6 +14,10 @@ CANONICAL_GEOMETRY_VERSION = "satn-network-geometry-v1"
 CANONICAL_GEOMETRY_DECIMALS = 9
 
 
+class CanonicalNetworkGeometryCollapseError(ValueError):
+    """A line has no extent at the governed identity precision."""
+
+
 def canonical_json(value: object) -> str:
     """Return the established byte-compatible canonical JSON representation."""
 
@@ -127,7 +131,9 @@ def _canonical_line_coordinates(line: LineString) -> list[list[float]]:
         if not coordinates or canonical != coordinates[-1]:
             coordinates.append(canonical)
     if len(coordinates) < 2:
-        raise ValueError("Canonical network line collapses at identity precision")
+        raise CanonicalNetworkGeometryCollapseError(
+            "Canonical network line collapses at identity precision"
+        )
     reversed_coordinates = list(reversed(coordinates))
     return min(coordinates, reversed_coordinates)
 

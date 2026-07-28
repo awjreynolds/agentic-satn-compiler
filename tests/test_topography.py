@@ -109,6 +109,61 @@ def test_adjustable_gradient_bands_keep_every_section_visible() -> None:
     assert json.loads(profiles.iloc[0]["gradient_section_ids"]) == list(sections["section_id"])
 
 
+def test_elevation_evidence_is_reprojected_once_for_all_edges(monkeypatch) -> None:
+    frame = gpd.GeoDataFrame(
+        [
+            {
+                "connection_id": "edge-1",
+                "geometry": LineString([(-2.36, 51.38), (-2.359, 51.38)]),
+            },
+            {
+                "connection_id": "edge-2",
+                "geometry": LineString([(-2.36, 51.381), (-2.359, 51.381)]),
+            },
+        ],
+        geometry="geometry",
+        crs=4326,
+    )
+    evidence = gpd.GeoDataFrame(
+        [
+            {
+                "evidence_id": f"terrain-{index}",
+                "source_id": "fixture-terrain",
+                "elevation_m": elevation,
+                "geometry": Point(x, y),
+            }
+            for index, (x, y, elevation) in enumerate(
+                [
+                    (-2.36, 51.38, 10),
+                    (-2.359, 51.38, 11),
+                    (-2.36, 51.381, 12),
+                    (-2.359, 51.381, 13),
+                ]
+            )
+        ],
+        geometry="geometry",
+        crs=4326,
+    )
+    original_to_crs = gpd.GeoDataFrame.to_crs
+    elevation_reprojections = 0
+
+    def counted_to_crs(dataframe, *args, **kwargs):
+        nonlocal elevation_reprojections
+        if "elevation_m" in dataframe.columns:
+            elevation_reprojections += 1
+        return original_to_crs(dataframe, *args, **kwargs)
+
+    monkeypatch.setattr(gpd.GeoDataFrame, "to_crs", counted_to_crs)
+
+    profiles, _ = build_topography_profiles(
+        [("connection", "connection_id", frame)],
+        evidence,
+    )
+
+    assert len(profiles) == 2
+    assert elevation_reprojections == 1
+
+
 def test_dense_evidence_publishes_20m_and_50m_micro_gradient_intervals() -> None:
     frame, profiles, _ = profiles_for(
         LineString([(0, 0), (100, 0)]),

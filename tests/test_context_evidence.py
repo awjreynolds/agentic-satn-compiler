@@ -390,3 +390,41 @@ def test_ncn_crossing_does_not_mark_a_perpendicular_road_as_ncn() -> None:
     marked = mark_ncn_edges(network, context)
 
     assert not bool(marked.iloc[0]["satn_ncn"])
+
+
+def test_mark_ncn_edges_uses_one_shared_spatial_query(monkeypatch) -> None:
+    network = gpd.GeoDataFrame(
+        [
+            {
+                "osmid": f"edge-{index}",
+                "highway": "unclassified",
+                "geometry": LineString(
+                    [(0, index / 10_000), (0.01, index / 10_000)]
+                ),
+            }
+            for index in range(20)
+        ],
+        crs=4326,
+    )
+    context = gpd.GeoDataFrame(
+        [
+            {
+                "evidence_id": "ncn",
+                "feature_type": "ncn-route",
+                "geometry": LineString([(0, 0), (0.01, 0)]),
+            }
+        ],
+        crs=4326,
+    )
+
+    def fail_on_per_edge_overlap(*args, **kwargs):
+        raise AssertionError("NCN overlap must not rebuild the corridor for each edge")
+
+    monkeypatch.setattr(
+        "satn.evidence.corridor_overlap_share",
+        fail_on_per_edge_overlap,
+    )
+
+    marked = mark_ncn_edges(network, context)
+
+    assert len(marked) == len(network)

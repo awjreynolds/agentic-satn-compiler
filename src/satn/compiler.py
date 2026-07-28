@@ -24,6 +24,7 @@ from satn.backbone import (
 )
 from satn.content_identity import (
     CANONICAL_GEOMETRY_VERSION,
+    CanonicalNetworkGeometryCollapseError,
     canonical_network_geometry_fingerprint,
 )
 from satn.cross_spine import CrossSpineProgress, resolve_cross_spine_assembly
@@ -1573,10 +1574,16 @@ def _strategic_spines(context: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
             )
             is_a_road = spine_kind == "a-road"
             for geometry in continuous_linework(corridor.geometry.union_all()):
-                segment_fingerprint = canonical_network_geometry_fingerprint(
-                    geometry,
-                    context.crs,
-                )
+                try:
+                    segment_fingerprint = canonical_network_geometry_fingerprint(
+                        geometry,
+                        context.crs,
+                    )
+                except CanonicalNetworkGeometryCollapseError:
+                    # GEOS union can retain sub-precision slivers where source
+                    # linework nearly touches. They have no governed identity
+                    # or usable network extent, so omit only that derived part.
+                    continue
                 rows.append(
                     {
                         "spine_id": _stable_role_id(
