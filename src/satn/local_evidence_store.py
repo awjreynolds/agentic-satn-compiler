@@ -48,6 +48,21 @@ from satn.open_roads_adapter import (
 from satn.open_roads_adapter import (
     validate_export as _validate_open_roads_export,
 )
+from satn.osm_network_adapter import (
+    ATTRIBUTES as _OSM_NETWORK_ATTRIBUTES,
+)
+from satn.osm_network_adapter import (
+    SOURCE_LAYER as _OSM_NETWORK_SOURCE_LAYER,
+)
+from satn.osm_network_adapter import (
+    contract_payload as _osm_network_contract_payload,
+)
+from satn.osm_network_adapter import (
+    read_partitions as _read_osm_network_adapter_partitions,
+)
+from satn.osm_network_adapter import (
+    validate_export as _validate_osm_network_export,
+)
 
 
 class SpatialRuntimeError(RuntimeError):
@@ -452,13 +467,12 @@ class LocalEvidenceStore:
                 assert current_coverage is not None
                 return RefreshResult(coverage=current_coverage)
             self._create_staging_tables(connection)
-            for partition_key in missing_keys:
-                partition = self._read_open_roads_partition(
-                    source_path,
-                    source_export,
-                    ingestion_contract,
-                    partition_key,
-                )
+            for partition in self._read_missing_partitions(
+                source_path,
+                source_export,
+                ingestion_contract,
+                tuple(missing_keys),
+            ):
                 attestation, rows = self._normalise_partition(partition)
                 self._add_observations(observations, attestation)
                 self._stage_partition(connection, attestation, rows)
@@ -839,6 +853,37 @@ class LocalEvidenceStore:
                 name_1 VARCHAR,
                 PRIMARY KEY (attestation_fingerprint, feature_content_fingerprint)
             );
+            CREATE TABLE IF NOT EXISTS openstreetmap_network_lines (
+                attestation_fingerprint VARCHAR NOT NULL,
+                source_export_fingerprint VARCHAR NOT NULL,
+                feature_content_fingerprint VARCHAR NOT NULL,
+                logical_key VARCHAR NOT NULL,
+                geometry_fingerprint VARCHAR NOT NULL,
+                canonical_geometry_json VARCHAR NOT NULL,
+                crs VARCHAR NOT NULL CHECK (crs = 'EPSG:27700'),
+                geometry GEOMETRY NOT NULL,
+                name VARCHAR,
+                highway VARCHAR,
+                ref VARCHAR,
+                oneway VARCHAR,
+                surface VARCHAR,
+                access VARCHAR,
+                bicycle VARCHAR,
+                foot VARCHAR,
+                cycleway VARCHAR,
+                service VARCHAR,
+                tracktype VARCHAR,
+                bridge VARCHAR,
+                tunnel VARCHAR,
+                junction VARCHAR,
+                maxspeed VARCHAR,
+                lanes VARCHAR,
+                width VARCHAR,
+                lit VARCHAR,
+                ele VARCHAR,
+                incline VARCHAR,
+                PRIMARY KEY (attestation_fingerprint, feature_content_fingerprint)
+            );
             """
         )
         for table in _LAYER_TABLES.values():
@@ -932,31 +977,33 @@ class LocalEvidenceStore:
             ]
             if runtime_rows != expected_runtime:
                 raise _schema_error("Local Evidence Store runtime registry is invalid")
-            self._verify_open_roads_rtree(connection)
+            self._verify_layer_rtrees(connection)
         except EvidenceStoreSchemaError:
             raise
         except Exception as error:
             raise _schema_error("Local Evidence Store physical schema is unreadable") from error
 
     @staticmethod
-    def _verify_open_roads_rtree(connection: Any) -> None:
-        rows = connection.execute(
-            """
-            SELECT table_name, expressions, sql
-            FROM duckdb_indexes()
-            WHERE schema_name = 'main' AND index_name = 'open_roads_roadlink_geometry_rtree'
-            """
-        ).fetchall()
-        if len(rows) != 1:
-            raise _schema_error("Local Evidence Store Open Roads RTree is missing")
-        table_name, expressions, sql = rows[0]
-        normalised_sql = " ".join(str(sql).upper().split())
-        if (
-            str(table_name) != "open_roads_roadlink"
-            or str(expressions) != "[geometry]"
-            or " USING RTREE (GEOMETRY)" not in normalised_sql
-        ):
-            raise _schema_error("Local Evidence Store Open Roads RTree binding is invalid")
+    def _verify_layer_rtrees(connection: Any) -> None:
+        for table in _LAYER_TABLES.values():
+            rows = connection.execute(
+                """
+                SELECT table_name, expressions, sql
+                FROM duckdb_indexes()
+                WHERE schema_name = 'main' AND index_name = ?
+                """,
+                [f"{table}_geometry_rtree"],
+            ).fetchall()
+            if len(rows) != 1:
+                raise _schema_error(f"Local Evidence Store {table} RTree is missing")
+            table_name, expressions, sql = rows[0]
+            normalised_sql = " ".join(str(sql).upper().split())
+            if (
+                str(table_name) != table
+                or str(expressions) != "[geometry]"
+                or " USING RTREE (GEOMETRY)" not in normalised_sql
+            ):
+                raise _schema_error(f"Local Evidence Store {table} RTree binding is invalid")
 
     @staticmethod
     def _create_staging_tables(connection: Any) -> None:
@@ -988,6 +1035,13 @@ class LocalEvidenceStore:
                 raise ValueError(
                     "feature attributes must match the declared ingestion contract exactly"
                 )
+            for name, value in attributes.items():
+                _, nullable = _LAYER_FIELD_TYPES[partition.partition_key.source_layer][name]
+                if value is None:
+                    if not nullable:
+                        raise ValueError(f"feature attribute {name} must not be null")
+                elif not isinstance(value, str):
+                    raise ValueError(f"feature attribute {name} must be a string or null")
             canonical_evidence_json(attributes)
             geometry = feature.geometry
             canonical_geometry = canonical_evidence_geometry(geometry, "EPSG:27700")
@@ -1029,7 +1083,41 @@ class LocalEvidenceStore:
         source_export: SourceExport,
         ingestion_contract: IngestionContract,
     ) -> Path:
-        return _validate_open_roads_export(source_export, ingestion_contract)
+        if ingestion_contract.source_layer == _OPEN_ROADS_SOURCE_LAYER:
+            return _validate_open_roads_export(source_export, ingestion_contract)
+        if ingestion_contract.source_layer == _OSM_NETWORK_SOURCE_LAYER:
+            return _validate_osm_network_export(source_export, ingestion_contract)
+        raise ValueError(
+            f"unsupported Local Evidence source layer: {ingestion_contract.source_layer}"
+        )
+
+    def _read_missing_partitions(
+        self,
+        source_path: Path,
+        source_export: SourceExport,
+        ingestion_contract: IngestionContract,
+        missing_keys: tuple[EvidencePartitionKey, ...],
+    ) -> tuple[_EvidencePartitionInput, ...]:
+        if ingestion_contract.source_layer == _OPEN_ROADS_SOURCE_LAYER:
+            return tuple(
+                self._read_open_roads_partition(
+                    source_path,
+                    source_export,
+                    ingestion_contract,
+                    partition_key,
+                )
+                for partition_key in missing_keys
+            )
+        if ingestion_contract.source_layer == _OSM_NETWORK_SOURCE_LAYER:
+            return self._read_osm_network_partitions(
+                source_path,
+                source_export,
+                ingestion_contract,
+                missing_keys,
+            )
+        raise ValueError(
+            f"unsupported Local Evidence source layer: {ingestion_contract.source_layer}"
+        )
 
     @staticmethod
     def _read_open_roads_partition(
@@ -1054,6 +1142,49 @@ class LocalEvidenceStore:
                 )
                 for feature in source_partition.features
             ),
+        )
+
+    @staticmethod
+    def _read_osm_network_partitions(
+        source_path: Path,
+        source_export: SourceExport,
+        ingestion_contract: IngestionContract,
+        partition_keys: tuple[EvidencePartitionKey, ...],
+    ) -> tuple[_EvidencePartitionInput, ...]:
+        source_partitions = _read_osm_network_adapter_partitions(
+            source_path,
+            source_export,
+            ingestion_contract,
+            partition_keys,
+        )
+        by_key = {
+            partition.partition_key.fingerprint: partition for partition in source_partitions
+        }
+        expected_keys = {key.fingerprint for key in partition_keys}
+        if len(by_key) != len(source_partitions) or set(by_key) != expected_keys:
+            raise ValueError(
+                "OpenStreetMap adapter did not return exactly the requested partitions"
+            )
+        return tuple(
+            _EvidencePartitionInput(
+                source_export=source_export,
+                ingestion_contract=ingestion_contract,
+                partition_key=by_key[partition_key.fingerprint].partition_key,
+                availability=(
+                    "available"
+                    if by_key[partition_key.fingerprint].features
+                    else "no-data"
+                ),
+                features=tuple(
+                    _EvidenceFeature(
+                        logical_key=feature.logical_key,
+                        geometry=feature.geometry,
+                        attributes=feature.attributes,
+                    )
+                    for feature in by_key[partition_key.fingerprint].features
+                ),
+            )
+            for partition_key in partition_keys
         )
 
     @staticmethod
@@ -1449,12 +1580,11 @@ class LocalEvidenceStore:
         self._verify_registry_closure(connection, coverage)
         for attestation in coverage.attestations:
             content = attestation.partition_content
-            if content.ingestion_contract.canonical_payload() != _open_roads_contract_payload(
-                attestation.source_export.declared_crs
+            if content.ingestion_contract.canonical_payload() != _expected_contract_payload(
+                content.partition_key.source_layer,
+                attestation.source_export.declared_crs,
             ):
-                raise _schema_error(
-                    "stored Open Roads Ingestion Contract is not supported by this adapter"
-                )
+                raise _schema_error("stored Ingestion Contract is not supported by this adapter")
             table = _LAYER_TABLES[content.partition_key.source_layer]
             typed_columns = _LAYER_ATTRIBUTES[content.partition_key.source_layer]
             selected_columns = ", ".join(typed_columns)
@@ -1735,7 +1865,15 @@ def _open_roads_adapter_fingerprint() -> str:
     return _adapter_fingerprint()
 
 
-_SCHEMA_CONTRACT = "satn-local-evidence-store-physical-schema/v2"
+def _expected_contract_payload(source_layer: str, declared_crs: str) -> dict[str, object]:
+    if source_layer == _OPEN_ROADS_SOURCE_LAYER:
+        return _open_roads_contract_payload(declared_crs)
+    if source_layer == _OSM_NETWORK_SOURCE_LAYER:
+        return _osm_network_contract_payload()
+    raise _schema_error(f"unsupported Local Evidence source layer: {source_layer}")
+
+
+_SCHEMA_CONTRACT = "satn-local-evidence-store-physical-schema/v3"
 _REBUILD_GUIDANCE = (
     "rebuild the Local Evidence Store from governed source inputs at a new store path"
 )
@@ -1783,6 +1921,36 @@ _EXPECTED_COLUMNS = {
         ("road_classification_number", "VARCHAR", "YES"),
         ("name_1", "VARCHAR", "YES"),
     ),
+    "openstreetmap_network_lines": (
+        ("attestation_fingerprint", "VARCHAR", "NO"),
+        ("source_export_fingerprint", "VARCHAR", "NO"),
+        ("feature_content_fingerprint", "VARCHAR", "NO"),
+        ("logical_key", "VARCHAR", "NO"),
+        ("geometry_fingerprint", "VARCHAR", "NO"),
+        ("canonical_geometry_json", "VARCHAR", "NO"),
+        ("crs", "VARCHAR", "NO"),
+        ("geometry", "GEOMETRY", "NO"),
+        ("name", "VARCHAR", "YES"),
+        ("highway", "VARCHAR", "YES"),
+        ("ref", "VARCHAR", "YES"),
+        ("oneway", "VARCHAR", "YES"),
+        ("surface", "VARCHAR", "YES"),
+        ("access", "VARCHAR", "YES"),
+        ("bicycle", "VARCHAR", "YES"),
+        ("foot", "VARCHAR", "YES"),
+        ("cycleway", "VARCHAR", "YES"),
+        ("service", "VARCHAR", "YES"),
+        ("tracktype", "VARCHAR", "YES"),
+        ("bridge", "VARCHAR", "YES"),
+        ("tunnel", "VARCHAR", "YES"),
+        ("junction", "VARCHAR", "YES"),
+        ("maxspeed", "VARCHAR", "YES"),
+        ("lanes", "VARCHAR", "YES"),
+        ("width", "VARCHAR", "YES"),
+        ("lit", "VARCHAR", "YES"),
+        ("ele", "VARCHAR", "YES"),
+        ("incline", "VARCHAR", "YES"),
+    ),
     "partition_attestation_registry": (
         ("fingerprint", "VARCHAR", "NO"),
         ("partition_content_fingerprint", "VARCHAR", "NO"),
@@ -1820,10 +1988,12 @@ _EXPECTED_COLUMNS = {
 
 _LAYER_TABLES = {
     _OPEN_ROADS_SOURCE_LAYER: "open_roads_roadlink",
+    _OSM_NETWORK_SOURCE_LAYER: "openstreetmap_network_lines",
 }
 
 _LAYER_ATTRIBUTES = {
     _OPEN_ROADS_SOURCE_LAYER: _OPEN_ROADS_ATTRIBUTES,
+    _OSM_NETWORK_SOURCE_LAYER: _OSM_NETWORK_ATTRIBUTES,
 }
 
 _LAYER_FIELD_TYPES = {
@@ -1832,6 +2002,9 @@ _LAYER_FIELD_TYPES = {
         "road_function": ("string", False),
         "road_classification_number": ("string|null", True),
         "name_1": ("string|null", True),
+    },
+    _OSM_NETWORK_SOURCE_LAYER: {
+        name: ("string|null", True) for name in _OSM_NETWORK_ATTRIBUTES
     },
 }
 
@@ -2076,12 +2249,6 @@ def _validate_query_contracts(
             raise _schema_error(
                 "query fields are not selected by every consulted Ingestion Contract"
             )
-        for field in used_fields:
-            expected_type = _LAYER_FIELD_TYPES[contract.source_layer][field][0]
-            if contract.accepted_schema.get(field) != expected_type:
-                raise _schema_error(
-                    "query field type differs from a consulted Ingestion Contract"
-                )
 
 
 def _query_sql(

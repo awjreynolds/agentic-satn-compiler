@@ -14,6 +14,7 @@ import pytest
 from shapely.geometry import LineString, MultiPolygon, Point, Polygon, box
 
 import satn.local_evidence_store as local_evidence_store
+import satn.osm_network_adapter as osm_network_adapter
 from satn.evidence_contracts import (
     EvidenceCoverage,
     EvidencePartitionKey,
@@ -29,6 +30,7 @@ from satn.local_evidence_store import (
 )
 
 PROJECT = Path(__file__).parents[1]
+RAW_OSM_FIXTURE = PROJECT / "tests" / "fixtures" / "osm-network.xml"
 LOCAL_SPATIAL_ARCHIVE = Path(
     "/private/tmp/banes-satn-embedded-store-benchmark/duckdb_extensions/"
     "v1.4.4/osx_arm64/spatial.duckdb_extension"
@@ -158,6 +160,32 @@ def _source_export_for(path: Path, *, format: str, crs: str = "EPSG:27700") -> S
     )
 
 
+def _write_osm_network_fixture(path: Path) -> Path:
+    path.write_bytes(RAW_OSM_FIXTURE.read_bytes())
+    return path
+
+
+def _osm_network_source_export(path: Path) -> SourceExport:
+    return SourceExport(
+        source_family="openstreetmap",
+        dataset="network",
+        layer="lines",
+        publisher_release="2026-07-27T10:11:12Z",
+        effective_date="2026-07-27",
+        licence="ODbL-1.0",
+        format="OSM XML",
+        declared_crs="EPSG:4326",
+        raw_bytes_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+        provenance={"retained_path": str(path.resolve())},
+    )
+
+
+def _osm_network_contract() -> IngestionContract:
+    payload = osm_network_adapter.contract_payload()
+    payload.pop("contract")
+    return IngestionContract(**payload)
+
+
 def _seeded_real_store(tmp_path: Path) -> tuple[LocalEvidenceStore, EvidenceCoverage]:
     store = _real_store(tmp_path)
     store.initialise()
@@ -204,6 +232,117 @@ def test_query_reads_one_exact_pinned_open_roads_subset(tmp_path: Path) -> None:
         "feature_geometry predicate selector_geometry"
     )
     assert result.manifest["row_fingerprints"] == (result.rows[0].fingerprint,)
+
+
+@pytest.mark.skipif(
+    not LOCAL_SPATIAL_ARCHIVE.is_file() or importlib.util.find_spec("duckdb") is None,
+    reason="pinned local Spatial archive or DuckDB package absent",
+)
+def test_osm_refresh_batches_all_missing_keys_and_queries_the_typed_rtree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _real_store(tmp_path)
+    store.initialise()
+    source_export = _osm_network_source_export(
+        _write_osm_network_fixture(tmp_path / "network.osm")
+    )
+    contract = _osm_network_contract()
+    cached_key = EvidencePartitionKey("openstreetmap/lines", "bng-10km/v1", "ST76")
+    store.refresh(
+        source_export=source_export,
+        ingestion_contract=contract,
+        partition_keys=(cached_key,),
+    )
+
+    original_reader = osm_network_adapter.pyogrio.read_dataframe
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def counted_reader(*args: object, **kwargs: object) -> object:
+        calls.append((args, kwargs))
+        return original_reader(*args, **kwargs)
+
+    monkeypatch.setattr(osm_network_adapter.pyogrio, "read_dataframe", counted_reader)
+    coverage = store.refresh(
+        source_export=source_export,
+        ingestion_contract=contract,
+        partition_keys=(
+            cached_key,
+            EvidencePartitionKey("openstreetmap/lines", "bng-10km/v1", "ST86"),
+            EvidencePartitionKey("openstreetmap/lines", "bng-10km/v1", "ST75"),
+            EvidencePartitionKey("openstreetmap/lines", "bng-10km/v1", "ST66"),
+        ),
+    ).coverage
+
+    assert len(calls) == 1
+    assert calls[0][1] == {
+        "layer": "lines",
+        "columns": ["osm_id", "name", "highway", "other_tags"],
+    }
+    assert {
+        attestation.partition_content.partition_key.cell: (
+            attestation.partition_content.availability,
+            tuple(
+                feature["logical_key"]
+                for feature in attestation.partition_content.features
+            ),
+        )
+        for attestation in coverage.attestations
+    } == {
+        "ST66": ("no-data", ()),
+        "ST75": ("available", ("osm-way:2002",)),
+        "ST76": ("available", ("osm-way:2001",)),
+        "ST86": ("available", ("osm-way:2001",)),
+    }
+
+    calls.clear()
+    assert (
+        store.refresh(
+            source_export=source_export,
+            ingestion_contract=contract,
+            partition_keys=(cached_key,),
+        ).coverage
+        == coverage
+    )
+    assert calls == []
+
+    result = store.query(
+        state_fingerprint=coverage.fingerprint,
+        source_layer="openstreetmap/lines",
+        selector=box(374_000, 164_000, 386_000, 166_000),
+        selector_crs="EPSG:27700",
+        filters={"highway": "residential"},
+        projection=("name", "ele", "cycleway"),
+    )
+
+    assert [(row.logical_key, row.attributes) for row in result.rows] == [
+        (
+            "osm-way:2001",
+            {"cycleway": "lane", "ele": "45.5", "name": "Main & Cross Road"},
+        )
+    ]
+    by_cell = {
+        attestation.partition_content.partition_key.cell: attestation.fingerprint
+        for attestation in coverage.attestations
+    }
+    assert set(result.rows[0].attestation_fingerprints) == {by_cell["ST76"], by_cell["ST86"]}
+    assert result.manifest["availability_counts"] == {
+        "available": 2,
+        "no-data": 0,
+        "explicit-unknown": 0,
+    }
+    connection = store._connect(read_only=True)
+    try:
+        rtree_rows = connection.execute(
+            """
+            SELECT table_name, expressions
+            FROM duckdb_indexes()
+            WHERE index_name = 'openstreetmap_network_lines_geometry_rtree'
+            """
+        ).fetchall()
+    finally:
+        connection.close()
+    assert rtree_rows == [("openstreetmap_network_lines", "[geometry]")]
 
 
 def _mutate_store(
@@ -675,7 +814,7 @@ def test_exact_repeat_initialise_validates_metadata_without_mutating_store_bytes
     finally:
         connection.close()
     assert metadata == (
-        "satn-local-evidence-store-physical-schema/v2",
+        "satn-local-evidence-store-physical-schema/v3",
         runtime_lock.fingerprint,
     )
 
@@ -754,6 +893,32 @@ def test_incompatible_store_metadata_fails_closed_without_byte_mutation(
 
     with pytest.raises(EvidenceStoreSchemaError, match="rebuild"):
         store.initialise()
+    assert store_path.read_bytes() == before
+
+
+@pytest.mark.skipif(
+    not LOCAL_SPATIAL_ARCHIVE.is_file() or importlib.util.find_spec("duckdb") is None,
+    reason="pinned local Spatial archive or DuckDB package absent",
+)
+def test_v2_store_metadata_requires_a_v3_rebuild_without_byte_mutation(
+    tmp_path: Path,
+) -> None:
+    store = _real_store(tmp_path)
+    store.initialise()
+    _mutate_store(
+        store,
+        """
+        UPDATE local_evidence_store_metadata
+        SET schema_contract = 'satn-local-evidence-store-physical-schema/v2'
+        WHERE singleton = true
+        """,
+    )
+    store_path = tmp_path / "evidence.duckdb"
+    before = store_path.read_bytes()
+
+    with pytest.raises(EvidenceStoreSchemaError, match="rebuild"):
+        store.initialise()
+
     assert store_path.read_bytes() == before
 
 
