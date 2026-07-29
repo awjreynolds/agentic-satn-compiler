@@ -371,6 +371,14 @@ def _validate_existing_lineaged_target(
         validation_path = Path(validation_directory)
         expected_governed_evidence: dict[str, dict[str, object] | None] = {}
         if config.source.official_road_classification is not None:
+            shutil.copy2(
+                _regular_sibling(
+                    destination,
+                    "boundary.geojson",
+                    label="retained-core lineage target boundary",
+                ),
+                validation_path / "boundary.geojson",
+            )
             _snapshot_official_road_classification(config, validation_path)
             expected_governed_evidence["official_road_classification"] = (
                 _road_classification_manifest(config, validation_path)
@@ -903,8 +911,18 @@ def _materialise_snapshot(
                 # Retained-core augmentation is not a new OSM acquisition.  It
                 # carries the former core identity/provenance byte-for-byte and
                 # appends independently validated governed evidence.
-                for key in ("source_identifier", "retrieved_at", "attribution"):
+                for key in (
+                    "source_identifier",
+                    "retrieved_at",
+                    "attribution",
+                    "disclaimer",
+                ):
                     manifest[key] = retained_manifest[key]
+                for key in ("area_id", "area_name"):
+                    if key in retained_manifest:
+                        manifest[key] = retained_manifest[key]
+                    else:
+                        manifest.pop(key, None)
                 previous_sources = retained_manifest.get("evidence_sources")
                 if isinstance(previous_sources, dict):
                     current_sources = manifest["evidence_sources"]
@@ -1186,6 +1204,13 @@ def _snapshot_official_road_classification(
     if governed is None:
         return False
     source, fingerprint = _load_governed_line_source(governed, "official road classification")
+    boundary = gpd.read_file(temporary / "boundary.geojson")
+    if boundary.crs is None or boundary.empty:
+        raise ValueError("snapshot boundary is required to select official road classification")
+    governed_area = boundary.to_crs(source.crs).geometry.union_all()
+    if governed_area.is_empty or not governed_area.is_valid:
+        raise ValueError("snapshot boundary is invalid for official road classification")
+    source = source[source.geometry.intersects(governed_area)]
     classification_column = next(
         (
             column
@@ -2547,7 +2572,17 @@ def _road_classification_manifest(
     path = snapshot_path / ROAD_CLASSIFICATION_FILENAME
     if governed is None or not path.exists():
         return None
-    return _governed_source_manifest(governed, path, ROAD_CLASSIFICATION_FILENAME)
+    manifest = _governed_source_manifest(governed, path, ROAD_CLASSIFICATION_FILENAME)
+    manifest["selection"] = {
+        "contract": "satn-official-road-boundary-selection/v1",
+        "predicate": "intersects",
+        "geometry_treatment": "retain-whole-source-feature",
+        "selected_feature_count": len(gpd.read_file(path)),
+        "source_export_sha256": sha256_file(governed.path),
+        "boundary_file": "boundary.geojson",
+        "boundary_sha256": sha256_file(snapshot_path / "boundary.geojson"),
+    }
+    return manifest
 
 
 def _observed_through_traffic_manifest(

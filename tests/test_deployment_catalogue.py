@@ -20,6 +20,7 @@ def test_catalogue_builds_a_small_root_selector_with_stable_area_links(tmp_path:
     publication = json.loads((destination / "catalogue.json").read_text(encoding="utf-8"))
     banes_definition = PROJECT / "deployments" / "banes" / "area.yaml"
     weca_definition = PROJECT / "deployments" / "weca" / "area.yaml"
+    banes_snapshot_id = AreaDefinition.from_yaml(banes_definition).source.snapshot_id
     weca_snapshot_id = AreaDefinition.from_yaml(weca_definition).source.snapshot_id
     assert publication["schema_version"] == "satn-deployment-catalogue/v1"
     assert publication["title"] == "SATN deployments"
@@ -49,7 +50,7 @@ def test_catalogue_builds_a_small_root_selector_with_stable_area_links(tmp_path:
                         "Bath and North East Somerset, England, United Kingdom"
                     ],
                 },
-                "snapshot": {"snapshot_id": "banes-osm-current"},
+                "snapshot": {"snapshot_id": banes_snapshot_id},
                 "agent_runtime": {
                     "response_mode": "direct-runtime",
                     "provider": "fake",

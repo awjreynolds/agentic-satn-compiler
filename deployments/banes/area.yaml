@@ -9,7 +9,12 @@ source:
   ncn_feature_service_url: https://services5.arcgis.com/1ZHcUS1lwPTg4ms0/arcgis/rest/services/National_Cycle_Network_Public/FeatureServer
   reclassified_ncn_feature_service_url: https://services5.arcgis.com/1ZHcUS1lwPTg4ms0/arcgis/rest/services/Reclassified_Routes_Public/FeatureServer
   snapshot_dir: ../../data/snapshots
-  snapshot_id: banes-osm-current
+  # Preserve the historical core while deliberately migrating official-road
+  # evidence to the v1-compatible WECA Source Export under ADR 0017.
+  snapshot_id: banes-osm-open-roads-v1-2026-07-29
+  retained_core_source:
+    snapshot_id: banes-osm-current
+    manifest_sha256: d54cd57ff2b1a92fab0b48a8b616cc4bcb8721b274024880d4ccc17b9a486c39
   network_type: bike
   overpass_url: https://overpass-api.de/api
   osm_timeout_seconds: 600
@@ -27,7 +32,7 @@ source:
     minimum_junction_count: 90
   urban_scope_buffer_km: 2
   official_road_classification:
-    path: ../../data/governed/banes-os-open-roads-2026-04-07.geojson
+    path: ../../data/governed/weca-os-open-roads-2026-04-07.geojson
     source_id: os-open-roads-2026-04-07
     effective_date: 2026-04-07
     licence: Open Government Licence v3.0
