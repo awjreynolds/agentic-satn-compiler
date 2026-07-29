@@ -8,6 +8,7 @@ import logging
 import os
 import time
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,6 +34,7 @@ from satn.compiler import (
 )
 from satn.constants import SCHEMA_VERSION
 from satn.content_identity import ordered_geometry_fingerprint
+from satn.ea_snapshot_recovery import load_legacy_ea_recovery_snapshot
 from satn.heartbeat import StageHeartbeat
 from satn.models import (
     AgentDecisionLedger,
@@ -49,6 +51,7 @@ from satn.models import (
 from satn.publisher import (
     publication_artifacts,
     publish,
+    retain_ea_recovery_candidate,
     validate_publication,
 )
 from satn.reference_application import (
@@ -184,6 +187,35 @@ def compile(
         },
     ) as heartbeat:
         return _compile(council, decision_ledger=decision_ledger, heartbeat=heartbeat)
+
+
+def compile_ea_recovery_candidate(config: AreaConfig | str | Path) -> Path:
+    """Compile the pinned invalid v10 only far enough to retain its replacement candidate."""
+
+    council = (
+        config
+        if isinstance(config, (AreaDefinition, CouncilConfig))
+        else AreaDefinition.from_yaml(config)
+    )
+    council.compilation.full = True
+    with StageHeartbeat(
+        LOGGER,
+        "ea-recovery-candidate",
+        {
+            "area_id": council.area_id,
+            "snapshot_id": council.source.snapshot_id,
+        },
+    ) as heartbeat:
+        result = _compile(
+            council,
+            heartbeat=heartbeat,
+            source_loader=load_legacy_ea_recovery_snapshot,
+            publisher=retain_ea_recovery_candidate,
+        )
+    candidate = result.artifacts.get("candidate")
+    if candidate is None:
+        raise ValueError("EA recovery compilation retained no governed mismatch candidate")
+    return candidate
 
 
 def compile_reference_network(
@@ -487,6 +519,14 @@ def _compile(
     *,
     decision_ledger: AgentDecisionLedger | str | Path | None = None,
     heartbeat: StageHeartbeat | None = None,
+    source_loader: Callable[
+        [AreaConfig], dict[str, gpd.GeoDataFrame]
+    ]
+    | None = None,
+    publisher: Callable[
+        [AreaConfig, CompiledNetwork, str], dict[str, Path]
+    ]
+    | None = None,
 ) -> CompilationResult:
     """Compile a parsed area definition, reporting its current long-running stage."""
     started = time.perf_counter()
@@ -518,7 +558,7 @@ def _compile(
         return reused
     if heartbeat is not None:
         heartbeat.set_stage("snapshot-load")
-    source = load_snapshot(council)
+    source = (source_loader or load_snapshot)(council)
     LOGGER.info(
         "Snapshot loaded places=%d road_edges=%d context_features=%d",
         len(source["places"]),
@@ -820,12 +860,19 @@ def _compile(
     run_id = f"run-{hashlib.sha256(run_fingerprint.encode()).hexdigest()[:12]}"
     if heartbeat is not None:
         heartbeat.set_stage("publication")
-    artifacts = publish(council, compiled, run_id)
-    LOGGER.info(
-        "Publication validated output=%s elapsed_seconds=%.1f",
-        council.publication.output_dir,
-        time.perf_counter() - started,
-    )
+    artifacts = (publisher or publish)(council, compiled, run_id)
+    if publisher is None:
+        LOGGER.info(
+            "Publication validated output=%s elapsed_seconds=%.1f",
+            council.publication.output_dir,
+            time.perf_counter() - started,
+        )
+    else:
+        LOGGER.info(
+            "Non-publishing compilation artifact validated artifacts=%s elapsed_seconds=%.1f",
+            sorted(artifacts),
+            time.perf_counter() - started,
+        )
     return CompilationResult(
         run_id=run_id,
         status=compiled.status,

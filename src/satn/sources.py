@@ -3080,6 +3080,12 @@ def _validate_snapshot(
 def load_snapshot(config: AreaConfig) -> dict[str, gpd.GeoDataFrame]:
     path = config.source.snapshot_dir / config.source.snapshot_id
     _validate_snapshot(path)
+    return _read_snapshot_frames(path)
+
+
+def _read_snapshot_frames(path: Path) -> dict[str, gpd.GeoDataFrame]:
+    """Read an already validated snapshot into the compiler's source frames."""
+
     network = gpd.read_file(path / "network.geojson")
     context_path = path / "context.geojson"
     context = (

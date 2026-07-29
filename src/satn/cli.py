@@ -9,6 +9,7 @@ import typer
 from satn.ea_fixed_point_operations import run_ea_fixed_point_convergence
 from satn.models import AreaDefinition
 from satn.pipeline import compile as compile_satn
+from satn.pipeline import compile_ea_recovery_candidate
 from satn.sources import snapshot as create_snapshot
 
 app = typer.Typer(no_args_is_help=True, help="Compile strategic active travel networks.")
@@ -81,6 +82,22 @@ def compile_command(
         return
     typer.echo(f"{result.status}: {result.connections} connections, {result.gaps} gaps")
     typer.echo(result.output_dir)
+
+
+@app.command("compile-ea-recovery-candidate")
+def ea_recovery_candidate_command(
+    config: Path,
+    log_level: str = typer.Option("INFO", "--log-level"),
+) -> None:
+    """Retain a governed replacement candidate for the pinned invalid WECA v10."""
+
+    _configure_logging(log_level)
+    try:
+        candidate = compile_ea_recovery_candidate(config)
+    except Exception:
+        LOGGER.exception("EA recovery candidate command failed config=%s", config)
+        raise
+    typer.echo(candidate)
 
 
 @app.command("converge-ea-elevation")

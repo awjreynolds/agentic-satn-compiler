@@ -34,6 +34,7 @@ def iter_geojson_features(
     legacy_nan_property_key: str | None = None,
     expected_legacy_nan_count: int | None = None,
     normalization_report: dict[str, int] | None = None,
+    feature_id_property_key: str | None = None,
 ) -> Iterator[tuple[int, dict[str, object], object, CRS]]:
     """Yield features after strictly validating the complete JSON envelope.
 
@@ -101,6 +102,21 @@ def iter_geojson_features(
                     allowed_key=legacy_nan_property_key,
                 )
                 normalized_count += feature_count_normalized
+            if feature_id_property_key is not None:
+                feature_id = feature.get("id")
+                if feature_id_property_key in properties:
+                    raise ValueError(
+                        f"reserved GeoJSON feature ID property occurs in {path.name}"
+                    )
+                if feature_id is not None:
+                    if (
+                        isinstance(feature_id, bool)
+                        or not isinstance(feature_id, (str, int))
+                        or not str(feature_id).strip()
+                    ):
+                        raise ValueError(f"invalid GeoJSON feature ID in {path.name}")
+                    properties = dict(properties)
+                    properties[feature_id_property_key] = str(feature_id)
             try:
                 geometry = shape(geometry_value)
             except Exception as error:

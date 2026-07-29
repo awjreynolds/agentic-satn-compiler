@@ -878,6 +878,41 @@ def _is_sha256(value: object) -> bool:
     return True
 
 
+def retain_ea_recovery_candidate(
+    config: AreaConfig,
+    compiled: CompiledNetwork,
+    run_id: str,
+) -> dict[str, Path]:
+    """Retain one fixed-point mismatch candidate without any publication path."""
+
+    candidate = _ea_fixed_point_candidate_path(config)
+    temporary = Path(
+        tempfile.mkdtemp(prefix=f".{candidate.name}-recovery-", dir=candidate.parent)
+    )
+    try:
+        network_path = temporary / EA_FIXED_POINT_CANDIDATE_NETWORK
+        _write_geojson(network_path, compiled)
+        try:
+            _validate_ea_elevation_fixed_point(config, network_path)
+        except EAFixedPointMismatchError as error:
+            retained = _retain_ea_fixed_point_candidate(
+                config,
+                run_id=run_id,
+                network_path=network_path,
+                expected=error.expected,
+                actual=error.actual,
+                governed_input_fingerprint=compiled.governed_input_fingerprint,
+            )
+            return {"candidate": retained}
+        raise ValueError(
+            "EA recovery candidate unexpectedly matches its invalid parent; "
+            "refusing invalid-parent publication"
+        )
+    finally:
+        if temporary.exists():
+            shutil.rmtree(temporary)
+
+
 def _retain_ea_fixed_point_candidate(
     config: AreaConfig,
     *,

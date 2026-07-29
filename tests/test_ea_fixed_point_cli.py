@@ -85,3 +85,22 @@ def test_convergence_cli_exits_one_when_governed_work_fails(
 
     assert result.exit_code == 1
     assert isinstance(result.exception, ValueError)
+
+
+def test_recovery_candidate_cli_emits_governed_candidate(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    candidate = tmp_path / ".satn-ea-fixed-point-candidates" / "weca"
+    monkeypatch.setattr(
+        "satn.cli.compile_ea_recovery_candidate",
+        lambda config: candidate if config == tmp_path / "area.yaml" else None,
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["compile-ea-recovery-candidate", str(tmp_path / "area.yaml")],
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout.strip() == str(candidate)
