@@ -122,6 +122,16 @@ class RefreshResult:
 
 
 @dataclass(frozen=True)
+class RefreshPlan:
+    """Exact read-only plan for one Source Export refresh."""
+
+    coverage: EvidenceCoverage
+    reused_cells: tuple[str, ...]
+    missing_cells: tuple[str, ...]
+    replaced_cells: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class EvidenceStoreStatus:
     """The current immutable Evidence Coverage, if a refresh has completed."""
 
@@ -130,6 +140,20 @@ class EvidenceStoreStatus:
 
 
 QueryPredicate = Literal["intersects", "within", "contains"]
+
+
+def evidence_partition_keys(
+    source_layer: str,
+    selector: BaseGeometry,
+) -> tuple[EvidencePartitionKey, ...]:
+    """Return the exact BNG partition keys required by one evidence selector."""
+
+    if source_layer not in _LAYER_TABLES:
+        raise ValueError(f"unsupported Local Evidence source layer: {source_layer}")
+    return tuple(
+        EvidencePartitionKey(source_layer, "bng-10km/v1", cell)
+        for cell in _bng_cells_intersecting(selector)
+    )
 
 
 @dataclass(frozen=True)
@@ -511,6 +535,319 @@ class LocalEvidenceStore:
             raise
         finally:
             connection.close()
+
+    def plan_refresh(
+        self,
+        *,
+        source_export: SourceExport,
+        ingestion_contract: IngestionContract,
+        partition_keys: tuple[EvidencePartitionKey, ...],
+        replace_source: bool = False,
+        expect_state: str | None = None,
+    ) -> RefreshPlan:
+        """Plan exact refresh output without taking a writer lock or mutating the store."""
+
+        _validate_refresh_request(partition_keys)
+        if replace_source != (expect_state is not None):
+            raise ValueError("source replacement requires replace_source and expect-state together")
+        connection = self._open_initialised(read_only=True)
+        try:
+            current = self._current_coverage(connection)
+            if current is not None:
+                self._verify_coverage(connection, current)
+                self._verify_retained_source_bytes(current)
+        finally:
+            connection.close()
+        if replace_source and (current is None or current.fingerprint != expect_state):
+            raise ValueError("Local Evidence Store current state does not match expect-state")
+
+        source_path = self._validated_source_path(source_export, ingestion_contract)
+        attestations = [] if current is None else list(current.attestations)
+        requested = (
+            {}
+            if current is None
+            else {key.fingerprint: key for key in current.requested_partition_keys}
+        )
+        current_by_key = {
+            item.partition_content.partition_key.fingerprint: item for item in attestations
+        }
+        reused: list[str] = []
+        missing: list[str] = []
+        replaced: list[str] = []
+        to_read: list[EvidencePartitionKey] = []
+        replaced_key_fingerprints: set[str] = set()
+        for key in partition_keys:
+            requested[key.fingerprint] = key
+            existing = current_by_key.get(key.fingerprint)
+            if existing is None:
+                missing.append(key.cell)
+                to_read.append(key)
+                continue
+            content = existing.partition_content
+            exact = (
+                existing.source_export.fingerprint == source_export.fingerprint
+                and content.ingestion_contract.fingerprint == ingestion_contract.fingerprint
+            )
+            if exact:
+                reused.append(key.cell)
+                continue
+            if not replace_source:
+                raise ValueError(
+                    "requested partition already has a different Source Export or "
+                    "Ingestion Contract; source replacement is not enabled"
+                )
+            replaced.append(key.cell)
+            to_read.append(key)
+            replaced_key_fingerprints.add(key.fingerprint)
+        if replaced_key_fingerprints:
+            attestations = [
+                item
+                for item in attestations
+                if item.partition_content.partition_key.fingerprint not in replaced_key_fingerprints
+            ]
+        observations = self._observations_by_source_export(attestations)
+        for partition in self._read_missing_partitions(
+            source_path,
+            source_export,
+            ingestion_contract,
+            tuple(to_read),
+        ):
+            attestation, _rows = self._normalise_partition(partition)
+            self._add_observations(observations, attestation)
+            attestations.append(attestation)
+        if _sha256_file(source_path) != source_export.raw_bytes_sha256:
+            raise ValueError("governed Source Export changed while it was being read")
+        coverage = EvidenceCoverage(
+            tuple(attestations),
+            requested_partition_keys=tuple(requested.values()),
+            state="complete",
+        )
+        return RefreshPlan(
+            coverage=coverage,
+            reused_cells=tuple(sorted(reused)),
+            missing_cells=tuple(sorted(missing)),
+            replaced_cells=tuple(sorted(replaced)),
+        )
+
+    def replace_source(
+        self,
+        *,
+        source_export: SourceExport,
+        ingestion_contract: IngestionContract,
+        partition_keys: tuple[EvidencePartitionKey, ...],
+        expect_state: str,
+    ) -> RefreshResult:
+        """Replace only requested source-layer cells under an exact current-state guard."""
+
+        plan = self.plan_refresh(
+            source_export=source_export,
+            ingestion_contract=ingestion_contract,
+            partition_keys=partition_keys,
+            replace_source=True,
+            expect_state=expect_state,
+        )
+        connection = self._open_initialised(read_only=False)
+        transaction_started = False
+        try:
+            connection.execute("BEGIN TRANSACTION")
+            transaction_started = True
+            current = self._current_coverage(connection)
+            if current is None or current.fingerprint != expect_state:
+                raise ValueError("Local Evidence Store current state does not match expect-state")
+            self._verify_coverage(connection, current)
+            self._verify_retained_source_bytes(current)
+            source_path = self._validated_source_path(source_export, ingestion_contract)
+            requested_fingerprints = {key.fingerprint for key in partition_keys}
+            current_by_key = {
+                item.partition_content.partition_key.fingerprint: item
+                for item in current.attestations
+            }
+            unchanged: list[EvidencePartitionAttestation] = []
+            to_read: list[EvidencePartitionKey] = []
+            for item in current.attestations:
+                key_fingerprint = item.partition_content.partition_key.fingerprint
+                if key_fingerprint not in requested_fingerprints:
+                    unchanged.append(item)
+            for key in partition_keys:
+                existing = current_by_key.get(key.fingerprint)
+                if (
+                    existing is not None
+                    and existing.source_export.fingerprint == source_export.fingerprint
+                    and existing.partition_content.ingestion_contract.fingerprint
+                    == ingestion_contract.fingerprint
+                ):
+                    unchanged.append(existing)
+                else:
+                    to_read.append(key)
+            observations = self._observations_by_source_export(unchanged)
+            self._create_staging_tables(connection)
+            for partition in self._read_missing_partitions(
+                source_path,
+                source_export,
+                ingestion_contract,
+                tuple(to_read),
+            ):
+                attestation, rows = self._normalise_partition(partition)
+                self._add_observations(observations, attestation)
+                self._stage_partition(connection, attestation, rows)
+                unchanged.append(attestation)
+            if _sha256_file(source_path) != source_export.raw_bytes_sha256:
+                raise ValueError("governed Source Export changed while it was being read")
+            coverage = EvidenceCoverage(
+                tuple(unchanged),
+                requested_partition_keys=tuple(
+                    {
+                        key.fingerprint: key
+                        for key in (
+                            *current.requested_partition_keys,
+                            *partition_keys,
+                        )
+                    }.values()
+                ),
+                state="complete",
+            )
+            if coverage.fingerprint != plan.coverage.fingerprint:
+                raise ValueError("source replacement changed after its exact plan was produced")
+            self._commit_staged_refresh(connection, coverage)
+            connection.execute("COMMIT")
+            transaction_started = False
+            return RefreshResult(coverage=coverage)
+        except Exception:
+            if transaction_started:
+                connection.execute("ROLLBACK")
+            raise
+        finally:
+            connection.close()
+
+    def rebuild(self) -> RefreshResult:
+        """Recreate vector evidence states from retained raw exports, then replace atomically."""
+
+        source = self._open_initialised(read_only=True)
+        try:
+            coverage_fingerprints = tuple(
+                str(row[0])
+                for row in source.execute(
+                    "SELECT fingerprint FROM coverage_state_registry ORDER BY fingerprint"
+                ).fetchall()
+            )
+            current = self._current_coverage(source)
+            if current is None:
+                raise ValueError("Local Evidence Store has no current coverage to rebuild")
+            coverages = tuple(
+                self._coverage_by_fingerprint(source, fingerprint)
+                for fingerprint in coverage_fingerprints
+            )
+            for coverage in coverages:
+                self._verify_coverage(source, coverage)
+                self._verify_retained_source_bytes(coverage)
+            ea_pointer = source.execute(
+                "SELECT coverage_fingerprint FROM current_ea_raster_coverage_state "
+                "WHERE singleton = true"
+            ).fetchone()
+            if ea_pointer is not None:
+                raise ValueError(
+                    "vector rebuild cannot discard registered EA raster coverage; "
+                    "refresh its retained cache separately"
+                )
+        finally:
+            source.close()
+
+        sibling_path = self._store_path.with_name(f".{self._store_path.name}.rebuild")
+        sibling_path.unlink(missing_ok=True)
+        sibling = LocalEvidenceStore(
+            store_path=sibling_path,
+            runtime_lock_path=self._runtime_lock_path,
+            extension_cache=self._extension_cache,
+        )
+        try:
+            sibling.initialise()
+            target = sibling._open_initialised(read_only=False)
+            transaction_started = False
+            try:
+                target.execute("BEGIN TRANSACTION")
+                transaction_started = True
+                sibling._create_staging_tables(target)
+                unique_attestations = {
+                    attestation.fingerprint: attestation
+                    for coverage in coverages
+                    for attestation in coverage.attestations
+                }
+                groups: dict[
+                    tuple[str, str],
+                    list[EvidencePartitionAttestation],
+                ] = {}
+                for attestation in unique_attestations.values():
+                    groups.setdefault(
+                        (
+                            attestation.source_export.fingerprint,
+                            attestation.partition_content.ingestion_contract.fingerprint,
+                        ),
+                        [],
+                    ).append(attestation)
+                for group in groups.values():
+                    exemplar = group[0]
+                    export = exemplar.source_export
+                    contract = exemplar.partition_content.ingestion_contract
+                    keys = tuple(item.partition_content.partition_key for item in group)
+                    expected_by_key = {
+                        item.partition_content.partition_key.fingerprint: item for item in group
+                    }
+                    path = sibling._validated_source_path(export, contract)
+                    rebuilt_keys: set[str] = set()
+                    for partition in sibling._read_missing_partitions(
+                        path,
+                        export,
+                        contract,
+                        keys,
+                    ):
+                        attestation, rows = sibling._normalise_partition(partition)
+                        expected = expected_by_key.get(
+                            attestation.partition_content.partition_key.fingerprint
+                        )
+                        if expected is None or attestation.fingerprint != expected.fingerprint:
+                            raise ValueError(
+                                "retained Source Export no longer recreates its attestation"
+                            )
+                        sibling._stage_partition(target, attestation, rows)
+                        rebuilt_keys.add(attestation.partition_content.partition_key.fingerprint)
+                    if rebuilt_keys != set(expected_by_key):
+                        raise ValueError("retained Source Export did not recreate every partition")
+                    if _sha256_file(path) != export.raw_bytes_sha256:
+                        raise ValueError(
+                            "governed Source Export changed while rebuild was reading it"
+                        )
+                sibling._commit_staged_refresh(target, current)
+                for coverage in coverages:
+                    sibling._insert_coverage_state(target, coverage)
+                target.execute("COMMIT")
+                transaction_started = False
+            except Exception:
+                if transaction_started:
+                    target.execute("ROLLBACK")
+                raise
+            finally:
+                target.close()
+            rebuilt = sibling.status(verify=True).current_coverage
+            if rebuilt != current:
+                raise ValueError("rebuilt Local Evidence Store changed current coverage identity")
+            for coverage in coverages:
+                if (
+                    sibling.resolve_coverage(
+                        state_fingerprint=coverage.fingerprint,
+                        verify=True,
+                    )
+                    != coverage
+                ):
+                    raise ValueError(
+                        "rebuilt Local Evidence Store changed historical coverage identity"
+                    )
+            sibling_path.replace(self._store_path)
+        except Exception:
+            sibling_path.unlink(missing_ok=True)
+            raise
+        verified = self.status(verify=True).current_coverage
+        assert verified is not None
+        return RefreshResult(coverage=verified)
 
     def refresh_ea_elevation_cache(
         self,
@@ -2162,6 +2499,15 @@ _QUERY_PREDICATES = {
     "within": "ST_Within",
     "contains": "ST_Contains",
 }
+
+
+def _validate_refresh_request(
+    partition_keys: tuple[EvidencePartitionKey, ...],
+) -> None:
+    if not partition_keys:
+        raise ValueError("refresh requires at least one Evidence Partition Key")
+    if len({key.fingerprint for key in partition_keys}) != len(partition_keys):
+        raise ValueError("refresh Evidence Partition Keys must be unique")
 
 
 def _freeze_mapping(value: Mapping[str, object]) -> Mapping[str, object]:
