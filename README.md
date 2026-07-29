@@ -1,8 +1,10 @@
-# SATN compiler
+# SATN: an agentic (AI) network compiler
 
-Area-portable tooling for compiling an evidence-led Strategic Active Travel
-Network (SATN), with independently deployable definitions for Bath and North East
-Somerset and the wider West of England region.
+SATN is an experimental agentic (AI-assisted) network compiler. Its deterministic
+geospatial core turns governed transport evidence and explicit planning rules into
+inspectable network artifacts. Optional bounded AI agents can compare only choices
+defined by the compiler and cite the evidence supplied to them; they cannot invent
+routes, evidence or policy.
 
 > Experimental SATN POC — not an adopted plan.
 
@@ -11,13 +13,122 @@ the B&NES or West of England Area Deployment, then inspect Strategic Spines,
 access connections, National Cycle Network evidence, Candidate Low-Traffic
 Areas, Schools and visible Network Gaps.
 
-The compiler grows a rural Backbone-and-Access Network outward from governed A-road
-and established NCN Strategic Spines. Communities and Schools attach to that shared
-backbone or remain visible Network Gaps; it does not generate a nearest-neighbour
-spider's web. Route choice remains separate from later demand or delivery
-prioritisation.
+Today's published B&NES and West of England maps use deterministic rules and the
+deterministic `fake` agent provider. They demonstrate reproducible baseline
+compilation and the boundaries placed around agent decisions, not a live
+production AI service. Every line and gap remains inspectable. The result is a
+planning hypothesis for officer discussion, not a scheme design, safety
+assessment, business case, consultation result or adopted plan.
 
-## Install
+## Why this matters for the West of England now
+
+The immediate opportunity is not to automate WECA's planning judgement. It is to
+give officers one reproducible cross-boundary baseline against which gaps,
+assumptions and multimodal access choices can be challenged.
+
+The published
+[2020–2036 LCWIP](https://www.westofengland-ca.gov.uk/wp-content/uploads/2021/09/West-of-England-Local-Cycling-and-Walking-Infrastructure-Plan-2020-2036.pdf)
+and the
+[2026 Transport Vision](https://www.westofengland-ca.gov.uk/wp-content/uploads/2026/02/J13599-Transport-Vision-document-AW-low-res.pdf)
+create a changing multimodal planning context. The LCWIP proposed £411 million
+of investment, 55 continuous cycle routes and improvements around 30 high
+streets. The Transport Vision describes an integrated system of walking,
+wheeling, cycling, buses, rail and future mass transit.
+
+Department for Transport
+[LCWIP guidance](https://assets.publishing.service.gov.uk/media/5f32aa668fa8f57ac88dc9dc/cycling-walking-infrastructure-technical-guidance-document.pdf)
+expects plans to be reviewed approximately every four to five years and when
+strategies, development or funding change.
+
+Modes and corridors for mass transit are still to be developed. This creates a
+useful moment to expose urban, rural and authority-boundary gaps and compare
+first- and last-mile access to possible corridors, interchanges and growth
+locations.
+
+The public record supports the case for review, but does not by itself confirm
+that a formal full LCWIP refresh has started; that should be confirmed directly
+with officers. SATN does not currently design a mass-transit network. It can act
+as the active-travel and access-planning companion to that work.
+
+## What the POC demonstrates
+
+- One compiler can produce council-scale and West of England-scale networks from
+  separately versioned area configurations. Agreement on cross-boundary evidence,
+  rules and adoption remains a matter for the relevant authorities.
+- A-road and established National Cycle Network evidence can seed shared
+  Strategic Spines, with community and school access grown outward from them.
+- Rural and urban connection failures remain visible Network Gaps rather than
+  being hidden by invented straight lines.
+- Reviewers can inspect gradients, Candidate Low-Traffic Areas, evidence,
+  rationale and source references in the published map.
+- The same run produces reproducible map, GeoJSON, GeoPackage, PDF and provenance
+  artifacts for technical review.
+- The repository contains typed components for wider LCWIP evidence, demand,
+  option comparison, intervention and prioritisation work. These components are
+  not all presented as a deployed, production-ready end-to-end LCWIP service.
+
+| Status | What is available |
+| --- | --- |
+| **Published POC today** | Deterministic baseline compilation, inspectable maps and artifacts, visible gaps and provenance. It is not an autonomous planning service and does not demonstrate production AI operation. |
+| **Implemented components** | Provider-neutral, bounded agent and recorded-decision contracts plus wider LCWIP artifact pipelines. They are not yet presented as one production service. |
+| **Future roadmap** | A complete officer decision workflow, exact route controls and governed agent-assisted imagery surveys. |
+
+The compiler grows a rural Backbone-and-Access Network outward from governed
+A-road and established NCN Strategic Spines. Communities and Schools attach to
+that shared backbone or remain visible Network Gaps; it does not generate a
+nearest-neighbour spider's web. Route choice remains separate from later demand
+or delivery prioritisation.
+
+> **AI assurance:** AI is bounded to compiler-defined questions and cited
+> evidence. It cannot create executable route geometry or make policy decisions.
+> Only validated compiler actions can create a new versioned network run; the
+> baseline is retained and material choices follow the configured human
+> acceptance route.
+
+## Baseline first, officer decisions second
+
+A clean baseline uses governed evidence and declared general rules with no
+recorded officer or agent decisions. It contains no place-specific or
+route-specific discretionary override and remains available as the common
+comparison point.
+
+Human judgement is still essential. The domain model and compiler contracts can
+record attributable choices from bounded menus, including retaining a gap. The
+published POC does not yet expose a complete officer decision workflow.
+Officer-informed alternatives should be new, named network runs recording the
+responsible officer or role, organisation, date, rationale and evidence; they
+must not silently overwrite the clean baseline. Public outputs can identify the
+accountable role without exposing unnecessary personal data.
+
+Some important decision types remain future features: excluding an exact road
+segment from strategic use, requiring use of a named cycleway, and commissioning
+agent-led street-level or aerial imagery observations. They are tracked in
+[the officer route-controls issue](https://github.com/awjreynolds/banes-satn/issues/236)
+and [the future visual-survey issue](https://github.com/awjreynolds/banes-satn/issues/238).
+Desktop imagery would be evidence for human review, never a substitute for a
+physical site, safety, engineering or legal survey.
+
+## Proposed WECA discovery
+
+**Decision requested:** nominate an executive sponsor and two or three relevant
+LCWIP, cycling, mass-transit or GIS officers for a time-boxed discovery using one
+possible transit corridor and one mixed urban/rural catchment. Start with a
+60–90 minute working session:
+
+1. Confirm the test corridor, catchment and responsible authority or role.
+2. Inspect the clean SATN baseline and its evidence together.
+3. Record disagreements as evidence gaps or required officer decision types.
+4. Agree the evidence, governance and success criteria for a bounded pilot.
+
+The discovery outputs would be a named evidence snapshot, documented assumptions,
+an unresolved-gap log, governance requirements, a comparison approach and a
+go/no-go recommendation for a wider pilot. This asks for no network adoption,
+procurement or policy commitment. Success means deciding whether traceable
+baselines and faster scenario comparison improve officer discussion.
+
+## Technical use
+
+### Install
 
 Python 3.12 or newer and [uv](https://docs.astral.sh/uv/) are required.
 
