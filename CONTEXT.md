@@ -4,6 +4,10 @@ This context defines the language for a council-portable process that develops o
 
 ## Language
 
+**Agentic Network Compiler**:
+A deterministic geospatial compiler with an optional provider-neutral AI Agent Runtime at bounded decision points. The runtime can select only from compiler-authored actions using governed evidence; it cannot invent evidence, submit executable geometry, set policy or adopt a network. The published POC uses the deterministic fake provider rather than a live production AI service.
+_Avoid_: autonomous planner, AI route author, chatbot map, production AI claim
+
 **Community**:
 A named, inhabited settlement or recognisable urban neighbourhood admitted as a Network Place. It is not defined by an administrative ward, a universal population threshold or an individual destination.
 _Avoid_: ward, destination, settlement point
@@ -144,6 +148,10 @@ _Avoid_: every education site, School Access Obligation, implied destination
 One immutable compilation defined by an Area Definition, evidence snapshot, Criteria Set, Network Selection Profile and accepted decisions. It may be compared with other scenarios but does not itself create authority for a Reference SATN.
 _Avoid_: mutable scenario, adopted network, live policy view
 
+**Baseline Scenario Compilation**:
+A Scenario Compilation using governed evidence and declared general rules with an empty accepted-decision ledger and no feature-specific discretionary directives. It is retained as the clean comparison point for every officer-informed alternative.
+_Avoid_: hidden override, adopted network, only possible scenario
+
 **Local Evidence Store**:
 A single-user, embedded and rebuildable query store derived from already-downloaded authoritative source exports. It supports fast spatial and attribute subset selection for Scenario Compilation without becoming the authoritative source, requiring a managed service, or repeatedly parsing whole national datasets.
 _Avoid_: source of record, managed database, mandatory daemon, multi-user platform, opaque cache
@@ -167,6 +175,10 @@ _Avoid_: scenario-owned statistic, unversioned cache value, whole-network recomp
 **Reference SATN**:
 The Scenario Compilation selected through the applicable governed human process as the clear default strategic network for review and publication. Other Scenario Compilations remain comparisons.
 _Avoid_: automatically adopted network, only possible network, final scheme
+
+**Officer-Informed Scenario Compilation**:
+A new immutable Scenario Compilation containing attributable accepted human decisions, including responsible officer or role, organisation, date, rationale and evidence, and compared with rather than silently substituted for its Baseline Scenario Compilation. Public metadata need not expose personal details beyond the accountable role.
+_Avoid_: mutable override layer, hidden exception, rewritten baseline
 
 **Network Gap**:
 An unresolved absence of a continuous, bidirectionally traversable connection with plausible intervention coverage. A Network Gap prevents a network being Complete.

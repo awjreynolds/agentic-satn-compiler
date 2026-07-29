@@ -16,6 +16,13 @@ backbones, then grow access outward to rural communities and schools. In urban a
 it must describe circulation using classified roads and candidate low-traffic areas
 rather than inventing cycle-route centrelines through residential streets.
 
+This PRD defines the deterministic network core of an agentic (AI) compiler. A
+configured AI runtime may assist with bounded, evidence-citing comparison of
+compiler-authored choices. It does not invent evidence or executable geometry,
+adopt policy, approve designs or replace accountable officer judgement. The
+published POC uses the deterministic `fake` agent provider rather than a live
+production AI service.
+
 The resulting review map is an informative strategic visualization. It must show:
 
 - rural A-road and established National Cycle Network (NCN) spines;
@@ -97,9 +104,20 @@ A successful compilation lets a reviewer answer:
    never a fabricated straight line.
 9. **Keep the map quiet.** Context belongs in independently selectable layers with
    accessible legends.
-10. **Agentic by default.** Bounded, evidence-citing agents handle routine refinement
-    and comparison without requesting approval for every edge; humans receive only
-    material ambiguities that remain unresolved after bounded revision.
+10. **Deterministic baseline first.** Compile governed evidence and declared general
+    rules with an empty accepted-decision ledger and no feature-specific
+    discretionary directives. Preserve this clean baseline for comparison.
+11. **Human decisions are explicit scenarios.** Record the responsible officer or
+    role, organisation, date, rationale and evidence for every accepted material
+    decision in a new immutable Scenario Compilation; never silently overwrite the
+    baseline or expose unnecessary personal data in public artifacts.
+12. **Agents support but do not govern.** Bounded, evidence-citing agents may refine
+    and compare finite compiler-authored choices. Agent output is advisory,
+    schema-validated and retained with evidence references and explicit unknowns.
+    Agents cannot invent evidence, create executable geometry or make policy
+    decisions outside those contracts. Only deterministic compiler actions change a
+    scenario, and material choices follow the configured human acceptance route;
+    unresolved material ambiguity becomes a Human Intervention Request.
 
 ## 6. Scope
 
