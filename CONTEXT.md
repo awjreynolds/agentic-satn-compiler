@@ -300,12 +300,16 @@ _Avoid_: map-tile gradient, assumed flat interval, endpoint-only slope
 An ordered, continuous selection of eligible Published Features assembled from one active endpoint for exploratory analysis. Aggregate Cross-Spine Connector geometry is excluded because its constituent edges already carry the analytical evidence.
 _Avoid_: arbitrary multi-selection, disconnected edge set, aggregate double-counting
 
-**Linear Evidence Panel**:
-A shared-distance view of the Gradient Inspection Path that aligns Micro-Gradient Intervals with road classification and future engineering evidence tracks. Reversing the path reverses directional gradient without changing the governed source evidence.
+**Evidence Panel**:
+The persistent map evidence surface. It previews evidence for the visible map artifact under the pointer or keyboard focus, locks that evidence when the artifact is pinned, and returns to dynamic preview when empty map space is selected. When a Gradient Inspection Path is active, the panel also presents its specialised Linear Evidence view.
+_Avoid_: evidence split across unrelated surfaces, stale selection, fixed single-purpose panel
+
+**Linear Evidence View**:
+A specialised shared-distance view within the Evidence Panel that appears for an active Gradient Inspection Path and aligns Micro-Gradient Intervals with road classification and future engineering evidence tracks. Reversing the path reverses directional gradient without changing the governed source evidence.
 _Avoid_: independent charts, edge-only summary, composite route score
 
 **Contextual Terrain Mode**:
-An optional visually exaggerated 3D terrain view used for orientation. It is never an analytical elevation source, and failure of its replaceable raster-dem provider restores the default 2D map without affecting the network or Linear Evidence Panel.
+An optional visually exaggerated 3D terrain view used for orientation. It is never an analytical elevation source, and failure of its replaceable raster-dem provider restores the default 2D map without affecting the network or Linear Evidence view.
 _Avoid_: analytical terrain tile, required 3D renderer, MapToolkit dependency
 
 **Elevation Evidence**:

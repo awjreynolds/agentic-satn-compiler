@@ -128,7 +128,7 @@ def test_any_visible_map_artifact_can_pin_its_context(tmp_path: Path) -> None:
         assert "All contextual properties" in hover_text
 
         page.mouse.move(map_box["x"] + 2, map_box["y"] + 2)
-        assert "Select any visible map artifact" in panel.inner_text()
+        assert "Hover over any visible map artifact" in panel.inner_text()
 
         page.mouse.move(artifact_x, artifact_y)
         page.mouse.click(artifact_x, artifact_y)
@@ -146,7 +146,14 @@ def test_any_visible_map_artifact_can_pin_its_context(tmp_path: Path) -> None:
         page.mouse.move(artifact_x, artifact_y)
         page.mouse.click(artifact_x, artifact_y)
         page.mouse.move(map_box["x"] + 2, map_box["y"] + 2)
-        assert "Select any visible map artifact" in panel.inner_text()
+        assert "Hover over any visible map artifact" in panel.inner_text()
+
+        page.locator("#feature-index summary").click()
+        indexed_artifact = page.locator("#connection-list .connection").first
+        indexed_artifact.focus()
+        assert indexed_artifact.get_attribute("data-feature-id") in panel.inner_text()
+        indexed_artifact.blur()
+        assert "Hover over any visible map artifact" in panel.inner_text()
 
         reference_selection = page.evaluate(
             """() => {
@@ -213,6 +220,99 @@ def test_any_visible_map_artifact_can_pin_its_context(tmp_path: Path) -> None:
 
 
 @pytest.mark.browser
+def test_evidence_panel_previews_pins_and_unlocks_map_artifacts(tmp_path: Path) -> None:
+    fixture = tmp_path / "fixture"
+    shutil.copytree(
+        PROJECT / "examples" / "fixture",
+        fixture,
+        ignore=shutil.ignore_patterns("work", ".satn-cache"),
+    )
+    config = CouncilConfig.from_yaml(fixture / "council.yaml")
+    snapshot(config)
+    result = compile(config)
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1440, "height": 900})
+        page.route("https://tile.openstreetmap.org/**", lambda route: route.abort())
+        page.goto(result.artifacts["review_map"].as_uri())
+        page.wait_for_function("document.documentElement.dataset.mapReady === 'true'")
+        page.wait_for_function("!window.SATN_REVIEW_MAP.isMoving()")
+
+        selections = page.evaluate(
+            """() => {
+              const map = window.SATN_REVIEW_MAP;
+              map.getStyle().layers
+                .filter((layer) => layer.source && layer.source !== "places")
+                .forEach((layer) => {
+                  map.setLayoutProperty(layer.id, "visibility", "none");
+                });
+              return map.getSource("places")._data.features
+                .map((feature) => {
+                  const point = map.project(feature.geometry.coordinates);
+                  const rendered = map.queryRenderedFeatures(point, {layers: ["places"]});
+                  return rendered.length
+                    ? {
+                        x: point.x,
+                        y: point.y,
+                        id: feature.properties.place_id,
+                        name: feature.properties.name
+                      }
+                    : null;
+                })
+                .filter(Boolean)
+                .slice(0, 2);
+            }"""
+        )
+        assert len(selections) == 2
+        first, second = selections
+        map_box = page.locator("#map").bounding_box()
+        assert map_box is not None
+
+        def map_point(selection: dict[str, object]) -> tuple[float, float]:
+            return (
+                map_box["x"] + float(selection["x"]),
+                map_box["y"] + float(selection["y"]),
+            )
+
+        first_x, first_y = map_point(first)
+        second_x, second_y = map_point(second)
+        empty_x, empty_y = map_box["x"] + 2, map_box["y"] + 2
+        panel = page.locator("#linear-evidence-panel")
+
+        page.mouse.move(first_x, first_y)
+        first_preview = panel.inner_text()
+
+        page.mouse.click(first_x, first_y)
+        page.mouse.move(second_x, second_y)
+        pinned_during_second_hover = panel.inner_text()
+
+        page.mouse.click(empty_x, empty_y)
+        page.mouse.move(second_x, second_y)
+        second_preview_after_unlock = panel.inner_text()
+
+        failures = []
+        if panel.locator("h2").inner_text() != "Evidence Panel":
+            failures.append("the persistent bottom surface is not named Evidence Panel")
+        if first["name"] not in first_preview or first["id"] not in first_preview:
+            failures.append("hovering the first artifact did not preview its evidence")
+        if (
+            first["name"] not in pinned_during_second_hover
+            or second["name"] in pinned_during_second_hover
+        ):
+            failures.append("hovering another artifact replaced the pinned evidence")
+        if (
+            second["name"] not in second_preview_after_unlock
+            or second["id"] not in second_preview_after_unlock
+            or first["name"] in second_preview_after_unlock
+        ):
+            failures.append("clicking empty map space did not unlock dynamic evidence")
+        assert not failures, "\n".join(failures)
+
+        browser.close()
+
+
+@pytest.mark.browser
 def test_gradient_inspection_path_popovers_and_linear_evidence(tmp_path: Path) -> None:
     fixture = tmp_path / "fixture"
     shutil.copytree(
@@ -234,6 +334,7 @@ def test_gradient_inspection_path_popovers_and_linear_evidence(tmp_path: Path) -
 
         assert page.locator("#layer-rail").is_visible()
         assert page.locator("#linear-evidence-panel").is_visible()
+        assert page.locator("#linear-evidence-view").is_hidden()
         assert page.locator("#terrain-mode").is_visible()
         assert not page.locator("#terrain-mode").is_checked()
         assert "analytical default" in page.locator("#terrain-status").inner_text()
@@ -299,6 +400,8 @@ def test_gradient_inspection_path_popovers_and_linear_evidence(tmp_path: Path) -
         page.locator("#gradient-path-append").click()
 
         assert "2 edges selected" in page.locator("#gradient-path-status").inner_text()
+        assert page.locator("#linear-evidence-view").is_visible()
+        assert page.locator("#linear-evidence-heading").inner_text() == "Linear Evidence"
         page.locator(f'[data-feature-id="{disconnected_id}"]').click()
         page.locator("#gradient-path-append").click()
         assert "does not share its junction" in page.locator("#gradient-path-status").inner_text()
@@ -344,5 +447,6 @@ def test_gradient_inspection_path_popovers_and_linear_evidence(tmp_path: Path) -
         assert "1 edge selected" in page.locator("#gradient-path-status").inner_text()
         page.locator("#gradient-path-reset").click()
         assert "No path selected" in page.locator("#gradient-path-status").inner_text()
+        assert page.locator("#linear-evidence-view").is_hidden()
 
         browser.close()
