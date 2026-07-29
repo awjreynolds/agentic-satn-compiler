@@ -84,22 +84,29 @@ def test_compiler_dependency_change_invalidates_fixture_publication_reuse(
     assert changed.run_id != first.run_id
 
 
-def test_review_map_change_does_not_invalidate_fixture_publication_reuse(
+def test_review_map_change_refreshes_publication_without_changing_semantic_run_id(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     config = prepared_config(tmp_path)
-    compile(config)
+    first = compile(config)
     root = copied_compiler_tree(tmp_path)
     review_map = root / "assets" / "review-map.js"
+    probe = b"\n/* dependency-manifest regression probe */\n"
     review_map.write_bytes(
-        review_map.read_bytes() + b"\n/* dependency-manifest regression probe */\n"
+        review_map.read_bytes() + probe
     )
     monkeypatch.setattr(dependencies, "_package_root", lambda: root)
+    monkeypatch.setattr("satn.publisher.files", lambda _package: root / "assets")
 
-    unchanged = compile(config)
+    refreshed = compile(config)
+    published_script = (
+        refreshed.artifacts["review_map"].parent / "assets" / "review-map.js"
+    ).read_bytes()
 
-    assert unchanged.metadata["publication_reused"] is True
+    assert refreshed.run_id == first.run_id
+    assert refreshed.metadata.get("publication_reused") is not True
+    assert published_script.endswith(probe)
 
 
 def test_full_directive_ignores_reusable_connections(tmp_path: Path) -> None:

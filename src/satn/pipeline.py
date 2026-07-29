@@ -13,6 +13,7 @@ from pathlib import Path
 
 import geopandas as gpd
 
+import satn.compilation_dependencies as compilation_dependencies
 from satn.agents import (
     AgentCompilationTerminated,
     AgentDecisionRequired,
@@ -1354,6 +1355,36 @@ def _compiler_digest() -> str:
     return digest
 
 
+def _review_map_assets_are_current(output: Path) -> bool:
+    """Return whether a reusable publication carries this installed UI shell."""
+    source_assets = compilation_dependencies._package_root() / "assets"
+    published_review = output / "review-map"
+    published_assets = published_review / "assets"
+    try:
+        html = (published_review / "index.html").read_text(encoding="utf-8")
+        for name in (
+            "maplibre-gl.js",
+            "maplibre-gl.css",
+            "MAPLIBRE-LICENSE.txt",
+            "review-map.js",
+            "review-map.css",
+        ):
+            content = (source_assets / name).read_bytes()
+            if (published_assets / name).read_bytes() != content:
+                return False
+            if name.startswith("review-map."):
+                path = Path(name)
+                digest = hashlib.sha256(content).hexdigest()[:12]
+                fingerprinted = f"{path.stem}.{digest}{path.suffix}"
+                if (published_assets / fingerprinted).read_bytes() != content:
+                    return False
+                if f"assets/{fingerprinted}" not in html:
+                    return False
+    except OSError:
+        return False
+    return True
+
+
 def _reuse_validated_publication(
     council: AreaConfig,
     governed_input_fingerprint: str,
@@ -1402,6 +1433,9 @@ def _reuse_validated_publication(
             return None
         if persisted_input_fingerprint != input_fingerprint:
             LOGGER.info("Existing publication input fingerprint differs; recompiling")
+            return None
+        if not _review_map_assets_are_current(output):
+            LOGGER.info("Existing publication review-map assets differ; republishing")
             return None
         validate_publication(output, council)
         agents_payload = json.loads((output / "agent-records.json").read_text(encoding="utf-8"))

@@ -193,6 +193,44 @@ def test_assembly_withholds_disconnected_exact_intersections_as_one_point_only_f
     }
 
 
+def test_route_refinement_finding_returns_in_the_connector_crs() -> None:
+    connectors = gpd.GeoDataFrame(
+        [
+            _connector(
+                "wgs84-disconnected",
+                MultiLineString(
+                    [
+                        [(-2.4, 51.3), (-2.399, 51.3)],
+                        [(-2.391, 51.3), (-2.39, 51.3)],
+                    ]
+                ),
+            )
+        ],
+        crs=4326,
+    )
+    roots = gpd.GeoDataFrame(
+        [
+            {
+                "spine_id": "left-primary",
+                "geometry": LineString([(-2.4, 51.299), (-2.4, 51.301)]),
+            },
+            {
+                "spine_id": "right-primary",
+                "geometry": LineString([(-2.39, 51.299), (-2.39, 51.301)]),
+            },
+        ],
+        crs=4326,
+    )
+
+    result = resolve_cross_spine_assembly(connectors, roots)
+
+    assert result.valid_connectors.empty
+    assert result.route_refinement_findings.crs.to_epsg() == 4326
+    finding = result.route_refinement_findings.iloc[0]
+    assert all(-3 < point.x < -2 for point in finding.geometry.geoms)
+    assert all(51 < point.y < 52 for point in finding.geometry.geoms)
+
+
 def test_assembly_enforces_named_root_closure_budget_and_reconciles_agent_audit() -> None:
     """A one-millimetre excess becomes a finding; the accepted audit is bijective."""
     connectors = gpd.GeoDataFrame(
