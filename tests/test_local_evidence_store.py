@@ -23,6 +23,7 @@ from satn.evidence_contracts import (
     SourceExport,
 )
 from satn.local_evidence_store import (
+    EvidenceRefreshRequest,
     EvidenceStoreSchemaError,
     LocalEvidenceStore,
     SpatialRuntimeError,
@@ -1289,14 +1290,19 @@ def test_refresh_plan_is_exact_and_does_not_mutate_the_store(tmp_path: Path) -> 
     existing = EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST56")
     missing = EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST76")
 
-    plan = store.plan_refresh(
-        source_export=source_export,
-        ingestion_contract=_open_roads_contract(),
-        partition_keys=(existing, missing),
+    plan = store.refresh_many(
+        requests=(
+            EvidenceRefreshRequest(
+                source_export=source_export,
+                ingestion_contract=_open_roads_contract(),
+                partition_keys=(existing, missing),
+            ),
+        ),
+        dry_run=True,
     )
 
-    assert plan.reused_cells == ("ST56",)
-    assert plan.missing_cells == ("ST76",)
+    assert plan.reused_cells == ("os-open-roads/RoadLink:ST56",)
+    assert plan.missing_cells == ("os-open-roads/RoadLink:ST76",)
     assert plan.replaced_cells == ()
     assert {key.cell for key in plan.coverage.requested_partition_keys} == {
         "ST56",
@@ -1311,7 +1317,10 @@ def test_refresh_plan_is_exact_and_does_not_mutate_the_store(tmp_path: Path) -> 
     not LOCAL_SPATIAL_ARCHIVE.is_file() or importlib.util.find_spec("duckdb") is None,
     reason="pinned local Spatial archive or DuckDB package absent",
 )
-def test_guarded_source_replacement_preserves_historical_coverage(tmp_path: Path) -> None:
+def test_guarded_source_replacement_scans_once_and_preserves_historical_coverage(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     store, prior = _seeded_real_store(tmp_path)
     replacement_path = _write_open_roads_fixture(
         tmp_path / "RoadLink-replacement.geojson",
@@ -1321,40 +1330,105 @@ def test_guarded_source_replacement_preserves_historical_coverage(tmp_path: Path
     key = EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST56")
 
     with pytest.raises(ValueError, match="expect-state"):
-        store.plan_refresh(
-            source_export=replacement_export,
-            ingestion_contract=_open_roads_contract(),
-            partition_keys=(key,),
-            replace_source=True,
+        store.refresh_many(
+            requests=(
+                EvidenceRefreshRequest(
+                    source_export=replacement_export,
+                    ingestion_contract=_open_roads_contract(),
+                    partition_keys=(key,),
+                ),
+            ),
+            dry_run=True,
+            replace_source="os-open-roads/RoadLink",
             expect_state="f" * 64,
         )
 
-    plan = store.plan_refresh(
+    request = EvidenceRefreshRequest(
         source_export=replacement_export,
         ingestion_contract=_open_roads_contract(),
         partition_keys=(key,),
-        replace_source=True,
+    )
+    plan = store.refresh_many(
+        requests=(request,),
+        dry_run=True,
+        replace_source="os-open-roads/RoadLink",
         expect_state=prior.fingerprint,
     )
-    replaced = store.replace_source(
-        source_export=replacement_export,
-        ingestion_contract=_open_roads_contract(),
-        partition_keys=(key,),
+    original_reader = store._read_missing_partitions
+    scans = 0
+
+    def counted_reader(*args, **kwargs):
+        nonlocal scans
+        scans += 1
+        return original_reader(*args, **kwargs)
+
+    monkeypatch.setattr(store, "_read_missing_partitions", counted_reader)
+    replaced = store.refresh_many(
+        requests=(request,),
+        replace_source="os-open-roads/RoadLink",
         expect_state=prior.fingerprint,
     ).coverage
 
-    assert plan.replaced_cells == ("ST56",)
+    assert plan.replaced_cells == ("os-open-roads/RoadLink:ST56",)
+    assert scans == 1
     assert replaced == plan.coverage
     assert replaced.fingerprint != prior.fingerprint
     assert store.status(verify=True).current_coverage == replaced
     assert store.resolve_coverage(state_fingerprint=prior.fingerprint) == prior
+    assert set(store.retained_source_paths()) == {
+        (tmp_path / "RoadLink.geojson").resolve(),
+        replacement_path.resolve(),
+    }
 
 
 @pytest.mark.skipif(
     not LOCAL_SPATIAL_ARCHIVE.is_file() or importlib.util.find_spec("duckdb") is None,
     reason="pinned local Spatial archive or DuckDB package absent",
 )
-def test_rebuild_recreates_current_and_historical_logical_states_from_raw_exports(
+def test_multi_source_refresh_rolls_back_every_source_when_the_second_scan_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    store, prior = _seeded_real_store(tmp_path)
+    open_roads = EvidenceRefreshRequest(
+        source_export=_source_export_for(tmp_path / "RoadLink.geojson", format="GeoJSON"),
+        ingestion_contract=_open_roads_contract(),
+        partition_keys=(
+            EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST76"),
+        ),
+    )
+    osm_path = _write_osm_network_fixture(tmp_path / "network.osm")
+    osm = EvidenceRefreshRequest(
+        source_export=_osm_network_source_export(osm_path),
+        ingestion_contract=_osm_network_contract(),
+        partition_keys=(
+            EvidencePartitionKey("openstreetmap/lines", "bng-10km/v1", "ST76"),
+        ),
+    )
+    original_reader = store._read_missing_partitions
+    scans = 0
+
+    def failing_second_reader(*args, **kwargs):
+        nonlocal scans
+        scans += 1
+        if scans == 2:
+            raise ValueError("second source failed")
+        return original_reader(*args, **kwargs)
+
+    monkeypatch.setattr(store, "_read_missing_partitions", failing_second_reader)
+
+    with pytest.raises(ValueError, match="second source failed"):
+        store.refresh_many(requests=(open_roads, osm))
+
+    assert scans == 2
+    assert store.status(verify=True).current_coverage == prior
+
+
+@pytest.mark.skipif(
+    not LOCAL_SPATIAL_ARCHIVE.is_file() or importlib.util.find_spec("duckdb") is None,
+    reason="pinned local Spatial archive or DuckDB package absent",
+)
+def test_rebuild_recreates_only_the_current_logical_state_from_its_retained_exports(
     tmp_path: Path,
 ) -> None:
     store, historical = _seeded_real_store(tmp_path)
@@ -1369,13 +1443,11 @@ def test_rebuild_recreates_current_and_historical_logical_states_from_raw_export
 
     assert rebuilt == current
     assert store.status(verify=True).current_coverage == current
-    assert (
+    with pytest.raises(ValueError, match="is not found"):
         store.resolve_coverage(
             state_fingerprint=historical.fingerprint,
             verify=True,
         )
-        == historical
-    )
 
 
 @pytest.mark.skipif(

@@ -190,6 +190,10 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     "satn/evidence_replay.py": (
         "additive Local Evidence replay gate; not a compiler input before equivalence cutover"
     ),
+    "satn/_evidence_operations.py": (
+        "private Local Evidence Store operations; "
+        "not a compiler input before equivalence cutover"
+    ),
     "satn/evidence_cli.py": (
         "additive Local Evidence Store command adapter; "
         "not a compiler input before equivalence cutover"
