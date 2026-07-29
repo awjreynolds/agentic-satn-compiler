@@ -378,6 +378,7 @@ class RoadGraph:
         max_association_m: float,
         ends: list[tuple[str, float]],
         *,
+        allow_stationary: bool = True,
         excluded_pairs: set[tuple[str, str]] | None = None,
     ) -> RoutedAttachment | None:
         """Attach a point to nearby nodes or edge interiors without hiding edge travel."""
@@ -385,6 +386,7 @@ class RoadGraph:
         choice = self.best_attachment(
             [(item.node_id, item.routing_cost_m) for item in attachments],
             ends,
+            allow_stationary=allow_stationary,
             excluded_pairs=excluded_pairs,
         )
         if choice is None:
@@ -707,10 +709,18 @@ class RoadGraph:
         while search_heap:
             _, _, _, _, _, _, search_starts, search_ends, routed = heapq.heappop(search_heap)
             total_m, nodes, start, start_snap, end, end_snap = routed
-            if start == end:
-                option = (
-                    stationary_route_option(self.node_points[start]) if allow_stationary else None
+            if start == end and not allow_stationary:
+                add_search(
+                    [attachment for attachment in search_starts if attachment[0] != start],
+                    search_ends,
                 )
+                add_search(
+                    [attachment for attachment in search_starts if attachment[0] == start],
+                    [attachment for attachment in search_ends if attachment[0] != end],
+                )
+                continue
+            if start == end:
+                option = stationary_route_option(self.node_points[start])
             else:
                 option = self._option_from_nodes(nodes, "direct")
             if option is None:

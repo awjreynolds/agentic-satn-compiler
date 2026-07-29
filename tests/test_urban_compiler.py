@@ -556,7 +556,7 @@ def test_governed_urban_a_road_evidence_extends_the_urban_spine_extent() -> None
     assert urban.spines.iloc[0]["role"] == "urban-main-road-spine"
 
 
-def test_compiler_requires_every_urban_a_road_evidence_segment_to_have_an_official_spine() -> None:
+def test_governed_official_a_roads_define_complete_urban_evidence() -> None:
     places = gpd.GeoDataFrame(
         [
             {
@@ -637,7 +637,12 @@ def test_compiler_requires_every_urban_a_road_evidence_segment_to_have_an_offici
         "boundary": gpd.GeoDataFrame(geometry=[], crs=27700),
         "context": context,
     }
-    missing = compile_network(
+    missing_official = compile_network(
+        config,
+        source,
+        FakeAgentRuntime(),
+    )
+    governed_one = compile_network(
         config,
         source | {"official_road_classification": official_roads(include_second_a_road=False)},
         FakeAgentRuntime(),
@@ -648,13 +653,22 @@ def test_compiler_requires_every_urban_a_road_evidence_segment_to_have_an_offici
         FakeAgentRuntime(),
     )
 
-    assert missing.criteria["urban_network"]["official_main_road_spines"] == "green"
-    assert missing.criteria["urban_network"]["urban_a_road_evidence_coverage"] == "red"
-    assert missing.compilation_diagnostics["urban_a_road_spine_coverage"] == {
+    assert missing_official.criteria["urban_network"]["official_main_road_spines"] == "grey"
+    assert missing_official.criteria["urban_network"]["urban_a_road_evidence_coverage"] == "red"
+    assert missing_official.compilation_diagnostics["urban_a_road_spine_coverage"] == {
         "source_alignment_tolerance_m": 100.0,
         "evidence_segment_count": 2,
         "total_km": 2.0,
-        "unmatched_km": 1.0,
+        "unmatched_km": 2.0,
+    }
+    assert list(governed_one.a_road_spines["evidence_id"]) == ["official-a-1"]
+    assert governed_one.criteria["urban_network"]["official_main_road_spines"] == "green"
+    assert governed_one.criteria["urban_network"]["urban_a_road_evidence_coverage"] == "green"
+    assert governed_one.compilation_diagnostics["urban_a_road_spine_coverage"] == {
+        "source_alignment_tolerance_m": 100.0,
+        "evidence_segment_count": 1,
+        "total_km": 1.0,
+        "unmatched_km": 0.0,
     }
     assert represented.criteria["urban_network"]["official_main_road_spines"] == "green"
     assert represented.criteria["urban_network"]["urban_a_road_evidence_coverage"] == "green"
@@ -665,6 +679,139 @@ def test_compiler_requires_every_urban_a_road_evidence_segment_to_have_an_offici
         "unmatched_km": 0.0,
     }
     assert "b-road" not in set(represented.urban_spines["official_classification"])
+
+
+def test_governed_road_classification_supersedes_conflicting_osm_a_road_context() -> None:
+    places = gpd.GeoDataFrame(
+        [
+            {
+                "place_id": place_id,
+                "name": name,
+                "kind": "community",
+                "place_class": "town",
+                "geometry": Point(x, 0),
+            }
+            for place_id, name, x in (
+                ("west", "West", 0),
+                ("east", "East", 100),
+            )
+        ],
+        crs=27700,
+    )
+    network = gpd.GeoDataFrame(
+        [
+            {
+                "osmid": "urban-street",
+                "highway": "residential",
+                "geometry": LineString([(0, 0), (100, 0)]),
+            }
+        ],
+        crs=27700,
+    )
+    context = gpd.GeoDataFrame(
+        [
+            {
+                "evidence_id": "osm-conflicting-a-road",
+                "feature_type": "a-road-spine",
+                "name": "A4017",
+                "category": "A-road strategic spine",
+                "source_id": "osm-way-203032222",
+                "network_scope": "urban",
+                "geometry": LineString([(0, 500), (1000, 500)]),
+            },
+            {
+                "evidence_id": "osm-unmatched-a-road",
+                "feature_type": "a-road-spine",
+                "name": "A999",
+                "category": "A-road strategic spine",
+                "source_id": "osm-way-unmatched",
+                "network_scope": "urban",
+                "geometry": LineString([(0, 1500), (1000, 1500)]),
+            },
+        ],
+        crs=27700,
+    )
+    official = gpd.GeoDataFrame(
+        [
+            {
+                "official_feature_id": "official-classified-unnumbered",
+                "official_classification": "classified-unnumbered",
+                "source_id": "os-open-roads-2026-04-07",
+                "effective_date": "2026-04-07",
+                "licence": "OGL v3.0",
+                "content_fingerprint": "official-fingerprint",
+                "geometry": LineString([(0, 500), (1000, 500)]),
+            },
+            {
+                "official_feature_id": "official-unclassified",
+                "official_classification": "unclassified",
+                "source_id": "os-open-roads-2026-04-07",
+                "effective_date": "2026-04-07",
+                "licence": "OGL v3.0",
+                "content_fingerprint": "official-fingerprint",
+                "geometry": LineString([(0, 510), (1000, 510)]),
+            },
+            {
+                "official_feature_id": "official-a-road",
+                "official_classification": "a-road",
+                "source_id": "os-open-roads-2026-04-07",
+                "effective_date": "2026-04-07",
+                "licence": "OGL v3.0",
+                "content_fingerprint": "official-fingerprint",
+                "geometry": LineString([(0, 1000), (1000, 1000)]),
+            },
+        ],
+        crs=27700,
+    )
+    config = CouncilConfig.from_yaml(
+        Path(__file__).parents[1] / "examples" / "fixture" / "council.yaml"
+    )
+
+    compiled = compile_network(
+        config,
+        {
+            "places": places,
+            "network": network,
+            "boundary": gpd.GeoDataFrame(geometry=[], crs=27700),
+            "context": context,
+            "official_road_classification": official,
+        },
+        FakeAgentRuntime(),
+    )
+
+    assert list(compiled.a_road_spines["evidence_id"]) == ["official-a-road"]
+    assert list(compiled.a_road_spines["source_id"]) == ["os-open-roads-2026-04-07"]
+    assert list(compiled.a_road_spines["network_scope"]) == ["urban"]
+    assert compiled.criteria["urban_network"]["urban_a_road_evidence_coverage"] == "green"
+    assert compiled.compilation_diagnostics["road_classification_disagreements"] == [
+        {
+            "disagreement_type": "official-non-a-road",
+            "osm_evidence_id": "osm-conflicting-a-road",
+            "osm_source_id": "osm-way-203032222",
+            "official_feature_id": "official-classified-unnumbered",
+            "official_classification": "classified-unnumbered",
+            "official_source_id": "os-open-roads-2026-04-07",
+            "official_content_fingerprint": "official-fingerprint",
+        },
+        {
+            "disagreement_type": "official-non-a-road",
+            "osm_evidence_id": "osm-conflicting-a-road",
+            "osm_source_id": "osm-way-203032222",
+            "official_feature_id": "official-unclassified",
+            "official_classification": "unclassified",
+            "official_source_id": "os-open-roads-2026-04-07",
+            "official_content_fingerprint": "official-fingerprint",
+        },
+        {
+            "disagreement_type": "no-overlapping-official-road",
+            "osm_evidence_id": "osm-unmatched-a-road",
+            "osm_source_id": "osm-way-unmatched",
+            "official_feature_id": None,
+            "official_classification": None,
+            "official_source_id": None,
+            "official_content_fingerprint": None,
+        },
+    ]
 
 
 def test_candidate_areas_use_only_qualifying_boundaries_and_flag_through_traffic() -> None:

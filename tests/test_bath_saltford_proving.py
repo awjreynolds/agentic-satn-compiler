@@ -28,6 +28,7 @@ from satn.psa_evidence_loaders import (
     load_education_access_evidence,
     load_population_reach_evidence,
 )
+from satn.publisher import publish
 from satn.sources import load_snapshot, snapshot
 
 PROJECT = Path(__file__).parents[1]
@@ -147,13 +148,12 @@ def test_bath_saltford_fixture_records_evidence_then_exposes_current_psa_boundar
     preparation = compiled.spine_access_candidate_preparation
     assert preparation is not None and preparation.prepared
     assert not preparation.prepared_spine_access_connections
-    assert {item.disposition for item in preparation.connection_roster} == {
-        "out-of-scope-direct-strategic-spine"
-    }
-    assert all(
-        item.reason == "out-of-scope-direct-strategic-spine-attachment"
-        for item in preparation.connection_roster
-    )
+    assert not preparation.connection_roster
+    associations = compiled.access_obligations[
+        compiled.access_obligations["place_id"].isin({"bath-edge", "saltford"})
+    ]
+    assert set(associations["service_status"]) == {"served"}
+    assert associations["access_connection_id"].isna().all()
     strategic = compiled.strategic_corridor_preparation
     assert strategic is not None and strategic.prepared
     assert {item.unit_role.value for item in strategic.units} == {
@@ -163,6 +163,29 @@ def test_bath_saltford_fixture_records_evidence_then_exposes_current_psa_boundar
     units = {item.unit_role.value: item for item in strategic.units}
     interurban = units["interurban-spine"]
     destination = units["strategic-destination-access"]
+    assert not interurban.anchor_connection_ids
+    assert set(interurban.anchor_obligation_ids) == set(associations["obligation_id"])
+    artifacts = publish(config, compiled, "backbone-access-association-proof")
+    published = json.loads(artifacts["geojson"].read_text(encoding="utf-8"))
+    published_associations = [
+        feature
+        for feature in published["features"]
+        if feature["properties"].get("feature_type") == "access-obligation"
+        and json.loads(feature["properties"].get("provenance", "{}")).get(
+            "service_kind"
+        )
+        == "backbone-access-association"
+    ]
+    assert {
+        feature["properties"]["place_id"] for feature in published_associations
+    } == {"bath-edge", "saltford"}
+    assert {
+        json.loads(feature["properties"]["provenance"])["association_kind"]
+        for feature in published_associations
+    } == {"colocated-direct-strategic-spine"}
+    assert {
+        feature["geometry"]["type"] for feature in published_associations
+    } == {"Point"}
     railway = next(
         record
         for record in interurban.candidate_records

@@ -16,7 +16,7 @@ source:
   # The final elevation snapshot never mutates the historical #125/#126
   # benchmark core.  ``satn snapshot ... --retain-core`` verifies this exact
   # source manifest before atomically seeding the final target.
-  snapshot_id: weca-elevation-2026-07-28-v5
+  snapshot_id: weca-classification-elevation-2026-07-28-v10
   retained_core_source:
     snapshot_id: weca-osm-current
     manifest_sha256: d4d8cbe37c13a6b9ae5d027693d64e89eab2edccf7b69afcdbec519883b1a988
@@ -28,6 +28,11 @@ source:
   community_place_types: [town, village, suburb, quarter, neighbourhood]
   urban_place_types: [city, town, suburb, quarter, neighbourhood]
   urban_scope_buffer_km: 2
+  official_road_classification:
+    path: ../../data/governed/weca-os-open-roads-2026-04-07.geojson
+    source_id: os-open-roads-2026-04-07
+    effective_date: 2026-04-07
+    licence: Open Government Licence v3.0
   national_elevation:
     provider: local-geojson
     path: ../../data/local/ea-lidar-dtm-1m-weca-samples.geojson

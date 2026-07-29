@@ -97,6 +97,10 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
     "satn/school_street.py": ("module", "school-street assessment"),
     "satn/settlement.py": ("module", "settlement and urban eligibility"),
     "satn/sources.py": ("module", "governed snapshot and source loading"),
+    "satn/streaming_geojson.py": (
+        "module",
+        "strict bounded validation of governed GeoJSON snapshot inputs",
+    ),
     "satn/tags.py": ("module", "OSM tag interpretation"),
     "satn/topography.py": ("module", "topography profile derivation"),
     "satn/topography_alternatives.py": (
@@ -162,6 +166,15 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     ),
     "satn/evidence_replay.py": (
         "additive Local Evidence replay gate; not a compiler input before equivalence cutover"
+    ),
+    "satn/ea_fixed_point_convergence.py": (
+        "bounded fixed-point orchestration without CompiledNetwork mutation"
+    ),
+    "satn/ea_fixed_point_operations.py": (
+        "local fixed-point command operations without CompiledNetwork mutation"
+    ),
+    "satn/ea_snapshot_recovery.py": (
+        "one-time snapshot recovery evidence without CompiledNetwork mutation"
     ),
     "satn/heartbeat.py": "operational progress reporting",
     "satn/local_evidence_store.py": (

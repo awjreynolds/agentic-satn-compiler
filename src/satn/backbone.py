@@ -14,14 +14,10 @@ import geopandas as gpd
 import networkx as nx
 import pandas as pd
 from shapely.geometry import LineString, MultiPoint, Point
-from shapely.ops import nearest_points
 
 from satn.agents import CompilationGate
 from satn.alignment_selection import CanonicalLineString
-from satn.content_identity import (
-    canonical_network_geometry_fingerprint,
-    canonical_undirected_pair,
-)
+from satn.content_identity import canonical_undirected_pair
 from satn.identifiers import stable_id as _stable_id
 from satn.models import (
     ACCESS_OBLIGATION_COLUMNS,
@@ -42,7 +38,6 @@ from satn.routing import (
     RouteOption,
     choose_alignment,
     serialise_options,
-    stationary_route_option,
 )
 from satn.topography_alternatives import TopographyComparison, compare_alignment_topography
 
@@ -674,6 +669,7 @@ def _assemble_backbone_outward(
     }
     rows: list[dict[str, object]] = []
     gap_rows: list[dict[str, object]] = []
+    access_associations: dict[str, _Candidate] = {}
     agent_records: list[AgentRecord] = []
     rejected_by_place: dict[str, list[AgentRecord]] = {}
     candidate_heap: list[tuple[tuple[object, ...], int, _Candidate | _CandidateBound]] = []
@@ -775,6 +771,23 @@ def _assemble_backbone_outward(
         selected = work
         place_id = str(selected.place["place_id"])
         if place_id not in unserved:
+            continue
+        if _is_access_association(selected):
+            if binding is not None:
+                raise ValueError(
+                    "Reference application replay cannot publish a stationary Community route"
+                )
+            access_associations[place_id] = selected
+            for rejected in rejected_by_place.pop(place_id, []):
+                rejected.decision = "superseded"
+                rejected.outcome_reason = (
+                    "The Community is colocated with existing governed Backbone geometry."
+                )
+            del unserved[place_id]
+            served_frontier = _access_association_frontier(selected, graph)
+            frontiers.append(served_frontier)
+            frontiers.sort(key=_frontier_key)
+            add_frontier_bounds(served_frontier)
             continue
         selected = _with_topography(
             selected,
@@ -926,6 +939,9 @@ def _assemble_backbone_outward(
             elevation_evidence=elevation_evidence,
             topography_config=topography_config,
         ):
+            if _is_access_association(selected):
+                access_associations[str(school["place_id"])] = selected
+                break
             row = _connection_row(selected, graph, obligation_kind="school")
             record = _evaluate(row, gate)
             agent_records.append(record)
@@ -1043,7 +1059,13 @@ def _assemble_backbone_outward(
     gaps = gpd.GeoDataFrame(
         gap_rows, columns=GAP_COLUMNS, geometry="geometry", crs=crs
     ).sort_values("connection_id")
-    obligations = _obligations(communities, schools, connections, gaps)
+    obligations = _obligations(
+        communities,
+        schools,
+        connections,
+        gaps,
+        access_associations,
+    )
     branches = _branches(connections, strategic_spines, crs)
     graph_diagnostics = graph.compilation_diagnostics()
     observed_unmaterializable_attachment_paths = int(
@@ -1199,6 +1221,42 @@ def _served_frontier(row: dict[str, object], graph: RoadGraph) -> _Frontier:
     )
 
 
+def _is_access_association(candidate: _Candidate) -> bool:
+    """Return true when no route edge is needed to reach existing Backbone geometry."""
+
+    return (
+        candidate.start_node == candidate.end_node
+        and candidate.option.length_km <= 1e-9
+        and not candidate.option.edge_ids
+        and not candidate.option.reverse_edge_ids
+    )
+
+
+def _access_association_frontier(candidate: _Candidate, graph: RoadGraph) -> _Frontier:
+    """Expose a colocated Community as a parent without inventing route geometry."""
+
+    place_id = str(candidate.place["place_id"])
+    frontier = candidate.frontier
+    geometry = candidate.start_point
+    return _Frontier(
+        target_id=_stable_id("access-obligation", place_id),
+        target_name=str(candidate.place.get("name") or place_id),
+        target_role="backbone-access-association",
+        target_place_id=place_id,
+        root_spine_id=frontier.root_spine_id,
+        root_spine_name=frontier.root_spine_name,
+        root_spine_kind=frontier.root_spine_kind,
+        root_evidence_id=frontier.root_evidence_id,
+        root_source_id=frontier.root_source_id,
+        branch_id=frontier.branch_id,
+        parent_access_connection_id=frontier.parent_access_connection_id,
+        depth=frontier.depth,
+        attachments=((candidate.start_node, 0.0),),
+        geometry=geometry,
+        projected_geometry=gpd.GeoSeries([geometry], crs=graph.crs).to_crs(27700).iloc[0],
+    )
+
+
 def _school_attachment_frontiers(
     strategic_spines: gpd.GeoDataFrame,
     community_connections: gpd.GeoDataFrame,
@@ -1312,7 +1370,11 @@ def _reference_frontier_matches(
     """Allow a planned child only through its exact already-served parent."""
 
     return (
-        frontier.target_role == "spine-access-connection"
+        frontier.target_role
+        in {
+            "spine-access-connection",
+            "backbone-access-association",
+        }
         and frontier.target_place_id == binding.parent_place_id
         and frontier.root_spine_id == binding.root_spine_id
         and any(node_id == binding.routing_end_node_id for node_id, _ in frontier.attachments)
@@ -1392,6 +1454,10 @@ def _validated_reference_option(
 ) -> RouteOption:
     """Recreate and exactly verify one adopted route at every mutation checkpoint."""
 
+    if binding.routing_start_node_id == binding.routing_end_node_id:
+        raise ValueError(
+            f"Reference application replay route is stationary at {checkpoint}"
+        )
     option = graph.option(
         binding.routing_start_node_id,
         binding.routing_end_node_id,
@@ -1401,6 +1467,10 @@ def _validated_reference_option(
         raise ValueError(
             f"Reference application replay route is absent, wrong-role or not "
             f"bidirectional at {checkpoint}"
+        )
+    if option.length_km <= 1e-9 or not option.edge_ids or not option.reverse_edge_ids:
+        raise ValueError(
+            f"Reference application replay route is stationary at {checkpoint}"
         )
     if tuple(option.edge_ids) != binding.routing_edge_ids:
         raise ValueError(
@@ -1648,6 +1718,7 @@ def _school_candidate(
         school.geometry,
         MAX_SCHOOL_ATTACHMENT_M,
         ends,
+        allow_stationary=True,
         excluded_pairs=excluded_pairs,
     )
     if choice is None:
@@ -1707,51 +1778,69 @@ def _direct_school_candidate(
     excluded_pairs: set[tuple[str, str]],
 ) -> _Candidate | None:
     projected_school = gpd.GeoSeries([school.geometry], crs=graph.crs).to_crs(27700).iloc[0]
-    nearby: list[tuple[float, _Frontier, Point, str]] = []
+    nearby: list[tuple[float, _Frontier]] = []
     for frontier in frontiers:
         distance_m = float(projected_school.distance(frontier.projected_geometry))
         if distance_m > MAX_SCHOOL_ATTACHMENT_M:
             continue
-        _, projected_attachment = nearest_points(projected_school, frontier.projected_geometry)
-        attachment = gpd.GeoSeries([projected_attachment], crs=27700).to_crs(graph.crs).iloc[0]
-        virtual_node = _stable_id(
-            "school-frontier-attachment",
-            frontier.target_id,
-            canonical_network_geometry_fingerprint(attachment, graph.crs),
-        )
-        if (virtual_node, virtual_node) not in excluded_pairs:
-            nearby.append((distance_m, frontier, attachment, virtual_node))
-    if not nearby or not graph.has_point_attachment(school.geometry, MAX_SCHOOL_ATTACHMENT_M):
+        if any(snap_m <= MAX_SPINE_ATTACHMENT_M for _, snap_m in frontier.attachments):
+            nearby.append((distance_m, frontier))
+    if not nearby:
         return None
-    association_m, frontier, attachment, virtual_node = min(
-        nearby,
-        key=lambda match: (round(match[0], 9), _frontier_key(match[1])),
+    choice = graph.best_point_attachment(
+        school.geometry,
+        MAX_SCHOOL_ATTACHMENT_M,
+        [
+            attachment
+            for _, frontier in nearby
+            for attachment in frontier.attachments
+            if attachment[1] <= MAX_SPINE_ATTACHMENT_M
+        ],
+        allow_stationary=True,
+        excluded_pairs=excluded_pairs,
     )
-    option = stationary_route_option(attachment)
+    if choice is None:
+        return None
+    matching_frontiers = [
+        (distance_m, snap_m, frontier)
+        for distance_m, frontier in nearby
+        for node_id, snap_m in frontier.attachments
+        if node_id == choice.end_node and snap_m <= MAX_SPINE_ATTACHMENT_M
+    ]
+    if not matching_frontiers:
+        return None
+    _, _, frontier = min(
+        matching_frontiers,
+        key=lambda match: (
+            round(match[0], 9),
+            round(match[1], 9),
+            _frontier_key(match[2]),
+        ),
+    )
     return _Candidate(
         rank=(
-            round(association_m / 1000, 9),
+            round(choice.total_distance_km, 9),
             str(school["place_id"]),
             0 if frontier.target_role == "strategic-spine" else 1,
             frontier.root_spine_id,
             frontier.target_id,
-            virtual_node,
-            virtual_node,
+            choice.start_node,
+            choice.end_node,
             "school",
         ),
         place=school,
         frontier=frontier,
-        option=option,
-        options=(option,),
+        option=choice.option,
+        options=(choice.option,),
         topography=None,
-        start_node=virtual_node,
-        start_snap_m=association_m,
-        end_node=virtual_node,
-        end_snap_m=0.0,
-        start_point=attachment,
-        end_point=attachment,
-        start_attachment_id=virtual_node,
-        end_attachment_id=virtual_node,
+        start_node=choice.start_node,
+        start_snap_m=choice.start_snap_m,
+        end_node=choice.end_node,
+        end_snap_m=choice.end_snap_m,
+        start_point=choice.start_point,
+        end_point=choice.end_point,
+        start_attachment_id=choice.start_attachment_id,
+        end_attachment_id=choice.end_attachment_id,
     )
 
 
@@ -2159,11 +2248,30 @@ def _gap_row(
     }
 
 
+def _access_association_evidence(candidate: _Candidate) -> dict[str, object]:
+    frontier = candidate.frontier
+    return {
+        "service_kind": "backbone-access-association",
+        "association_kind": (
+            "colocated-direct-strategic-spine"
+            if frontier.target_role == "strategic-spine"
+            else "colocated-existing-backbone"
+        ),
+        "routing_node_id": candidate.start_node,
+        "root_spine_id": frontier.root_spine_id,
+        "root_source_id": frontier.root_source_id,
+        "root_evidence_id": frontier.root_evidence_id,
+        "parent_role": frontier.target_role,
+        "parent_target_id": frontier.target_id,
+    }
+
+
 def _obligations(
     communities: gpd.GeoDataFrame,
     schools: gpd.GeoDataFrame,
     connections: gpd.GeoDataFrame,
     gaps: gpd.GeoDataFrame,
+    access_associations: dict[str, _Candidate],
 ) -> gpd.GeoDataFrame:
     served_communities = {
         str(row["place_id"]): row
@@ -2187,9 +2295,10 @@ def _obligations(
     for _, community in communities.sort_values("place_id").iterrows():
         place_id = str(community["place_id"])
         access = served_communities.get(place_id)
+        association = access_associations.get(place_id)
         service_status = (
             AccessServiceStatus.SERVED.value
-            if access is not None
+            if access is not None or association is not None
             else AccessServiceStatus.NETWORK_GAP.value
         )
         provenance = {
@@ -2204,6 +2313,11 @@ def _obligations(
                 else None
             ),
         }
+        supporting_evidence = None
+        if association is not None:
+            association_evidence = _access_association_evidence(association)
+            provenance.update(association_evidence)
+            supporting_evidence = json.dumps(association_evidence, sort_keys=True)
         rows.append(
             {
                 "obligation_id": _stable_id("access-obligation", place_id),
@@ -2218,6 +2332,11 @@ def _obligations(
                 "service_rationale": (
                     "Community has one governed parent access edge to the assembled backbone."
                     if access is not None
+                    else (
+                        "Community is colocated with existing governed Backbone geometry; "
+                        "no route edge is required or published."
+                    )
+                    if association is not None
                     else community_gap_reasons.get(
                         place_id, "Community remains exposed as a Network Gap."
                     )
@@ -2226,11 +2345,31 @@ def _obligations(
                 "access_point_source_id": None,
                 "access_point_rationale": None,
                 "criterion_access_point": "grey",
+                "criterion_continuity": (
+                    access["criterion_continuity"]
+                    if access is not None
+                    else TrafficLight.GREEN.value
+                    if association is not None
+                    else TrafficLight.RED.value
+                ),
                 "access_connection_id": (
                     access["access_connection_id"] if access is not None else None
                 ),
-                "root_spine_id": access["root_spine_id"] if access is not None else None,
-                "branch_id": access["branch_id"] if access is not None else None,
+                "root_spine_id": (
+                    access["root_spine_id"]
+                    if access is not None
+                    else association.frontier.root_spine_id
+                    if association is not None
+                    else None
+                ),
+                "branch_id": (
+                    access["branch_id"]
+                    if access is not None
+                    else association.frontier.branch_id
+                    if association is not None
+                    else None
+                ),
+                "supporting_evidence": supporting_evidence,
                 "provenance": json.dumps(provenance, sort_keys=True),
                 "geometry": community.geometry,
             }
@@ -2238,12 +2377,14 @@ def _obligations(
     for _, school in schools.sort_values("place_id").iterrows():
         school_id = str(school["place_id"])
         access = served_schools.get(school_id)
+        association = access_associations.get(school_id)
         access_status = AccessPointStatus(str(school.get("access_point_status"))).value
         service_status = (
             AccessServiceStatus.SERVED.value
-            if access is not None and access_status == AccessPointStatus.MAPPED.value
+            if (access is not None or association is not None)
+            and access_status == AccessPointStatus.MAPPED.value
             else AccessServiceStatus.SERVED_PROVISIONAL.value
-            if access is not None
+            if access is not None or association is not None
             else AccessServiceStatus.NETWORK_GAP.value
         )
         provenance = {
@@ -2261,6 +2402,11 @@ def _obligations(
                 else None
             ),
         }
+        supporting_evidence = None
+        if association is not None:
+            association_evidence = _access_association_evidence(association)
+            provenance.update(association_evidence)
+            supporting_evidence = json.dumps(association_evidence, sort_keys=True)
         rows.append(
             {
                 "obligation_id": _stable_id("school-access-obligation", school_id),
@@ -2273,7 +2419,12 @@ def _obligations(
                 "network_role": "school-access-obligation",
                 "service_status": service_status,
                 "service_rationale": (
-                    "Mapped School Access Point has one governed parent edge to fixed "
+                    (
+                        "School Access Point is colocated with fixed governed Backbone "
+                        "geometry; no route edge is required or published."
+                    )
+                    if association is not None
+                    else "Mapped School Access Point has one governed parent edge to fixed "
                     "backbone geometry."
                     if service_status == AccessServiceStatus.SERVED.value
                     else (
@@ -2291,11 +2442,31 @@ def _obligations(
                     AccessPointStatus.INFERRED.value: TrafficLight.AMBER.value,
                     AccessPointStatus.UNRESOLVED.value: TrafficLight.GREY.value,
                 }.get(access_status, TrafficLight.GREY.value),
+                "criterion_continuity": (
+                    access["criterion_continuity"]
+                    if access is not None
+                    else TrafficLight.GREEN.value
+                    if association is not None
+                    else TrafficLight.RED.value
+                ),
                 "access_connection_id": (
                     access["access_connection_id"] if access is not None else None
                 ),
-                "root_spine_id": access["root_spine_id"] if access is not None else None,
-                "branch_id": access["branch_id"] if access is not None else None,
+                "root_spine_id": (
+                    access["root_spine_id"]
+                    if access is not None
+                    else association.frontier.root_spine_id
+                    if association is not None
+                    else None
+                ),
+                "branch_id": (
+                    access["branch_id"]
+                    if access is not None
+                    else association.frontier.branch_id
+                    if association is not None
+                    else None
+                ),
+                "supporting_evidence": supporting_evidence,
                 "provenance": json.dumps(provenance, sort_keys=True),
                 "geometry": school.geometry,
             }

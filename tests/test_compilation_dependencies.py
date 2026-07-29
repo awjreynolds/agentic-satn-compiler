@@ -33,6 +33,7 @@ def test_manifest_is_explicit_complete_and_records_component_digests() -> None:
         "satn/routing.py",
         "satn/backbone.py",
         "satn/sources.py",
+        "satn/streaming_geojson.py",
         "satn/models.py",
         "satn/education_access.py",
         "satn/ea_elevation.py",
@@ -211,6 +212,23 @@ def test_network_selection_contract_is_a_controlled_compilation_component(
     assert "satn/network_selection.py" in {
         component["path"] for component in original["components"]
     }
+    assert changed["sha256"] != original["sha256"]
+
+
+def test_streaming_geojson_validation_changes_compiler_identity(tmp_path: Path) -> None:
+    root = copied_compiler_tree(tmp_path)
+    original = dependencies.compilation_dependency_manifest(package_root=root)
+    parser = root / "streaming_geojson.py"
+    parser.write_bytes(parser.read_bytes() + b"\n# dependency-manifest regression probe\n")
+
+    changed = dependencies.compilation_dependency_manifest(package_root=root)
+
+    component = next(
+        item
+        for item in original["components"]
+        if item["path"] == "satn/streaming_geojson.py"
+    )
+    assert component["reason"] == "strict bounded validation of governed GeoJSON snapshot inputs"
     assert changed["sha256"] != original["sha256"]
 
 

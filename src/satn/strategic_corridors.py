@@ -203,6 +203,7 @@ class PreparedStrategicCorridorUnit:
     candidate_set: AlignmentCandidateSet
     endpoint_binding: StrategicCorridorEndpointBinding
     anchor_connection_ids: tuple[str, ...]
+    anchor_obligation_ids: tuple[str, ...]
     routing_start_node_id: str
     routing_end_node_id: str
     strategic_destination_id: str | None
@@ -212,6 +213,9 @@ class PreparedStrategicCorridorUnit:
 
     def __post_init__(self) -> None:
         binding = self.endpoint_binding
+        anchor_count = len(self.anchor_connection_ids) + len(
+            self.anchor_obligation_ids
+        )
         if (
             self.candidate_set.endpoints != binding.candidate_endpoints
             or self.candidate_set.mandatory_strategic_destination_ids
@@ -221,11 +225,16 @@ class PreparedStrategicCorridorUnit:
                 self.routing_end_node_id,
             )
             != binding.routing_node_ids
+            or self.anchor_connection_ids
+            != tuple(sorted(set(self.anchor_connection_ids)))
+            or self.anchor_obligation_ids
+            != tuple(sorted(set(self.anchor_obligation_ids)))
         ):
             raise ValueError("strategic corridor unit endpoint binding is stale")
         if self.unit_role is StrategicCorridorUnitRole.INTERURBAN_SPINE:
             if (
-                len(binding.network_place_ids) != 2
+                anchor_count != 2
+                or len(binding.network_place_ids) != 2
                 or binding.strategic_destination_ids
                 or self.strategic_destination_id is not None
                 or self.candidate_set.mandatory_network_place_ids
@@ -238,7 +247,8 @@ class PreparedStrategicCorridorUnit:
             ):
                 raise ValueError("interurban unit requires exactly two Network Places")
         elif (
-            len(binding.network_place_ids) != 1
+            anchor_count != 1
+            or len(binding.network_place_ids) != 1
             or len(binding.strategic_destination_ids) != 1
             or (self.strategic_destination_id,)
             != binding.strategic_destination_ids
@@ -262,6 +272,7 @@ class PreparedStrategicCorridorUnit:
             "candidate_set": self.candidate_set.model_dump(mode="json"),
             "endpoint_binding": self.endpoint_binding.canonical(),
             "anchor_connection_ids": list(self.anchor_connection_ids),
+            "anchor_obligation_ids": list(self.anchor_obligation_ids),
             "routing_start_node_id": self.routing_start_node_id,
             "routing_end_node_id": self.routing_end_node_id,
             "strategic_destination_id": self.strategic_destination_id,
@@ -358,6 +369,7 @@ def prepare_strategic_corridors(
     *,
     road_graph: RoadGraph,
     spine_access_connections: gpd.GeoDataFrame,
+    access_obligations: gpd.GeoDataFrame | None = None,
     context: gpd.GeoDataFrame,
     source_config: SourceConfig,
     config_directory: Path,
@@ -399,11 +411,15 @@ def prepare_strategic_corridors(
                 source_config.network_selection_strategic_admissions_max_age_days
             ),
         )
-    units, issues = _interurban_units(profile, road_graph, spine_access_connections, context)
+    anchors = _direct_spine_anchors(
+        spine_access_connections,
+        access_obligations=access_obligations,
+    )
+    units, issues = _interurban_units(profile, road_graph, anchors, context)
     destination_units, destination_issues = _destination_units(
         profile,
         road_graph,
-        spine_access_connections,
+        anchors,
         context,
         education,
     )
@@ -453,10 +469,9 @@ def prepare_strategic_corridors(
 def _interurban_units(
     profile: NetworkSelectionProfile,
     graph: RoadGraph,
-    connections: gpd.GeoDataFrame,
+    anchors: tuple[dict[str, str], ...],
     context: gpd.GeoDataFrame,
 ) -> tuple[tuple[PreparedStrategicCorridorUnit, ...], tuple[StrategicCorridorIssue, ...]]:
-    anchors = _direct_spine_anchors(connections)
     units: list[PreparedStrategicCorridorUnit] = []
     issues: list[StrategicCorridorIssue] = []
     for root_spine_id, grouped in _group_anchors(anchors):
@@ -492,7 +507,7 @@ def _interurban_units(
                 {
                     "role": StrategicCorridorUnitRole.INTERURBAN_SPINE.value,
                     "root_spine_id": root_spine_id,
-                    "anchors": [left["access_connection_id"], right["access_connection_id"]],
+                    "anchors": [left["anchor_id"], right["anchor_id"]],
                     "candidate_set": candidate_set.candidate_set_fingerprint,
                 },
             )
@@ -510,7 +525,18 @@ def _interurban_units(
                         strategic_destination_ids=(),
                     ),
                     anchor_connection_ids=tuple(
-                        sorted((left["access_connection_id"], right["access_connection_id"]))
+                        sorted(
+                            item["access_connection_id"]
+                            for item in (left, right)
+                            if item["access_connection_id"]
+                        )
+                    ),
+                    anchor_obligation_ids=tuple(
+                        sorted(
+                            item["access_obligation_id"]
+                            for item in (left, right)
+                            if item["access_obligation_id"]
+                        )
                     ),
                     routing_start_node_id=start,
                     routing_end_node_id=end,
@@ -526,13 +552,12 @@ def _interurban_units(
 def _destination_units(
     profile: NetworkSelectionProfile,
     graph: RoadGraph,
-    connections: gpd.GeoDataFrame,
+    anchors: tuple[dict[str, str], ...],
     context: gpd.GeoDataFrame,
     education: EducationAccessEvidenceLoad | None,
 ) -> tuple[tuple[PreparedStrategicCorridorUnit, ...], tuple[StrategicCorridorIssue, ...]]:
     if education is None or not education.strategic_admission_records:
         return (), ()
-    anchors = _direct_spine_anchors(connections)
     units: list[PreparedStrategicCorridorUnit] = []
     issues: list[StrategicCorridorIssue] = []
     for admission in education.strategic_admission_records:
@@ -619,7 +644,7 @@ def _destination_units(
             "alignment-unit",
             {
                 "role": StrategicCorridorUnitRole.STRATEGIC_DESTINATION_ACCESS.value,
-                "anchor": anchor["access_connection_id"],
+                "anchor": anchor["anchor_id"],
                 "site_id": admission.site_id,
                 "candidate_set": candidate_set.candidate_set_fingerprint,
             },
@@ -635,7 +660,16 @@ def _destination_units(
                     network_place_ids=(anchor["place_id"],),
                     strategic_destination_ids=(destination_id,),
                 ),
-                anchor_connection_ids=(anchor["access_connection_id"],),
+                anchor_connection_ids=tuple(
+                    [anchor["access_connection_id"]]
+                    if anchor["access_connection_id"]
+                    else []
+                ),
+                anchor_obligation_ids=tuple(
+                    [anchor["access_obligation_id"]]
+                    if anchor["access_obligation_id"]
+                    else []
+                ),
                 routing_start_node_id=anchor["routing_node"],
                 routing_end_node_id=destination_node,
                 strategic_destination_id=destination_id,
@@ -783,9 +817,13 @@ def _candidate_set(
     return candidate_set, records
 
 
-def _direct_spine_anchors(connections: gpd.GeoDataFrame) -> tuple[dict[str, str], ...]:
-    if connections.empty:
-        return ()
+def _direct_spine_anchors(
+    connections: gpd.GeoDataFrame,
+    *,
+    access_obligations: gpd.GeoDataFrame | None = None,
+) -> tuple[dict[str, str], ...]:
+    """Return routed and explicit non-route direct-spine anchor evidence."""
+
     required = {
         "access_connection_id",
         "obligation_kind",
@@ -794,26 +832,92 @@ def _direct_spine_anchors(connections: gpd.GeoDataFrame) -> tuple[dict[str, str]
         "root_spine_id",
         "community_attachment_node",
     }
-    if not required.issubset(connections.columns):
-        return ()
-    selected = connections[
-        connections["obligation_kind"].eq("community")
-        & connections["parent_role"].eq("strategic-spine")
-    ]
     result: list[dict[str, str]] = []
-    for _, row in selected.sort_values("access_connection_id").iterrows():
-        values = {
-            "access_connection_id": _text(row.get("access_connection_id")),
-            "place_id": _text(row.get("place_id")),
-            "root_spine_id": _text(row.get("root_spine_id")),
-            "routing_node": _text(row.get("community_attachment_node")),
-        }
-        if not all(values.values()):
-            continue
+    if not connections.empty and required.issubset(connections.columns):
+        selected = connections[
+            connections["obligation_kind"].eq("community")
+            & connections["parent_role"].eq("strategic-spine")
+        ]
+        for _, row in selected.sort_values("access_connection_id").iterrows():
+            provenance = _json_object(row.get("provenance"))
+            access_connection_id = _text(row.get("access_connection_id"))
+            values = {
+                "anchor_id": access_connection_id,
+                "access_connection_id": access_connection_id,
+                "access_obligation_id": "",
+                "place_id": _text(row.get("place_id")),
+                "root_spine_id": _text(row.get("root_spine_id")),
+                "routing_node": _text(row.get("community_attachment_node")),
+                "source_id": (
+                    _text(provenance.get("root_source_id")) or "unknown-source"
+                ),
+                "evidence_id": (
+                    _text(provenance.get("root_evidence_id")) or "unknown-evidence"
+                ),
+            }
+            if all(
+                values[key]
+                for key in (
+                    "anchor_id",
+                    "place_id",
+                    "root_spine_id",
+                    "routing_node",
+                )
+            ):
+                result.append(values)
+    if access_obligations is None or access_obligations.empty:
+        return tuple(result)
+    association_required = {
+        "obligation_id",
+        "obligation_kind",
+        "place_id",
+        "service_status",
+        "access_connection_id",
+        "root_spine_id",
+        "provenance",
+    }
+    if not association_required.issubset(access_obligations.columns):
+        return tuple(result)
+    associations = access_obligations[
+        access_obligations["obligation_kind"].eq("community")
+        & access_obligations["service_status"].eq("served")
+    ]
+    for _, row in associations.sort_values("obligation_id").iterrows():
         provenance = _json_object(row.get("provenance"))
-        values["source_id"] = _text(provenance.get("root_source_id")) or "unknown-source"
-        values["evidence_id"] = _text(provenance.get("root_evidence_id")) or "unknown-evidence"
-        result.append(values)
+        root_spine_id = _text(row.get("root_spine_id"))
+        if (
+            _text(row.get("access_connection_id"))
+            or provenance.get("service_kind") != "backbone-access-association"
+            or provenance.get("association_kind")
+            != "colocated-direct-strategic-spine"
+            or provenance.get("parent_role") != "strategic-spine"
+            or _text(provenance.get("root_spine_id")) != root_spine_id
+        ):
+            continue
+        obligation_id = _text(row.get("obligation_id"))
+        values = {
+            "anchor_id": obligation_id,
+            "access_connection_id": "",
+            "access_obligation_id": obligation_id,
+            "place_id": _text(row.get("place_id")),
+            "root_spine_id": root_spine_id,
+            "routing_node": _text(provenance.get("routing_node_id")),
+            "source_id": _text(provenance.get("root_source_id")),
+            "evidence_id": _text(provenance.get("root_evidence_id")),
+        }
+        if all(
+            values[key]
+            for key in (
+                "anchor_id",
+                "access_obligation_id",
+                "place_id",
+                "root_spine_id",
+                "routing_node",
+                "source_id",
+                "evidence_id",
+            )
+        ) and _text(provenance.get("parent_target_id")):
+            result.append(values)
     return tuple(result)
 
 
@@ -826,7 +930,7 @@ def _group_anchors(
     return tuple(
         (
             root_spine_id,
-            tuple(sorted(group, key=lambda item: item["access_connection_id"])),
+            tuple(sorted(group, key=lambda item: item["anchor_id"])),
         )
         for root_spine_id, group in sorted(groups.items())
     )
@@ -951,7 +1055,7 @@ def _nearest_anchor(
         distances.append(
             (
                 float(projected.distance(target)),
-                anchor["access_connection_id"],
+                anchor["anchor_id"],
                 anchor,
             )
         )

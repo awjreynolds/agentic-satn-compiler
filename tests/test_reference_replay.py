@@ -10,6 +10,7 @@ from datetime import date
 from pathlib import Path
 
 import geopandas as gpd
+import pandas as pd
 import pytest
 from pydantic import BaseModel
 from shapely.geometry import LineString, Point, Polygon
@@ -37,7 +38,11 @@ from satn.alignment_selection import (
     ScenarioDecisionRecord,
     education_option_id_for_candidate,
 )
-from satn.backbone import _assemble_backbone_outward, assemble_backbone_outward
+from satn.backbone import (
+    _assemble_backbone_outward,
+    _validated_reference_option,
+    assemble_backbone_outward,
+)
 from satn.compilation_dependencies import compilation_dependency_manifest
 from satn.compiler import compile_network
 from satn.education_access import (
@@ -531,7 +536,6 @@ def _run_assembly(
         runtime = FakeAgentRuntime(
             {
                 AgentRole.DECISION: [
-                    {"request_id": "$request", "choice_id": "1"},
                     {"request_id": "$request", "choice_id": "3"},
                 ]
             }
@@ -559,6 +563,8 @@ def test_replay_applies_exact_route_only_after_its_parent_frontier_exists() -> N
     assembly = _replay_assembly(plan)
 
     child = assembly.connections.set_index("place_id").loc["child"]
+    parent = assembly.obligations.set_index("place_id").loc["parent"]
+    parent_provenance = json.loads(parent["provenance"])
     child_obligation = assembly.obligations.set_index("place_id").loc["child"]
     child_branch = assembly.branches.set_index("branch_id").loc[child["branch_id"]]
     selected_option = next(
@@ -567,6 +573,11 @@ def test_replay_applies_exact_route_only_after_its_parent_frontier_exists() -> N
         if option["selected"] is True
     )
     logical_id = plan.candidate_bindings[0].logical_connection_id
+    assert set(assembly.connections["place_id"]) == {"child"}
+    assert parent["service_status"] == "served"
+    assert pd.isna(parent["access_connection_id"])
+    assert parent_provenance["service_kind"] == "backbone-access-association"
+    assert parent_provenance["association_kind"] == "colocated-direct-strategic-spine"
     assert child["parent_place_id"] == "parent"
     assert json.loads(child["provenance"])["reference_application"] == {
         "binding_fingerprint": plan.candidate_bindings[0].binding_fingerprint,
@@ -837,6 +848,25 @@ def test_replay_fails_closed_for_a_route_edge_mismatch() -> None:
 
     with pytest.raises(ValueError, match="forward route edges"):
         _replay_assembly(plan)
+
+
+def test_replay_fails_closed_for_a_stationary_adopted_route() -> None:
+    graph = _graph()
+    plan = _rebuilt_plan(
+        _plan(graph),
+        routing_start_node_id="parent",
+        routing_end_node_id="parent",
+        route_role="direct",
+        routing_edge_ids=("fabricated-forward-edge",),
+        reverse_routing_edge_ids=("fabricated-reverse-edge",),
+    )
+
+    with pytest.raises(ValueError, match="route is stationary"):
+        _validated_reference_option(
+            plan.candidate_bindings[0],
+            graph,
+            checkpoint="test",
+        )
 
 
 def test_replay_fails_closed_for_a_route_geometry_mismatch() -> None:

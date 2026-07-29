@@ -19,6 +19,8 @@ import pandas as pd
 from shapely.geometry import LineString, MultiLineString, Point
 from shapely.ops import linemerge
 
+from satn.content_identity import canonical_network_geometry_fingerprint
+
 DTM_DATASET_ID = "13787b9a-26a4-4775-8523-806d13af58fc"
 DTM_COVERAGE_ID = f"{DTM_DATASET_ID}__Lidar_Composite_Elevation_DTM_1m"
 DTM_ENDPOINT = f"https://environment.data.gov.uk/geoservices/datasets/{DTM_DATASET_ID}/wcs"
@@ -267,7 +269,11 @@ def read_sample_ledger(path: Path) -> list[dict[str, object]]:
 
 
 def sha256_file(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def eligible_route_samples(
@@ -378,6 +384,37 @@ def eligible_route_fingerprint(routes: gpd.GeoDataFrame) -> str:
         separators=(",", ":"),
     )
     return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def validate_eligible_route_geometries(
+    routes: gpd.GeoDataFrame,
+    *,
+    source: Path | str,
+) -> tuple[str, ...]:
+    """Fail closed when a route eligible for elevation lacks portable line identity."""
+
+    if routes.crs is None:
+        raise ValueError("EA retained sampled routes require a CRS")
+    metric = routes.to_crs(27700)
+    identities: list[str] = []
+    for position, row in metric.iterrows():
+        if row.get("feature_type") not in ELIGIBLE_FEATURE_TYPES or pd.isna(
+            row.get("topography_profile_id")
+        ):
+            continue
+        feature_id = str(row.get("feature_id") or row.get("id") or position)
+        try:
+            identities.append(
+                canonical_network_geometry_fingerprint(row.geometry, metric.crs)
+            )
+        except ValueError as error:
+            raise ValueError(
+                "EA retained sampled route "
+                f"{feature_id!r} in {source} {error}; "
+                "emit a Network Gap or regenerate a distinct-node governed route "
+                "before sealing elevation evidence"
+            ) from error
+    return tuple(identities)
 
 
 def fixed_point_route_fingerprint(routes: gpd.GeoDataFrame) -> str:

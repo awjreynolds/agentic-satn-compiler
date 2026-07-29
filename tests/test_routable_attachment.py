@@ -108,6 +108,83 @@ def test_attachment_group_distance_bounds_are_exact_zero_snap_costs() -> None:
     }
 
 
+def test_attachment_search_continues_to_distinct_nodes_when_stationary_is_forbidden() -> None:
+    graph = RoadGraph(
+        gpd.GeoDataFrame(
+            [
+                {
+                    "osmid": "forward",
+                    "u": "a",
+                    "v": "b",
+                    "length": 100,
+                    "highway": "unclassified",
+                    "geometry": LineString([(0, 0), (100, 0)]),
+                },
+                {
+                    "osmid": "reverse",
+                    "u": "b",
+                    "v": "a",
+                    "length": 100,
+                    "highway": "unclassified",
+                    "geometry": LineString([(100, 0), (0, 0)]),
+                },
+            ],
+            geometry="geometry",
+            crs=27700,
+        )
+    )
+
+    attachment = graph.best_attachment(
+        [("a", 0.0), ("b", 10.0)],
+        [("a", 0.0)],
+        allow_stationary=False,
+    )
+
+    assert attachment is not None
+    assert (attachment.start_node, attachment.end_node) == ("b", "a")
+    assert attachment.option.length_km == pytest.approx(0.1)
+    assert attachment.option.geometry.length == pytest.approx(100)
+
+
+def test_point_attachment_continues_to_distinct_nodes_when_stationary_is_forbidden() -> None:
+    graph = RoadGraph(
+        gpd.GeoDataFrame(
+            [
+                {
+                    "osmid": "forward",
+                    "u": "a",
+                    "v": "b",
+                    "length": 100,
+                    "highway": "unclassified",
+                    "geometry": LineString([(0, 0), (100, 0)]),
+                },
+                {
+                    "osmid": "reverse",
+                    "u": "b",
+                    "v": "a",
+                    "length": 100,
+                    "highway": "unclassified",
+                    "geometry": LineString([(100, 0), (0, 0)]),
+                },
+            ],
+            geometry="geometry",
+            crs=27700,
+        )
+    )
+
+    attachment = graph.best_point_attachment(
+        Point(0, 0),
+        120,
+        [("a", 0.0)],
+        allow_stationary=False,
+    )
+
+    assert attachment is not None
+    assert attachment.start_node != attachment.end_node
+    assert attachment.total_distance_km > 0
+    assert len(set(attachment.option.geometry.coords)) > 1
+
+
 def test_metric_lower_bound_falls_back_to_zero_for_noncanonical_endpoints() -> None:
     graph = RoadGraph(
         gpd.GeoDataFrame(

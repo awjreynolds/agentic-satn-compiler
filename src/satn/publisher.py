@@ -828,6 +828,7 @@ def _ea_fixed_point_next_step(
         return _ea_fixed_point_repin_required(reason)
     authority_boundaries = replay_inputs["authority_boundaries"]
     survey_index = replay_inputs["survey_index"]
+    sample_routes = replay_inputs["sample_routes"]
     cache_dir = elevation.path.parent / "ea-dtm-cache"
     command = [
         "uv",
@@ -849,6 +850,8 @@ def _ea_fixed_point_next_step(
         "15000",
         "--governed-input-fingerprint",
         governed_input_fingerprint,
+        "--supplemental-routes",
+        str(sample_routes),
     ]
     return {
         "next_step_status": "ea-acquisition-ready",

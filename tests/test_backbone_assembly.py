@@ -1918,6 +1918,51 @@ def test_unreachable_community_becomes_a_gap_without_fabricated_linework() -> No
     assert compiled.criteria["spine_network"]["all_access_obligations_resolved"] == "red"
 
 
+def test_colocated_community_never_becomes_a_zero_length_access_route() -> None:
+    source = parallel_spine_source()
+    source["places"] = frame(
+        [
+            *source["places"].to_dict("records"),
+            {
+                "place_id": "community-colocated",
+                "name": "Community Colocated",
+                "kind": "community",
+                "place_class": "village",
+                "geometry": Point(0, 0),
+            },
+        ]
+    )
+
+    compiled = compile_network(config(), source, FakeAgentRuntime())
+
+    access = compiled.spine_access_connections[
+        compiled.spine_access_connections["place_id"] == "community-colocated"
+    ]
+    gaps = compiled.gaps[
+        (compiled.gaps["network_role"] == "spine-access-gap")
+        & (compiled.gaps["from_place"] == "community-colocated")
+    ]
+    obligation = compiled.access_obligations.set_index("place_id").loc[
+        "community-colocated"
+    ]
+    provenance = json.loads(obligation["provenance"])
+
+    assert access.empty
+    assert gaps.empty
+    assert obligation["service_status"] == "served"
+    assert pd.isna(obligation["access_connection_id"])
+    assert obligation["criterion_continuity"] == "green"
+    assert provenance["service_kind"] == "backbone-access-association"
+    assert provenance["association_kind"] == "colocated-direct-strategic-spine"
+    assert provenance["routing_node_id"]
+    assert provenance["root_spine_id"] == obligation["root_spine_id"]
+    assert provenance["parent_target_id"] == obligation["root_spine_id"]
+    assert provenance["root_source_id"]
+    assert provenance["root_evidence_id"]
+    assert compiled.criteria["spine_network"]["all_access_obligations_resolved"] == "green"
+    assert compiled.criteria["spine_network"]["degree_one_access_valid"] == "green"
+
+
 def test_agent_gate_rejection_cannot_enter_validated_backbone_state() -> None:
     runtime = FakeAgentRuntime(
         {
@@ -2071,8 +2116,17 @@ def test_growth_uses_lazy_bounds_to_avoid_redundant_searches_at_representative_s
         FakeAgentRuntime(),
     )
 
-    assert len(compiled.spine_access_connections) == community_count
+    assert len(compiled.spine_access_connections) == community_count - 1
+    colocated = compiled.access_obligations.set_index("place_id").loc["community-00"]
+    assert colocated["service_status"] == "served"
+    assert pd.isna(colocated["access_connection_id"])
+    assert (
+        json.loads(colocated["provenance"])["service_kind"]
+        == "backbone-access-association"
+    )
     diagnostics = compiled.compilation_diagnostics
+    # The first Community is already on the initial Spine. Its zero-edge association
+    # becomes a frontier without publishing a route or searching a farther endpoint.
     assert calls == community_count
     assert diagnostics["candidate_evaluations"] == calls
     assert diagnostics["candidate_pairs_enqueued"] == (
