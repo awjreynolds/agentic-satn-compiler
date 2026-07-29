@@ -224,6 +224,9 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     ),
     "satn/runtime_governance.py": "current publication runtime-governance validation",
     "satn/runtime_governance_contract.py": "current publication governance contract",
+    "satn/routing_materialisation.py": (
+        "additive routing/assembly sidecar; not a compiler input before equivalence cutover"
+    ),
     "satn/scenario_compilation.py": (
         "post-compile Scenario Compilation bridge without CompiledNetwork mutation"
     ),
