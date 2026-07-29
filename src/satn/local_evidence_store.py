@@ -8,7 +8,7 @@ import math
 import platform as platform_module
 import re
 import shutil
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -515,6 +515,66 @@ class LocalEvidenceStore:
                     if isinstance(retained_path, str) and retained_path:
                         paths.add(Path(retained_path))
             return tuple(sorted(paths))
+        finally:
+            connection.close()
+
+    def resolve_edge_enrichments(
+        self,
+        *,
+        requests: Sequence[object],
+        materialise: Callable[[object], object],
+    ) -> object:
+        """Resolve exact typed Edge Enrichments and atomically materialise only misses."""
+
+        from satn.edge_enrichments import EdgeEnrichmentStore
+
+        connection = self._open_initialised(read_only=False)
+        transaction_started = False
+        try:
+            connection.execute("BEGIN TRANSACTION")
+            transaction_started = True
+            result = EdgeEnrichmentStore(connection).resolve(requests, materialise)
+            connection.execute("COMMIT")
+            transaction_started = False
+            return result
+        except Exception:
+            if transaction_started:
+                connection.execute("ROLLBACK")
+            raise
+        finally:
+            connection.close()
+
+    def verify_edge_enrichments(self, records: Sequence[object]) -> tuple[object, ...]:
+        """Verify immutable typed rows before a Scenario consumes them."""
+
+        from satn.edge_enrichments import EdgeEnrichmentStore
+
+        connection = self._open_initialised(read_only=True)
+        try:
+            return EdgeEnrichmentStore(connection).verify(records)
+        finally:
+            connection.close()
+
+    def verify_edge_enrichment_citations(
+        self, citations: Sequence[object]
+    ) -> tuple[object, ...]:
+        """Verify and transactionally retain exact Scenario enrichment citations."""
+
+        from satn.edge_enrichments import EdgeEnrichmentStore
+
+        connection = self._open_initialised(read_only=False)
+        transaction_started = False
+        try:
+            connection.execute("BEGIN TRANSACTION")
+            transaction_started = True
+            result = EdgeEnrichmentStore(connection).verify_citations(citations)
+            connection.execute("COMMIT")
+            transaction_started = False
+            return result
+        except Exception:
+            if transaction_started:
+                connection.execute("ROLLBACK")
+            raise
         finally:
             connection.close()
 
@@ -1205,6 +1265,8 @@ class LocalEvidenceStore:
 
     @staticmethod
     def _create_schema(connection: Any) -> None:
+        from satn.edge_enrichments import create_edge_enrichment_schema
+
         connection.execute(
             """
             CREATE TABLE local_evidence_store_metadata (
@@ -1320,6 +1382,7 @@ class LocalEvidenceStore:
             """
         )
         create_ea_raster_schema(connection)
+        create_edge_enrichment_schema(connection)
         for table in _LAYER_TABLES.values():
             connection.execute(
                 f"CREATE INDEX IF NOT EXISTS {table}_geometry_rtree "
@@ -1364,6 +1427,8 @@ class LocalEvidenceStore:
         return connection
 
     def _validate_store_schema(self, connection: Any) -> None:
+        from satn.edge_enrichments import EDGE_ENRICHMENT_EXPECTED_COLUMNS
+
         try:
             column_rows = connection.execute(
                 """
@@ -1378,9 +1443,13 @@ class LocalEvidenceStore:
                 actual_columns.setdefault(str(table), []).append(
                     (str(column), str(data_type), str(nullable))
                 )
+            expected_columns = {
+                **_EXPECTED_COLUMNS,
+                **EDGE_ENRICHMENT_EXPECTED_COLUMNS,
+            }
             if {
                 table: tuple(columns) for table, columns in actual_columns.items()
-            } != _EXPECTED_COLUMNS:
+            } != expected_columns:
                 raise _schema_error("Local Evidence Store physical schema is incomplete or changed")
             self._verify_ea_raster_constraints(connection)
 
@@ -2345,7 +2414,7 @@ def _expected_contract_payload(source_layer: str, declared_crs: str) -> dict[str
     raise _schema_error(f"unsupported Local Evidence source layer: {source_layer}")
 
 
-_SCHEMA_CONTRACT = "satn-local-evidence-store-physical-schema/v4"
+_SCHEMA_CONTRACT = "satn-local-evidence-store-physical-schema/v5"
 _REBUILD_GUIDANCE = (
     "rebuild the Local Evidence Store from governed source inputs at a new store path"
 )

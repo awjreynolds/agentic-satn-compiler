@@ -1,5 +1,16 @@
 # Agent Instructions
 
+## Delivery-first development
+
+- Do not run audit cycles, broad review loops, or the full test suite by default.
+- Implement the requested change, run the smallest focused test or basic check that
+  exercises it, fix any concrete failure, and move on.
+- Run a full audit, comprehensive review, full generation, or full test suite only
+  when the user explicitly requests it or an unavoidable external release gate
+  requires it.
+- Do not run GitNexus impact, detect-changes, or other audit tooling unless the user
+  explicitly requests an audit. GitNexus may still be used for quick code navigation.
+
 ## Agent skills
 
 ### Issue tracker
@@ -21,20 +32,13 @@ This project is indexed by GitNexus as **banes-satn** (19325 symbols, 32342 rela
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
-## Always Do
+## Use for navigation
 
-- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `gitnexus_impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
-- **MUST run `gitnexus_detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
-- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
-- When exploring unfamiliar code, use `gitnexus_query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
-- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `gitnexus_context({name: "symbolName"})`.
-
-## Never Do
-
-- NEVER edit a function, class, or method without first running `gitnexus_impact` on it.
-- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
-- NEVER rename symbols with find-and-replace — use `gitnexus_rename` which understands the call graph.
-- NEVER commit changes without running `gitnexus_detect_changes()` to check affected scope.
+- When exploring unfamiliar code, `gitnexus_query({query: "concept"})` can locate
+  relevant execution flows without a broad codebase review.
+- When full context on a specific symbol is useful, `gitnexus_context({name:
+  "symbolName"})` can show its callers, callees and participating flows.
+- Use `gitnexus_rename` for graph-aware symbol renames instead of find-and-replace.
 
 ## Resources
 

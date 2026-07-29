@@ -180,6 +180,9 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     "satn/assets/strategic-reference.css": "strategic-only review-map presentation asset",
     "satn/assets/strategic-reference.js": "strategic-only review-map presentation asset",
     "satn/cli.py": "command-line adapter",
+    "satn/acceptance_cutover.py": (
+        "additive Local Evidence acceptance gate; not a compiler input before cutover"
+    ),
     "satn/deployment.py": "isolated deployment assembly",
     "satn/deployment_catalogue.py": "deployment catalogue assembly",
     "satn/deployment_provenance.py": "deployment lock validation",
@@ -189,6 +192,15 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     ),
     "satn/evidence_replay.py": (
         "additive Local Evidence replay gate; not a compiler input before equivalence cutover"
+    ),
+    "satn/evidence_materialisations.py": (
+        "additive Local Evidence logical records; not a compiler input before cutover"
+    ),
+    "satn/evidence_store_acceptance.py": (
+        "additive Local Evidence acceptance evidence; not a compiler input before cutover"
+    ),
+    "satn/evidence_store_equivalence.py": (
+        "additive Local Evidence equivalence gate; not a compiler input before cutover"
     ),
     "satn/_evidence_operations.py": (
         "private Local Evidence Store operations; "
@@ -224,8 +236,14 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     ),
     "satn/runtime_governance.py": "current publication runtime-governance validation",
     "satn/runtime_governance_contract.py": "current publication governance contract",
+    "satn/routing_materialisation.py": (
+        "additive routing/assembly sidecar; not a compiler input before equivalence cutover"
+    ),
     "satn/scenario_compilation.py": (
         "post-compile Scenario Compilation bridge without CompiledNetwork mutation"
+    ),
+    "satn/scenario_iteration.py": (
+        "post-compile changed-configuration coordinator without CompiledNetwork mutation"
     ),
     "satn/strategic_criteria_scenario.py": (
         "post-compile strategic criteria and Scenario bridge without CompiledNetwork mutation"
