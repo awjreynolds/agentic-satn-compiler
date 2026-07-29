@@ -190,6 +190,9 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
         "additive Environment Agency raster evidence sidecar; "
         "not a compiler input before equivalence cutover"
     ),
+    "satn/edge_enrichments.py": (
+        "additive Local Evidence sidecar; not a compiler input before cutover"
+    ),
     "satn/evidence_replay.py": (
         "additive Local Evidence replay gate; not a compiler input before equivalence cutover"
     ),
