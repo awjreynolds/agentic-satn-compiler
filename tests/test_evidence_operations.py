@@ -142,7 +142,15 @@ def test_workspace_resolves_all_operational_paths_from_one_invocation_directory(
 
 def test_missing_init_runtime_leaves_no_store_parent_or_lock_inventory(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
+    runtime_lock = json.loads(
+        (PROJECT / "config/duckdb-spatial-runtime-lock.json").read_text(encoding="utf-8")
+    )
+    monkeypatch.setattr(
+        "satn.local_evidence_store._runtime_platform",
+        lambda: runtime_lock["platform"],
+    )
     store = tmp_path / "workspace/.satn/evidence/local-evidence.duckdb"
     workspace = LocalEvidenceStore.workspace(
         workspace=tmp_path / "workspace",
