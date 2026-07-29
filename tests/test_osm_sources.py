@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 import urllib.parse
@@ -32,6 +33,7 @@ PROJECT = Path(__file__).parents[1]
 def base_config() -> CouncilConfig:
     config = CouncilConfig.from_yaml(PROJECT / "config" / "banes.yaml")
     config.source.national_elevation = None
+    config.source.retained_core_source = None
     return config
 
 
@@ -569,6 +571,73 @@ def test_osm_snapshot_governs_official_road_classification(tmp_path: Path) -> No
     assert official_a["official_road_number"] == "A4"
     assert official_a["official_road_name"] == "Bath Road"
     assert official_a["official_road_function"] == "A Road"
+
+
+def test_osm_snapshot_selects_intersecting_whole_official_roads(
+    tmp_path: Path,
+) -> None:
+    classification_path = tmp_path / "regional-classification.geojson"
+    crossing = LineString([(-2.7, 51.4), (-2.5, 51.4)])
+    gpd.GeoDataFrame(
+        [
+            {
+                "id": "crossing-road",
+                "road_classification": "A Road",
+                "road_classification_number": "A4",
+                "name_1": "Whole Road",
+                "road_function": "A Road",
+                "geometry": crossing,
+            },
+            {
+                "id": "outside-road",
+                "road_classification": "B Road",
+                "road_classification_number": "B1",
+                "name_1": "Outside Road",
+                "road_function": "B Road",
+                "geometry": LineString([(-2.8, 51.4), (-2.7, 51.4)]),
+            },
+        ],
+        crs=4326,
+    ).to_file(classification_path, driver="GeoJSON")
+    config = base_config()
+    config.source.snapshot_dir = tmp_path / "snapshots"
+    config.source.snapshot_id = "regional-classification-osm"
+    config.source.official_road_classification = OfficialRoadClassificationConfig(
+        path=classification_path,
+        source_id="os-open-roads-2026-04-07",
+        effective_date="2026-04-07",
+        licence="Open Government Licence v3.0",
+    )
+
+    path = snapshot(config, osm_adapter=FakeOSMAdapter())
+
+    snapshotted = gpd.read_file(path / "official-road-classification.geojson")
+    assert list(snapshotted["official_feature_id"]) == ["crossing-road"]
+    assert snapshotted.geometry.iloc[0].equals_exact(crossing, tolerance=1e-12)
+    assert snapshotted.iloc[0][
+        [
+            "official_road_number",
+            "official_road_name",
+            "official_road_function",
+        ]
+    ].tolist() == ["A4", "Whole Road", "A Road"]
+    assert set(snapshotted["content_fingerprint"]) == {
+        hashlib.sha256(classification_path.read_bytes()).hexdigest()
+    }
+    manifest = json.loads((path / "snapshot.json").read_text(encoding="utf-8"))
+    assert manifest["evidence_sources"]["official_road_classification"]["selection"] == {
+        "contract": "satn-official-road-boundary-selection/v1",
+        "predicate": "intersects",
+        "geometry_treatment": "retain-whole-source-feature",
+        "selected_feature_count": 1,
+        "source_export_sha256": hashlib.sha256(
+            classification_path.read_bytes()
+        ).hexdigest(),
+        "boundary_file": "boundary.geojson",
+        "boundary_sha256": hashlib.sha256(
+            (path / "boundary.geojson").read_bytes()
+        ).hexdigest(),
+    }
 
 
 def test_osm_snapshot_governs_observed_through_traffic(tmp_path: Path) -> None:

@@ -5,9 +5,16 @@ import json
 import shutil
 from pathlib import Path
 
+import geopandas as gpd
 import pytest
+from shapely.geometry import LineString
 
-from satn.models import CouncilConfig, RetainedCoreSourceConfig, SourceConfig
+from satn.models import (
+    CouncilConfig,
+    OfficialRoadClassificationConfig,
+    RetainedCoreSourceConfig,
+    SourceConfig,
+)
 from satn.sources import ELEVATION_EVIDENCE_FILENAME, snapshot
 
 PROJECT = Path(__file__).parents[1]
@@ -302,6 +309,71 @@ def test_lineaged_retained_core_seeds_distinct_target_and_is_idempotent(tmp_path
 
     assert snapshot(config, retain_core=True) == target
     assert (target / "snapshot.json").read_bytes() == final_manifest_bytes
+
+
+def test_lineaged_whole_road_selection_is_idempotently_revalidated(
+    tmp_path: Path,
+) -> None:
+    config = copied_config(tmp_path)
+    historical, historical_manifest_sha256 = retained_core_source(
+        config, "historical-core"
+    )
+    historical_manifest_path = historical / "snapshot.json"
+    historical_manifest = json.loads(
+        historical_manifest_path.read_text(encoding="utf-8")
+    )
+    historical_manifest.pop("area_id")
+    historical_manifest.pop("area_name")
+    historical_manifest["disclaimer"] = "Historical area-specific disclaimer."
+    historical_manifest_path.write_text(
+        json.dumps(historical_manifest, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    historical_manifest_sha256 = hashlib.sha256(
+        historical_manifest_path.read_bytes()
+    ).hexdigest()
+    boundary = gpd.read_file(historical / "boundary.geojson")
+    minx, miny, maxx, maxy = boundary.total_bounds
+    roads = tmp_path / "regional-open-roads.geojson"
+    gpd.GeoDataFrame(
+        [
+            {
+                "id": "crossing-road",
+                "road_classification": "A Road",
+                "road_function": "A Road",
+                "road_classification_number": "A1",
+                "name_1": "Whole Road",
+                "geometry": LineString(
+                    [
+                        (minx - (maxx - minx), (miny + maxy) / 2),
+                        ((minx + maxx) / 2, (miny + maxy) / 2),
+                    ]
+                ),
+            }
+        ],
+        crs=boundary.crs,
+    ).to_file(roads, driver="GeoJSON")
+    config.source.official_road_classification = OfficialRoadClassificationConfig(
+        path=roads,
+        source_id="os-open-roads-2026-04-07",
+        effective_date="2026-04-07",
+        licence="Open Government Licence v3.0",
+    )
+    target = configure_lineaged_target(
+        config,
+        source_id="historical-core",
+        manifest_sha256=historical_manifest_sha256,
+    )
+
+    snapshot(config, retain_core=True)
+    manifest_bytes = (target / "snapshot.json").read_bytes()
+    manifest = json.loads(manifest_bytes)
+
+    assert snapshot(config, retain_core=True) == target
+    assert (target / "snapshot.json").read_bytes() == manifest_bytes
+    assert "area_id" not in manifest
+    assert "area_name" not in manifest
+    assert manifest["disclaimer"] == "Historical area-specific disclaimer."
 
 
 def test_lineaged_target_rejects_self_resealed_retained_network(tmp_path: Path) -> None:

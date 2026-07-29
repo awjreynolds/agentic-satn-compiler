@@ -22,9 +22,12 @@ def _banes_checkout(root: Path) -> AreaDefinition:
     area.parent.mkdir(parents=True)
     shutil.copy2(BANES_AREA, area)
     files = {
-        root / "data/snapshots/banes-osm-current/snapshot.json": b'{"snapshot":"banes"}',
         root
-        / "data/governed/banes-os-open-roads-2026-04-07.geojson": b'{"roads":[]}',
+        / "data/snapshots/banes-osm-open-roads-v1-2026-07-29/snapshot.json": (
+            b'{"snapshot":"banes"}'
+        ),
+        root
+        / "data/governed/weca-os-open-roads-2026-04-07.geojson": b'{"roads":[]}',
         root
         / "data/local/ea-lidar-dtm-1m-banes-samples.geojson": b'{"elevation":[]}',
         root / "data/local/banes-atm-full.geojson": b'{"atm":[]}',

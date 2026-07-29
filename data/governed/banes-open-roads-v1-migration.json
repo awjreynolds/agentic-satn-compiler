@@ -1,0 +1,76 @@
+{
+  "contract": "satn-banes-open-roads-source-migration/v1",
+  "issue": 224,
+  "decision": "use-governed-weca-source-export-with-banes-whole-feature-selection",
+  "legacy": {
+    "path": "banes-os-open-roads-2026-04-07.geojson",
+    "raw_sha256": "bb39710d078c52366fc0c75205cbd396db6d408f96f43bfb216ba15613d82f5b",
+    "byte_count": 4648503,
+    "feature_count": 10776,
+    "role": "immutable-historical-clipped-source-and-snapshot-oracle",
+    "active_v1_source_export": false,
+    "snapshot_id": "banes-osm-current",
+    "snapshot_manifest_sha256": "d54cd57ff2b1a92fab0b48a8b616cc4bcb8721b274024880d4ccc17b9a486c39",
+    "official_road_file_sha256": "6906b97d60935a4254adab158c1aed7c24c5408ac28a152b5ab0ca8d723b03d7"
+  },
+  "source_export": {
+    "path": "weca-os-open-roads-2026-04-07.geojson",
+    "raw_sha256": "87c944fb4c4f77c949f25913c58b3e7f49df80bbe0bf317606b32feb0653e89c",
+    "byte_count": 30452575,
+    "source_family": "os-open-roads",
+    "dataset": "open-roads",
+    "layer": "RoadLink",
+    "publisher": "Ordnance Survey",
+    "publisher_release": "2026-04-07",
+    "effective_date": "2026-04-07",
+    "licence": "Open Government Licence v3.0",
+    "attribution": "Contains OS data © Crown copyright and database rights 2026.",
+    "format": "GeoJSON",
+    "declared_crs": "EPSG:4326",
+    "schema": [
+      "id",
+      "road_classification",
+      "road_function",
+      "road_classification_number",
+      "name_1"
+    ],
+    "national_package": {
+      "download_api": "https://api.os.uk/downloads/v1/products/OpenRoads/downloads?area=GB&format=GeoPackage&redirect",
+      "filename": "oproad_gpkg_gb.zip",
+      "md5": "2ee5d30899c4a44df321e5e1a66989ac"
+    }
+  },
+  "selection": {
+    "contract": "satn-official-road-boundary-selection/v1",
+    "predicate": "intersects",
+    "geometry_treatment": "retain-whole-source-feature",
+    "selected_feature_count": 10776,
+    "stable_id_mismatch_count": 0,
+    "classification_mismatch_count": 0,
+    "changed_geometry_count": 136
+  },
+  "reviewed_comparison": {
+    "legacy_geometry_types": {
+      "LineString": 10762,
+      "MultiLineString": 14
+    },
+    "v1_geometry_types": {
+      "LineString": 10776
+    },
+    "legacy_total_length_mm": 1399402057,
+    "v1_total_length_mm": 1434826234,
+    "additional_boundary_crossing_length_mm": 35424177,
+    "interpretation": "outside-boundary portions of the same 136 RoadLinks; no inferred or OSM geometry"
+  },
+  "derived_snapshot": {
+    "snapshot_id": "banes-osm-open-roads-v1-2026-07-29",
+    "manifest_sha256": "fe11343d2c6d5b8dc910a7176675dbb51042e9c8afe63eb2128a415afed1bfcf",
+    "manifest_byte_count": 3750,
+    "official_road_file": "official-road-classification.geojson",
+    "official_road_file_sha256": "c8d408afa15e2d8459829a6246186edbcda6b9b955a4c85c4a70a7257c1f0780",
+    "official_road_file_byte_count": 8302678,
+    "boundary_sha256": "7d904abad636573eb7e488948ef885035adb256983a0f6980a3041d70f9fd85b",
+    "source_export_sha256": "87c944fb4c4f77c949f25913c58b3e7f49df80bbe0bf317606b32feb0653e89c",
+    "role": "derived-banes-snapshot-oracle-not-source-export"
+  }
+}
