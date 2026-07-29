@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -13,6 +14,7 @@ from PIL import Image, TiffImagePlugin
 from shapely.geometry import LineString, Point
 
 import satn.ea_raster_evidence as ea_raster
+import satn.local_evidence_store as local_evidence_store
 from satn.ea_elevation import (
     SAMPLE_LEDGER_SCHEMA_VERSION,
     evidence_row_sha256,
@@ -22,27 +24,61 @@ from satn.ea_elevation import (
 from satn.local_evidence_store import (
     EvidenceStoreSchemaError,
     LocalEvidenceStore,
+    SpatialRuntimeLock,
     provision_spatial_runtime,
 )
 
-PROJECT = Path(__file__).parents[1]
+LOCAL_SPATIAL_RUNTIME_LOCK_SETTING = os.environ.get(
+    "SATN_TEST_DUCKDB_SPATIAL_RUNTIME_LOCK"
+)
+LOCAL_SPATIAL_ARCHIVE_SETTING = os.environ.get("SATN_TEST_DUCKDB_SPATIAL_EXTENSION")
+LOCAL_SPATIAL_RUNTIME_LOCK = Path(
+    LOCAL_SPATIAL_RUNTIME_LOCK_SETTING
+    or "__satn_test_duckdb_spatial_runtime_lock_not_configured__"
+)
 LOCAL_SPATIAL_ARCHIVE = Path(
-    "/private/tmp/banes-satn-embedded-store-benchmark/duckdb_extensions/"
-    "v1.4.4/osx_arm64/spatial.duckdb_extension"
+    LOCAL_SPATIAL_ARCHIVE_SETTING
+    or "__satn_test_duckdb_spatial_extension_not_configured__"
+)
+RUN_REAL_SPATIAL = pytest.mark.skipif(
+    LOCAL_SPATIAL_RUNTIME_LOCK_SETTING is None
+    or LOCAL_SPATIAL_ARCHIVE_SETTING is None
+    or importlib.util.find_spec("duckdb") is None,
+    reason=(
+        "real DuckDB Spatial tests require explicit pinned "
+        "SATN_TEST_DUCKDB_SPATIAL_RUNTIME_LOCK and "
+        "SATN_TEST_DUCKDB_SPATIAL_EXTENSION artifacts"
+    ),
 )
 
 
 def _real_store(tmp_path: Path) -> LocalEvidenceStore:
-    runtime_lock_path = PROJECT / "config" / "duckdb-spatial-runtime-lock.json"
+    if not LOCAL_SPATIAL_RUNTIME_LOCK.is_file():
+        pytest.fail(
+            "configured SATN_TEST_DUCKDB_SPATIAL_RUNTIME_LOCK is not a file: "
+            f"{LOCAL_SPATIAL_RUNTIME_LOCK}"
+        )
+    if not LOCAL_SPATIAL_ARCHIVE.is_file():
+        pytest.fail(
+            "configured SATN_TEST_DUCKDB_SPATIAL_EXTENSION is not a file: "
+            f"{LOCAL_SPATIAL_ARCHIVE}"
+        )
+    runtime_lock = SpatialRuntimeLock.from_json(LOCAL_SPATIAL_RUNTIME_LOCK)
+    runtime_platform = local_evidence_store._runtime_platform()
+    if runtime_lock.platform != runtime_platform:
+        pytest.fail(
+            "configured pinned DuckDB Spatial test runtime targets "
+            f"{runtime_lock.platform}, not {runtime_platform}"
+        )
     extension_cache = tmp_path / "extensions"
     provision_spatial_runtime(
-        runtime_lock_path=runtime_lock_path,
+        runtime_lock_path=LOCAL_SPATIAL_RUNTIME_LOCK,
         extension_archive=LOCAL_SPATIAL_ARCHIVE,
         extension_cache=extension_cache,
     )
     store = LocalEvidenceStore(
         store_path=tmp_path / "evidence.duckdb",
-        runtime_lock_path=runtime_lock_path,
+        runtime_lock_path=LOCAL_SPATIAL_RUNTIME_LOCK,
         extension_cache=extension_cache,
     )
     store.initialise()
@@ -163,10 +199,7 @@ def _write_tile(
     return receipt_path, object_path
 
 
-@pytest.mark.skipif(
-    not LOCAL_SPATIAL_ARCHIVE.is_file() or importlib.util.find_spec("duckdb") is None,
-    reason="pinned local Spatial archive or DuckDB package absent",
-)
+@RUN_REAL_SPATIAL
 def test_offline_sampling_matches_retained_ledger_at_northing_boundaries(
     tmp_path: Path,
 ) -> None:
@@ -271,10 +304,7 @@ def test_offline_sampling_matches_retained_ledger_at_northing_boundaries(
     assert origin.observations[0].elevation_mm == 7_000
 
 
-@pytest.mark.skipif(
-    not LOCAL_SPATIAL_ARCHIVE.is_file() or importlib.util.find_spec("duckdb") is None,
-    reason="pinned local Spatial archive or DuckDB package absent",
-)
+@RUN_REAL_SPATIAL
 def test_northing_boundary_nodata_comes_from_the_governed_north_tile(
     tmp_path: Path,
 ) -> None:
@@ -297,10 +327,7 @@ def test_northing_boundary_nodata_comes_from_the_governed_north_tile(
     assert result.observations[0].tile_receipt_fingerprint is not None
 
 
-@pytest.mark.skipif(
-    not LOCAL_SPATIAL_ARCHIVE.is_file() or importlib.util.find_spec("duckdb") is None,
-    reason="pinned local Spatial archive or DuckDB package absent",
-)
+@RUN_REAL_SPATIAL
 def test_exact_repeat_reuses_attested_tile_without_decode_or_unrelated_receipts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -341,10 +368,7 @@ def test_exact_repeat_reuses_attested_tile_without_decode_or_unrelated_receipts(
     assert metadata_checks == [False]
 
 
-@pytest.mark.skipif(
-    not LOCAL_SPATIAL_ARCHIVE.is_file() or importlib.util.find_spec("duckdb") is None,
-    reason="pinned local Spatial archive or DuckDB package absent",
-)
+@RUN_REAL_SPATIAL
 def test_offline_sampling_is_incremental_direction_equivalent_and_metadata_only(
     tmp_path: Path,
 ) -> None:
@@ -437,10 +461,7 @@ def test_offline_sampling_is_incremental_direction_equivalent_and_metadata_only(
     assert all(len(str(payload)) < 4_000 for payload in payloads)
 
 
-@pytest.mark.skipif(
-    not LOCAL_SPATIAL_ARCHIVE.is_file() or importlib.util.find_spec("duckdb") is None,
-    reason="pinned local Spatial archive or DuckDB package absent",
-)
+@RUN_REAL_SPATIAL
 def test_nodata_is_distinct_from_missing_and_tamper_fails_closed(tmp_path: Path) -> None:
     store = _real_store(tmp_path)
     cache = tmp_path / "cache"
@@ -477,10 +498,7 @@ def test_nodata_is_distinct_from_missing_and_tamper_fails_closed(tmp_path: Path)
         )
 
 
-@pytest.mark.skipif(
-    not LOCAL_SPATIAL_ARCHIVE.is_file() or importlib.util.find_spec("duckdb") is None,
-    reason="pinned local Spatial archive or DuckDB package absent",
-)
+@RUN_REAL_SPATIAL
 def test_elevation_schema_rejects_removed_singleton_constraints(tmp_path: Path) -> None:
     store = _real_store(tmp_path)
     connection = store._connect(read_only=False)
@@ -501,10 +519,7 @@ def test_elevation_schema_rejects_removed_singleton_constraints(tmp_path: Path) 
         store.status(verify=True)
 
 
-@pytest.mark.skipif(
-    not LOCAL_SPATIAL_ARCHIVE.is_file() or importlib.util.find_spec("duckdb") is None,
-    reason="pinned local Spatial archive or DuckDB package absent",
-)
+@RUN_REAL_SPATIAL
 def test_wrong_raster_metadata_and_noncanonical_receipts_are_rejected(
     tmp_path: Path,
 ) -> None:
@@ -556,10 +571,7 @@ def test_wrong_raster_metadata_and_noncanonical_receipts_are_rejected(
         )
 
 
-@pytest.mark.skipif(
-    not LOCAL_SPATIAL_ARCHIVE.is_file() or importlib.util.find_spec("duckdb") is None,
-    reason="pinned local Spatial archive or DuckDB package absent",
-)
+@RUN_REAL_SPATIAL
 def test_sampling_releases_each_decoded_tile_before_opening_the_next(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

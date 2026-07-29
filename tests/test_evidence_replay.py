@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 from dataclasses import replace
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from shapely.geometry import LineString, Point
 
 import satn.ea_raster_evidence as ea_raster
 import satn.evidence_replay as replay_module
+import satn.local_evidence_store as local_evidence_store
 from satn import open_roads_adapter
 from satn.ea_raster_evidence import ElevationObservation, ElevationSamplingResult
 from satn.evidence_contracts import (
@@ -32,20 +34,34 @@ from satn.evidence_replay import (
 from satn.local_evidence_store import (
     EvidenceQueryResult,
     LocalEvidenceStore,
+    SpatialRuntimeLock,
     provision_spatial_runtime,
 )
 
-PROJECT = Path(__file__).parents[1]
+LOCAL_SPATIAL_RUNTIME_LOCK_SETTING = os.environ.get(
+    "SATN_TEST_DUCKDB_SPATIAL_RUNTIME_LOCK"
+)
+LOCAL_SPATIAL_ARCHIVE_SETTING = os.environ.get("SATN_TEST_DUCKDB_SPATIAL_EXTENSION")
+LOCAL_SPATIAL_RUNTIME_LOCK = Path(
+    LOCAL_SPATIAL_RUNTIME_LOCK_SETTING
+    or "__satn_test_duckdb_spatial_runtime_lock_not_configured__"
+)
 LOCAL_SPATIAL_ARCHIVE = Path(
-    "/private/tmp/banes-satn-embedded-store-benchmark/duckdb_extensions/"
-    "v1.4.4/osx_arm64/spatial.duckdb_extension"
+    LOCAL_SPATIAL_ARCHIVE_SETTING
+    or "__satn_test_duckdb_spatial_extension_not_configured__"
 )
 SHA_A = "a" * 64
 SHA_B = "b" * 64
 SHA_C = "c" * 64
 RUN_REPLAY = pytest.mark.skipif(
-    not LOCAL_SPATIAL_ARCHIVE.is_file() or importlib.util.find_spec("duckdb") is None,
-    reason="pinned local Spatial archive or DuckDB package absent",
+    LOCAL_SPATIAL_RUNTIME_LOCK_SETTING is None
+    or LOCAL_SPATIAL_ARCHIVE_SETTING is None
+    or importlib.util.find_spec("duckdb") is None,
+    reason=(
+        "real DuckDB Spatial tests require explicit pinned "
+        "SATN_TEST_DUCKDB_SPATIAL_RUNTIME_LOCK and "
+        "SATN_TEST_DUCKDB_SPATIAL_EXTENSION artifacts"
+    ),
 )
 EXECUTION_SENSITIVE_DISTRIBUTIONS = (
     "duckdb",
@@ -76,14 +92,30 @@ def _clean_commit(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _runtime_paths(tmp_path: Path) -> tuple[Path, Path]:
-    runtime_lock_path = PROJECT / "config" / "duckdb-spatial-runtime-lock.json"
+    if not LOCAL_SPATIAL_RUNTIME_LOCK.is_file():
+        pytest.fail(
+            "configured SATN_TEST_DUCKDB_SPATIAL_RUNTIME_LOCK is not a file: "
+            f"{LOCAL_SPATIAL_RUNTIME_LOCK}"
+        )
+    if not LOCAL_SPATIAL_ARCHIVE.is_file():
+        pytest.fail(
+            "configured SATN_TEST_DUCKDB_SPATIAL_EXTENSION is not a file: "
+            f"{LOCAL_SPATIAL_ARCHIVE}"
+        )
+    runtime_lock = SpatialRuntimeLock.from_json(LOCAL_SPATIAL_RUNTIME_LOCK)
+    runtime_platform = local_evidence_store._runtime_platform()
+    if runtime_lock.platform != runtime_platform:
+        pytest.fail(
+            "configured pinned DuckDB Spatial test runtime targets "
+            f"{runtime_lock.platform}, not {runtime_platform}"
+        )
     extension_cache = tmp_path / "extensions"
     provision_spatial_runtime(
-        runtime_lock_path=runtime_lock_path,
+        runtime_lock_path=LOCAL_SPATIAL_RUNTIME_LOCK,
         extension_archive=LOCAL_SPATIAL_ARCHIVE,
         extension_cache=extension_cache,
     )
-    return runtime_lock_path, extension_cache
+    return LOCAL_SPATIAL_RUNTIME_LOCK, extension_cache
 
 
 def _canonical_bytes(payload: dict[str, object]) -> bytes:
