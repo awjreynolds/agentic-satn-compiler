@@ -102,6 +102,51 @@ def test_text_and_json_render_the_same_deep_status_result(
     ]
 
 
+def test_status_and_delete_forward_acceptance_safety_options(
+    operations: _Operations,
+    tmp_path: Path,
+) -> None:
+    area = tmp_path / "area.yaml"
+
+    status = RUNNER.invoke(
+        app,
+        [
+            "evidence",
+            "status",
+            "--area",
+            str(area),
+            "--state",
+            STATE,
+            "--verify",
+            "--provenance",
+        ],
+    )
+    delete = RUNNER.invoke(
+        app,
+        [
+            "evidence",
+            "delete",
+            "--yes",
+            "--expect-state",
+            STATE,
+        ],
+    )
+
+    assert status.exit_code == delete.exit_code == 0
+    assert operations.calls == [
+        (
+            "status",
+            {
+                "area": area,
+                "state": STATE,
+                "verify": True,
+                "provenance": True,
+            },
+        ),
+        ("delete", {"yes": True, "expect_state": STATE}),
+    ]
+
+
 def test_refresh_forwards_all_raw_options_without_domain_work(
     operations: _Operations,
     tmp_path: Path,

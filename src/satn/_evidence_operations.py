@@ -5,6 +5,8 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
+import shutil
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -18,6 +20,7 @@ from shapely.geometry import mapping
 from shapely.geometry.base import BaseGeometry
 
 from satn.evidence_contracts import (
+    EvidencePartitionKey,
     IngestionContract,
     SourceExport,
     canonical_evidence_json,
@@ -32,8 +35,6 @@ from satn.local_evidence_store import (
     supported_evidence_layers,
 )
 from satn.models import AreaDefinition
-from satn.open_roads_adapter import contract_payload as open_roads_contract_payload
-from satn.osm_network_adapter import contract_payload as osm_network_contract_payload
 
 
 @dataclass(frozen=True)
@@ -49,8 +50,19 @@ class EvidencePaths:
 class SourceBinding:
     """One local Source Export and its closed Ingestion Contract."""
 
+    descriptor_path: Path
     source_export: SourceExport
     ingestion_contract: IngestionContract
+
+
+@dataclass
+class _LockOwnership:
+    """Inventory ownership observed by one writer-lock attempt."""
+
+    attempted: bool = False
+    created: bool = False
+    acquired: bool = False
+    inode: int | None = None
 
 
 class _LocalEvidenceWorkspace:
@@ -83,23 +95,42 @@ class _LocalEvidenceWorkspace:
         """Initialise or verify the exact offline store runtime."""
 
         existed = self.paths.store.is_file()
+        parent_existed = self.paths.store.parent.exists()
+        extension_cache_existed = self.paths.extension_cache.exists()
+        lock_ownership = _LockOwnership()
         store = self._store()
-        if extension_archive is not None:
-            provision_spatial_runtime(
-                runtime_lock_path=_runtime_lock_path(),
-                extension_archive=_absolute(extension_archive, self._invocation_dir),
-                extension_cache=self.paths.extension_cache,
+        try:
+            if extension_archive is not None:
+                provision_spatial_runtime(
+                    runtime_lock_path=_runtime_lock_path(),
+                    extension_archive=_absolute(extension_archive, self._invocation_dir),
+                    extension_cache=self.paths.extension_cache,
+                )
+            store.verify_runtime()
+            lock = (
+                nullcontext()
+                if existed
+                else _writer_lock(self.paths, ownership=lock_ownership)
             )
-        store.verify_runtime()
-        lock = nullcontext() if existed else _writer_lock(self.paths)
-        with lock:
-            store.initialise()
-            status = store.status(verify=True)
+            with lock:
+                store.initialise()
+                status = store.status(verify=True)
+            runtime = store.runtime_status()
+        except Exception:
+            if not existed:
+                _cleanup_failed_initialise(
+                    self.paths,
+                    parent_existed=parent_existed,
+                    extension_cache_existed=extension_cache_existed,
+                    lock_ownership=lock_ownership,
+                )
+            raise
         coverage = status.current_coverage
         return self._result(
             command="init",
             state=None if coverage is None else coverage.fingerprint,
             created=not existed and self.paths.store.is_file(),
+            runtime=runtime,
         )
 
     def refresh(
@@ -112,14 +143,14 @@ class _LocalEvidenceWorkspace:
         dry_run: bool,
         rebuild: bool,
     ) -> dict[str, object]:
-        """Plan, atomically refresh, or physically rebuild exact coverage."""
+        """Plan, atomically refresh, or physically rebuild registered coverage."""
 
         if (replace_source is None) != (expect_state is None):
             raise ValueError("--replace-source and --expect-state must be supplied together")
         if rebuild:
             if dry_run or source_exports or replace_source is not None:
                 raise ValueError(
-                    "--rebuild repairs the current logical state and cannot refresh sources"
+                    "--rebuild repairs registered logical states and cannot refresh sources"
                 )
             _load_area_geometry(_absolute(area, self._invocation_dir))
             with _writer_lock(self.paths):
@@ -134,30 +165,57 @@ class _LocalEvidenceWorkspace:
 
         selector = _load_area_geometry(_absolute(area, self._invocation_dir))
         store = self._store()
-        descriptors = source_exports or _retained_descriptors(store)
-        if not descriptors:
-            raise ValueError(
-                "refresh has no supplied or retained local Source Export descriptors"
+        retained_missing: tuple[str, ...] = ()
+        retained_coverage = None
+        if source_exports:
+            bindings = tuple(
+                _load_source_descriptor(_absolute(path, self._invocation_dir))
+                for path in source_exports
             )
-        bindings = tuple(
-            _load_source_descriptor(_absolute(path, self._invocation_dir))
-            for path in descriptors
-        )
+            requests = tuple(
+                EvidenceRefreshRequest(
+                    source_export=binding.source_export,
+                    ingestion_contract=binding.ingestion_contract,
+                    partition_keys=evidence_partition_keys(
+                        binding.ingestion_contract.source_layer,
+                        selector,
+                    ),
+                )
+                for binding in bindings
+            )
+        else:
+            bindings, requests, retained_missing, retained_coverage = (
+                _retained_refresh_plan(store, selector)
+            )
         if replace_source is not None and replace_source not in {
             binding.ingestion_contract.source_layer for binding in bindings
         }:
             raise ValueError(f"--replace-source {replace_source} has no matching descriptor")
-        requests = tuple(
-            EvidenceRefreshRequest(
-                source_export=binding.source_export,
-                ingestion_contract=binding.ingestion_contract,
-                partition_keys=evidence_partition_keys(
-                    binding.ingestion_contract.source_layer,
-                    selector,
+        if retained_missing and not dry_run:
+            raise ValueError(
+                "retained Source Export descriptors do not cover: "
+                + ", ".join(retained_missing)
+            )
+        if not requests:
+            return self._result(
+                command="refresh",
+                state=(
+                    None
+                    if retained_coverage is None
+                    else retained_coverage.fingerprint
+                ),
+                dry_run=dry_run,
+                rebuilt=False,
+                reused_cells=[],
+                missing_cells=list(retained_missing),
+                replaced_cells=[],
+                sources=[],
+                coverage=_coverage_payload(
+                    retained_coverage,
+                    provenance=dry_run,
+                    area_selector=selector,
                 ),
             )
-            for binding in bindings
-        )
         lock = nullcontext() if dry_run else _writer_lock(self.paths)
         with lock:
             refreshed = store.refresh_many(
@@ -173,7 +231,9 @@ class _LocalEvidenceWorkspace:
             dry_run=dry_run,
             rebuilt=False,
             reused_cells=list(refreshed.reused_cells),
-            missing_cells=list(refreshed.missing_cells),
+            missing_cells=sorted(
+                set(refreshed.missing_cells) | set(retained_missing)
+            ),
             replaced_cells=list(refreshed.replaced_cells),
             sources=_refresh_sources_payload(bindings, coverage),
             coverage=_coverage_payload(coverage, provenance=dry_run),
@@ -190,6 +250,7 @@ class _LocalEvidenceWorkspace:
         """Report current or historical coverage with complete diagnostics."""
 
         store = self._store()
+        runtime = store.runtime_status() if verify else None
         selector = (
             None
             if area is None
@@ -211,6 +272,7 @@ class _LocalEvidenceWorkspace:
                 provenance=provenance,
                 area_selector=selector,
             ),
+            **({} if runtime is None else {"runtime": runtime}),
         )
 
     def query(
@@ -336,6 +398,82 @@ def _runtime_lock_path() -> Path:
     if project_lock.is_file():
         return project_lock
     return Path(__file__).with_name("assets") / "duckdb-spatial-runtime-lock.json"
+
+
+def _cleanup_failed_initialise(
+    paths: EvidencePaths,
+    *,
+    parent_existed: bool,
+    extension_cache_existed: bool,
+    lock_ownership: _LockOwnership,
+) -> None:
+    """Remove only inventory created by a failed first initialization."""
+
+    with _failed_initialise_cleanup_guard(paths, lock_ownership) as may_clean:
+        if not may_clean:
+            return
+        if lock_ownership.acquired:
+            paths.store.unlink(missing_ok=True)
+            Path(f"{paths.store}.wal").unlink(missing_ok=True)
+        lock_path = paths.store.with_suffix(paths.store.suffix + ".lock")
+        if (
+            lock_ownership.created
+            and lock_ownership.inode is not None
+            and lock_path.is_file()
+            and lock_path.stat().st_ino == lock_ownership.inode
+        ):
+            lock_path.unlink()
+        if (
+            not extension_cache_existed
+            and paths.extension_cache.exists()
+            and paths.extension_cache.is_relative_to(paths.store.parent)
+        ):
+            shutil.rmtree(paths.extension_cache)
+        if not parent_existed:
+            candidate = paths.store.parent
+            stop = paths.workspace.parent
+            while candidate != stop:
+                try:
+                    candidate.rmdir()
+                except OSError:
+                    break
+                candidate = candidate.parent
+
+
+@contextmanager
+def _failed_initialise_cleanup_guard(
+    paths: EvidencePaths,
+    ownership: _LockOwnership,
+):
+    """Yield only while this invocation's lock inode is exclusively held."""
+
+    if not ownership.attempted:
+        yield True
+        return
+    if not ownership.acquired or ownership.inode is None:
+        yield False
+        return
+    lock_path = paths.store.with_suffix(paths.store.suffix + ".lock")
+    try:
+        handle = lock_path.open("a+b")
+    except FileNotFoundError:
+        yield False
+        return
+    try:
+        if os.fstat(handle.fileno()).st_ino != ownership.inode:
+            yield False
+            return
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
 
 
 def _coverage_payload(
@@ -532,39 +670,108 @@ def _load_source_descriptor(path: Path) -> SourceBinding:
     )
     contract_payload = payload.get("ingestion_contract")
     if contract_payload is None:
-        contract_payload = _default_contract_payload(source)
+        raise ValueError(
+            "Source Export descriptor requires an explicit ingestion_contract identity"
+        )
     if not isinstance(contract_payload, dict):
         raise ValueError("Source Export descriptor ingestion_contract must be a mapping")
+    if contract_payload.get("contract") != "satn-ingestion-contract/v1":
+        raise ValueError(
+            "Source Export descriptor ingestion_contract identity is unsupported"
+        )
+    contract_fingerprint = contract_payload.get("fingerprint")
+    if (
+        not isinstance(contract_fingerprint, str)
+        or re.fullmatch(r"[0-9a-f]{64}", contract_fingerprint) is None
+    ):
+        raise ValueError(
+            "Source Export descriptor ingestion_contract fingerprint must be a "
+            "full lowercase SHA-256"
+        )
     contract_payload = {key: value for key, value in contract_payload.items() if key != "contract"}
     contract = IngestionContract(**contract_payload)
     source_layer = f"{source.source_family}/{source.layer}"
     if contract.source_layer != source_layer:
         raise ValueError("Source Export and Ingestion Contract source layers differ")
-    return SourceBinding(source_export=source, ingestion_contract=contract)
-
-
-def _default_contract_payload(source: SourceExport) -> dict[str, object]:
-    source_layer = f"{source.source_family}/{source.layer}"
-    if source_layer == "os-open-roads/RoadLink":
-        return open_roads_contract_payload(source.declared_crs)
-    if source_layer == "openstreetmap/lines":
-        return osm_network_contract_payload()
-    raise ValueError(
-        f"descriptor requires an explicit supported Ingestion Contract for {source_layer}"
+    return SourceBinding(
+        descriptor_path=path,
+        source_export=source,
+        ingestion_contract=contract,
     )
 
 
-def _retained_descriptors(store: LocalEvidenceStore) -> tuple[Path, ...]:
+def _retained_refresh_plan(
+    store: LocalEvidenceStore,
+    selector: BaseGeometry,
+) -> tuple[
+    tuple[SourceBinding, ...],
+    tuple[EvidenceRefreshRequest, ...],
+    tuple[str, ...],
+    object | None,
+]:
+    """Resolve retained descriptors only to the exact cells they attest."""
+
     status = store.status(verify=True)
     coverage = status.current_coverage
+    desired = {
+        (source_layer, key.cell): key
+        for source_layer in supported_evidence_layers()
+        for key in evidence_partition_keys(source_layer, selector)
+    }
     if coverage is None:
-        return ()
-    descriptors: set[Path] = set()
+        return (), (), tuple(
+            f"{source_layer}:{cell}" for source_layer, cell in sorted(desired)
+        ), None
+    binding_cache: dict[Path, SourceBinding] = {}
+    grouped_keys: dict[tuple[str, str], list[EvidencePartitionKey]] = {}
+    grouped_bindings: dict[tuple[str, str], SourceBinding] = {}
+    covered: set[tuple[str, str]] = set()
     for attestation in coverage.attestations:
+        key = attestation.partition_content.partition_key
+        qualified = (key.source_layer, key.cell)
+        if qualified not in desired:
+            continue
         descriptor = attestation.source_export.provenance.get("descriptor_path")
-        if isinstance(descriptor, str) and descriptor:
-            descriptors.add(Path(descriptor))
-    return tuple(sorted(descriptors))
+        if not isinstance(descriptor, str) or not descriptor:
+            continue
+        descriptor_path = Path(descriptor)
+        binding = binding_cache.get(descriptor_path)
+        if binding is None:
+            binding = _load_source_descriptor(descriptor_path)
+            binding_cache[descriptor_path] = binding
+        contract = attestation.partition_content.ingestion_contract
+        if (
+            binding.source_export.fingerprint
+            != attestation.source_export.fingerprint
+            or binding.ingestion_contract.fingerprint != contract.fingerprint
+        ):
+            raise ValueError(
+                "retained Source Export descriptor identity does not match its attestation"
+            )
+        identity = (
+            binding.source_export.fingerprint,
+            binding.ingestion_contract.fingerprint,
+        )
+        grouped_bindings[identity] = binding
+        grouped_keys.setdefault(identity, []).append(desired[qualified])
+        covered.add(qualified)
+    identities = sorted(grouped_keys)
+    bindings = tuple(grouped_bindings[identity] for identity in identities)
+    requests = tuple(
+        EvidenceRefreshRequest(
+            source_export=grouped_bindings[identity].source_export,
+            ingestion_contract=grouped_bindings[identity].ingestion_contract,
+            partition_keys=tuple(
+                sorted(grouped_keys[identity], key=lambda item: item.fingerprint)
+            ),
+        )
+        for identity in identities
+    )
+    missing = tuple(
+        f"{source_layer}:{cell}"
+        for source_layer, cell in sorted(set(desired) - covered)
+    )
+    return bindings, requests, missing, coverage
 
 
 def _refresh_sources_payload(
@@ -742,10 +949,29 @@ def _json_plain(value: object) -> object:
 
 
 @contextmanager
-def _writer_lock(paths: EvidencePaths):
+def _writer_lock(paths: EvidencePaths, *, ownership: _LockOwnership | None = None):
     lock_path = paths.store.with_suffix(paths.store.suffix + ".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    handle = lock_path.open("a+b")
+    if ownership is not None:
+        ownership.attempted = True
+    while True:
+        try:
+            descriptor = os.open(
+                lock_path,
+                os.O_CREAT | os.O_EXCL | os.O_RDWR,
+                0o600,
+            )
+            created = True
+        except FileExistsError:
+            try:
+                descriptor = os.open(lock_path, os.O_RDWR)
+            except FileNotFoundError:
+                continue
+            created = False
+        break
+    if ownership is not None:
+        ownership.created = created
+    handle = os.fdopen(descriptor, "a+b")
     try:
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -753,6 +979,9 @@ def _writer_lock(paths: EvidencePaths):
             raise EvidenceWriterBusy(
                 f"Local Evidence Store writer lock is busy: {lock_path}"
             ) from error
+        if ownership is not None:
+            ownership.acquired = True
+            ownership.inode = os.fstat(handle.fileno()).st_ino
         yield lock_path
     finally:
         try:

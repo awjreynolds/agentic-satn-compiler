@@ -456,6 +456,18 @@ class LocalEvidenceStore:
 
         self._verify_runtime()
 
+    def runtime_status(self) -> dict[str, str]:
+        """Verify and report the exact pinned runtime without requiring a store."""
+
+        self._verify_runtime()
+        runtime_lock = self._runtime_lock()
+        extension_path = self._extension_path(runtime_lock)
+        return {
+            **runtime_lock.canonical_payload(),
+            "fingerprint": runtime_lock.fingerprint,
+            "extension_path": str(extension_path),
+        }
+
     def initialise(self) -> None:
         """Create a new exact store, or validate an exact existing store."""
 
@@ -691,8 +703,19 @@ class LocalEvidenceStore:
             current = self._current_coverage(source)
             if current is None:
                 raise ValueError("Local Evidence Store has no current coverage to rebuild")
-            self._verify_coverage(source, current)
-            self._verify_retained_source_bytes(current)
+            state_fingerprints = tuple(
+                str(row[0])
+                for row in source.execute(
+                    "SELECT fingerprint FROM coverage_state_registry ORDER BY fingerprint"
+                ).fetchall()
+            )
+            coverages = tuple(
+                self._coverage_by_fingerprint(source, fingerprint)
+                for fingerprint in state_fingerprints
+            )
+            for coverage in coverages:
+                self._verify_coverage(source, coverage)
+                self._verify_retained_source_bytes(coverage)
             ea_pointer = source.execute(
                 "SELECT coverage_fingerprint FROM current_ea_raster_coverage_state "
                 "WHERE singleton = true"
@@ -722,7 +745,8 @@ class LocalEvidenceStore:
                 sibling._create_staging_tables(target)
                 unique_attestations = {
                     attestation.fingerprint: attestation
-                    for attestation in current.attestations
+                    for coverage in coverages
+                    for attestation in coverage.attestations
                 }
                 groups: dict[
                     tuple[str, str],
@@ -769,6 +793,8 @@ class LocalEvidenceStore:
                             "governed Source Export changed while rebuild was reading it"
                         )
                 sibling._commit_staged_refresh(target, current)
+                for coverage in coverages:
+                    sibling._insert_coverage_state(target, coverage)
                 target.execute("COMMIT")
                 transaction_started = False
             except Exception:
@@ -780,12 +806,34 @@ class LocalEvidenceStore:
             rebuilt = sibling.status(verify=True).current_coverage
             if rebuilt != current:
                 raise ValueError("rebuilt Local Evidence Store changed current coverage identity")
+            for coverage in coverages:
+                if (
+                    sibling.resolve_coverage(
+                        state_fingerprint=coverage.fingerprint,
+                        verify=True,
+                    )
+                    != coverage
+                ):
+                    raise ValueError(
+                        "rebuilt Local Evidence Store changed historical coverage identity"
+                    )
             sibling_path.replace(self._store_path)
         except Exception:
             sibling_path.unlink(missing_ok=True)
             raise
         verified = self.status(verify=True).current_coverage
         assert verified is not None
+        for coverage in coverages:
+            if (
+                self.resolve_coverage(
+                    state_fingerprint=coverage.fingerprint,
+                    verify=True,
+                )
+                != coverage
+            ):
+                raise ValueError(
+                    "rebuilt Local Evidence Store lost historical coverage identity"
+                )
         return RefreshResult(coverage=verified)
 
     def refresh_ea_elevation_cache(

@@ -1428,7 +1428,7 @@ def test_multi_source_refresh_rolls_back_every_source_when_the_second_scan_fails
     not LOCAL_SPATIAL_ARCHIVE.is_file() or importlib.util.find_spec("duckdb") is None,
     reason="pinned local Spatial archive or DuckDB package absent",
 )
-def test_rebuild_recreates_only_the_current_logical_state_from_its_retained_exports(
+def test_rebuild_recreates_current_and_historical_logical_states_from_raw_exports(
     tmp_path: Path,
 ) -> None:
     store, historical = _seeded_real_store(tmp_path)
@@ -1443,11 +1443,13 @@ def test_rebuild_recreates_only_the_current_logical_state_from_its_retained_expo
 
     assert rebuilt == current
     assert store.status(verify=True).current_coverage == current
-    with pytest.raises(ValueError, match="is not found"):
+    assert (
         store.resolve_coverage(
             state_fingerprint=historical.fingerprint,
             verify=True,
         )
+        == historical
+    )
 
 
 @pytest.mark.skipif(
