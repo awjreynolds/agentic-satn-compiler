@@ -1,7 +1,7 @@
 # Red-team assessment: Oxfordshire SATN equivalence and an agentic LCWIP foundation
 
 - Assessed: 2026-07-24
-- Repository: [`awjreynolds/banes-satn`](https://github.com/awjreynolds/banes-satn)
+- Repository: [`awjreynolds/agentic-satn-compiler`](https://github.com/awjreynolds/agentic-satn-compiler)
 - Scope: current repository, live publication, tests, existing GitHub issues, Oxfordshire's published SATN process, and current national LCWIP guidance
 - Posture: independent challenge, not an implementation plan and not legal advice
 
@@ -46,7 +46,7 @@ The standard suite passed on 2026-07-24:
 
 This is strong implementation evidence for the behaviours the tests cover. It is not external validation of route quality, policy compliance, demand, public acceptability, equality impacts or deliverability.
 
-The live `publication.json` and `README.txt` at `https://awjreynolds.github.io/banes-satn/` were byte-for-byte identical to the checked-in `site/` files at assessment time. The live result describes itself as:
+The live `publication.json` and `README.txt` at `https://awjreynolds.github.io/agentic-satn-compiler/` were byte-for-byte identical to the checked-in `site/` files at assessment time. The live result describes itself as:
 
 - schema `2.0`;
 - status `reviewable`, not `complete`;
@@ -194,7 +194,7 @@ A network can be topologically coherent but strategically weak. It can connect e
 
 The B&NES compiler should not be presented as reimplementing Oxfordshire's SATN. It implements a potentially valuable wayfinding and audit layer that Oxfordshire's public process does not make reproducible. It does not reproduce Oxfordshire's central demand, prioritisation and governance functions.
 
-Issue [#11](https://github.com/awjreynolds/banes-satn/issues/11) mapped Oxfordshire into a transferable method, but later product issues narrowed the implementation. Issue [#20](https://github.com/awjreynolds/banes-satn/issues/20) explicitly excluded delivery prioritisation, demand/PCT/DfT scoring, costing, engineering feasibility, statutory consultation and adoption. The current `PRD.md:360-376` preserves most of those exclusions. “Issue closed” must not be read as “Oxfordshire equivalence delivered.”
+Issue [#11](https://github.com/awjreynolds/agentic-satn-compiler/issues/11) mapped Oxfordshire into a transferable method, but later product issues narrowed the implementation. Issue [#20](https://github.com/awjreynolds/agentic-satn-compiler/issues/20) explicitly excluded delivery prioritisation, demand/PCT/DfT scoring, costing, engineering feasibility, statutory consultation and adoption. The current `PRD.md:360-376` preserves most of those exclusions. “Issue closed” must not be read as “Oxfordshire equivalence delivered.”
 
 ## Proposition B: replacement for an LCWIP
 
@@ -255,9 +255,9 @@ Do not position SATN as an alternative document to an LCWIP. Position it as one 
 
 The repository's issue history supports this boundary:
 
-- [#1](https://github.com/awjreynolds/banes-satn/issues/1), [#20](https://github.com/awjreynolds/banes-satn/issues/20) and [#31](https://github.com/awjreynolds/banes-satn/issues/31) exclude consultation and adoption;
-- [#3](https://github.com/awjreynolds/banes-satn/issues/3) defers demand to a future Prioritisation Pass;
-- [#16](https://github.com/awjreynolds/banes-satn/issues/16) closed the wider Intervention Archetype catalogue as out of scope; and
+- [#1](https://github.com/awjreynolds/agentic-satn-compiler/issues/1), [#20](https://github.com/awjreynolds/agentic-satn-compiler/issues/20) and [#31](https://github.com/awjreynolds/agentic-satn-compiler/issues/31) exclude consultation and adoption;
+- [#3](https://github.com/awjreynolds/agentic-satn-compiler/issues/3) defers demand to a future Prioritisation Pass;
+- [#16](https://github.com/awjreynolds/agentic-satn-compiler/issues/16) closed the wider Intervention Archetype catalogue as out of scope; and
 - no existing issue is specifically scoped to LCWIP outputs, equality, engagement, monitoring, policy integration or a walking-network method.
 
 ## Proposition C: an agentic LCWIP foundation
@@ -411,7 +411,7 @@ Minimum acceptance evidence:
 - persistent disclaimer until adoption; and
 - prohibition on agent self-approval.
 
-Related existing issues: [#1](https://github.com/awjreynolds/banes-satn/issues/1), [#5](https://github.com/awjreynolds/banes-satn/issues/5), [#20](https://github.com/awjreynolds/banes-satn/issues/20), [#59](https://github.com/awjreynolds/banes-satn/issues/59).
+Related existing issues: [#1](https://github.com/awjreynolds/agentic-satn-compiler/issues/1), [#5](https://github.com/awjreynolds/agentic-satn-compiler/issues/5), [#20](https://github.com/awjreynolds/agentic-satn-compiler/issues/20), [#59](https://github.com/awjreynolds/agentic-satn-compiler/issues/59).
 
 #### B2. No governed demand, origin-destination or desire-line pass
 
@@ -427,7 +427,7 @@ Minimum acceptance evidence:
 - raw quantities preserved alongside any classifications; and
 - comparison fixtures against published or expert-reviewed networks.
 
-Related existing issues: [#3](https://github.com/awjreynolds/banes-satn/issues/3), [#11](https://github.com/awjreynolds/banes-satn/issues/11), [#14](https://github.com/awjreynolds/banes-satn/issues/14), [#20](https://github.com/awjreynolds/banes-satn/issues/20).
+Related existing issues: [#3](https://github.com/awjreynolds/agentic-satn-compiler/issues/3), [#11](https://github.com/awjreynolds/agentic-satn-compiler/issues/11), [#14](https://github.com/awjreynolds/agentic-satn-compiler/issues/14), [#20](https://github.com/awjreynolds/agentic-satn-compiler/issues/20).
 
 #### B3. No dedicated walking-network method
 
@@ -459,7 +459,7 @@ Minimum acceptance evidence:
 - explicit “not audited”, “not feasible” and “requires design” states; and
 - no inference from map geometry alone.
 
-Related existing issues: [#7](https://github.com/awjreynolds/banes-satn/issues/7), [#15](https://github.com/awjreynolds/banes-satn/issues/15), [#16](https://github.com/awjreynolds/banes-satn/issues/16), [#31](https://github.com/awjreynolds/banes-satn/issues/31).
+Related existing issues: [#7](https://github.com/awjreynolds/agentic-satn-compiler/issues/7), [#15](https://github.com/awjreynolds/agentic-satn-compiler/issues/15), [#16](https://github.com/awjreynolds/agentic-satn-compiler/issues/16), [#31](https://github.com/awjreynolds/agentic-satn-compiler/issues/31).
 
 #### B5. No scheme/improvement register or joint prioritised programme
 
@@ -476,7 +476,7 @@ Minimum acceptance evidence:
 - short, medium and long-term programme; and
 - transparent human-approved weights, overrides and sensitivity analysis.
 
-Related existing issues: [#11](https://github.com/awjreynolds/banes-satn/issues/11), [#16](https://github.com/awjreynolds/banes-satn/issues/16), [#17](https://github.com/awjreynolds/banes-satn/issues/17), [#20](https://github.com/awjreynolds/banes-satn/issues/20).
+Related existing issues: [#11](https://github.com/awjreynolds/agentic-satn-compiler/issues/11), [#16](https://github.com/awjreynolds/agentic-satn-compiler/issues/16), [#17](https://github.com/awjreynolds/agentic-satn-compiler/issues/17), [#20](https://github.com/awjreynolds/agentic-satn-compiler/issues/20).
 
 #### B6. No engagement, consultation, equality or public-sector-duty workflow
 
@@ -508,7 +508,7 @@ Minimum acceptance evidence:
 - reproducible comparison against the prior plan without treating either as ground truth; and
 - a council decision on whether the network is suitable for consultation, not adoption.
 
-Related existing issues: [#27](https://github.com/awjreynolds/banes-satn/issues/27), [#29](https://github.com/awjreynolds/banes-satn/issues/29), [#30](https://github.com/awjreynolds/banes-satn/issues/30), [#43](https://github.com/awjreynolds/banes-satn/issues/43).
+Related existing issues: [#27](https://github.com/awjreynolds/agentic-satn-compiler/issues/27), [#29](https://github.com/awjreynolds/agentic-satn-compiler/issues/29), [#30](https://github.com/awjreynolds/agentic-satn-compiler/issues/30), [#43](https://github.com/awjreynolds/agentic-satn-compiler/issues/43).
 
 ### Issue-shaping recommendation
 
@@ -616,7 +616,7 @@ Cross-Boundary Gateways identify geometry, but not institutional responsibility,
 
 #### M10. Tracker truth and capability claims
 
-Open parent issues [#31](https://github.com/awjreynolds/banes-satn/issues/31) and [#59](https://github.com/awjreynolds/banes-satn/issues/59) remain open after their listed child slices closed. Issues [#76](https://github.com/awjreynolds/banes-satn/issues/76), [#77](https://github.com/awjreynolds/banes-satn/issues/77) and [#80](https://github.com/awjreynolds/banes-satn/issues/80) also remain open although later delivery issues claim corresponding work. Several closed issues retain unchecked acceptance boxes.
+Open parent issues [#31](https://github.com/awjreynolds/agentic-satn-compiler/issues/31) and [#59](https://github.com/awjreynolds/agentic-satn-compiler/issues/59) remain open after their listed child slices closed. Issues [#76](https://github.com/awjreynolds/agentic-satn-compiler/issues/76), [#77](https://github.com/awjreynolds/agentic-satn-compiler/issues/77) and [#80](https://github.com/awjreynolds/agentic-satn-compiler/issues/80) also remain open although later delivery issues claim corresponding work. Several closed issues retain unchecked acceptance boxes.
 
 Issue state should not drive public capability claims. Add an evidence-backed capability matrix tied to tests, code, publication schema and a release/version.
 

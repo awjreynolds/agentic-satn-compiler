@@ -1,10 +1,10 @@
-# Product Requirements: Spine-led Strategic Active Travel Network
+# Product Requirements: Agentic SATN Compiler
 
 **Status:** Draft for implementation
 
 **Date:** 22 July 2026
 
-**Product:** `banes-satn`
+**Product:** Agentic SATN Compiler (`agentic-satn-compiler`, ASATNC)
 
 **Reference domain language:** [CONTEXT.md](CONTEXT.md)
 

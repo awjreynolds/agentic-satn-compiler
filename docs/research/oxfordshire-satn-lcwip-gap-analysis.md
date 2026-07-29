@@ -1,7 +1,7 @@
 # Can the B&NES SATN tool replace Oxfordshire's process or generate an LCWIP?
 
 - Assessment date: 24 July 2026
-- Repository assessed: `awjreynolds/banes-satn` at `e38901e`
+- Repository assessed: `awjreynolds/agentic-satn-compiler` at `e38901e`
 - Scope: functional equivalence, replacement readiness, LCWIP conformance, and agentic
   foundation
 - Status: technical and product assessment, not legal advice or a council adoption decision
@@ -494,18 +494,18 @@ the decision-maker.
 
 The gap analysis is captured in one umbrella PRD with native sub-issues:
 
-- [#88 — PRD: Build an agent-assisted LCWIP workspace around the SATN compiler](https://github.com/awjreynolds/banes-satn/issues/88)
-- [#89 — Define the LCWIP domain model, lifecycle and Guidance Profile](https://github.com/awjreynolds/banes-satn/issues/89)
-- [#90 — Build the governed LCWIP baseline Evidence Registry and adapters](https://github.com/awjreynolds/banes-satn/issues/90)
-- [#91 — Add cycling demand, desire-line and route-selection planning](https://github.com/awjreynolds/banes-satn/issues/91)
-- [#92 — Add walking and wheeling network planning and audits](https://github.com/awjreynolds/banes-satn/issues/92)
-- [#93 — Compile audited deficiencies into infrastructure intervention packages](https://github.com/awjreynolds/banes-satn/issues/93)
-- [#94 — Add transparent LCWIP prioritisation, phasing and sensitivity analysis](https://github.com/awjreynolds/banes-satn/issues/94)
-- [#95 — Add LCWIP governance, engagement, equality and human-authority gates](https://github.com/awjreynolds/banes-satn/issues/95)
-- [#96 — Generalise bounded agent decisions for staged LCWIP review and red-teaming](https://github.com/awjreynolds/banes-satn/issues/96)
-- [#97 — Publish versioned LCWIP reports, conformance manifests and release history](https://github.com/awjreynolds/banes-satn/issues/97)
-- [#98 — Track LCWIP delivery, monitoring and scheduled review](https://github.com/awjreynolds/banes-satn/issues/98)
-- [#99 — Run a B&NES LCWIP adoption-candidate pilot and independent assurance](https://github.com/awjreynolds/banes-satn/issues/99)
+- [#88 — PRD: Build an agent-assisted LCWIP workspace around the SATN compiler](https://github.com/awjreynolds/agentic-satn-compiler/issues/88)
+- [#89 — Define the LCWIP domain model, lifecycle and Guidance Profile](https://github.com/awjreynolds/agentic-satn-compiler/issues/89)
+- [#90 — Build the governed LCWIP baseline Evidence Registry and adapters](https://github.com/awjreynolds/agentic-satn-compiler/issues/90)
+- [#91 — Add cycling demand, desire-line and route-selection planning](https://github.com/awjreynolds/agentic-satn-compiler/issues/91)
+- [#92 — Add walking and wheeling network planning and audits](https://github.com/awjreynolds/agentic-satn-compiler/issues/92)
+- [#93 — Compile audited deficiencies into infrastructure intervention packages](https://github.com/awjreynolds/agentic-satn-compiler/issues/93)
+- [#94 — Add transparent LCWIP prioritisation, phasing and sensitivity analysis](https://github.com/awjreynolds/agentic-satn-compiler/issues/94)
+- [#95 — Add LCWIP governance, engagement, equality and human-authority gates](https://github.com/awjreynolds/agentic-satn-compiler/issues/95)
+- [#96 — Generalise bounded agent decisions for staged LCWIP review and red-teaming](https://github.com/awjreynolds/agentic-satn-compiler/issues/96)
+- [#97 — Publish versioned LCWIP reports, conformance manifests and release history](https://github.com/awjreynolds/agentic-satn-compiler/issues/97)
+- [#98 — Track LCWIP delivery, monitoring and scheduled review](https://github.com/awjreynolds/agentic-satn-compiler/issues/98)
+- [#99 — Run a B&NES LCWIP adoption-candidate pilot and independent assurance](https://github.com/awjreynolds/agentic-satn-compiler/issues/99)
 
 Issues #89–#98 are specified for agent implementation. The assurance/adoption-candidate
 pilot, #99, is intentionally human-owned. The PRD preserves explicit dependencies and
@@ -513,10 +513,10 @@ human gates; its sub-issues do not imply that plan adoption can be automated.
 
 The issue tracker should link rather than duplicate the existing SATN work:
 
-- [#11 — Oxfordshire transferable method](https://github.com/awjreynolds/banes-satn/issues/11)
-- [#20 — original B&NES SATN PRD](https://github.com/awjreynolds/banes-satn/issues/20)
-- [#31 — Backbone-and-Access Network](https://github.com/awjreynolds/banes-satn/issues/31)
-- [#59 — bounded agent choices](https://github.com/awjreynolds/banes-satn/issues/59)
+- [#11 — Oxfordshire transferable method](https://github.com/awjreynolds/agentic-satn-compiler/issues/11)
+- [#20 — original B&NES SATN PRD](https://github.com/awjreynolds/agentic-satn-compiler/issues/20)
+- [#31 — Backbone-and-Access Network](https://github.com/awjreynolds/agentic-satn-compiler/issues/31)
+- [#59 — bounded agent choices](https://github.com/awjreynolds/agentic-satn-compiler/issues/59)
 
 ## Final recommendation
 

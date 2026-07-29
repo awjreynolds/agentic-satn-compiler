@@ -15,7 +15,7 @@
 
 ### Issue tracker
 
-Issues and PRDs live in GitHub Issues for `awjreynolds/banes-satn`. See `docs/agents/issue-tracker.md`.
+Issues and PRDs live in GitHub Issues for `awjreynolds/agentic-satn-compiler`. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

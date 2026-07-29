@@ -1,6 +1,6 @@
-# Strategic Active Travel Network
+# Agentic SATN Compiler (ASATNC)
 
-This context defines the language for a council-portable process that develops one continuous, evidence-led cycling network from connections between places.
+This context defines the language for a council-portable agentic compiler that develops one continuous, evidence-led Strategic Active Travel Network from connections between places.
 
 ## Language
 
