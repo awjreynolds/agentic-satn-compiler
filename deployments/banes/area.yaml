@@ -22,14 +22,6 @@ source:
   internal_portal_threshold_km: 1
   community_place_types: [town, village, suburb, quarter, neighbourhood]
   urban_place_types: [city, town, suburb, quarter, neighbourhood]
-  urban_place_source_ids: ["25942875", "26900589"]
-  urban_settlement_form:
-    eligible_place_classes: [village]
-    assessment_radius_km: 1
-    maximum_component_association_m: 250
-    component_association_tolerance_m: 10
-    minimum_minor_street_length_km: 10
-    minimum_junction_count: 90
   urban_scope_buffer_km: 2
   official_road_classification:
     path: ../../data/governed/weca-os-open-roads-2026-04-07.geojson

@@ -33,6 +33,17 @@ def test_weca_is_a_canonical_area_definition_with_canonical_serialized_identity(
     assert "council_id" not in definition.model_dump(mode="json")
 
 
+def test_banes_and_weca_share_urban_classification_inputs() -> None:
+    banes = AreaDefinition.from_yaml(PROJECT / "deployments" / "banes" / "area.yaml")
+    weca = AreaDefinition.from_yaml(PROJECT / "deployments" / "weca" / "area.yaml")
+
+    assert banes.source.urban_place_source_ids == []
+    assert weca.source.urban_place_source_ids == []
+    assert banes.source.urban_place_types == weca.source.urban_place_types
+    assert banes.source.urban_settlement_form == weca.source.urban_settlement_form
+    assert banes.source.urban_scope_buffer_km == weca.source.urban_scope_buffer_km
+
+
 def test_legacy_council_definition_uses_the_facade_and_preserves_legacy_serialization(
     tmp_path: Path,
 ) -> None:
