@@ -8,6 +8,7 @@ import math
 import os
 import uuid
 from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 import geopandas as gpd
@@ -45,17 +46,27 @@ LEGACY_NAN_EXPECTED_COUNT = 588
 _GEOJSON_FEATURE_ID = "__recovery_geojson_feature_id"
 
 
-def load_legacy_ea_recovery_snapshot(
-    config: AreaConfig,
-) -> dict[str, gpd.GeoDataFrame]:
-    """Load only the pinned invalid v10 parent for candidate-only recovery."""
+@dataclass(frozen=True)
+class ValidatedEARecoveryParent:
+    """Exact legacy parent capability issued only after recovery validation."""
 
-    source = getattr(config, "source", None)
-    snapshot_id = getattr(source, "snapshot_id", None)
-    snapshot_dir = getattr(source, "snapshot_dir", None)
+    path: Path
+    snapshot_id: str
+    manifest_sha256: str
+    manifest_bytes: bytes
+
+
+def validate_legacy_ea_recovery_parent(
+    snapshot_dir: Path,
+    *,
+    snapshot_id: str,
+    manifest_sha256: str,
+) -> ValidatedEARecoveryParent:
+    """Validate and bind the one pinned legacy parent accepted for EA recovery."""
+
     if (
         snapshot_id != LEGACY_NAN_PARENT_SNAPSHOT_ID
-        or not isinstance(snapshot_dir, Path)
+        or manifest_sha256 != LEGACY_NAN_PARENT_MANIFEST_SHA256
     ):
         raise ValueError("EA recovery requires the exact pinned WECA v10 parent")
     parent = snapshot_dir / snapshot_id
@@ -68,15 +79,15 @@ def load_legacy_ea_recovery_snapshot(
     manifest_path = parent / "snapshot.json"
     if manifest_path.is_symlink() or not manifest_path.is_file():
         raise ValueError("EA recovery requires the exact pinned WECA v10 parent")
-    manifest_sha256 = _sha256_file(manifest_path)
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest_bytes = manifest_path.read_bytes()
+        manifest = json.loads(manifest_bytes)
     except (OSError, json.JSONDecodeError) as error:
         raise ValueError("EA recovery requires the exact pinned WECA v10 parent") from error
     if (
         not isinstance(manifest, dict)
-        or manifest.get("snapshot_id") != LEGACY_NAN_PARENT_SNAPSHOT_ID
-        or manifest_sha256 != LEGACY_NAN_PARENT_MANIFEST_SHA256
+        or manifest.get("snapshot_id") != snapshot_id
+        or hashlib.sha256(manifest_bytes).hexdigest() != manifest_sha256
     ):
         raise ValueError("EA recovery requires the exact pinned WECA v10 parent")
 
@@ -88,7 +99,30 @@ def load_legacy_ea_recovery_snapshot(
         expected_legacy_nan_count=LEGACY_NAN_EXPECTED_COUNT,
         normalization_report=normalization_report,
     )
-    return _read_snapshot_frames(parent)
+    return ValidatedEARecoveryParent(
+        path=parent,
+        snapshot_id=snapshot_id,
+        manifest_sha256=manifest_sha256,
+        manifest_bytes=manifest_bytes,
+    )
+
+
+def load_legacy_ea_recovery_snapshot(
+    config: AreaConfig,
+) -> dict[str, gpd.GeoDataFrame]:
+    """Load only the pinned invalid v10 parent for candidate-only recovery."""
+
+    source = getattr(config, "source", None)
+    snapshot_id = getattr(source, "snapshot_id", None)
+    snapshot_dir = getattr(source, "snapshot_dir", None)
+    if not isinstance(snapshot_id, str) or not isinstance(snapshot_dir, Path):
+        raise ValueError("EA recovery requires the exact pinned WECA v10 parent")
+    parent = validate_legacy_ea_recovery_parent(
+        snapshot_dir,
+        snapshot_id=snapshot_id,
+        manifest_sha256=LEGACY_NAN_PARENT_MANIFEST_SHA256,
+    )
+    return _read_snapshot_frames(parent.path)
 
 
 def recovery_output_family(elevation_output: Path) -> tuple[Path, ...]:

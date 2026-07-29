@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from itertools import pairwise
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 import geopandas as gpd
 import networkx as nx
@@ -76,6 +76,9 @@ from satn.models import (
 )
 from satn.settlement import assess_community_urban_eligibility
 from satn.streaming_geojson import iter_geojson_features
+
+if TYPE_CHECKING:
+    from satn.ea_snapshot_recovery import ValidatedEARecoveryParent
 
 CORE_SOURCE_FILES = ("boundary.geojson", "places.geojson", "network.geojson")
 OSM_ATTRIBUTION = "© OpenStreetMap contributors; data available under the ODbL"
@@ -255,6 +258,28 @@ def _lineaged_retained_core_source(config: AreaConfig) -> tuple[Path, dict[str, 
     if not isinstance(manifest, dict) or manifest.get("snapshot_id") != lineage.snapshot_id:
         raise ValueError("retained-core lineage source snapshot identity mismatch")
     return source, manifest
+
+
+def _validated_ea_recovery_source(
+    config: AreaConfig,
+    parent: ValidatedEARecoveryParent,
+) -> tuple[Path, dict[str, object]]:
+    """Consume one exact recovery capability only for its configured lineage."""
+
+    lineage = config.source.retained_core_source
+    expected_path = config.source.snapshot_dir / parent.snapshot_id
+    if (
+        lineage is None
+        or lineage.snapshot_id != parent.snapshot_id
+        or lineage.manifest_sha256 != parent.manifest_sha256
+        or parent.path != expected_path
+        or hashlib.sha256(parent.manifest_bytes).hexdigest() != parent.manifest_sha256
+    ):
+        raise ValueError("EA recovery parent capability differs from configured lineage")
+    manifest = json.loads(parent.manifest_bytes)
+    if not isinstance(manifest, dict) or manifest.get("snapshot_id") != parent.snapshot_id:
+        raise ValueError("EA recovery parent capability has invalid snapshot identity")
+    return parent.path, manifest
 
 
 def _validate_existing_lineaged_target(
@@ -671,6 +696,7 @@ def _materialise_snapshot(
     retain_core: bool = False,
     osm_adapter: OSMAdapter | None = None,
     stage_only: bool = False,
+    ea_recovery_parent: ValidatedEARecoveryParent | None = None,
 ) -> Path | StagedSnapshot:
     """Materialise an immutable, attributable source snapshot."""
     destination = _snapshot_destination(config)
@@ -699,7 +725,12 @@ def _materialise_snapshot(
         if retain_core and config.source.national_elevation is None:
             raise ValueError("retained-core snapshot augmentation requires national elevation")
 
-        source_lineage = _lineaged_retained_core_source(config)
+        if ea_recovery_parent is not None:
+            if not retain_core or not stage_only:
+                raise ValueError("EA recovery parent capability requires staged retained-core mode")
+            source_lineage = _validated_ea_recovery_source(config, ea_recovery_parent)
+        else:
+            source_lineage = _lineaged_retained_core_source(config)
         if destination.exists():
             manifest = json.loads(
                 _regular_sibling(destination, "snapshot.json", label="snapshot manifest").read_text(
@@ -981,6 +1012,33 @@ def stage_retained_core_snapshot(config: AreaConfig) -> StagedSnapshot:
     )
     if not isinstance(result, StagedSnapshot):  # pragma: no cover - guarded above.
         raise ValueError("retained-core snapshot was not staged")
+    return result
+
+
+def stage_ea_recovery_snapshot(config: AreaConfig) -> StagedSnapshot:
+    """Stage one clean target from the exactly governed legacy EA parent."""
+
+    destination = _snapshot_destination(config)
+    if destination.exists():
+        raise ValueError("staged snapshot destination already exists")
+    lineage = config.source.retained_core_source
+    if lineage is None:
+        raise ValueError("staged retained-core snapshot requires explicit parent lineage")
+    from satn.ea_snapshot_recovery import validate_legacy_ea_recovery_parent
+
+    parent = validate_legacy_ea_recovery_parent(
+        config.source.snapshot_dir,
+        snapshot_id=lineage.snapshot_id,
+        manifest_sha256=lineage.manifest_sha256,
+    )
+    result = _materialise_snapshot(
+        config,
+        retain_core=True,
+        stage_only=True,
+        ea_recovery_parent=parent,
+    )
+    if not isinstance(result, StagedSnapshot):  # pragma: no cover - guarded above.
+        raise ValueError("EA recovery snapshot was not staged")
     return result
 
 

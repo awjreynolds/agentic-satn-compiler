@@ -29,7 +29,7 @@ from satn.ea_snapshot_recovery import (
 )
 from satn.models import AreaDefinition, RetainedCoreSourceConfig, safe_snapshot_id
 from satn.pipeline import compilation_governed_input_fingerprint
-from satn.sources import _validated_ea_snapshot_replay_inputs, stage_retained_core_snapshot
+from satn.sources import _validated_ea_snapshot_replay_inputs, stage_ea_recovery_snapshot
 
 
 def main() -> None:
@@ -167,7 +167,7 @@ def main() -> None:
             f"{elevation_output.stem}.sampled-routes.geojson"
         )
         validate_recovery_sampled_route_output(sampled)
-        staged = stage_retained_core_snapshot(recovered)
+        staged = stage_ea_recovery_snapshot(recovered)
         target_manifest_sha256 = sha256_file(staged.path / "snapshot.json")
 
     if target_manifest_sha256 is None:  # pragma: no cover - branches establish it.

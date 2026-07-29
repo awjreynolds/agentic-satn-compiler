@@ -13,6 +13,7 @@ import geopandas as gpd
 import pytest
 from shapely.geometry import LineString, Point
 
+import satn.ea_snapshot_recovery as recovery_module
 import satn.sources as sources_module
 import satn.streaming_geojson as streaming_geojson_module
 from satn import compile
@@ -1285,6 +1286,85 @@ def test_retained_core_snapshot_can_be_validated_before_absent_only_promotion(
     assert promoted == target
     assert target.is_dir()
     assert not staged.path.exists()
+
+
+def test_ea_recovery_staging_accepts_only_the_exact_legacy_parent_and_seals_strict_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = copied_config(tmp_path)
+    parent = snapshot(config)
+    retained_routes = parent / EA_RETAINED_ROUTE_FILENAME
+    retained_routes.write_bytes(
+        b'{"type":"FeatureCollection","crs":{"type":"name","properties":'
+        b'{"name":"urn:ogc:def:crs:EPSG::27700"}},"features":['
+        b'{"type":"Feature","properties":{"feature_id":"legacy-route",'
+        b'"access_point_source_id":NaN},"geometry":{"type":"LineString",'
+        b'"coordinates":[[350000,150000],[350001,150001]]}}]}'
+    )
+    parent_manifest_path = parent / "snapshot.json"
+    parent_manifest = json.loads(parent_manifest_path.read_text(encoding="utf-8"))
+    parent_manifest["files"].append(EA_RETAINED_ROUTE_FILENAME)
+    parent_manifest["file_sha256"][EA_RETAINED_ROUTE_FILENAME] = hashlib.sha256(
+        retained_routes.read_bytes()
+    ).hexdigest()
+    parent_manifest_path.write_text(
+        json.dumps(parent_manifest, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    parent_manifest_sha256 = hashlib.sha256(
+        parent_manifest_path.read_bytes()
+    ).hexdigest()
+    monkeypatch.setattr(sources_module, "STREAMING_GEOJSON_THRESHOLD_BYTES", 1)
+    monkeypatch.setattr(
+        recovery_module,
+        "LEGACY_NAN_PARENT_SNAPSHOT_ID",
+        parent.name,
+    )
+    monkeypatch.setattr(
+        recovery_module,
+        "LEGACY_NAN_PARENT_MANIFEST_SHA256",
+        parent_manifest_sha256,
+    )
+    monkeypatch.setattr(recovery_module, "LEGACY_NAN_EXPECTED_COUNT", 1)
+
+    config.source.snapshot_id = "strict-recovered-v11"
+    config.source.retained_core_source = RetainedCoreSourceConfig(
+        snapshot_id=parent.name,
+        manifest_sha256=parent_manifest_sha256,
+    )
+    terrain = tmp_path / "strict-recovered-elevation.geojson"
+    gpd.GeoDataFrame(
+        [{"sample": "elevation", "height": 10, "geometry": Point(-2.5, 51.4)}],
+        geometry="geometry",
+        crs=4326,
+    ).to_file(terrain, driver="GeoJSON")
+    config.source.national_elevation = NationalElevationConfig(
+        provider="local-geojson",
+        path=terrain,
+        source_id="strict-recovered-test-elevation",
+        licence="Synthetic fixture",
+        attribution="Synthetic fixture",
+        elevation_field="height",
+        identifier_field="sample",
+    )
+
+    with pytest.raises(ValueError, match="invalid JSON value"):
+        stage_retained_core_snapshot(config)
+
+    staged = sources_module.stage_ea_recovery_snapshot(config)
+
+    assert staged.destination == config.source.snapshot_dir / config.source.snapshot_id
+    assert not staged.destination.exists()
+    assert not (staged.path / EA_RETAINED_ROUTE_FILENAME).exists()
+    _validate_snapshot(staged.path)
+    staged_manifest = json.loads(
+        (staged.path / "snapshot.json").read_text(encoding="utf-8")
+    )
+    assert staged_manifest["retained_core_lineage"] == {
+        "source_snapshot_id": parent.name,
+        "source_manifest_sha256": parent_manifest_sha256,
+    }
 
 
 def test_staged_snapshot_promotion_never_replaces_an_existing_target(
