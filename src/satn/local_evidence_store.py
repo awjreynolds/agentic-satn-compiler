@@ -18,6 +18,23 @@ from shapely import from_geojson, from_wkb, to_wkb
 from shapely.geometry import box
 from shapely.geometry.base import BaseGeometry
 
+from satn.ea_raster_evidence import (
+    EA_RASTER_EXPECTED_COLUMNS,
+    EA_RASTER_REQUIRED_CONSTRAINTS,
+    EAElevationCoverage,
+    ElevationSamplingResult,
+    RasterIoObserver,
+    create_ea_raster_schema,
+)
+from satn.ea_raster_evidence import (
+    refresh_ea_elevation_cache as _refresh_ea_elevation_cache,
+)
+from satn.ea_raster_evidence import (
+    resolve_verified_ea_coverage as _resolve_verified_ea_coverage,
+)
+from satn.ea_raster_evidence import (
+    sample_elevation as _sample_elevation,
+)
 from satn.evidence_contracts import (
     EvidenceCoverage,
     EvidencePartitionAttestation,
@@ -495,6 +512,98 @@ class LocalEvidenceStore:
         finally:
             connection.close()
 
+    def refresh_ea_elevation_cache(
+        self,
+        *,
+        cache_dir: Path,
+        requested_bng_10km_cells: tuple[str, ...],
+    ) -> EAElevationCoverage:
+        """Register verified local EA raster pairs without copying their payloads."""
+
+        connection = self._open_initialised(read_only=False)
+        transaction_started = False
+        try:
+            connection.execute("BEGIN TRANSACTION")
+            transaction_started = True
+            coverage = _refresh_ea_elevation_cache(
+                connection,
+                cache_dir=cache_dir,
+                requested_bng_10km_cells=requested_bng_10km_cells,
+            )
+            connection.execute("COMMIT")
+            transaction_started = False
+            return coverage
+        except Exception:
+            if transaction_started:
+                connection.execute("ROLLBACK")
+            raise
+        finally:
+            connection.close()
+
+    def sample_elevation(
+        self,
+        *,
+        cache_dir: Path,
+        geometry: BaseGeometry,
+        geometry_crs: str = "EPSG:27700",
+        spacing_mm: int = 10_000,
+        state_fingerprint: str | None = None,
+        io_observer: RasterIoObserver | None = None,
+    ) -> ElevationSamplingResult:
+        """Sample unseen point/line geometry from a pinned local raster state."""
+
+        connection = self._open_initialised(read_only=True)
+        transaction_started = False
+        try:
+            connection.execute("BEGIN TRANSACTION")
+            transaction_started = True
+            result = _sample_elevation(
+                connection,
+                cache_dir=cache_dir,
+                geometry=geometry,
+                geometry_crs=geometry_crs,
+                spacing_mm=spacing_mm,
+                state_fingerprint=state_fingerprint,
+                io_observer=io_observer,
+            )
+            connection.execute("COMMIT")
+            transaction_started = False
+            return result
+        except Exception:
+            if transaction_started:
+                connection.execute("ROLLBACK")
+            raise
+        finally:
+            connection.close()
+
+    def verify_ea_elevation_cache(
+        self,
+        *,
+        cache_dir: Path,
+        state_fingerprint: str | None = None,
+    ) -> EAElevationCoverage:
+        """Verify one registered EA raster state and every retained receipt/object pair."""
+
+        connection = self._open_initialised(read_only=True)
+        transaction_started = False
+        try:
+            connection.execute("BEGIN TRANSACTION")
+            transaction_started = True
+            coverage = _resolve_verified_ea_coverage(
+                connection,
+                cache_dir=cache_dir,
+                state_fingerprint=state_fingerprint,
+            )
+            connection.execute("COMMIT")
+            transaction_started = False
+            return coverage
+        except Exception:
+            if transaction_started:
+                connection.execute("ROLLBACK")
+            raise
+        finally:
+            connection.close()
+
     def resolve_coverage(
         self,
         *,
@@ -886,6 +995,7 @@ class LocalEvidenceStore:
             );
             """
         )
+        create_ea_raster_schema(connection)
         for table in _LAYER_TABLES.values():
             connection.execute(
                 f"CREATE INDEX IF NOT EXISTS {table}_geometry_rtree "
@@ -948,6 +1058,7 @@ class LocalEvidenceStore:
                 table: tuple(columns) for table, columns in actual_columns.items()
             } != _EXPECTED_COLUMNS:
                 raise _schema_error("Local Evidence Store physical schema is incomplete or changed")
+            self._verify_ea_raster_constraints(connection)
 
             runtime_lock = self._runtime_lock()
             metadata_rows = connection.execute(
@@ -1004,6 +1115,43 @@ class LocalEvidenceStore:
                 or " USING RTREE (GEOMETRY)" not in normalised_sql
             ):
                 raise _schema_error(f"Local Evidence Store {table} RTree binding is invalid")
+
+    @staticmethod
+    def _verify_ea_raster_constraints(connection: Any) -> None:
+        table_names = tuple(EA_RASTER_EXPECTED_COLUMNS)
+        placeholders = ", ".join("?" for _ in table_names)
+        rows = connection.execute(
+            f"""
+            SELECT table_name, constraint_type, constraint_column_names,
+                   referenced_table, referenced_column_names, expression
+            FROM duckdb_constraints()
+            WHERE schema_name = 'main' AND table_name IN ({placeholders})
+              AND constraint_type IN ('PRIMARY KEY', 'UNIQUE', 'CHECK', 'FOREIGN KEY')
+            """,
+            list(table_names),
+        ).fetchall()
+        actual = frozenset(
+            (
+                str(table),
+                str(constraint_type),
+                tuple(str(item) for item in columns),
+                None if referenced_table is None else str(referenced_table),
+                tuple(str(item) for item in referenced_columns),
+                None if expression is None else str(expression),
+            )
+            for (
+                table,
+                constraint_type,
+                columns,
+                referenced_table,
+                referenced_columns,
+                expression,
+            ) in rows
+        )
+        if actual != EA_RASTER_REQUIRED_CONSTRAINTS:
+            raise _schema_error(
+                "Local Evidence Store EA raster constraints are incomplete or changed"
+            )
 
     @staticmethod
     def _create_staging_tables(connection: Any) -> None:
@@ -1873,12 +2021,13 @@ def _expected_contract_payload(source_layer: str, declared_crs: str) -> dict[str
     raise _schema_error(f"unsupported Local Evidence source layer: {source_layer}")
 
 
-_SCHEMA_CONTRACT = "satn-local-evidence-store-physical-schema/v3"
+_SCHEMA_CONTRACT = "satn-local-evidence-store-physical-schema/v4"
 _REBUILD_GUIDANCE = (
     "rebuild the Local Evidence Store from governed source inputs at a new store path"
 )
 
 _EXPECTED_COLUMNS = {
+    **EA_RASTER_EXPECTED_COLUMNS,
     "coverage_state_attestation": (
         ("coverage_fingerprint", "VARCHAR", "NO"),
         ("attestation_fingerprint", "VARCHAR", "NO"),

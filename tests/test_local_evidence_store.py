@@ -814,7 +814,7 @@ def test_exact_repeat_initialise_validates_metadata_without_mutating_store_bytes
     finally:
         connection.close()
     assert metadata == (
-        "satn-local-evidence-store-physical-schema/v3",
+        "satn-local-evidence-store-physical-schema/v4",
         runtime_lock.fingerprint,
     )
 
