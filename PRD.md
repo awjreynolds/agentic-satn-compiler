@@ -25,6 +25,15 @@ policy, approve designs or replace accountable officer judgement. The published
 POC uses Deterministic Test Mode (`provider: fake`), which makes no live model or
 external-system call.
 
+At POC level, this also demonstrates a reusable network-compilation architecture,
+not only an SATN algorithm. Evidence governance, deterministic compilation,
+bounded agent investigation, versioned scenarios, provenance and publication can
+be reused for a future Mass Transit Network compiler. That extension requires its
+own specialist domain contracts for corridors, modes, stops and interchanges,
+service patterns, frequency, capacity, demand, operations, constraints, costs and
+multimodal integration; those contracts and a compiled mass-transit network are
+outside this PRD.
+
 The resulting review map is an informative strategic visualization. It must show:
 
 - rural A-road and established National Cycle Network (NCN) spines;
@@ -379,6 +388,9 @@ the topology rules, not by optimizing toward a predetermined line count.
 
 ## 11. Out of scope
 
+- Mass-transit corridor, mode, stop, service or operational network compilation;
+  the reusable compiler pattern does not make those active-travel-specific domain
+  contracts complete.
 - Google Street View or other street-level imagery sampling.
 - API-key management for imagery providers.
 - Automated classification of roadside conditions at 100 m intervals.
