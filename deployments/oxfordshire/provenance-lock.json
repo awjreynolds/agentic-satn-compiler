@@ -1,0 +1,1312 @@
+{
+  "accepted_decisions_sha256": "91c07bdcd437aaa4980fc0ece88b285b0d7bc957bac47660b58091ea238ec81c",
+  "area_definition_sha256": "6fba4006fcee54480de25194b810b337d450239ca01fb80df45a2815db12dffb",
+  "area_id": "oxfordshire",
+  "area_name": "Oxfordshire",
+  "artifacts": {
+    ".nojekyll": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    "README.txt": {
+      "sha256": "2de8118a6213aad575bbbbf9c692654b3ddcdf568fa44b753731d2108c4fdd03",
+      "size_bytes": 184
+    },
+    "agent-records.json": {
+      "sha256": "fe346313b1da845ef407a40bbab857720435cbea6d78b4c4465371d8f9de4914",
+      "size_bytes": 1168241
+    },
+    "assets/MAPLIBRE-LICENSE.txt": {
+      "sha256": "ee5fc05a0677eaf69601d2c7db0d9ecd6cc27c3abc1d0733bc9ed34707cf8ef2",
+      "size_bytes": 5984
+    },
+    "assets/maplibre-gl.css": {
+      "sha256": "792ac997dcf6ae6f643eb4e2dee4630c85e7056526bd8fb85ffe83c67d6c41b4",
+      "size_bytes": 69422
+    },
+    "assets/maplibre-gl.js": {
+      "sha256": "b5a34e6930ff937dbbb9eec8892cffb80ba473cce88ae5ca8c4654432f5f0ebc",
+      "size_bytes": 939308
+    },
+    "assets/review-map.9d739f676dc2.css": {
+      "sha256": "9d739f676dc25094907a9d3193eaba64e688feecacdb0f61b973384f9679c2e8",
+      "size_bytes": 8664
+    },
+    "assets/review-map.b2c270b1b807.js": {
+      "sha256": "b2c270b1b807d1e3b01ad031ed42a8d6158bb80fcdb297285ca89d125def4f53",
+      "size_bytes": 91358
+    },
+    "assets/review-map.css": {
+      "sha256": "9d739f676dc25094907a9d3193eaba64e688feecacdb0f61b973384f9679c2e8",
+      "size_bytes": 8664
+    },
+    "assets/review-map.js": {
+      "sha256": "b2c270b1b807d1e3b01ad031ed42a8d6158bb80fcdb297285ca89d125def4f53",
+      "size_bytes": 91358
+    },
+    "backbone-comparison.json": {
+      "sha256": "a439e717e06ab1433829f781fa52b656ae49445912c0be69c01417aca146ddc6",
+      "size_bytes": 1600
+    },
+    "compiler-run.json": {
+      "sha256": "b4886aea20e5faece5f5204fc2344e82600a12d9a8bdf13b692b5b19f67413d9",
+      "size_bytes": 845260
+    },
+    "data.js": {
+      "sha256": "a41941401027e0e7e1b0fb38e542276b47ed1517f500bc16852621c8e313d773",
+      "size_bytes": 614067
+    },
+    "divergence-records.json": {
+      "sha256": "de0d6326acf13734774a77465c9e26a6098aaa696a67e5ed7a492f2f91626afa",
+      "size_bytes": 115
+    },
+    "evidence/topography-profiles-04da71236097a4da.geojson": {
+      "sha256": "04da71236097a4da8944f2ad701f3c3a1bf4e3add8021f6d94bdfefaedfd425f",
+      "size_bytes": 244237
+    },
+    "evidence/topography-profiles-1b8867f62f5e85cb.geojson": {
+      "sha256": "1b8867f62f5e85cba2855f7755591c0307c6cec36999b58138608b6b001a3630",
+      "size_bytes": 243714
+    },
+    "evidence/topography-profiles-7258dae21f5985f7.geojson": {
+      "sha256": "7258dae21f5985f7bf5763da8eeb17e598d88bf7470a7d9451479292724df464",
+      "size_bytes": 242888
+    },
+    "evidence/topography-profiles-db2a6ecc02a4c89f.geojson": {
+      "sha256": "db2a6ecc02a4c89f1d91f7b7493a341e65fb3f9ff11c92b4d8536d350e0736d3",
+      "size_bytes": 242722
+    },
+    "evidence/topography-profiles-ff137ba7b0b0c876.geojson": {
+      "sha256": "ff137ba7b0b0c8767b06eed0a9cbacf88e14be6866817525e7a01b9d39312d4d",
+      "size_bytes": 29448
+    },
+    "human-intervention-requests.json": {
+      "sha256": "de0d6326acf13734774a77465c9e26a6098aaa696a67e5ed7a492f2f91626afa",
+      "size_bytes": 115
+    },
+    "index.html": {
+      "sha256": "faace0185c6c69138c9c4d3461cb828d16a93aac626719f143346930af006a1e",
+      "size_bytes": 15794
+    },
+    "layer-manifest.json": {
+      "sha256": "d882ddeb4289f5a005f88dc23e831f7eb59a69ab32190853daf73be8fc0fc90d",
+      "size_bytes": 135837
+    },
+    "layers/amenities-healthcare-00d68acc5c239fe9.geojson": {
+      "sha256": "00d68acc5c239fe94d610ec8a808d9e5f3cbd0c386e12a25e9ebf37b50b85df6",
+      "size_bytes": 1011
+    },
+    "layers/amenities-healthcare-0387f6678827bd45.geojson": {
+      "sha256": "0387f6678827bd45a8b577fd563a8ec2eeb6ec3ad082f15653dbadd2c405e6a1",
+      "size_bytes": 1651
+    },
+    "layers/amenities-healthcare-0d6000de19f7d7c3.geojson": {
+      "sha256": "0d6000de19f7d7c35aca1be025b9963481787c694c2a7c4af47f081afef45840",
+      "size_bytes": 3334
+    },
+    "layers/amenities-healthcare-24151fbeaa163e49.geojson": {
+      "sha256": "24151fbeaa163e49447d92c894ddc1f0d9f7b00e07c668229a0c2048f89e7c71",
+      "size_bytes": 6868
+    },
+    "layers/amenities-healthcare-2a14f4919be5ba85.geojson": {
+      "sha256": "2a14f4919be5ba85f75eb20c2c8f19c42ed2e5e48cedaafa815b5bcb0fd8c7b7",
+      "size_bytes": 358
+    },
+    "layers/amenities-healthcare-34485f320c2e550a.geojson": {
+      "sha256": "34485f320c2e550a16795a0cedbe91f84f0fce151bfb416b65a6ccabdbbe3684",
+      "size_bytes": 1636
+    },
+    "layers/amenities-healthcare-35482f18acbc8cbd.geojson": {
+      "sha256": "35482f18acbc8cbdd3b12bffa5238ec4e731a80e22a7389f99e11cd68924e2b9",
+      "size_bytes": 2917
+    },
+    "layers/amenities-healthcare-3a4aacd91810abe9.geojson": {
+      "sha256": "3a4aacd91810abe9e5763e30eddc877450cad34338b06b1835943100f196469a",
+      "size_bytes": 699
+    },
+    "layers/amenities-healthcare-44a72032ca2b72a8.geojson": {
+      "sha256": "44a72032ca2b72a81ae3fa04ad0c3fa4c1265379e645afb6b6ebcf4b4c8e3705",
+      "size_bytes": 1643
+    },
+    "layers/amenities-healthcare-471f22d1358447f0.geojson": {
+      "sha256": "471f22d1358447f06f30369bdd22961c2a525da808b779e4dc6fbccf057ab1e7",
+      "size_bytes": 680
+    },
+    "layers/amenities-healthcare-4aa5ffb4d204519d.geojson": {
+      "sha256": "4aa5ffb4d204519dfb0cc65ff5c4c59002364b8eab14e90f3d9e9f115b5acec8",
+      "size_bytes": 23370
+    },
+    "layers/amenities-healthcare-4e1468884e26b6fa.geojson": {
+      "sha256": "4e1468884e26b6faf0a5d877089cb8bde2cac5fb6f9db801a60ee1cc88976629",
+      "size_bytes": 706
+    },
+    "layers/amenities-healthcare-5d094cd10201d979.geojson": {
+      "sha256": "5d094cd10201d9790b7de0526af8b637cc7a72d96f55e0ab6333ed862d6320ea",
+      "size_bytes": 1648
+    },
+    "layers/amenities-healthcare-60a830addbc50045.geojson": {
+      "sha256": "60a830addbc50045c5aff8f3c892612e57aa5e2138096ee55a9371c7ffe50cb0",
+      "size_bytes": 1687
+    },
+    "layers/amenities-healthcare-76abc43df7cd10a9.geojson": {
+      "sha256": "76abc43df7cd10a9219b3aee0794c7efdd7813019babd74587b57183bb3db057",
+      "size_bytes": 3622
+    },
+    "layers/amenities-healthcare-770f5d6887b2ec7b.geojson": {
+      "sha256": "770f5d6887b2ec7b9e59bc471eaab942d4837f724580b7a084c3977f2b687337",
+      "size_bytes": 1366
+    },
+    "layers/amenities-healthcare-8499f34fafb33370.geojson": {
+      "sha256": "8499f34fafb33370f7c6cd7c7d8d62afa902ed602f76c54242e11fe676dfb815",
+      "size_bytes": 2944
+    },
+    "layers/amenities-healthcare-9618ecdb8409a566.geojson": {
+      "sha256": "9618ecdb8409a566df02fc4282b828730123988b7dcbef10ef8e8fb527d974c6",
+      "size_bytes": 350
+    },
+    "layers/amenities-healthcare-ac97f52d7c2730b4.geojson": {
+      "sha256": "ac97f52d7c2730b4e879b8df341e2b9b44f0b88bf3a32334c12da152673da0dd",
+      "size_bytes": 360
+    },
+    "layers/amenities-healthcare-ae7a207e9fedb539.geojson": {
+      "sha256": "ae7a207e9fedb539020cdd6aba6bf4b4db6590bc1281492448358ca80f425d51",
+      "size_bytes": 1379
+    },
+    "layers/amenities-healthcare-b2ba53dc94df4a12.geojson": {
+      "sha256": "b2ba53dc94df4a123d0ccac9fdf7c91b7084538ffc33f02ccd4fd5ee0f6fd2e6",
+      "size_bytes": 6848
+    },
+    "layers/amenities-healthcare-baf610c11899222f.geojson": {
+      "sha256": "baf610c11899222fc8e9560a12381aa73bdb052937c68853764387e9c3894f9d",
+      "size_bytes": 999
+    },
+    "layers/amenities-healthcare-c127d85083b8c092.geojson": {
+      "sha256": "c127d85083b8c092614a5a5aee44da898b57f16d9fa29fe5e3e3c0fe46dc01b4",
+      "size_bytes": 1009
+    },
+    "layers/amenities-healthcare-cb8cbdf546200428.geojson": {
+      "sha256": "cb8cbdf5462004280ae7bac659896f85d7ce1cd3572b2551a9c9203b007a99b1",
+      "size_bytes": 2285
+    },
+    "layers/amenities-healthcare-daa5a6aa76120e36.geojson": {
+      "sha256": "daa5a6aa76120e36b748deddde0c27dc403103053bbc651536bc76895316a77b",
+      "size_bytes": 370
+    },
+    "layers/amenities-healthcare-dbd3cb1af054aaba.geojson": {
+      "sha256": "dbd3cb1af054aaba46e08c164eaf875f3f658daf4974592bc14015b2430001e8",
+      "size_bytes": 367
+    },
+    "layers/amenities-healthcare-dd1504129b9411c2.geojson": {
+      "sha256": "dd1504129b9411c2d0019961c73ac21c5679a42dc8dcd8b0017a2d152d29c18d",
+      "size_bytes": 1681
+    },
+    "layers/amenities-healthcare-e34428979da93402.geojson": {
+      "sha256": "e34428979da934027ff0dff4c52d63bb922c47b8800712718e19da873f57f945",
+      "size_bytes": 2613
+    },
+    "layers/amenities-healthcare-f1064a18b203472f.geojson": {
+      "sha256": "f1064a18b203472fb63b0dfee743a67fae3bca468920ad9be986560efe2d504f",
+      "size_bytes": 688
+    },
+    "layers/amenities-healthcare-fc50667b43be0e17.geojson": {
+      "sha256": "fc50667b43be0e1794ba5fcb06068ba749621e47c701f1e12454e686dbe1c403",
+      "size_bytes": 2646
+    },
+    "layers/amenities-retail-centre-00eb65fefa4e8469.geojson": {
+      "sha256": "00eb65fefa4e84691a23adc509e1fed33dd66d94922f0e9462f8c614e66b4ba2",
+      "size_bytes": 7692
+    },
+    "layers/amenities-retail-centre-03bb9fb135976aae.geojson": {
+      "sha256": "03bb9fb135976aae9059686ff1221a16baf3065f038def96e3115d4b136d2378",
+      "size_bytes": 11050
+    },
+    "layers/amenities-retail-centre-054fd480e27f2f80.geojson": {
+      "sha256": "054fd480e27f2f809108cd047e36b7a123c7b1de5a2031f42be9f697e33c9410",
+      "size_bytes": 413
+    },
+    "layers/amenities-retail-centre-0bc5884b601df23b.geojson": {
+      "sha256": "0bc5884b601df23b8922642828cbab58bac4effdf71cbdc494715223e980592a",
+      "size_bytes": 2280
+    },
+    "layers/amenities-retail-centre-124658b25f7b5899.geojson": {
+      "sha256": "124658b25f7b5899fd39da3071683b16bab7c14b0eb5a0ada916e6c70e71a61f",
+      "size_bytes": 2078
+    },
+    "layers/amenities-retail-centre-2185ea853db918d3.geojson": {
+      "sha256": "2185ea853db918d37ff80a2936481cceff4ed98eac170529b4f688577abd6bd0",
+      "size_bytes": 2111
+    },
+    "layers/amenities-retail-centre-240e5628ad414798.geojson": {
+      "sha256": "240e5628ad41479889b2f3d74d47678ca743d260a374dda94f2417dc389ddec0",
+      "size_bytes": 3220
+    },
+    "layers/amenities-retail-centre-25a6c1c6620781f7.geojson": {
+      "sha256": "25a6c1c6620781f797c838ee9e035635aefdd2cba64fe301c895607f8aa9d447",
+      "size_bytes": 2400
+    },
+    "layers/amenities-retail-centre-28b41a12d526fe41.geojson": {
+      "sha256": "28b41a12d526fe41b0d7c3cf1e8bceb4f31dca24f4f007e354dadf089cf1e72d",
+      "size_bytes": 1886
+    },
+    "layers/amenities-retail-centre-39f6be334e039800.geojson": {
+      "sha256": "39f6be334e03980067303d08f492094d957ab04bd53075f1cbe5bee52a2d1901",
+      "size_bytes": 417
+    },
+    "layers/amenities-retail-centre-3beee5487cbc8a22.geojson": {
+      "sha256": "3beee5487cbc8a22617746ff8918c7a11d73fc4de9068304bab52f0fefd2afa4",
+      "size_bytes": 805
+    },
+    "layers/amenities-retail-centre-3d5b9158855428ba.geojson": {
+      "sha256": "3d5b9158855428bac9119efc689dbe3fdbf1cb81ba0688587c86292c802ca047",
+      "size_bytes": 401
+    },
+    "layers/amenities-retail-centre-3dd56d221a042b77.geojson": {
+      "sha256": "3dd56d221a042b772dd363bdd28b2973deb63f06da8f1fe555fde9c54f23af9f",
+      "size_bytes": 1694
+    },
+    "layers/amenities-retail-centre-53b73f4e9d839818.geojson": {
+      "sha256": "53b73f4e9d839818abaaefe50a357d25e80c6eef2af2a150784fca4c580dd156",
+      "size_bytes": 7221
+    },
+    "layers/amenities-retail-centre-54b3b6333f5d3e5b.geojson": {
+      "sha256": "54b3b6333f5d3e5b36f7d28dbd96cd30e863f1c45c7b5f7b52e35749bf7e33b9",
+      "size_bytes": 2884
+    },
+    "layers/amenities-retail-centre-563b69e840e30909.geojson": {
+      "sha256": "563b69e840e30909dc34efc1f96af355214b0c48ecc3f081417aad77fc3e4365",
+      "size_bytes": 2191
+    },
+    "layers/amenities-retail-centre-73e0b8ce901501c2.geojson": {
+      "sha256": "73e0b8ce901501c2447f6af213a556b38a8010d82ed83fd1642dd8c4722376e8",
+      "size_bytes": 1214
+    },
+    "layers/amenities-retail-centre-751f64bace8c95df.geojson": {
+      "sha256": "751f64bace8c95dffdbe13daf4356e7d5efa8c0de822d2e340d51db18f915c9c",
+      "size_bytes": 18139
+    },
+    "layers/amenities-retail-centre-81e761870b1602bd.geojson": {
+      "sha256": "81e761870b1602bddfe093a503b6d4abb1d2574072cb70716c6e66789b82c823",
+      "size_bytes": 4912
+    },
+    "layers/amenities-retail-centre-9358395268f986b3.geojson": {
+      "sha256": "9358395268f986b378e6556219301c6e9fa0e20a19f644936825c504253035a3",
+      "size_bytes": 1849
+    },
+    "layers/amenities-retail-centre-99109ea43079de73.geojson": {
+      "sha256": "99109ea43079de73c98fdb4c802ab964b3bbb77f477e7a1e7d06bb5e6d255f51",
+      "size_bytes": 1534
+    },
+    "layers/amenities-retail-centre-99ae19c01b409ac2.geojson": {
+      "sha256": "99ae19c01b409ac2b07d5f125864c80b3b271dff46e29b38f97e029f4cdbb829",
+      "size_bytes": 5817
+    },
+    "layers/amenities-retail-centre-9ce8f9be4379e35b.geojson": {
+      "sha256": "9ce8f9be4379e35b9bad03613b813f0ec44a19c62772f5111cf71b8c5e85727e",
+      "size_bytes": 6045
+    },
+    "layers/amenities-retail-centre-9d750224b0c6b47f.geojson": {
+      "sha256": "9d750224b0c6b47f7babc355544da0536bf24ebad3f9bef0466c21fcb4b1a27b",
+      "size_bytes": 6080
+    },
+    "layers/amenities-retail-centre-a73b75dd06e88297.geojson": {
+      "sha256": "a73b75dd06e882971b1aad7692f4aede732588bc111101bf2d5ced2f989b6f95",
+      "size_bytes": 433
+    },
+    "layers/amenities-retail-centre-ba0a98933a9627da.geojson": {
+      "sha256": "ba0a98933a9627da160ebb61d231466784b5f8bc60dd2793053d7dd5c9a78497",
+      "size_bytes": 1130
+    },
+    "layers/amenities-retail-centre-bb4a1c220468bc20.geojson": {
+      "sha256": "bb4a1c220468bc2031f13c4ecc495320dc4c206766519a87f8729238c2cc1b62",
+      "size_bytes": 1121
+    },
+    "layers/amenities-retail-centre-c15d1e6b9987d0cf.geojson": {
+      "sha256": "c15d1e6b9987d0cfa925d461fe1a350971113bb5de11c7d89f0beeb6a49476b6",
+      "size_bytes": 2088
+    },
+    "layers/amenities-retail-centre-c4ae9b1ee6a61f4e.geojson": {
+      "sha256": "c4ae9b1ee6a61f4e12365e72cbba029c5eaa2e0f5163f2019f9071311e5ac97a",
+      "size_bytes": 1542
+    },
+    "layers/amenities-retail-centre-c5d5f324210e7d1f.geojson": {
+      "sha256": "c5d5f324210e7d1f33c5681e2d6c9d2ec6e7dea1fe098962851d2fea6123e110",
+      "size_bytes": 2445
+    },
+    "layers/amenities-retail-centre-c69829061820e747.geojson": {
+      "sha256": "c69829061820e7473296567bec3d92a8c8dc2b5c1e814ba21fae7fd73532f394",
+      "size_bytes": 6613
+    },
+    "layers/amenities-retail-centre-d4292a8c202af333.geojson": {
+      "sha256": "d4292a8c202af333442269b896041aae1fad0b91bf474fa82eb98177cedf511a",
+      "size_bytes": 3782
+    },
+    "layers/amenities-retail-centre-d5e01a7a7126acf8.geojson": {
+      "sha256": "d5e01a7a7126acf8810f7df1f590559a27d55a51f2d1f366bdaf036e1c40b859",
+      "size_bytes": 2268
+    },
+    "layers/amenities-retail-centre-d651f34ffeeacf47.geojson": {
+      "sha256": "d651f34ffeeacf4754223d97aea59fc58ab8330d2a53351cd1429c934e1f6103",
+      "size_bytes": 1679
+    },
+    "layers/amenities-retail-centre-e0e619837645e085.geojson": {
+      "sha256": "e0e619837645e08573ca23f6e47e83b3ce84726474612abcd26a6e84f90d92e5",
+      "size_bytes": 40745
+    },
+    "layers/amenities-retail-centre-e4a073b59ff6168e.geojson": {
+      "sha256": "e4a073b59ff6168e876d564f66e8b8f382185548eb3f41dc5fec3eb5b1503c1b",
+      "size_bytes": 432
+    },
+    "layers/low-traffic-low-traffic-area-427795d704824d21.geojson": {
+      "sha256": "427795d704824d21e82953c76216032fc7d3fba5f36df363069382568ba369ee",
+      "size_bytes": 2043
+    },
+    "layers/low-traffic-low-traffic-area-72a3721eab557eb9.geojson": {
+      "sha256": "72a3721eab557eb9ce2f683d88f4eb138e7c4477794fb99077a85aa63f2f0c5c",
+      "size_bytes": 8962
+    },
+    "layers/low-traffic-low-traffic-area-c6834a31bd686d9a.geojson": {
+      "sha256": "c6834a31bd686d9a8af816caa87f6b0f1e294c54808abce100101d5ae40f71be",
+      "size_bytes": 1085
+    },
+    "layers/low-traffic-low-traffic-area-portal-0e7652b2672fadfc.geojson": {
+      "sha256": "0e7652b2672fadfc318db9903e81c29a1d4f201d2d7d33c476629b2ce7cc4c72",
+      "size_bytes": 1177
+    },
+    "layers/low-traffic-low-traffic-area-portal-7fd8fd3c2a2b5ec2.geojson": {
+      "sha256": "7fd8fd3c2a2b5ec22980177b2245e1f23d26e3e508418befa31f1cf3f82a5c90",
+      "size_bytes": 5154
+    },
+    "layers/low-traffic-low-traffic-area-portal-dce0ae372919f875.geojson": {
+      "sha256": "dce0ae372919f87552686b637d97fd953b4b6d8a00444c31020eeb6c16b60966",
+      "size_bytes": 1600
+    },
+    "layers/schools-school-02ab0f07597cacfd.geojson": {
+      "sha256": "02ab0f07597cacfd15c7082d0af046013d801a3057a01e0fa0599cba59ad1d31",
+      "size_bytes": 93735
+    },
+    "layers/schools-school-0420a955c0f3d165.geojson": {
+      "sha256": "0420a955c0f3d165ecda64850a562017f93f3846be756cfad6f3a860ff5e086f",
+      "size_bytes": 9367
+    },
+    "layers/schools-school-0a34fcd8aa01ba1e.geojson": {
+      "sha256": "0a34fcd8aa01ba1e82bcb3002702b20d76f70e3581b2107f0a7292592bbbe64b",
+      "size_bytes": 2376
+    },
+    "layers/schools-school-112d29421f3fd3d6.geojson": {
+      "sha256": "112d29421f3fd3d6f52e4676e48b6ccfc55ab204fa51e25e4f9d75615af2af98",
+      "size_bytes": 7647
+    },
+    "layers/schools-school-13bbe3015e72dc69.geojson": {
+      "sha256": "13bbe3015e72dc69a2f5b77b7c7707d79a87add2454cbf4779547dbb5bbb36d9",
+      "size_bytes": 1233
+    },
+    "layers/schools-school-154a7d71ff40fb12.geojson": {
+      "sha256": "154a7d71ff40fb12a70c87a7fe0527da891c0d5eccb43f746d727650c6d0e698",
+      "size_bytes": 630
+    },
+    "layers/schools-school-16a0b551d6b439e9.geojson": {
+      "sha256": "16a0b551d6b439e956295bdf5f2e485e4349d9ff24521b812bb72e0de3cb2465",
+      "size_bytes": 1264
+    },
+    "layers/schools-school-1beb4f2b0a1cbf9e.geojson": {
+      "sha256": "1beb4f2b0a1cbf9e8abb6a4538b38ca99948feb781d8d1d64905389a4034a12d",
+      "size_bytes": 3434
+    },
+    "layers/schools-school-1eaae4db24b07793.geojson": {
+      "sha256": "1eaae4db24b077932376094c43694d561b94a949a1ad6439339293665a0f79d3",
+      "size_bytes": 4621
+    },
+    "layers/schools-school-24102e3b8b368085.geojson": {
+      "sha256": "24102e3b8b368085773115918ae1ec8caf34d9b6d02c6254402bc7adac96bc8a",
+      "size_bytes": 1888
+    },
+    "layers/schools-school-2c0e270f5885cdac.geojson": {
+      "sha256": "2c0e270f5885cdac5e9ada784c85200eb2f5e075b4c45ce0e2babf3e6eca22a6",
+      "size_bytes": 3501
+    },
+    "layers/schools-school-2ef1b028a3c85472.geojson": {
+      "sha256": "2ef1b028a3c85472f3670b6c45945a9648933bc4409afe722b9df31ede3050d8",
+      "size_bytes": 6309
+    },
+    "layers/schools-school-36b7382474e0d4d0.geojson": {
+      "sha256": "36b7382474e0d4d0731f0b4c688446035b5ee00dd6a1f29f2e3bd0fdeb45e761",
+      "size_bytes": 1693
+    },
+    "layers/schools-school-3eaa3ff65d276f9d.geojson": {
+      "sha256": "3eaa3ff65d276f9d07c367bc8cc50b2e8f57cd1e04a972051163d2257f03f3ea",
+      "size_bytes": 5920
+    },
+    "layers/schools-school-44dff76a30473602.geojson": {
+      "sha256": "44dff76a304736024d5ae306a850579e4db30cfbf6a684c524a7bd75434339f2",
+      "size_bytes": 3020
+    },
+    "layers/schools-school-44fec8015250e340.geojson": {
+      "sha256": "44fec8015250e340445f0e0855c2871f0c5e70d243cae7fc0c6c40cba12762e8",
+      "size_bytes": 1818
+    },
+    "layers/schools-school-45209581a479e29a.geojson": {
+      "sha256": "45209581a479e29afe09dfb0b91c67289d0f7f871fa9b6c6b04207f4e6f65309",
+      "size_bytes": 606
+    },
+    "layers/schools-school-499c96276274c10f.geojson": {
+      "sha256": "499c96276274c10f54bbcb67817100d9b4e5da48645165e360ce339881ddd63a",
+      "size_bytes": 652
+    },
+    "layers/schools-school-556dcd497c7f9b0a.geojson": {
+      "sha256": "556dcd497c7f9b0a2345ac36d26a6a90916b8e27602fbd674e1a23eebe0d2107",
+      "size_bytes": 20595
+    },
+    "layers/schools-school-5db15f7ef511b0dd.geojson": {
+      "sha256": "5db15f7ef511b0dd1928da15b2e45118169112d850db74b3b0433e0ac300f4cb",
+      "size_bytes": 2903
+    },
+    "layers/schools-school-5df826efffa32e75.geojson": {
+      "sha256": "5df826efffa32e750e4487cfeb2f96778db1a35fb1a246882e875f5f41ffc507",
+      "size_bytes": 1845
+    },
+    "layers/schools-school-635ed562d493d127.geojson": {
+      "sha256": "635ed562d493d1279ccbccf923aa8ed304385f887e5be468dbd8db86271834e5",
+      "size_bytes": 591
+    },
+    "layers/schools-school-64d9dad82a755f8d.geojson": {
+      "sha256": "64d9dad82a755f8d6f6611057d46e32ced267b901711a9952ec5cb37dc25d225",
+      "size_bytes": 5341
+    },
+    "layers/schools-school-6a82cd6e47cc2fcd.geojson": {
+      "sha256": "6a82cd6e47cc2fcd8d1376108640fab630577a13d628ed517bd93c16ba49ccf1",
+      "size_bytes": 1775
+    },
+    "layers/schools-school-6b57ca1fa8849e6a.geojson": {
+      "sha256": "6b57ca1fa8849e6ad4f48d5e1e3ba9f87880bcbcf7d1b186a2f757d6009b8054",
+      "size_bytes": 4076
+    },
+    "layers/schools-school-6fc2c6e0cd08929a.geojson": {
+      "sha256": "6fc2c6e0cd08929a8dba5fe9029f9176d69a2b1e86fcf971cf90e41d1e2e0392",
+      "size_bytes": 9365
+    },
+    "layers/schools-school-7317b560a48a101c.geojson": {
+      "sha256": "7317b560a48a101c688d120f0dd8d2cca36e58e0a3e161dfe06f712f0af443c3",
+      "size_bytes": 631
+    },
+    "layers/schools-school-81286b239bc226e2.geojson": {
+      "sha256": "81286b239bc226e214c3b9f8ce9d0ad58155037ab960ccefc9dedd9ac12077d7",
+      "size_bytes": 5820
+    },
+    "layers/schools-school-8163325a7aae21a1.geojson": {
+      "sha256": "8163325a7aae21a14d1b6602e7020dfc56a59cf2ae398564b8ee21020a320201",
+      "size_bytes": 639
+    },
+    "layers/schools-school-83a7efe99afd8d12.geojson": {
+      "sha256": "83a7efe99afd8d1250fd71e7f30c88299e6f4bad375c8914dfcbf0c073f98fe0",
+      "size_bytes": 5446
+    },
+    "layers/schools-school-8505bbea2e621ef7.geojson": {
+      "sha256": "8505bbea2e621ef71733114295a3bada87ba842b7532573af15c292a9b47ff3c",
+      "size_bytes": 1807
+    },
+    "layers/schools-school-86de08c4132dc568.geojson": {
+      "sha256": "86de08c4132dc5682fe9f0ab23a1c29de400f643a1321ad09db4a6d8ef08deef",
+      "size_bytes": 2362
+    },
+    "layers/schools-school-8b0b4e35ad297f31.geojson": {
+      "sha256": "8b0b4e35ad297f31cd9dcdbd4569e82028bbeacf6b376fbc315e157db8afe0ea",
+      "size_bytes": 5865
+    },
+    "layers/schools-school-92553522a6dab568.geojson": {
+      "sha256": "92553522a6dab56801335c84b98a2b7710eaaedb03f3f8152b41dd3e254740d7",
+      "size_bytes": 5287
+    },
+    "layers/schools-school-a7adc8eb87dbe379.geojson": {
+      "sha256": "a7adc8eb87dbe379a4d742fc218a64c3911e92fd698d0a5e7e4ae9ee47c84e7a",
+      "size_bytes": 5066
+    },
+    "layers/schools-school-c0dcfccec652a47f.geojson": {
+      "sha256": "c0dcfccec652a47fef40b9237ee8e9d6c9c6016d73a9053dcd9f3ff2a6622672",
+      "size_bytes": 3654
+    },
+    "layers/schools-school-c2fa982898df6442.geojson": {
+      "sha256": "c2fa982898df6442cc9d44c80c2a4d1dade35a8bc1a991f50a06371eb61d8082",
+      "size_bytes": 1169
+    },
+    "layers/schools-school-c6e10ab679e22782.geojson": {
+      "sha256": "c6e10ab679e22782c075e036d9655781360f97fc04c0a2904b10ed68df45956d",
+      "size_bytes": 2934
+    },
+    "layers/schools-school-ccf81d196f670b97.geojson": {
+      "sha256": "ccf81d196f670b972a10ae2e3b319b9cc638c6a66ea653117117e927ea9d5a90",
+      "size_bytes": 21155
+    },
+    "layers/schools-school-e4b2a54c9cf714a6.geojson": {
+      "sha256": "e4b2a54c9cf714a67560be62c1e6356964b422d68872587eda53281ad9429a5f",
+      "size_bytes": 2453
+    },
+    "layers/schools-school-eb8a809297d57f86.geojson": {
+      "sha256": "eb8a809297d57f86bfa56714d10fb7175f7a6ccd6cb50a95cdee1d1d3a065734",
+      "size_bytes": 8727
+    },
+    "layers/schools-school-ecb9d46f0c00f488.geojson": {
+      "sha256": "ecb9d46f0c00f488996c5d770d465c62fbcc52dd042d1b214051e87268e23d5d",
+      "size_bytes": 3955
+    },
+    "layers/schools-school-ef971f2dfa40b492.geojson": {
+      "sha256": "ef971f2dfa40b492d7c804cc33d96885053b812b9a15a9c93df2f90a2834886b",
+      "size_bytes": 6429
+    },
+    "layers/schools-school-street-assessment-0b148d5d77571edd.geojson": {
+      "sha256": "0b148d5d77571edd89e6f2a40d133195dd0001ee2fcd0b7c439aed0e57288553",
+      "size_bytes": 4738
+    },
+    "layers/schools-school-street-assessment-21a466cb77b37940.geojson": {
+      "sha256": "21a466cb77b37940cec3ac6074fd8fb2a87d5d87043557feaa267c111f3c26b2",
+      "size_bytes": 21823
+    },
+    "layers/schools-school-street-assessment-230b887e6ee0a1e0.geojson": {
+      "sha256": "230b887e6ee0a1e059901c98129e33e7ed74a176397740838f5ff1e0d26bc600",
+      "size_bytes": 16795
+    },
+    "layers/schools-school-street-assessment-2fad62325edf9875.geojson": {
+      "sha256": "2fad62325edf987507959bf72b78fee4cb49635de2d969a75a3c8c742cac7e4c",
+      "size_bytes": 7713
+    },
+    "layers/schools-school-street-assessment-31efc73e3507929f.geojson": {
+      "sha256": "31efc73e3507929ff4e59f10906432c8ab6bf4f18dbd93bb519ff4e99af99f8f",
+      "size_bytes": 4598
+    },
+    "layers/schools-school-street-assessment-361bf5f91b7b1545.geojson": {
+      "sha256": "361bf5f91b7b15451b466da8017256932f0888c6a621488607e5cdd1f15c997b",
+      "size_bytes": 1552
+    },
+    "layers/schools-school-street-assessment-382f0d3d45ec66a3.geojson": {
+      "sha256": "382f0d3d45ec66a34e7de9ad53493ea499fdd23d3daf48c6adc49341f8bf30fb",
+      "size_bytes": 7580
+    },
+    "layers/schools-school-street-assessment-3e171a5eb199f6d5.geojson": {
+      "sha256": "3e171a5eb199f6d563547353814dd5257308942ccd88269a16219c52347a2332",
+      "size_bytes": 14357
+    },
+    "layers/schools-school-street-assessment-41faf3cad2756a3b.geojson": {
+      "sha256": "41faf3cad2756a3bfb445a114d1332bcacffc6c803e1214f878ffb1de467a5ef",
+      "size_bytes": 14190
+    },
+    "layers/schools-school-street-assessment-44907beed414c959.geojson": {
+      "sha256": "44907beed414c9592607b52bce69c8ee17e967aeb4ce1e5ccaf3bf2c4228df51",
+      "size_bytes": 7707
+    },
+    "layers/schools-school-street-assessment-48d0bc917c7c3944.geojson": {
+      "sha256": "48d0bc917c7c3944f8088cbd768a948a82d64082ae685ca98beae90c8ba69d83",
+      "size_bytes": 23257
+    },
+    "layers/schools-school-street-assessment-4bae3d0f63a47813.geojson": {
+      "sha256": "4bae3d0f63a478137219f79b64b2fff15c66df05e6d9fd929edf06ae5a221464",
+      "size_bytes": 12149
+    },
+    "layers/schools-school-street-assessment-51b18645f82ae3ea.geojson": {
+      "sha256": "51b18645f82ae3eafab8a81f840e3ddaa3e5eb6bd6461f59f38bf1b2baa9345f",
+      "size_bytes": 4533
+    },
+    "layers/schools-school-street-assessment-5b852290287c00fe.geojson": {
+      "sha256": "5b852290287c00fe98dffc947e2a32031bdddbfc9f9dcac54002ba2633090d41",
+      "size_bytes": 6191
+    },
+    "layers/schools-school-street-assessment-5e5424d486cf8119.geojson": {
+      "sha256": "5e5424d486cf8119135f500d70d4bf83d08f1a8e1c950a898617c3e8094e63d2",
+      "size_bytes": 1532
+    },
+    "layers/schools-school-street-assessment-5e80d9fe13a1c8ba.geojson": {
+      "sha256": "5e80d9fe13a1c8bad4d8d5c1c750a0df6d9d3267f62ef1099e5dbec6f15f7418",
+      "size_bytes": 9187
+    },
+    "layers/schools-school-street-assessment-6655830ad6d7d8c4.geojson": {
+      "sha256": "6655830ad6d7d8c41714f098fd8664d469c6d07fbcc36cae2202c42bdb76bb2b",
+      "size_bytes": 46577
+    },
+    "layers/schools-school-street-assessment-6862561d62c46f33.geojson": {
+      "sha256": "6862561d62c46f33206ed78cbab3dc3d3b3085ec581aa8b017c1f8f6ac91b46a",
+      "size_bytes": 54207
+    },
+    "layers/schools-school-street-assessment-69d823585ba19d19.geojson": {
+      "sha256": "69d823585ba19d191165244cf2cc084adef1da18b04de160c3300260863b0f6c",
+      "size_bytes": 3038
+    },
+    "layers/schools-school-street-assessment-69fdb0264a2f5cc6.geojson": {
+      "sha256": "69fdb0264a2f5cc65ca252d616770d3b216d66578976728816095c83ed9bfb43",
+      "size_bytes": 1534
+    },
+    "layers/schools-school-street-assessment-76324e9313df6ce8.geojson": {
+      "sha256": "76324e9313df6ce8856ce4fc24ff4e3f88606e27436a75095508e28199f229a2",
+      "size_bytes": 12213
+    },
+    "layers/schools-school-street-assessment-7d9fe7fdd824f816.geojson": {
+      "sha256": "7d9fe7fdd824f81685e1307d897d40782fd1fa5423888def64c17136170bf306",
+      "size_bytes": 13675
+    },
+    "layers/schools-school-street-assessment-7e74dcd86e682d93.geojson": {
+      "sha256": "7e74dcd86e682d932cebf508573d965f5aa540c5bd39caef390dec59b81d37a9",
+      "size_bytes": 6144
+    },
+    "layers/schools-school-street-assessment-7ee1e29dca88629c.geojson": {
+      "sha256": "7ee1e29dca88629c01a8a88b11e6068b23687a21c9182d2505e683eecd18ad61",
+      "size_bytes": 10679
+    },
+    "layers/schools-school-street-assessment-8dd3a3066c29b4e6.geojson": {
+      "sha256": "8dd3a3066c29b4e6d8fd4cf6015328fd1c4530fd4996ad43fb3361cdfda5478d",
+      "size_bytes": 9101
+    },
+    "layers/schools-school-street-assessment-9560deb655d7aa48.geojson": {
+      "sha256": "9560deb655d7aa482cce9463513279d366afa6f370d7aeabf66f41f157d03832",
+      "size_bytes": 12149
+    },
+    "layers/schools-school-street-assessment-9d5f3ce191b66ddc.geojson": {
+      "sha256": "9d5f3ce191b66ddced24bdfa26cb4558ffb389b6f544581e940d731c5aa022fe",
+      "size_bytes": 19902
+    },
+    "layers/schools-school-street-assessment-9db5dd06d2520489.geojson": {
+      "sha256": "9db5dd06d25204895a11712cf7e499dc8a9f027314c16365383cfaf55cb0746b",
+      "size_bytes": 1555
+    },
+    "layers/schools-school-street-assessment-aacbf1533fc8b594.geojson": {
+      "sha256": "aacbf1533fc8b594e94b3f3f6f144a0cbabe232b029e0c03e87524d9e565a301",
+      "size_bytes": 3071
+    },
+    "layers/schools-school-street-assessment-b07a2d2c20f32350.geojson": {
+      "sha256": "b07a2d2c20f323504337aecf73f0ff6a2292020bf8ab47a9bc14eaa246406ad7",
+      "size_bytes": 3143
+    },
+    "layers/schools-school-street-assessment-b4bc89715bc61e9f.geojson": {
+      "sha256": "b4bc89715bc61e9fd56a188ee14de779acb393b1054bea677197810ee273c1cb",
+      "size_bytes": 16898
+    },
+    "layers/schools-school-street-assessment-bed9d1ec59c1a482.geojson": {
+      "sha256": "bed9d1ec59c1a482c7033e77524f19712857acb38eff56d0989bb48cac40d063",
+      "size_bytes": 12389
+    },
+    "layers/schools-school-street-assessment-bedf72e28b487bc7.geojson": {
+      "sha256": "bedf72e28b487bc782d0a594ec1297be8859d7a002f4b5bc7f43a8a65502c53c",
+      "size_bytes": 4591
+    },
+    "layers/schools-school-street-assessment-c1a95d6ba66839c9.geojson": {
+      "sha256": "c1a95d6ba66839c92ae03f1051254ba51576b5d8dea63d62bc94d1d6320c01f1",
+      "size_bytes": 15222
+    },
+    "layers/schools-school-street-assessment-c2fd03b9a88fa582.geojson": {
+      "sha256": "c2fd03b9a88fa5829a993a338fd57a31017291ea93f03a8f86fa58f742701c30",
+      "size_bytes": 4703
+    },
+    "layers/schools-school-street-assessment-c31f03b1900c49ca.geojson": {
+      "sha256": "c31f03b1900c49ca8d0998decd40b8490854bc2fc3f31debdead878bf82a3259",
+      "size_bytes": 21135
+    },
+    "layers/schools-school-street-assessment-ca94a4bac406605f.geojson": {
+      "sha256": "ca94a4bac406605f44bd5dba6f99e440f1e342bb315657331f1c80711e813f63",
+      "size_bytes": 9363
+    },
+    "layers/schools-school-street-assessment-d72a9765577aa986.geojson": {
+      "sha256": "d72a9765577aa986e828066b93988092362ba4e32b9001e0d04ad372d3037f31",
+      "size_bytes": 4757
+    },
+    "layers/schools-school-street-assessment-df4698d1654670e9.geojson": {
+      "sha256": "df4698d1654670e98891ca8068749412bd76a81ee839159dbf6b90b62f5238db",
+      "size_bytes": 1559
+    },
+    "layers/schools-school-street-assessment-e414555ee3ea7d50.geojson": {
+      "sha256": "e414555ee3ea7d5040affc6930f0803887f2ebff7ff052d96033f3150fa6a6cb",
+      "size_bytes": 4778
+    },
+    "layers/schools-school-street-assessment-f1abc270c8e18ae2.geojson": {
+      "sha256": "f1abc270c8e18ae2ead2d99462059fe9f81c2e475cd855ee025f71a6f33d1971",
+      "size_bytes": 1616
+    },
+    "layers/schools-school-street-assessment-f68854ca9a1efae7.geojson": {
+      "sha256": "f68854ca9a1efae75071749bf32e1a30fec8206e8bf23a258d177d6636be3676",
+      "size_bytes": 10671
+    },
+    "layers/schools-school-street-assessment-fcb31aa2acc45712.geojson": {
+      "sha256": "fcb31aa2acc45712f3d671bcd4a406e70a730383156a1b4a1748ab13bdff0765",
+      "size_bytes": 103801
+    },
+    "network-map.pdf": {
+      "sha256": "fa8e6d2464c61e456b4fe00ed8259e7daeae80cf7fb803110d1fa1cad7d41cc8",
+      "size_bytes": 5084009
+    },
+    "network.geojson": {
+      "sha256": "0fb1ba67cdf1b3881a380f6f00246f4f44e7b6e5a9b90ffeb49da7a422166904",
+      "size_bytes": 14644975
+    },
+    "publication.json": {
+      "sha256": "e050f458ecfdb7c01aa0f3edcc601939e5fabe43ee309deaccc2bfd4e5061d26",
+      "size_bytes": 627743
+    },
+    "service-worker.js": {
+      "sha256": "36bb8aa54eff5bf96d462d4da3a877a00bf1ef1e95636798c0b5ea6356c1c629",
+      "size_bytes": 1625
+    },
+    "topography-manifest.json": {
+      "sha256": "f5e9e270d430c0813a04878ef47afb3465b58804849bc702efedc8625ab60de8",
+      "size_bytes": 39329
+    },
+    "topography-profile-evidence.json": {
+      "sha256": "a079f466225603ecb86ec6bf185adc3eb8640157975c84b214f3e80b226f23ae",
+      "size_bytes": 40375
+    },
+    "topography/detail-040cce8204b3d42e.geojson": {
+      "sha256": "040cce8204b3d42e2365ffeec48dbc4619458e134a6e46bb1dba621b0b27006a",
+      "size_bytes": 52058
+    },
+    "topography/detail-05a22ce4b6466aea.geojson": {
+      "sha256": "05a22ce4b6466aea6143a58d2d5996aa3d7c404014441f6ca462c43c402549b4",
+      "size_bytes": 116733
+    },
+    "topography/detail-0f453798a38dd599.geojson": {
+      "sha256": "0f453798a38dd599f6bef05682f8f8268a19a2951696d7b74c6bb549c6089ac5",
+      "size_bytes": 146799
+    },
+    "topography/detail-1119b27d9b184730.geojson": {
+      "sha256": "1119b27d9b1847304e6d90dc467c2cc8fddfd274b3eb9306dccb45ef4cce42ff",
+      "size_bytes": 44451
+    },
+    "topography/detail-169799acea0af4f9.geojson": {
+      "sha256": "169799acea0af4f92a2357f8784be7a7df039aa54c540aceac295f332610fbde",
+      "size_bytes": 20012
+    },
+    "topography/detail-1f4963798d33d2ad.geojson": {
+      "sha256": "1f4963798d33d2adb54f120e339d60e1ee5dd0d185024508b28bedff4c92ba6e",
+      "size_bytes": 47523
+    },
+    "topography/detail-214d3bcad3b7e1ae.geojson": {
+      "sha256": "214d3bcad3b7e1ae3d58305521d0d7e43d0f76cf581324e5076860e5163ce09d",
+      "size_bytes": 3176
+    },
+    "topography/detail-23f5036c08371d98.geojson": {
+      "sha256": "23f5036c08371d98e77ccfd94f4cb6606c08e4d8ceaade795cff2c0404b7ae51",
+      "size_bytes": 17614
+    },
+    "topography/detail-2f3cb5bd301e5cd9.geojson": {
+      "sha256": "2f3cb5bd301e5cd9bb7e413b2757d3b07c7371247e3967a319a497f54667b191",
+      "size_bytes": 22882
+    },
+    "topography/detail-354ef03f24bd13ef.geojson": {
+      "sha256": "354ef03f24bd13ef3783e989bfcc549230c0dff47acbba2f86c290607f1d9aa7",
+      "size_bytes": 82931
+    },
+    "topography/detail-3756c375039ab789.geojson": {
+      "sha256": "3756c375039ab7893913fcde80d329dc3aed9523d0424a987777648079156df5",
+      "size_bytes": 3610
+    },
+    "topography/detail-43ff8fbb66456fa2.geojson": {
+      "sha256": "43ff8fbb66456fa2d9aca9576fdf5d25ec62211a0bf4763c1aca07e72a1fd854",
+      "size_bytes": 125734
+    },
+    "topography/detail-49c3cfceac282129.geojson": {
+      "sha256": "49c3cfceac282129e4ce5b1fcfb4c2cd7023cd44f42554c6592c105884dec3dc",
+      "size_bytes": 9392
+    },
+    "topography/detail-56917a4c8268d94f.geojson": {
+      "sha256": "56917a4c8268d94f7e849d1d82e1c9fb7a599cb7a866c6dac85157021850ce39",
+      "size_bytes": 59613
+    },
+    "topography/detail-570a2f9f6642c79a.geojson": {
+      "sha256": "570a2f9f6642c79aaee36e88599505eb942b1137da6a46e70390bd6315180af3",
+      "size_bytes": 9006
+    },
+    "topography/detail-598e00ffd0715a21.geojson": {
+      "sha256": "598e00ffd0715a211f347b1c846dbbcccfeba1cfd575867ec40b9f11adbb5d04",
+      "size_bytes": 85232
+    },
+    "topography/detail-5ace5a0774a5d39a.geojson": {
+      "sha256": "5ace5a0774a5d39abf832e2ad6ae7af4639634bdb2e28754887f3a5e44614950",
+      "size_bytes": 64930
+    },
+    "topography/detail-5f6e321c281a05eb.geojson": {
+      "sha256": "5f6e321c281a05eb10bd1fae50d48f2a234d308c232671ebc3901a664ad9fdd6",
+      "size_bytes": 127333
+    },
+    "topography/detail-5fffc4dcc8c8de15.geojson": {
+      "sha256": "5fffc4dcc8c8de1521f8c95f5b42bad84093337550e960908ba5ca6026256111",
+      "size_bytes": 47405
+    },
+    "topography/detail-65541ca70c86c9ec.geojson": {
+      "sha256": "65541ca70c86c9ec211e2599aa5fdb3197fe4f1fedd5a50889a4301ac52a7139",
+      "size_bytes": 81357
+    },
+    "topography/detail-69eee12c77342945.geojson": {
+      "sha256": "69eee12c773429451f5381d5f1c0c13dc538b067d4c681a3c19765824617804c",
+      "size_bytes": 64528
+    },
+    "topography/detail-6b267eb50d11b1fa.geojson": {
+      "sha256": "6b267eb50d11b1fa1af1c04b44cd43b5b277672eed53c1fba052c05c0b932100",
+      "size_bytes": 74754
+    },
+    "topography/detail-6fc09e95c36b5f67.geojson": {
+      "sha256": "6fc09e95c36b5f67de2874df08269cd025bd16a9ccef532a76aada975505384c",
+      "size_bytes": 58521
+    },
+    "topography/detail-6fe0468c863cb1f8.geojson": {
+      "sha256": "6fe0468c863cb1f88bd78ff0a9730fdae601badf30fba710a3fc77c0991d8c47",
+      "size_bytes": 63251
+    },
+    "topography/detail-734813976e89f06d.geojson": {
+      "sha256": "734813976e89f06dd479b480130231d83fb3868ec6ce6b3bcd69029e9222c9b8",
+      "size_bytes": 50299
+    },
+    "topography/detail-74a7744c2a673ada.geojson": {
+      "sha256": "74a7744c2a673ada26136798a7b76c1695a760ba900f71f94a2632ead8a53b50",
+      "size_bytes": 52413
+    },
+    "topography/detail-765d5fff4168948e.geojson": {
+      "sha256": "765d5fff4168948e24745a8906b3b3b8ab10df27d864e230457d66f3657027c5",
+      "size_bytes": 12593
+    },
+    "topography/detail-78a4d46ed965182f.geojson": {
+      "sha256": "78a4d46ed965182f673945a0c6a0ad2787576ee780fd32927f1208e1fa540b9d",
+      "size_bytes": 54961
+    },
+    "topography/detail-78cff075660e600f.geojson": {
+      "sha256": "78cff075660e600f91aaa441a357d8fbe580078a0c00bfa99cce655e5bdaba21",
+      "size_bytes": 51693
+    },
+    "topography/detail-78ef0340122ce7a8.geojson": {
+      "sha256": "78ef0340122ce7a82faefd49c54f76282e1fbc90b5bcc218e7bcc5f7bed1731a",
+      "size_bytes": 77562
+    },
+    "topography/detail-79832b3406888902.geojson": {
+      "sha256": "79832b34068889027d2baebda49c43792cd44b08fe9cdcdd77bd3f9d5cfabf8e",
+      "size_bytes": 15813
+    },
+    "topography/detail-7a47ed28f91c49cc.geojson": {
+      "sha256": "7a47ed28f91c49cccab724b4126c74f59cf834b0f61b54bac5af78aa69a6c9c9",
+      "size_bytes": 40109
+    },
+    "topography/detail-7e29a0ffda45d52b.geojson": {
+      "sha256": "7e29a0ffda45d52b94172927de347b1162648073e4171158a5302e21f8333e83",
+      "size_bytes": 49855
+    },
+    "topography/detail-8a03a0d58b2958a0.geojson": {
+      "sha256": "8a03a0d58b2958a07e66899b374fc20e415e6de0a98b6c4507c579e5b6c2fe69",
+      "size_bytes": 7490
+    },
+    "topography/detail-8e50bc38725eb584.geojson": {
+      "sha256": "8e50bc38725eb584c01320c62dd19a54f90a3e6fe97ff7eab32fa1d15a95d271",
+      "size_bytes": 59529
+    },
+    "topography/detail-91cefacedbe7aba8.geojson": {
+      "sha256": "91cefacedbe7aba8ea4c8fecd11e27822ee3c08fcc57050aca4a7571afe495fc",
+      "size_bytes": 8599
+    },
+    "topography/detail-9a7a3e8c1828fb8d.geojson": {
+      "sha256": "9a7a3e8c1828fb8d822cd1b9fd4cb6ffb2e199aaeb533ac6441a80ca4ad03693",
+      "size_bytes": 12213
+    },
+    "topography/detail-9c53ce3d4b7db4da.geojson": {
+      "sha256": "9c53ce3d4b7db4da680bb4c1b30c4e488327545f0574d0addf6771368cd4db9d",
+      "size_bytes": 72110
+    },
+    "topography/detail-9cf8d5ea6e2a2013.geojson": {
+      "sha256": "9cf8d5ea6e2a20139bfbec481db9da279c7445dca0c774e39fbac9fde8620d1c",
+      "size_bytes": 21271
+    },
+    "topography/detail-a237c3e8a21451cd.geojson": {
+      "sha256": "a237c3e8a21451cd0293489d2725e37496ae4af01fcfd4d94ace0a6d24bf40da",
+      "size_bytes": 69487
+    },
+    "topography/detail-a6a92fd270f92b4d.geojson": {
+      "sha256": "a6a92fd270f92b4d67a83f0817ff2cae02cd841d6af8696f2ddccb33e0c92d00",
+      "size_bytes": 11058
+    },
+    "topography/detail-a8db09f75c13adde.geojson": {
+      "sha256": "a8db09f75c13adde9f8edff54d8ebf47614a7da74b63f97043110b6d783726c3",
+      "size_bytes": 66056
+    },
+    "topography/detail-b0dbac412411e4c6.geojson": {
+      "sha256": "b0dbac412411e4c692a9bc13c340b691a957861b6576b5354d96fc3a31d946f7",
+      "size_bytes": 31553
+    },
+    "topography/detail-c5262df71559fa33.geojson": {
+      "sha256": "c5262df71559fa3399f731df1ca70d45c3024a87d29a02ab95a476ce688dc4f3",
+      "size_bytes": 36162
+    },
+    "topography/detail-c7583ebcf848e5f3.geojson": {
+      "sha256": "c7583ebcf848e5f365b3f5e875a252d8a364aefce1f94a30dfb1b7cf468f9e52",
+      "size_bytes": 21544
+    },
+    "topography/detail-cba262daac63a818.geojson": {
+      "sha256": "cba262daac63a81872d9d58761021572f91054dba41075dc890bcca112f666ff",
+      "size_bytes": 28039
+    },
+    "topography/detail-d12aa6572be5615f.geojson": {
+      "sha256": "d12aa6572be5615fc0a660871b6485ae4e5a04f730e406e3af539d90d800c197",
+      "size_bytes": 8869
+    },
+    "topography/detail-d5f8a0ae556d1462.geojson": {
+      "sha256": "d5f8a0ae556d14620dedad4182b347ad9778b3a8976b693b722d90a9714f2316",
+      "size_bytes": 8347
+    },
+    "topography/detail-d95b693c443fbc8d.geojson": {
+      "sha256": "d95b693c443fbc8d35a6f7b0b957fc24de949fb32ec1de78909783d0f4c5053a",
+      "size_bytes": 2778
+    },
+    "topography/detail-e426b71f928dc186.geojson": {
+      "sha256": "e426b71f928dc1863124c6db07794f33e59450bdae274dc9fedc793c5353805c",
+      "size_bytes": 93664
+    },
+    "topography/detail-e9401f6d76deff96.geojson": {
+      "sha256": "e9401f6d76deff96dae393697aea1d373e055b457e836455a75a48ecf64ceaea",
+      "size_bytes": 51702
+    },
+    "topography/detail-e99075a52221645d.geojson": {
+      "sha256": "e99075a52221645da0f74ef3dafde1841c1208606ea223760813c3db84eceff0",
+      "size_bytes": 19548
+    },
+    "topography/detail-eb476c3451ed25d8.geojson": {
+      "sha256": "eb476c3451ed25d8ccbfeefc75618b1353c11dfba5666e074821d280be738c19",
+      "size_bytes": 1610
+    },
+    "topography/detail-ee0de40a7b95f99a.geojson": {
+      "sha256": "ee0de40a7b95f99ab3f3140f4183603d7b05b80b840e9e4cbf50b6868a47b7a0",
+      "size_bytes": 3285
+    },
+    "topography/detail-f006fbd6acc624f3.geojson": {
+      "sha256": "f006fbd6acc624f39b461317a553c07cb0bb26618ea645ba69b04a3ddcccbd5b",
+      "size_bytes": 6584
+    },
+    "topography/detail-f6e313b2d47f873a.geojson": {
+      "sha256": "f6e313b2d47f873aa80d8de097289d3aa5b3fa5af38b6d243c7139a7f4de9633",
+      "size_bytes": 51411
+    },
+    "topography/detail-f709909cc886f5bf.geojson": {
+      "sha256": "f709909cc886f5bf9972dce1ab16519845116ced74e3abd638d2c9a7ab6866a4",
+      "size_bytes": 34805
+    },
+    "topography/detail-fc5cc986c2da96af.geojson": {
+      "sha256": "fc5cc986c2da96afa344fc4700a93b889b14394e8bef504813111c3f0e7e05a1",
+      "size_bytes": 79573
+    },
+    "topography/overview-00d88e47fd241d18.geojson": {
+      "sha256": "00d88e47fd241d186809e90efc31b9b9bab2d2f062db320c734ff84550c7b640",
+      "size_bytes": 48633
+    },
+    "topography/overview-04b2af8b10fc4dea.geojson": {
+      "sha256": "04b2af8b10fc4dea3491ca6e5bdd2b53fde2464a863321db5da1e2236353af4b",
+      "size_bytes": 44885
+    },
+    "topography/overview-0fa2101b7393d999.geojson": {
+      "sha256": "0fa2101b7393d999f13a3cdac28a7e23910dbad1b4a7294dbe74bbe106c90185",
+      "size_bytes": 61870
+    },
+    "topography/overview-121ae15dcdf9ec1c.geojson": {
+      "sha256": "121ae15dcdf9ec1c7384b04f00e8f9bfc78d32dec0543019061afc7e70dc5088",
+      "size_bytes": 48998
+    },
+    "topography/overview-19013930b714caa2.geojson": {
+      "sha256": "19013930b714caa2fb9cb83ac4851af5044ad1d877e0d86197c12a778d8cbb96",
+      "size_bytes": 33185
+    },
+    "topography/overview-1af2f6256bbbefe6.geojson": {
+      "sha256": "1af2f6256bbbefe6799cabeeddcc2443e56b58ad27731bc30fd77b651aeb2a73",
+      "size_bytes": 6770
+    },
+    "topography/overview-22081cf5c9a012d5.geojson": {
+      "sha256": "22081cf5c9a012d5de99033b9c8c4b7e48a5a06b2b5fe177df0e4038d592b893",
+      "size_bytes": 20011
+    },
+    "topography/overview-22a615ca4699bddc.geojson": {
+      "sha256": "22a615ca4699bddc0dd698cc14838edb864f7e7d711ec2542652280ec949a64a",
+      "size_bytes": 68814
+    },
+    "topography/overview-23567e92416c9946.geojson": {
+      "sha256": "23567e92416c9946fa4a3ff317c4a0ef5097a19fc2165622a072c8fdac0c6299",
+      "size_bytes": 41931
+    },
+    "topography/overview-29e13f2e9d5d3e10.geojson": {
+      "sha256": "29e13f2e9d5d3e1041505840ae47e32450742ea4330251f0f51e8eda767e72e7",
+      "size_bytes": 11673
+    },
+    "topography/overview-2aefc3934b18ef0d.geojson": {
+      "sha256": "2aefc3934b18ef0dc8eb7aef599c5608e2dc476a4fc8afec7962b3d7ae8fc2b2",
+      "size_bytes": 76137
+    },
+    "topography/overview-2fc6b1a1ab96283a.geojson": {
+      "sha256": "2fc6b1a1ab96283af43b4aac8d1e8ce5a4b53ce2e71411735a70dcb4864a8b0c",
+      "size_bytes": 49071
+    },
+    "topography/overview-37984f13bc0644aa.geojson": {
+      "sha256": "37984f13bc0644aa4b53fa122681cf2149116ff163f559562e194780ed18d2be",
+      "size_bytes": 6044
+    },
+    "topography/overview-3b2d266101b9ce37.geojson": {
+      "sha256": "3b2d266101b9ce3720603bb42f226be6dd71f9d89d06746d37172f06542dc9af",
+      "size_bytes": 74713
+    },
+    "topography/overview-3bf0d05152d8b80d.geojson": {
+      "sha256": "3bf0d05152d8b80dc9b013d43f5222923ce16f9fb1df04f76ea875ee10a2cf36",
+      "size_bytes": 61648
+    },
+    "topography/overview-3cbc780f2ed2a2fe.geojson": {
+      "sha256": "3cbc780f2ed2a2fe7d55f8b0b7f1b09fda3f3f7f7e78fbc94ff7b6db0a74aca5",
+      "size_bytes": 62456
+    },
+    "topography/overview-3d72fea3f464f2ce.geojson": {
+      "sha256": "3d72fea3f464f2cec5ce2ca95a975c09ed9f46ee7a57e481462c18bf657913b1",
+      "size_bytes": 2598
+    },
+    "topography/overview-3ddaab62b38f0d9d.geojson": {
+      "sha256": "3ddaab62b38f0d9dd5a088423f684a134342fda23d25e2a7bda6945b48d5e38d",
+      "size_bytes": 1430
+    },
+    "topography/overview-3ffb023b0cde8931.geojson": {
+      "sha256": "3ffb023b0cde8931e074bdffe71d4831b7f1c89a5cad8f45b18e033e4df605e5",
+      "size_bytes": 8149
+    },
+    "topography/overview-428212206edc6783.geojson": {
+      "sha256": "428212206edc6783309583fb1f5d2ca9466d2560c86e15df44c6467eef86ae51",
+      "size_bytes": 16354
+    },
+    "topography/overview-464a4e027f1691b8.geojson": {
+      "sha256": "464a4e027f1691b80b6468a7f3ef1e3346a2a217e12ffdbc8d0e9a9f1c642f95",
+      "size_bytes": 110433
+    },
+    "topography/overview-493ff29f8ffc9e96.geojson": {
+      "sha256": "493ff29f8ffc9e968dc06e11189ab224f9f3d4aefd26edcc23111e040173cd72",
+      "size_bytes": 118873
+    },
+    "topography/overview-4c30f89290e88d48.geojson": {
+      "sha256": "4c30f89290e88d48a389f3cdf9354ec2fa342b18da0846b08078d1cbe16da520",
+      "size_bytes": 17928
+    },
+    "topography/overview-4c3e3e6b0135ba20.geojson": {
+      "sha256": "4c3e3e6b0135ba20fad93a475f2bb73fd2362b5ffefe9bc18aafcd8b0ebb5139",
+      "size_bytes": 45543
+    },
+    "topography/overview-4df2ebeab7e7c73f.geojson": {
+      "sha256": "4df2ebeab7e7c73f6f8e264d84e0087a3d6fd51732bf0dcafebb6f5c8d81b7d6",
+      "size_bytes": 12233
+    },
+    "topography/overview-4fdf61b852e8d922.geojson": {
+      "sha256": "4fdf61b852e8d92204b67328bf315eda3d4547112879c5822e58805969e5522b",
+      "size_bytes": 52081
+    },
+    "topography/overview-5121c37a00fb331d.geojson": {
+      "sha256": "5121c37a00fb331d8cef72f903dfdd54ba8ac81ad2132e270f16f660bd067644",
+      "size_bytes": 79151
+    },
+    "topography/overview-555a6553aec62670.geojson": {
+      "sha256": "555a6553aec626706065d53dd6feab238fb9e9751c1300c50497990254e1fb4e",
+      "size_bytes": 8059
+    },
+    "topography/overview-5e0f4d2c5749f12b.geojson": {
+      "sha256": "5e0f4d2c5749f12b0ea270ec6364c4a269cf813f6bec00c4f0c7f15d2b59d1b0",
+      "size_bytes": 21442
+    },
+    "topography/overview-63125f25f7eac6a7.geojson": {
+      "sha256": "63125f25f7eac6a74c6a8c490597631508a0ae7c703eb9c5ba20b43a01217a51",
+      "size_bytes": 7807
+    },
+    "topography/overview-663092d2231c4f98.geojson": {
+      "sha256": "663092d2231c4f98e2982c1225ffa1e1c5dc17ec3415b85ecd444624f740c63e",
+      "size_bytes": 60551
+    },
+    "topography/overview-75eab5996a147276.geojson": {
+      "sha256": "75eab5996a14727622e4f84ecb0a1615c173f09cee9326bbcd420004a5a1c598",
+      "size_bytes": 37949
+    },
+    "topography/overview-7fbe49fa00de15c3.geojson": {
+      "sha256": "7fbe49fa00de15c3c3a32bff5c037b8b8ca05ab5bd688c4f0a80a18206864f86",
+      "size_bytes": 53841
+    },
+    "topography/overview-832a45c5bf366e66.geojson": {
+      "sha256": "832a45c5bf366e66a28bb5602e48aae3cf1ff44f1aba29b0ece7ef44c044cbb5",
+      "size_bytes": 17852
+    },
+    "topography/overview-885cb89141a7b4b9.geojson": {
+      "sha256": "885cb89141a7b4b970943089c242ef8b6c0ac24a9697f44717a1582fd4d27ca9",
+      "size_bytes": 47382
+    },
+    "topography/overview-8a0801c198aabaa9.geojson": {
+      "sha256": "8a0801c198aabaa9b2e4193205cf03074572d64a08da6e842de1910ee701cbd0",
+      "size_bytes": 67147
+    },
+    "topography/overview-8d8dde49f0c0a7d6.geojson": {
+      "sha256": "8d8dde49f0c0a7d631525cff86a35491666850e2d7c6e2990ff9bf06b392a11b",
+      "size_bytes": 25339
+    },
+    "topography/overview-924873b1689ad27e.geojson": {
+      "sha256": "924873b1689ad27ece948b523d12acdbaa8b052f4189c4213a89bb6d0ab5ff12",
+      "size_bytes": 47419
+    },
+    "topography/overview-935de0d6f64f8846.geojson": {
+      "sha256": "935de0d6f64f88465d33959d3225ebaa38c06da3655d233f3cf9c78bd35347cb",
+      "size_bytes": 46255
+    },
+    "topography/overview-93b67d16c0a4131d.geojson": {
+      "sha256": "93b67d16c0a4131d15a31fe849d20905d7a0f6e2109caf14f3ab57f1c6e53d39",
+      "size_bytes": 70130
+    },
+    "topography/overview-a0c4207caab1a524.geojson": {
+      "sha256": "a0c4207caab1a524613ba3ce9dc363eec08f268eed17353aa4f5fce22fb0baff",
+      "size_bytes": 14733
+    },
+    "topography/overview-a2b2992886148231.geojson": {
+      "sha256": "a2b299288614823148747364fcdde54e52ff16c5d459875bc5cac0dc2769b53a",
+      "size_bytes": 9212
+    },
+    "topography/overview-a862bd2795743886.geojson": {
+      "sha256": "a862bd2795743886069f63938881d41e00d7dd00b5a91b5d06ec0c0e60aa9dee",
+      "size_bytes": 80912
+    },
+    "topography/overview-a9b38f17be2d2181.geojson": {
+      "sha256": "a9b38f17be2d2181543ad9553b26f1ef6defa27823f815691bf633e31ea4d7dd",
+      "size_bytes": 20104
+    },
+    "topography/overview-ab65c8d24e024a75.geojson": {
+      "sha256": "ab65c8d24e024a75db52788342e3fc55ff7387c6b85ba98ff3f566040f522827",
+      "size_bytes": 48813
+    },
+    "topography/overview-b141e761a07d6368.geojson": {
+      "sha256": "b141e761a07d636891b924e51c1036e2ba5e124f2a74f2fb17f2335255f5cbc2",
+      "size_bytes": 56193
+    },
+    "topography/overview-bf66e28bb21cb5d9.geojson": {
+      "sha256": "bf66e28bb21cb5d9449301151e055d94f7b53f30273e3b5447ff4f2d3dbbded5",
+      "size_bytes": 2816
+    },
+    "topography/overview-d226b9e4f429a0bb.geojson": {
+      "sha256": "d226b9e4f429a0bb6084d88260408f3f5a4acc498771ba9c0c03f0029eb19c34",
+      "size_bytes": 56469
+    },
+    "topography/overview-d530e1e9bfd9b182.geojson": {
+      "sha256": "d530e1e9bfd9b1824a73945ee49b9a06f903bb4df071b92f1b40ac1bd87dc817",
+      "size_bytes": 141759
+    },
+    "topography/overview-d891b46f595e5e76.geojson": {
+      "sha256": "d891b46f595e5e760158049f4f4bbfeb9bc040aaf5b58f16f8d66787d388347c",
+      "size_bytes": 116554
+    },
+    "topography/overview-da2bee5efe8b8be4.geojson": {
+      "sha256": "da2bee5efe8b8be4deb1fdeff4e51bee388b9758602ad4b7ba7c58607643de1a",
+      "size_bytes": 34362
+    },
+    "topography/overview-dc2ecc611c0447e2.geojson": {
+      "sha256": "dc2ecc611c0447e2fb1cfd9762d4cf3b96288f1e7f9d632c0f4c240e29a93751",
+      "size_bytes": 89344
+    },
+    "topography/overview-e2d8084a7e07579d.geojson": {
+      "sha256": "e2d8084a7e07579d3751609ad85a90d0c8de5102dd34f7ec1760edfe4e723c13",
+      "size_bytes": 8646
+    },
+    "topography/overview-e515b0b05a941904.geojson": {
+      "sha256": "e515b0b05a9419049490c5ca50a833db5fd23640719c158e245286d740183533",
+      "size_bytes": 3105
+    },
+    "topography/overview-e555f7092083634b.geojson": {
+      "sha256": "e555f7092083634bf991ae7cd0167e87cc0af43c4bfa4e5bebb0416ffe24dc0d",
+      "size_bytes": 10338
+    },
+    "topography/overview-f6e4dac94fde9045.geojson": {
+      "sha256": "f6e4dac94fde9045c64913f9ab45105eedf8d5a65d95790829b247c49ff641d9",
+      "size_bytes": 30833
+    },
+    "topography/overview-fa2081b026399627.geojson": {
+      "sha256": "fa2081b02639962728769a15a3eb504238b6ab7d609c0f2096a08baf58830bf3",
+      "size_bytes": 3430
+    },
+    "topography/overview-ff20e811839ef04d.geojson": {
+      "sha256": "ff20e811839ef04def5e5f98a255cb2a58d2e1ea39815f0e954cbf983cfe90c3",
+      "size_bytes": 72702
+    }
+  },
+  "compilation_input_fingerprint": "1714146759e7c0cbda46ece22a3f2f0941e390a86d76953bf6f97e32dac61d92",
+  "connection_count": 405,
+  "criteria": {
+    "atm_comparison": {
+      "compared": "grey"
+    },
+    "connections": {
+      "distance_challenges": "green",
+      "mandatory_checks": "red"
+    },
+    "network": {
+      "authoritative_model": "green",
+      "community_accounting": "green",
+      "community_coverage": "green",
+      "intervention_coverage": "green",
+      "legacy_pairwise_absent": "green",
+      "rural_community_accounting": "green",
+      "urban_community_accounting": "green"
+    },
+    "school_street_candidate_assessments": {
+      "all_in_scope_schools_assessed": "green",
+      "qualitative_not_probability": "green"
+    },
+    "spine_network": {
+      "a_road_intervention_assumptions": "green",
+      "all_access_obligations_resolved": "red",
+      "branch_provenance": "green",
+      "cross_spine_traversal": "red",
+      "degree_one_access_valid": "green",
+      "first_reachable_access": "green",
+      "gateway_coverage": "green",
+      "governed_spine_evidence": "green",
+      "parallel_meetings_suppressed": "green",
+      "school_access_state": "red"
+    },
+    "topography": {
+      "all_generated_edges_profiled": "green",
+      "elevation_evidence_coverage": "grey",
+      "gradient_sections_published": "grey"
+    },
+    "urban_network": {
+      "area_permeability_without_centreline": "green",
+      "candidate_low_traffic_areas": "green",
+      "ncn_kept_as_permeability_evidence": "green",
+      "official_main_road_spines": "grey",
+      "official_road_classification": "grey",
+      "stable_named_area_portals": "green",
+      "urban_a_road_evidence_coverage": "red",
+      "urban_community_area_access": "red",
+      "urban_school_area_access": "red"
+    }
+  },
+  "cyclic_runtime_files": [
+    "provenance-lock.json",
+    "review-map.zip"
+  ],
+  "decision_contract_sha256": "d5c59b714279461e5dea360c585225b775dc81378a4a89c7936f1335ffe6fa1e",
+  "decision_ledger_input_sha256": "67779ed4c174e52fe6267892a335d34d6acb63c7fcbca50b7a61d1c48596c9c9",
+  "deployment_id": "oxfordshire",
+  "gap_count": 552,
+  "governed_input_fingerprint": "8dce8f21f1f00348dc3d449b8ac82ba7609d094aff2fdc2fb81cdc83a6713c3e",
+  "layer_counts": {
+    "a_road_spines": 7428,
+    "access_obligations": 897,
+    "branch_meeting_connections": 82,
+    "candidate_low_traffic_areas": 3,
+    "cross_spine_connectors": 53,
+    "elevation_corroboration": 0,
+    "gaps": 552,
+    "gradient_sections": 0,
+    "healthcare": 236,
+    "low_traffic_area_portals": 14,
+    "ncn_routes": 777,
+    "retail_centres": 350,
+    "school_access_obligations": 366,
+    "school_street_assessments": 366,
+    "schools": 472,
+    "spine_access_branches": 219,
+    "spine_access_connections": 323,
+    "strategic_spines": 366,
+    "topography_profiles": 824,
+    "urban_classification_unknowns": 0,
+    "urban_spines": 0
+  },
+  "run_id": "run-93186a8034fd",
+  "runtime_governance_sha256": "7e112ca51264156788fcd27d42b5642478125daa3b51bed0d148dae9709876fc",
+  "schema_version": "satn-deployment-provenance-lock/v2",
+  "scope": {
+    "area_id": "oxfordshire",
+    "area_name": "Oxfordshire",
+    "audience": "public"
+  },
+  "snapshot_id": "oxfordshire-osm-2026-07-29",
+  "snapshot_manifest_sha256": "6b8367adcafd13663d79a8f4e1f844890827d439a59acd1ab0f929ad1dd9bdf9",
+  "status": "reviewable",
+  "title": "Oxfordshire Strategic Active Travel Network Review"
+}
