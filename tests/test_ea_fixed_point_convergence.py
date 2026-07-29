@@ -470,6 +470,85 @@ def test_acquisition_identity_separates_distinct_governed_inputs(
         assert max(len(name.encode()) for name in family) <= 255
 
 
+def test_sequential_acquisitions_derive_from_one_stable_evidence_basename(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (
+        operations,
+        snapshot,
+        compilation,
+        configured_evidence,
+        _supplemental,
+        routes,
+    ) = _production_acquisition_case(tmp_path, monkeypatch)
+    commands: list[tuple[str, ...]] = []
+
+    def run(command: tuple[str, ...], **_kwargs: object) -> SimpleNamespace:
+        commands.append(command)
+        _write_completed_acquisition_output(
+            Path(command[5]),
+            routes,
+            governed_input_fingerprint=command[18],
+        )
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("satn.ea_fixed_point_operations.subprocess.run", run)
+    first = operations.acquire(snapshot, compilation)
+    next_snapshot = EAFixedPointSnapshot(
+        snapshot_id=f"{snapshot.snapshot_id}-fp-test-01",
+        manifest_sha256="d" * 64,
+        primary_fingerprint=first.primary_fingerprint,
+        retained_sample_routes=first.evidence_path.with_name(
+            f"{first.evidence_path.stem}.sampled-routes.geojson"
+        ),
+        route_inventory=first.route_inventory,
+        governed_source_identities=(("network.geojson", "c" * 64),),
+        parent_snapshot_id=snapshot.snapshot_id,
+        parent_manifest_sha256=snapshot.manifest_sha256,
+        elevation_evidence_path=first.evidence_path,
+    )
+    monkeypatch.setattr(
+        "satn.ea_fixed_point_operations.create_snapshot",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "satn.ea_fixed_point_operations._snapshot_state",
+        lambda _config, *, expected_parent: next_snapshot,
+    )
+    sealed = operations.snapshot(snapshot, first, 1).snapshot
+    second_command = list(compilation.acquisition_command)
+    second_command[5] = str(first.evidence_path)
+    second_command[18] = "f" * 64
+    second_compilation = EAFixedPointCompilation(
+        expected_fingerprint=sealed.primary_fingerprint,
+        actual_fingerprint=compilation.actual_fingerprint,
+        candidate_network=compilation.candidate_network,
+        urban_access_ms=0,
+        topography_ms=0,
+        acquisition_command=tuple(second_command),
+    )
+
+    second = operations.acquire(sealed, second_compilation)
+
+    assert first.evidence_path != second.evidence_path
+    assert first.evidence_path.parent == second.evidence_path.parent
+    assert all(
+        path.name.startswith(f"{configured_evidence.stem}.fixed-point-")
+        and path.stem.count(".fixed-point-") == 1
+        for path in (first.evidence_path, second.evidence_path)
+    )
+    for output in (first.evidence_path, second.evidence_path):
+        family = (
+            output,
+            output.with_suffix(".manifest.json"),
+            output.with_name(f"{output.stem}.sample-ledger.jsonl"),
+            output.with_name(f"{output.stem}.sampled-routes.geojson"),
+        )
+        assert max(len(path.name.encode()) for path in family) <= 255
+    assert len(commands) == 2
+
+
 def test_acquisition_refuses_a_partial_immutable_output_family_before_execution(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

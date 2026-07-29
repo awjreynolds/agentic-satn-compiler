@@ -194,6 +194,10 @@ class EAFixedPointProductionOperations:
         self._base_config = config.model_copy(deep=True)
         self._base_snapshot_id = config.source.snapshot_id
         self._run_token = run_token
+        elevation = config.source.national_elevation
+        self._base_evidence_path = (
+            elevation.path.resolve() if elevation is not None else None
+        )
 
     def initial_snapshot(self) -> EAFixedPointSnapshot:
         return _snapshot_state(next(iter(self._configs.values())))
@@ -271,6 +275,7 @@ class EAFixedPointProductionOperations:
             snapshot,
             compilation,
             run_token=self._run_token,
+            base_evidence_path=self._base_evidence_path,
         )
         family = _acquisition_output_family(evidence_path)
         existing = tuple(path.exists() or path.is_symlink() for path in family)
@@ -358,6 +363,7 @@ def _validated_acquisition_command(
     compilation: EAFixedPointCompilation,
     *,
     run_token: str,
+    base_evidence_path: Path | None,
 ) -> tuple[tuple[str, ...], Path]:
     command = compilation.acquisition_command
     if len(command) != 21 or command[:4] != (
@@ -399,6 +405,12 @@ def _validated_acquisition_command(
         raise ValueError(
             "EA governed acquisition output differs from configured elevation evidence"
         )
+    if base_evidence_path is None:
+        raise ValueError("EA convergence lacks its stable base elevation evidence path")
+    base_evidence = _path_within_project(
+        str(base_evidence_path),
+        "base elevation output",
+    )
     if cache_path != evidence_path.parent / "ea-dtm-cache":
         raise ValueError("EA governed acquisition cache path is not reproducible")
     replay_inputs = _validated_ea_snapshot_replay_inputs(
@@ -429,8 +441,9 @@ def _validated_acquisition_command(
             separators=(",", ":"),
         ).encode()
     ).hexdigest()
-    iteration_evidence = evidence_path.with_name(
-        f"{evidence_path.stem}.fixed-point-{iteration_identity}{evidence_path.suffix}"
+    iteration_evidence = base_evidence.with_name(
+        f"{base_evidence.stem}.fixed-point-{iteration_identity}"
+        f"{base_evidence.suffix}"
     )
     command = (*command[:5], str(iteration_evidence), *command[6:])
     return command, iteration_evidence
