@@ -17,11 +17,13 @@ it must describe circulation using classified roads and candidate low-traffic ar
 rather than inventing cycle-route centrelines through residential streets.
 
 This PRD defines the deterministic network core of an agentic (AI) compiler. A
-configured AI runtime may assist with bounded, evidence-citing comparison of
-compiler-authored choices. It does not invent evidence or executable geometry,
-adopt policy, approve designs or replace accountable officer judgement. The
-published POC uses the deterministic `fake` agent provider rather than a live
-production AI service.
+configured AI runtime may undertake deeper, evidence-citing investigation at
+bounded compiler decision points and, through separately approved integrations,
+use external evidence systems. It must return through the compiler's typed
+validation boundary and cannot invent evidence or executable geometry, adopt
+policy, approve designs or replace accountable officer judgement. The published
+POC uses Deterministic Test Mode (`provider: fake`), which makes no live model or
+external-system call.
 
 The resulting review map is an informative strategic visualization. It must show:
 
