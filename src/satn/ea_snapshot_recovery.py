@@ -534,8 +534,29 @@ def promote_recovery_transaction(
         "official_source_id": official_source_id,
         "official_content_fingerprint": official_content_fingerprint,
     }
+    completed_plan = {
+        "target_snapshot_id": target.name,
+        "target_manifest_sha256": target_manifest_sha256,
+        "record_sha256": hashlib.sha256(record_content).hexdigest(),
+        "expected_configuration_sha256": expected_config_sha256,
+        "promoted_configuration_sha256": desired_config_sha256,
+        "parent_snapshot_id": parent_snapshot_id,
+        "parent_manifest_sha256": parent_manifest_sha256,
+        "official_source_id": official_source_id,
+        "official_content_fingerprint": official_content_fingerprint,
+    }
     plan_bytes = json.dumps(plan, sort_keys=True, separators=(",", ":")).encode()
     transaction_id = hashlib.sha256(plan_bytes).hexdigest()
+    completed_plan_bytes = json.dumps(
+        completed_plan, sort_keys=True, separators=(",", ":")
+    ).encode()
+    completed_transaction_id = hashlib.sha256(completed_plan_bytes).hexdigest()
+    completed_journal = {
+        "schema_version": RECOVERY_TRANSACTION_SCHEMA_VERSION,
+        "transaction_id": completed_transaction_id,
+        "phase": "complete",
+        "plan": completed_plan,
+    }
 
     if config_path.is_symlink() or not config_path.is_file():
         raise ValueError("EA snapshot recovery configuration is missing or unsafe")
@@ -563,13 +584,40 @@ def promote_recovery_transaction(
         "plan": plan,
     }
     if journal_path.exists():
-        journal = _read_recovery_journal(
-            journal_path,
-            transaction_id=transaction_id,
-            plan=plan,
-        )
+        if recorded_plan == completed_plan:
+            journal = _read_recovery_journal(
+                journal_path,
+                transaction_id=completed_transaction_id,
+                plan=completed_plan,
+            )
+            if journal.get("phase") != "complete":
+                raise ValueError("EA snapshot recovery transaction journal differs")
+        else:
+            journal = _read_recovery_journal(
+                journal_path,
+                transaction_id=transaction_id,
+                plan=plan,
+            )
     else:
         _write_recovery_journal(journal_path, journal, create=True)
+
+    if journal["phase"] == "complete":
+        if current_config_sha256 != desired_config_sha256:
+            raise ValueError("EA snapshot recovery completed configuration differs")
+        if not target.exists():
+            raise ValueError("EA snapshot recovery completed target is unavailable")
+        _validate_promoted_recovery_target(
+            target,
+            target_snapshot_id=target.name,
+            expected_manifest_sha256=str(target_manifest_sha256),
+            parent_snapshot_id=parent_snapshot_id,
+            parent_manifest_sha256=parent_manifest_sha256,
+            official_source_id=official_source_id,
+            official_content_fingerprint=official_content_fingerprint,
+        )
+        write_recovery_record(record_path, record)
+        _write_recovery_journal(journal_path, completed_journal, create=False)
+        return target
 
     if target.exists():
         _validate_promoted_recovery_target(
@@ -620,8 +668,7 @@ def promote_recovery_transaction(
         _atomic_replace_bytes(config_path, promoted_config_bytes)
     elif current_config_sha256 != desired_config_sha256:
         raise ValueError("EA snapshot recovery configuration changed outside transaction")
-    journal["phase"] = "complete"
-    _write_recovery_journal(journal_path, journal, create=False)
+    _write_recovery_journal(journal_path, completed_journal, create=False)
     return target
 
 
@@ -642,7 +689,12 @@ def recovery_transaction_artifact(
     if not journal_path.exists():
         return None
     plan = _untrusted_recovery_journal_plan(journal_path)
-    if plan.get("target") != str(target.resolve(strict=False)):
+    recorded_target = plan.get("target")
+    if recorded_target is not None:
+        target_differs = recorded_target != str(target.resolve(strict=False))
+    else:
+        target_differs = plan.get("target_snapshot_id") != target.name
+    if target_differs:
         raise ValueError("EA snapshot recovery transaction target differs")
     target_manifest_sha256 = plan.get("target_manifest_sha256")
     _canonical_sha256(target_manifest_sha256, "target manifest")

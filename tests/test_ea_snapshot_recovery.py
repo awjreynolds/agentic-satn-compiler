@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from pathlib import Path
 
 import geopandas as gpd
@@ -1877,6 +1878,114 @@ def test_recovery_transaction_promotes_once_and_replays_idempotently(
     arguments["staged_snapshot"] = None
     assert promote_recovery_transaction(**arguments) == promoted
     assert expected["record_path"].read_bytes() == record_bytes
+
+
+def test_completed_recovery_transaction_replays_from_a_different_checkout(
+    tmp_path: Path,
+) -> None:
+    original_root = tmp_path / "original"
+    original_root.mkdir()
+    arguments, expected = _transaction_fixture(original_root)
+    promote_recovery_transaction(**arguments)
+    original_journal = recovery_transaction_journal_path(expected["record_path"])
+
+    checkout_root = tmp_path / "fresh-checkout"
+    checkout_root.mkdir()
+    checkout_target = checkout_root / expected["target"].name
+    checkout_record = checkout_root / expected["record_path"].name
+    checkout_config = checkout_root / expected["config_path"].name
+    shutil.copytree(expected["target"], checkout_target)
+    shutil.copy2(expected["record_path"], checkout_record)
+    shutil.copy2(original_journal, recovery_transaction_journal_path(checkout_record))
+    shutil.copy2(expected["config_path"], checkout_config)
+
+    replay_arguments = {
+        **arguments,
+        "staged_snapshot": None,
+        "target": checkout_target,
+        "record_path": checkout_record,
+        "config_path": checkout_config,
+    }
+    plan = recovery_module.recovery_transaction_plan(checkout_record)
+    assert plan is not None
+    assert plan["target_snapshot_id"] == checkout_target.name
+    artifact = recovery_module.recovery_transaction_artifact(
+        checkout_record,
+        target=checkout_target,
+    )
+    assert artifact == (None, arguments["record"]["target_manifest_sha256"])
+    assert promote_recovery_transaction(**replay_arguments) == checkout_target
+    journal_text = recovery_transaction_journal_path(checkout_record).read_text(
+        encoding="utf-8"
+    )
+    assert str(original_root) not in journal_text
+    assert str(checkout_root) not in journal_text
+
+
+def test_completed_recovery_replay_migrates_a_valid_legacy_absolute_journal(
+    tmp_path: Path,
+) -> None:
+    arguments, expected = _transaction_fixture(tmp_path)
+    staged_identity = str(expected["staged_path"].resolve(strict=True))
+    promote_recovery_transaction(**arguments)
+    record_content = (
+        json.dumps(
+            arguments["record"],
+            indent=2,
+            sort_keys=True,
+            ensure_ascii=True,
+        )
+        + "\n"
+    ).encode()
+    legacy_plan = {
+        "target": str(expected["target"].resolve(strict=False)),
+        "staged": staged_identity,
+        "target_manifest_sha256": arguments["record"]["target_manifest_sha256"],
+        "record": str(expected["record_path"].resolve(strict=False)),
+        "record_sha256": hashlib.sha256(record_content).hexdigest(),
+        "configuration": str(expected["config_path"].resolve(strict=False)),
+        "expected_configuration_sha256": arguments["expected_config_sha256"],
+        "promoted_configuration_sha256": hashlib.sha256(
+            expected["promoted_config"]
+        ).hexdigest(),
+        "parent_snapshot_id": arguments["parent_snapshot_id"],
+        "parent_manifest_sha256": arguments["parent_manifest_sha256"],
+        "official_source_id": arguments["official_source_id"],
+        "official_content_fingerprint": arguments[
+            "official_content_fingerprint"
+        ],
+    }
+    legacy_transaction_id = hashlib.sha256(
+        json.dumps(
+            legacy_plan,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    journal_path = recovery_transaction_journal_path(expected["record_path"])
+    journal_path.write_text(
+        json.dumps(
+            {
+                "schema_version": recovery_module.RECOVERY_TRANSACTION_SCHEMA_VERSION,
+                "transaction_id": legacy_transaction_id,
+                "phase": "complete",
+                "plan": legacy_plan,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    arguments["staged_snapshot"] = None
+    assert promote_recovery_transaction(**arguments) == expected["target"]
+    migrated = json.loads(journal_path.read_text(encoding="utf-8"))
+    assert migrated["phase"] == "complete"
+    assert migrated["plan"]["target_snapshot_id"] == expected["target"].name
+    assert "target" not in migrated["plan"]
+    assert "staged" not in migrated["plan"]
+    assert str(tmp_path) not in journal_path.read_text(encoding="utf-8")
 
 
 def test_recovery_transaction_refuses_unjournaled_existing_target(
