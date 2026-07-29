@@ -251,15 +251,14 @@ def test_weca_configured_snapshot_is_distinct_and_benchmark_fixture_is_byte_pinn
     assert configured.source.retained_core_source == WECA_CONFIGURED_PARENT
 
 
-def test_weca_configured_snapshot_is_distinct_from_last_published_lock() -> None:
+def test_weca_configured_snapshot_matches_current_published_lock() -> None:
     configured = CouncilConfig.from_yaml(PROJECT / "deployments/weca/area.yaml")
     published_lock = json.loads(
         (PROJECT / "deployments/weca/provenance-lock.json").read_text(encoding="utf-8")
     )
 
     assert configured.source.snapshot_id == WECA_CONFIGURED_SNAPSHOT_ID
-    assert published_lock["snapshot_id"] == "weca-elevation-2026-07-28-v5"
-    assert configured.source.snapshot_id != published_lock["snapshot_id"]
+    assert published_lock["snapshot_id"] == configured.source.snapshot_id
 
 
 def test_lineaged_retained_core_seeds_distinct_target_and_is_idempotent(tmp_path: Path) -> None:

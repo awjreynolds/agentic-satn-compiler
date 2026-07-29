@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -31,18 +32,27 @@ from satn.local_evidence_store import (
 
 PROJECT = Path(__file__).parents[1]
 RAW_OSM_FIXTURE = PROJECT / "tests" / "fixtures" / "osm-network.xml"
+LOCAL_SPATIAL_RUNTIME_LOCK_SETTING = os.environ.get(
+    "SATN_TEST_DUCKDB_SPATIAL_RUNTIME_LOCK"
+)
+LOCAL_SPATIAL_ARCHIVE_SETTING = os.environ.get("SATN_TEST_DUCKDB_SPATIAL_EXTENSION")
+LOCAL_SPATIAL_RUNTIME_LOCK = Path(
+    LOCAL_SPATIAL_RUNTIME_LOCK_SETTING
+    or "__satn_test_duckdb_spatial_runtime_lock_not_configured__"
+)
 LOCAL_SPATIAL_ARCHIVE = Path(
-    "/private/tmp/banes-satn-embedded-store-benchmark/duckdb_extensions/"
-    "v1.4.4/osx_arm64/spatial.duckdb_extension"
+    LOCAL_SPATIAL_ARCHIVE_SETTING
+    or "__satn_test_duckdb_spatial_extension_not_configured__"
 )
 
 
 def _runtime_lock(
     path: Path,
     *,
-    platform: str = "osx_arm64",
+    platform: str | None = None,
     extension_sha256: str,
 ) -> Path:
+    runtime_platform = platform or local_evidence_store._runtime_platform()
     runtime_lock_path = path / "runtime-lock.json"
     runtime_lock_path.write_text(
         json.dumps(
@@ -50,14 +60,21 @@ def _runtime_lock(
                 "contract": "satn-duckdb-spatial-runtime/v1",
                 "duckdb_version": "1.4.4",
                 "spatial_version": "f129b24",
-                "platform": platform,
-                "extension_relative_path": "v1.4.4/osx_arm64/spatial.duckdb_extension",
+                "platform": runtime_platform,
+                "extension_relative_path": (
+                    f"v1.4.4/{runtime_platform}/spatial.duckdb_extension"
+                ),
                 "extension_sha256": extension_sha256,
             }
         ),
         encoding="utf-8",
     )
     return runtime_lock_path
+
+
+def _cached_extension(path: Path, runtime_lock_path: Path) -> Path:
+    runtime_lock = SpatialRuntimeLock.from_json(runtime_lock_path)
+    return path / "extensions" / runtime_lock.extension_relative_path
 
 
 def _store(tmp_path: Path, *, runtime_lock_path: Path) -> LocalEvidenceStore:
@@ -69,16 +86,41 @@ def _store(tmp_path: Path, *, runtime_lock_path: Path) -> LocalEvidenceStore:
 
 
 def _real_store(tmp_path: Path) -> LocalEvidenceStore:
-    runtime_lock_path = PROJECT / "config" / "duckdb-spatial-runtime-lock.json"
+    if (
+        LOCAL_SPATIAL_RUNTIME_LOCK_SETTING is None
+        or LOCAL_SPATIAL_ARCHIVE_SETTING is None
+    ):
+        pytest.skip(
+            "real DuckDB Spatial tests require explicit pinned "
+            "SATN_TEST_DUCKDB_SPATIAL_RUNTIME_LOCK and "
+            "SATN_TEST_DUCKDB_SPATIAL_EXTENSION artifacts"
+        )
+    if not LOCAL_SPATIAL_RUNTIME_LOCK.is_file():
+        pytest.fail(
+            "configured SATN_TEST_DUCKDB_SPATIAL_RUNTIME_LOCK is not a file: "
+            f"{LOCAL_SPATIAL_RUNTIME_LOCK}"
+        )
+    if not LOCAL_SPATIAL_ARCHIVE.is_file():
+        pytest.fail(
+            "configured SATN_TEST_DUCKDB_SPATIAL_EXTENSION is not a file: "
+            f"{LOCAL_SPATIAL_ARCHIVE}"
+        )
+    runtime_lock = SpatialRuntimeLock.from_json(LOCAL_SPATIAL_RUNTIME_LOCK)
+    runtime_platform = local_evidence_store._runtime_platform()
+    if runtime_lock.platform != runtime_platform:
+        pytest.fail(
+            "configured pinned DuckDB Spatial test runtime targets "
+            f"{runtime_lock.platform}, not {runtime_platform}"
+        )
     extension_cache = tmp_path / "extensions"
     provision_spatial_runtime(
-        runtime_lock_path=runtime_lock_path,
+        runtime_lock_path=LOCAL_SPATIAL_RUNTIME_LOCK,
         extension_archive=LOCAL_SPATIAL_ARCHIVE,
         extension_cache=extension_cache,
     )
     return LocalEvidenceStore(
         store_path=tmp_path / "evidence.duckdb",
-        runtime_lock_path=runtime_lock_path,
+        runtime_lock_path=LOCAL_SPATIAL_RUNTIME_LOCK,
         extension_cache=extension_cache,
     )
 
@@ -383,7 +425,7 @@ def test_initialise_fails_before_database_creation_without_a_provisioned_extensi
 
 def test_initialise_rejects_a_cached_extension_with_the_wrong_checksum(tmp_path: Path) -> None:
     runtime_lock_path = _runtime_lock(tmp_path, extension_sha256="a" * 64)
-    cached = tmp_path / "extensions" / "v1.4.4/osx_arm64/spatial.duckdb_extension"
+    cached = _cached_extension(tmp_path, runtime_lock_path)
     cached.parent.mkdir(parents=True)
     cached.write_bytes(b"not the locked extension")
 
@@ -394,16 +436,20 @@ def test_initialise_rejects_a_cached_extension_with_the_wrong_checksum(tmp_path:
 
 
 def test_initialise_rejects_a_runtime_lock_for_another_platform(tmp_path: Path) -> None:
+    runtime_platform = local_evidence_store._runtime_platform()
+    other_platform = (
+        "linux_x86_64" if runtime_platform != "linux_x86_64" else "osx_arm64"
+    )
     store = _store(
         tmp_path,
         runtime_lock_path=_runtime_lock(
             tmp_path,
-            platform="linux_x86_64",
+            platform=other_platform,
             extension_sha256="a" * 64,
         ),
     )
 
-    with pytest.raises(SpatialRuntimeError, match="targets linux_x86_64"):
+    with pytest.raises(SpatialRuntimeError, match=f"targets {other_platform}"):
         store.initialise()
 
     assert not (tmp_path / "evidence.duckdb").exists()
@@ -417,7 +463,7 @@ def test_initialise_rejects_a_different_duckdb_version_before_opening_the_store(
         tmp_path,
         extension_sha256=hashlib.sha256(extension).hexdigest(),
     )
-    cached = tmp_path / "extensions" / "v1.4.4/osx_arm64/spatial.duckdb_extension"
+    cached = _cached_extension(tmp_path, runtime_lock_path)
     cached.parent.mkdir(parents=True)
     cached.write_bytes(extension)
 
@@ -440,7 +486,7 @@ def test_status_rejects_a_different_duckdb_version_before_opening_the_store(
         tmp_path,
         extension_sha256=hashlib.sha256(extension).hexdigest(),
     )
-    cached = tmp_path / "extensions" / "v1.4.4/osx_arm64/spatial.duckdb_extension"
+    cached = _cached_extension(tmp_path, runtime_lock_path)
     cached.parent.mkdir(parents=True)
     cached.write_bytes(extension)
     store_path = tmp_path / "evidence.duckdb"
@@ -480,7 +526,7 @@ def test_initialise_disables_automatic_extensions_and_loads_only_the_locked_path
         tmp_path,
         extension_sha256=hashlib.sha256(extension).hexdigest(),
     )
-    cached = tmp_path / "extensions" / "v1.4.4/osx_arm64/spatial.duckdb_extension"
+    cached = _cached_extension(tmp_path, runtime_lock_path)
     cached.parent.mkdir(parents=True)
     cached.write_bytes(extension)
     statements: list[str] = []
@@ -929,18 +975,7 @@ def test_v2_store_metadata_requires_a_v3_rebuild_without_byte_mutation(
 def test_refresh_persists_availability_as_an_immutable_attested_coverage_state(
     tmp_path: Path,
 ) -> None:
-    runtime_lock_path = PROJECT / "config" / "duckdb-spatial-runtime-lock.json"
-    extension_cache = tmp_path / "extensions"
-    provision_spatial_runtime(
-        runtime_lock_path=runtime_lock_path,
-        extension_archive=LOCAL_SPATIAL_ARCHIVE,
-        extension_cache=extension_cache,
-    )
-    store = LocalEvidenceStore(
-        store_path=tmp_path / "evidence.duckdb",
-        runtime_lock_path=runtime_lock_path,
-        extension_cache=extension_cache,
-    )
+    store = _real_store(tmp_path)
     store.initialise()
     available = EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST56")
     no_data = EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST57")

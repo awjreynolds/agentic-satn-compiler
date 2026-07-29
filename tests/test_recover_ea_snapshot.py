@@ -29,9 +29,21 @@ def _recovery_script() -> ModuleType:
     return module
 
 
-def test_recovery_transaction_accepts_only_recovery_path_fingerprint() -> None:
+def test_recovery_transaction_accepts_only_recovery_path_fingerprint(
+    tmp_path: Path,
+) -> None:
     module = _recovery_script()
     config = AreaDefinition.from_yaml(PROJECT / "deployments" / "banes" / "area.yaml")
+    snapshot_id = "minimal-recovery-transaction-snapshot"
+    snapshot_root = tmp_path / "snapshots"
+    snapshot = snapshot_root / snapshot_id
+    snapshot.mkdir(parents=True)
+    (snapshot / "snapshot.json").write_text(
+        '{"schema_version":"2.0","snapshot_id":"minimal-recovery-transaction-snapshot"}\n',
+        encoding="utf-8",
+    )
+    config.source.snapshot_dir = snapshot_root
+    config.source.snapshot_id = snapshot_id
     network_manifest = compilation_dependency_manifest(config)
     recovery_manifest = compilation_dependency_manifest(
         config,

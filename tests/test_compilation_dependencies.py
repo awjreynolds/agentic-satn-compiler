@@ -181,6 +181,16 @@ def test_ea_recovery_code_is_active_only_for_recovery_candidate_identity(
 ) -> None:
     root = copied_compiler_tree(tmp_path)
     config = AreaDefinition.from_yaml(PROJECT / "deployments" / "banes" / "area.yaml")
+    snapshot_id = "minimal-recovery-fingerprint-snapshot"
+    snapshot_root = tmp_path / "snapshots"
+    snapshot = snapshot_root / snapshot_id
+    snapshot.mkdir(parents=True)
+    (snapshot / "snapshot.json").write_text(
+        '{"schema_version":"2.0","snapshot_id":"minimal-recovery-fingerprint-snapshot"}\n',
+        encoding="utf-8",
+    )
+    config.source.snapshot_dir = snapshot_root
+    config.source.snapshot_id = snapshot_id
     ordinary = dependencies.compilation_dependency_manifest(
         config,
         package_root=root,
