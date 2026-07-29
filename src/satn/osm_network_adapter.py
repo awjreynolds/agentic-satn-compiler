@@ -9,14 +9,17 @@ inventing a routing graph or clipping the source observation.
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import re
 import threading
+import urllib.parse
 import xml.etree.ElementTree as ElementTree
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from importlib.metadata import version
 from pathlib import Path
 from types import MappingProxyType
@@ -88,6 +91,9 @@ _OSM_LINES_SCHEMA: Final = {
 }
 _UTC_RECEIPT = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 _SUPPORTED_BNG_EXTENT = box(0, 0, 700_000, 1_300_000)
+ACQUISITION_RECEIPT_CONTRACT: Final = "satn-osm-network-acquisition-receipt/v1"
+OSM_ATTRIBUTION: Final = "© OpenStreetMap contributors"
+OSM_COPYRIGHT_URL: Final = "https://www.openstreetmap.org/copyright"
 
 
 @dataclass(frozen=True)
@@ -105,6 +111,175 @@ class OsmNetworkPartition:
 
     partition_key: EvidencePartitionKey
     features: tuple[OsmNetworkFeature, ...]
+
+
+def governed_overpass_query(
+    bounds: Sequence[object], timeout_seconds: int
+) -> tuple[str, dict[str, str]]:
+    """Return the only supported bounded raw-network acquisition query."""
+
+    area = _canonical_wgs84_bbox(bounds)
+    if (
+        not isinstance(timeout_seconds, int)
+        or isinstance(timeout_seconds, bool)
+        or not 1 <= timeout_seconds <= 1_800
+    ):
+        raise ValueError("OpenStreetMap acquisition timeout_seconds must be 1 to 1800")
+    bbox = ",".join(area[key] for key in ("south", "west", "north", "east"))
+    query = (
+        f"[out:xml][timeout:{timeout_seconds}][bbox:{bbox}];\n"
+        'way["highway"];\n'
+        "(._;>;);\n"
+        "out meta;\n"
+    )
+    return query, {"type": "bbox", "crs": DECLARED_CRS, **area}
+
+
+def ingestion_contract() -> IngestionContract:
+    """Construct the current closed OSM network ingestion contract."""
+
+    payload = contract_payload()
+    payload.pop("contract")
+    return IngestionContract(**payload)
+
+
+def acquisition_receipt_payload(
+    source_path: Path,
+    *,
+    raw_object_path: str,
+    endpoint: str,
+    query: str,
+    area: Mapping[str, object],
+    timeout_seconds: int,
+    retrieved_at: str,
+    response_headers: Mapping[str, str | None],
+) -> dict[str, object]:
+    """Build a governed receipt after validating the exact received raw bytes."""
+
+    source_path = source_path.resolve()
+    raw_sha256 = _sha256_file(source_path)
+    expected_object_path = f"objects/sha256/{raw_sha256}.osm"
+    if raw_object_path != expected_object_path:
+        raise ValueError("OSM raw object path does not match its content-addressed digest")
+    canonical_endpoint = _canonical_overpass_endpoint(endpoint)
+    canonical_retrieved_at = _canonical_utc_receipt(retrieved_at)
+    expected_query, canonical_area = governed_overpass_query(
+        tuple(area.get(key) for key in ("south", "west", "north", "east")),
+        timeout_seconds,
+    )
+    if dict(area) != canonical_area or query != expected_query:
+        raise ValueError("OSM acquisition query or area differs from the governed bounded request")
+    header_keys = {"content_type", "etag", "last_modified", "date"}
+    if set(response_headers) != header_keys or any(
+        value is not None and (not isinstance(value, str) or not value.strip())
+        for value in response_headers.values()
+    ):
+        raise ValueError("OSM acquisition response headers do not match the closed receipt schema")
+    publisher_release = _raw_xml_receipt(source_path)
+    source_export = SourceExport(
+        source_family=SOURCE_FAMILY,
+        dataset=DATASET,
+        layer=OSM_LAYER,
+        publisher_release=publisher_release,
+        effective_date=publisher_release[:10],
+        licence=LICENCE,
+        format=FORMAT,
+        declared_crs=DECLARED_CRS,
+        raw_bytes_sha256=raw_sha256,
+        provenance={"retained_path": str(source_path)},
+    )
+    validate_export(source_export, ingestion_contract())
+    return {
+        "contract": ACQUISITION_RECEIPT_CONTRACT,
+        "source_export": source_export.canonical_payload(),
+        "acquisition": {
+            "endpoint": canonical_endpoint,
+            "method": "POST",
+            "query_language": "Overpass QL",
+            "query": query,
+            "area": canonical_area,
+            "timeout_seconds": timeout_seconds,
+            "retrieved_at": canonical_retrieved_at,
+        },
+        "publisher": {
+            "generator": _raw_xml_generator(source_path),
+            "osm_base": publisher_release,
+        },
+        "http": {key: response_headers[key] for key in sorted(header_keys)},
+        "raw_object": {
+            "path": raw_object_path,
+            "sha256": raw_sha256,
+            "byte_count": source_path.stat().st_size,
+        },
+        "licence": {
+            "spdx": LICENCE,
+            "attribution": OSM_ATTRIBUTION,
+            "url": OSM_COPYRIGHT_URL,
+        },
+    }
+
+
+def acquisition_receipt_bytes(payload: Mapping[str, object]) -> bytes:
+    """Return canonical retained bytes for an OSM acquisition receipt."""
+
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
+    return (encoded + "\n").encode()
+
+
+def load_acquisition_receipt(receipt_path: Path) -> SourceExport:
+    """Load and fully attest one retained OSM acquisition without network access."""
+
+    if not receipt_path.is_file() or receipt_path.is_symlink():
+        raise ValueError(f"governed OSM acquisition receipt is not retained at {receipt_path}")
+    resolved_receipt = receipt_path.resolve()
+    raw_receipt = resolved_receipt.read_bytes()
+    expected_name = f"{hashlib.sha256(raw_receipt).hexdigest()}.json"
+    if resolved_receipt.name != expected_name or resolved_receipt.parent.name != "receipts":
+        raise ValueError("governed OSM acquisition receipt is not content-addressed")
+    try:
+        payload = json.loads(raw_receipt)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("governed OSM acquisition receipt is invalid JSON") from error
+    if not isinstance(payload, dict) or raw_receipt != acquisition_receipt_bytes(payload):
+        raise ValueError("governed OSM acquisition receipt is not canonical")
+    source_payload, acquisition, publisher, raw_object = _validated_acquisition_receipt(payload)
+    raw_sha256 = str(raw_object["sha256"])
+    object_path = (
+        resolved_receipt.parent.parent / "objects" / "sha256" / f"{raw_sha256}.osm"
+    )
+    if object_path.is_symlink() or not object_path.is_file():
+        raise ValueError(f"governed OSM raw object is not retained at {object_path}")
+    if object_path.stat().st_size != raw_object["byte_count"]:
+        raise ValueError(
+            "governed OSM raw object checksum or byte count does not match its receipt"
+        )
+    provenance = {
+        "retained_path": str(object_path.resolve()),
+        "acquisition_receipt": str(resolved_receipt),
+        "retrieved_at": acquisition["retrieved_at"],
+        "acquisition_endpoint": acquisition["endpoint"],
+        "acquisition_query": acquisition["query"],
+        "acquisition_area": acquisition["area"],
+        "publisher_generator": publisher["generator"],
+        "http": payload["http"],
+        "attribution": payload["licence"]["attribution"],
+    }
+    source_export = SourceExport(
+        **{
+            key: value
+            for key, value in source_payload.items()
+            if key != "contract"
+        },
+        provenance=provenance,
+    )
+    validate_export(source_export, ingestion_contract())
+    return source_export
 
 
 def contract_payload() -> dict[str, object]:
@@ -274,6 +449,191 @@ def _retained_path(source_export: SourceExport) -> Path:
     return source_path.resolve()
 
 
+def _canonical_wgs84_bbox(bounds: Sequence[object]) -> dict[str, str]:
+    if isinstance(bounds, (str, bytes)) or len(bounds) != 4:
+        raise ValueError("OpenStreetMap acquisition bbox requires south, west, north and east")
+    names = ("south", "west", "north", "east")
+    decimals: list[Decimal] = []
+    values: dict[str, str] = {}
+    for name, value in zip(names, bounds, strict=True):
+        if isinstance(value, bool):
+            raise ValueError("OpenStreetMap acquisition bbox coordinates must be finite numbers")
+        try:
+            coordinate = Decimal(str(value))
+        except (InvalidOperation, ValueError) as error:
+            raise ValueError(
+                "OpenStreetMap acquisition bbox coordinates must be finite numbers"
+            ) from error
+        if not coordinate.is_finite():
+            raise ValueError("OpenStreetMap acquisition bbox coordinates must be finite numbers")
+        if coordinate == 0:
+            coordinate = Decimal(0)
+        decimals.append(coordinate)
+        text = format(coordinate, "f")
+        if "." in text:
+            text = text.rstrip("0").rstrip(".")
+        values[name] = text
+    south, west, north, east = decimals
+    if not Decimal(-90) <= south < north <= Decimal(90):
+        raise ValueError("OpenStreetMap acquisition bbox latitude bounds are invalid")
+    if not Decimal(-180) <= west < east <= Decimal(180):
+        raise ValueError("OpenStreetMap acquisition bbox longitude bounds are invalid")
+    return values
+
+
+def _canonical_overpass_endpoint(value: object) -> str:
+    if not isinstance(value, str) or value != value.strip():
+        raise ValueError("OpenStreetMap acquisition endpoint must be an HTTPS URL")
+    parsed = urllib.parse.urlsplit(value)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError(
+            "OpenStreetMap acquisition endpoint must be an HTTPS URL without credentials, "
+            "query or fragment"
+        )
+    return value
+
+
+def _validated_acquisition_receipt(
+    payload: Mapping[str, object],
+) -> tuple[
+    Mapping[str, object],
+    Mapping[str, object],
+    Mapping[str, object],
+    Mapping[str, object],
+]:
+    if set(payload) != {
+        "contract",
+        "source_export",
+        "acquisition",
+        "publisher",
+        "http",
+        "raw_object",
+        "licence",
+    } or payload.get("contract") != ACQUISITION_RECEIPT_CONTRACT:
+        raise ValueError("governed OSM acquisition receipt does not match the v1 schema")
+    source_payload = payload["source_export"]
+    acquisition = payload["acquisition"]
+    publisher = payload["publisher"]
+    http = payload["http"]
+    raw_object = payload["raw_object"]
+    licence = payload["licence"]
+    if not all(
+        isinstance(value, dict)
+        for value in (source_payload, acquisition, publisher, http, raw_object, licence)
+    ):
+        raise ValueError("governed OSM acquisition receipt does not match the v1 schema")
+    assert isinstance(source_payload, dict)
+    assert isinstance(acquisition, dict)
+    assert isinstance(publisher, dict)
+    assert isinstance(http, dict)
+    assert isinstance(raw_object, dict)
+    assert isinstance(licence, dict)
+    if set(source_payload) != {
+        "contract",
+        "source_family",
+        "dataset",
+        "layer",
+        "publisher_release",
+        "effective_date",
+        "licence",
+        "format",
+        "declared_crs",
+        "raw_bytes_sha256",
+    }:
+        raise ValueError("governed OSM acquisition Source Export does not match the v1 schema")
+    if (
+        source_payload.get("contract") != "satn-source-export/v1"
+        or source_payload.get("source_family") != SOURCE_FAMILY
+        or source_payload.get("dataset") != DATASET
+        or source_payload.get("layer") != OSM_LAYER
+        or source_payload.get("licence") != LICENCE
+        or source_payload.get("format") != FORMAT
+        or source_payload.get("declared_crs") != DECLARED_CRS
+    ):
+        raise ValueError("governed OSM acquisition Source Export declaration is unsupported")
+    if set(acquisition) != {
+        "endpoint",
+        "method",
+        "query_language",
+        "query",
+        "area",
+        "timeout_seconds",
+        "retrieved_at",
+    }:
+        raise ValueError("governed OSM acquisition request does not match the v1 schema")
+    if acquisition.get("method") != "POST" or acquisition.get("query_language") != "Overpass QL":
+        raise ValueError("governed OSM acquisition request method or language is unsupported")
+    endpoint = _canonical_overpass_endpoint(acquisition.get("endpoint"))
+    if endpoint != acquisition["endpoint"]:
+        raise ValueError("governed OSM acquisition endpoint is not canonical")
+    retrieved_at = _canonical_utc_receipt(acquisition.get("retrieved_at"))
+    if retrieved_at != acquisition["retrieved_at"]:
+        raise ValueError("governed OSM acquisition retrieval time is not canonical")
+    area = acquisition.get("area")
+    if not isinstance(area, dict) or set(area) != {
+        "type",
+        "crs",
+        "south",
+        "west",
+        "north",
+        "east",
+    }:
+        raise ValueError("governed OSM acquisition area does not match the bbox schema")
+    timeout_seconds = acquisition.get("timeout_seconds")
+    query, expected_area = governed_overpass_query(
+        tuple(area.get(key) for key in ("south", "west", "north", "east")),
+        timeout_seconds,  # type: ignore[arg-type]
+    )
+    if (
+        area != expected_area
+        or acquisition.get("query") != query
+        or not isinstance(acquisition.get("query"), str)
+    ):
+        raise ValueError("governed OSM acquisition query or area is not canonical")
+    if set(publisher) != {"generator", "osm_base"}:
+        raise ValueError("governed OSM publisher receipt does not match the v1 schema")
+    generator = publisher.get("generator")
+    if generator is not None and (not isinstance(generator, str) or not generator.strip()):
+        raise ValueError("governed OSM publisher generator is invalid")
+    osm_base = _canonical_utc_receipt(publisher.get("osm_base"))
+    if (
+        source_payload.get("publisher_release") != osm_base
+        or source_payload.get("effective_date") != osm_base[:10]
+    ):
+        raise ValueError("governed OSM publisher receipt differs from its Source Export")
+    if set(http) != {"content_type", "date", "etag", "last_modified"} or any(
+        value is not None and (not isinstance(value, str) or not value.strip())
+        for value in http.values()
+    ):
+        raise ValueError("governed OSM HTTP metadata does not match the v1 schema")
+    raw_sha256 = source_payload.get("raw_bytes_sha256")
+    if (
+        not isinstance(raw_sha256, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", raw_sha256)
+        or set(raw_object) != {"path", "sha256", "byte_count"}
+        or raw_object.get("sha256") != raw_sha256
+        or raw_object.get("path") != f"objects/sha256/{raw_sha256}.osm"
+        or not isinstance(raw_object.get("byte_count"), int)
+        or isinstance(raw_object.get("byte_count"), bool)
+        or raw_object["byte_count"] <= 0
+    ):
+        raise ValueError("governed OSM raw object does not match its Source Export")
+    if licence != {
+        "spdx": LICENCE,
+        "attribution": OSM_ATTRIBUTION,
+        "url": OSM_COPYRIGHT_URL,
+    }:
+        raise ValueError("governed OSM acquisition licence or attribution is unsupported")
+    return source_payload, acquisition, publisher, raw_object
+
+
 @contextmanager
 def _osm_driver_configuration() -> object:
     """Apply the closed OGR tag mapping only while this adapter is reading."""
@@ -328,6 +688,22 @@ def _raw_xml_receipt(source_path: Path) -> str:
     if len(receipts) != 1:
         raise ValueError("governed OSM XML requires exactly one <meta osm_base=...Z> receipt")
     return receipts[0]
+
+
+def _raw_xml_generator(source_path: Path) -> str | None:
+    try:
+        for _event, element in ElementTree.iterparse(source_path, events=("start",)):
+            if element.tag != "osm" or element.attrib.get("version") != "0.6":
+                raise ValueError('governed OSM XML must have root <osm version="0.6">')
+            generator = element.attrib.get("generator")
+            if generator is not None and not generator.strip():
+                raise ValueError("governed OSM XML generator must be non-empty when present")
+            return generator
+    except ValueError:
+        raise
+    except (ElementTree.ParseError, UnicodeDecodeError) as error:
+        raise ValueError("governed Source Export is not well-formed OSM XML") from error
+    raise ValueError("governed Source Export is missing an OSM XML root")
 
 
 def _canonical_utc_receipt(value: object) -> str:
