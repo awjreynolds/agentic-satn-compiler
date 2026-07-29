@@ -57,7 +57,7 @@ def test_public_api_runs_complete_fixture(tmp_path: Path) -> None:
     result = compile(config)
 
     assert result.status == "complete"
-    assert result.connections == 3
+    assert result.connections == 2
     assert result.gaps == 0
     assert result.criteria["connections"]["mandatory_checks"] == "green"
     assert result.agent_records[0].decision == "accept"
@@ -101,17 +101,24 @@ def test_public_api_runs_complete_fixture(tmp_path: Path) -> None:
     )
     assert a_road["design_status"] == "strategic assumption; not a carriageway or final design"
     spine_access = gpd.read_file(result.artifacts["geopackage"], layer="spine_access_connections")
+    access_obligations = gpd.read_file(
+        result.artifacts["geopackage"], layer="access_obligations"
+    )
     spine_branches = gpd.read_file(result.artifacts["geopackage"], layer="spine_access_branches")
-    assert len(spine_access) == 3
+    assert len(spine_access) == 2
     community_access = spine_access[spine_access["obligation_kind"] == "community"]
     school_access = spine_access[spine_access["obligation_kind"] == "school"]
     assert set(community_access["community_id"]) == {"westfield", "eastfield"}
-    assert set(spine_access["network_role"]) == {
-        "spine-access-connection",
-        "school-access-connection",
-    }
-    assert list(school_access["school_id"]) == ["school-fixture"]
-    assert list(school_access["access_point_status"]) == ["mapped"]
+    assert set(spine_access["network_role"]) == {"spine-access-connection"}
+    assert school_access.empty
+    school_obligation = access_obligations[
+        access_obligations["school_id"] == "school-fixture"
+    ].iloc[0]
+    association = json.loads(school_obligation["provenance"])
+    assert school_obligation.geometry.geom_type == "Point"
+    assert pd.isna(school_obligation["access_connection_id"])
+    assert association["service_kind"] == "backbone-access-association"
+    assert association["association_kind"] == "colocated-existing-backbone"
     assert set(spine_access["spine_id"]) <= set(strategic_spines["spine_id"])
     assert spine_access["access_connection_id"].str.startswith("spine-access-").all()
     assert spine_access["community_attachment_node"].notna().all()
@@ -121,7 +128,7 @@ def test_public_api_runs_complete_fixture(tmp_path: Path) -> None:
     assert result.metadata["strategic_spines"] == 2
     assert result.metadata["access_obligations"] == 3
     assert result.metadata["school_access_obligations"] == 1
-    assert result.metadata["spine_access_connections"] == 3
+    assert result.metadata["spine_access_connections"] == 2
     assert result.metadata["spine_access_branches"] >= 1
     assert set(spine_access["branch_id"]) == set(spine_branches["branch_id"])
     assert set(spine_branches["network_role"]) == {"spine-access-branch"}
@@ -131,7 +138,9 @@ def test_public_api_runs_complete_fixture(tmp_path: Path) -> None:
         "school-access-obligation",
     }
     assert set(obligation["service_status"]) == {"served"}
-    assert set(obligation["access_connection_id"]) == set(spine_access["access_connection_id"])
+    assert set(obligation["access_connection_id"].dropna()) == set(
+        spine_access["access_connection_id"]
+    )
     school_obligation = obligation[obligation["obligation_kind"] == "school"].iloc[0]
     assert school_obligation["school_id"] == "school-fixture"
     assert school_obligation["access_point_status"] == "mapped"
@@ -474,7 +483,7 @@ def test_external_cli_snapshot_and_compile(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
     )
-    assert "complete: 3 connections, 0 gaps" in compile_run.stdout
+    assert "complete: 2 connections, 0 gaps" in compile_run.stdout
     assert (config_path.parent / "work" / "output" / "review-map.zip").exists()
 
 

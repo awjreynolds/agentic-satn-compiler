@@ -58,7 +58,6 @@ def test_blind_comparison_is_independent_and_publication_is_lawful(tmp_path: Pat
     assert result.metadata["atm_mode"] == "blind"
     assert result.metadata["atm_geometry_included"] is False
     assert result.metadata["divergence_counts"] == {
-        "addition": 1,
         "match": 2,
         "omission": 1,
     }
@@ -66,11 +65,7 @@ def test_blind_comparison_is_independent_and_publication_is_lawful(tmp_path: Pat
     assert "atm-reference" not in {f["properties"]["feature_type"] for f in network["features"]}
     assert "atm_reference" not in set(pyogrio.list_layers(result.artifacts["geopackage"])[:, 0])
     divergence = json.loads(result.artifacts["divergences"].read_text())
-    assert {record["status"] for record in divergence["records"]} == {
-        "addition",
-        "match",
-        "omission",
-    }
+    assert {record["status"] for record in divergence["records"]} == {"match", "omission"}
     assert all(
         record["review_required"] is False
         for record in divergence["records"]

@@ -398,8 +398,10 @@ def _connector_frame(rows: list[gpd.GeoDataFrame], source: gpd.GeoDataFrame) -> 
 def _finding_frame(rows: list[dict[str, object]], crs: object) -> gpd.GeoDataFrame:
     if not rows:
         return gpd.GeoDataFrame(columns=GAP_COLUMNS, geometry="geometry", crs=crs)
-    return gpd.GeoDataFrame(rows, columns=GAP_COLUMNS, geometry="geometry", crs=crs).sort_values(
-        "connection_id"
+    return (
+        gpd.GeoDataFrame(rows, columns=GAP_COLUMNS, geometry="geometry", crs=27700)
+        .to_crs(crs)
+        .sort_values("connection_id")
     )
 
 

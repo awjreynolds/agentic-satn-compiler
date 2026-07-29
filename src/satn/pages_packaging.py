@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import shutil
 import stat
@@ -275,6 +276,28 @@ def _coordinates(geometry: object) -> list[tuple[float, float]]:
 
     visit(geometry.get("coordinates"))
     return values
+
+
+def _validate_wgs84_map_artifacts(deployment: Path) -> None:
+    """Reject map coordinates that cannot be handed safely to MapLibre."""
+    for artifact in _files(deployment):
+        if artifact.suffix.lower() != ".geojson":
+            continue
+        relative_path = artifact.relative_to(deployment).as_posix()
+        features = _feature_collection(artifact, f"map artifact {relative_path}")
+        for index, feature in enumerate(features):
+            for longitude, latitude in _coordinates(feature.get("geometry")):
+                if (
+                    not math.isfinite(longitude)
+                    or not math.isfinite(latitude)
+                    or not -180 <= longitude <= 180
+                    or not -90 <= latitude <= 90
+                ):
+                    raise ValueError(
+                        "map artifact "
+                        f"{relative_path} feature {index} must contain only finite WGS84 "
+                        "longitude/latitude coordinates"
+                    )
 
 
 def _bbox(features: list[dict[str, object]]) -> list[float] | None:
@@ -910,6 +933,7 @@ def _copy_deployments(
             expected_snapshot_manifest_sha256=expected_snapshot,
             expected_lock=lock,
         )
+        _validate_wgs84_map_artifacts(target)
 
         for name, artifact in entry.artifacts.items():
             if name == "review_map_zip":

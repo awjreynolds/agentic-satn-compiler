@@ -1,0 +1,16 @@
+{
+  "phase": "complete",
+  "plan": {
+    "expected_configuration_sha256": "78e1278bde5280d8dbb0febe7294addd47c738d0090f8f59130f4d49a8692af6",
+    "official_content_fingerprint": "87c944fb4c4f77c949f25913c58b3e7f49df80bbe0bf317606b32feb0653e89c",
+    "official_source_id": "os-open-roads-2026-04-07",
+    "parent_manifest_sha256": "1993f2f66aaf9fabf95bb5621502a0b8d17430e1d12b49abfc0f03d61d830729",
+    "parent_snapshot_id": "weca-classification-elevation-2026-07-28-v10",
+    "promoted_configuration_sha256": "208fccfad9c27b34a27f50d819a9cfccf62ae21fab6c70ec7ec878edbc4439fc",
+    "record_sha256": "1afa42c04297147970b78902c968785cc27859e6bf30fecff8503e12ed7a0bcb",
+    "target_manifest_sha256": "f07ae113dbdcd1dcbb8f8a04747d602cd39249b71ad9e7027efdec57e0b474cd",
+    "target_snapshot_id": "weca-classification-elevation-2026-07-28-v11"
+  },
+  "schema_version": "ea-snapshot-recovery-transaction/v1",
+  "transaction_id": "e9498eed4b7fd4bd541fb4e29a430a3ee12a8478b1c9e64f3cb7cc35cee950bf"
+}

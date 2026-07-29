@@ -7,7 +7,7 @@ import pytest
 
 import satn.compilation_dependencies as dependencies
 from satn.models import AreaDefinition
-from satn.pipeline import _compiler_digest
+from satn.pipeline import _compiler_digest, compilation_governed_input_fingerprint
 
 PROJECT = Path(__file__).parents[1]
 
@@ -33,6 +33,7 @@ def test_manifest_is_explicit_complete_and_records_component_digests() -> None:
         "satn/routing.py",
         "satn/backbone.py",
         "satn/sources.py",
+        "satn/streaming_geojson.py",
         "satn/models.py",
         "satn/education_access.py",
         "satn/ea_elevation.py",
@@ -45,9 +46,17 @@ def test_manifest_is_explicit_complete_and_records_component_digests() -> None:
         "runtime-distribution/shapely",
     } <= components
     assert all(len(component["sha256"]) == 64 for component in manifest["components"])
-    assert "satn/publisher.py" not in components
+    assert "satn/publisher.py" in components
     assert "satn/pages_packaging.py" not in components
+    assert "satn/local_evidence_store.py" not in components
+    assert "satn/open_roads_adapter.py" not in components
+    assert "satn/osm_network_adapter.py" not in components
     assert "satn/assets/review-map.js" not in components
+    excluded = {component["path"] for component in manifest["excluded_components"]}
+    assert {
+        "satn/assets/osm-network-osmconf.ini",
+        "satn/osm_network_adapter.py",
+    } <= excluded
     population_component = next(
         component
         for component in manifest["components"]
@@ -167,6 +176,85 @@ def test_strategic_reference_path_adds_replay_dependency() -> None:
     assert strategic["sha256"] != ordinary["sha256"]
 
 
+def test_ea_recovery_code_is_active_only_for_recovery_candidate_identity(
+    tmp_path: Path,
+) -> None:
+    root = copied_compiler_tree(tmp_path)
+    config = AreaDefinition.from_yaml(PROJECT / "deployments" / "banes" / "area.yaml")
+    snapshot_id = "minimal-recovery-fingerprint-snapshot"
+    snapshot_root = tmp_path / "snapshots"
+    snapshot = snapshot_root / snapshot_id
+    snapshot.mkdir(parents=True)
+    (snapshot / "snapshot.json").write_text(
+        '{"schema_version":"2.0","snapshot_id":"minimal-recovery-fingerprint-snapshot"}\n',
+        encoding="utf-8",
+    )
+    config.source.snapshot_dir = snapshot_root
+    config.source.snapshot_id = snapshot_id
+    ordinary = dependencies.compilation_dependency_manifest(
+        config,
+        package_root=root,
+    )
+    recovery = dependencies.compilation_dependency_manifest(
+        config,
+        compiler_path="ea-recovery",
+        package_root=root,
+    )
+    recovery_path = "satn/ea_snapshot_recovery.py"
+    recovery_publisher_path = "satn/publisher.py"
+
+    assert recovery_path not in ordinary["selection"]["component_paths"]
+    assert recovery_publisher_path not in ordinary["selection"]["component_paths"]
+    assert recovery_path in {
+        component["path"] for component in ordinary["inactive_components"]
+    }
+    assert recovery["selection"]["active_groups"] == [
+        "core",
+        "ea-recovery",
+        "elevation-source",
+        "osm-source",
+    ]
+    assert recovery_path in recovery["selection"]["component_paths"]
+    assert recovery_publisher_path in recovery["selection"]["component_paths"]
+    assert recovery["sha256"] != ordinary["sha256"]
+
+    ordinary_fingerprint = compilation_governed_input_fingerprint(
+        config,
+        dependency_manifest=ordinary,
+    )
+    recovery_fingerprint = compilation_governed_input_fingerprint(
+        config,
+        dependency_manifest=recovery,
+    )
+    for relative_path in ("ea_snapshot_recovery.py", "publisher.py"):
+        module = root / relative_path
+        original_bytes = module.read_bytes()
+        module.write_bytes(
+            original_bytes + b"\n# active recovery dependency probe\n"
+        )
+        unchanged_ordinary = dependencies.compilation_dependency_manifest(
+            config,
+            package_root=root,
+        )
+        changed_recovery = dependencies.compilation_dependency_manifest(
+            config,
+            compiler_path="ea-recovery",
+            package_root=root,
+        )
+
+        assert unchanged_ordinary["sha256"] == ordinary["sha256"]
+        assert changed_recovery["sha256"] != recovery["sha256"]
+        assert compilation_governed_input_fingerprint(
+            config,
+            dependency_manifest=unchanged_ordinary,
+        ) == ordinary_fingerprint
+        assert compilation_governed_input_fingerprint(
+            config,
+            dependency_manifest=changed_recovery,
+        ) != recovery_fingerprint
+        module.write_bytes(original_bytes)
+
+
 def test_external_direct_runtime_versions_are_selected_only_when_configured() -> None:
     fixture = AreaDefinition.from_yaml(PROJECT / "examples" / "fixture" / "council.yaml")
     external_agent = fixture.compilation.agent.model_copy(
@@ -203,6 +291,23 @@ def test_network_selection_contract_is_a_controlled_compilation_component(
     assert "satn/network_selection.py" in {
         component["path"] for component in original["components"]
     }
+    assert changed["sha256"] != original["sha256"]
+
+
+def test_streaming_geojson_validation_changes_compiler_identity(tmp_path: Path) -> None:
+    root = copied_compiler_tree(tmp_path)
+    original = dependencies.compilation_dependency_manifest(package_root=root)
+    parser = root / "streaming_geojson.py"
+    parser.write_bytes(parser.read_bytes() + b"\n# dependency-manifest regression probe\n")
+
+    changed = dependencies.compilation_dependency_manifest(package_root=root)
+
+    component = next(
+        item
+        for item in original["components"]
+        if item["path"] == "satn/streaming_geojson.py"
+    )
+    assert component["reason"] == "strict bounded validation of governed GeoJSON snapshot inputs"
     assert changed["sha256"] != original["sha256"]
 
 
@@ -245,7 +350,11 @@ def test_compiler_semantic_module_changes_change_the_manifest_digest(tmp_path: P
 
 def test_review_map_and_release_packaging_changes_do_not_change_the_digest(tmp_path: Path) -> None:
     root = copied_compiler_tree(tmp_path)
-    original = dependencies.compilation_dependency_manifest(package_root=root)
+    config = AreaDefinition.from_yaml(PROJECT / "deployments" / "banes" / "area.yaml")
+    original = dependencies.compilation_dependency_manifest(
+        config,
+        package_root=root,
+    )
 
     for relative_path in (
         "assets/review-map.js",
@@ -254,8 +363,33 @@ def test_review_map_and_release_packaging_changes_do_not_change_the_digest(tmp_p
     ):
         path = root / relative_path
         path.write_bytes(path.read_bytes() + b"\n/* dependency-manifest regression probe */\n")
+        changed = dependencies.compilation_dependency_manifest(
+            config,
+            package_root=root,
+        )
+        assert changed["sha256"] == original["sha256"]
+
+
+def test_additive_evidence_sidecars_do_not_change_the_ordinary_compiler_digest(
+    tmp_path: Path,
+) -> None:
+    root = copied_compiler_tree(tmp_path)
+    original = dependencies.compilation_dependency_manifest(package_root=root)
+    excluded = {
+        component["path"] for component in original["excluded_components"]
+    }
+
+    for relative_path in ("ea_raster_evidence.py", "evidence_replay.py"):
+        component_path = f"satn/{relative_path}"
+        assert component_path in excluded
+        assert component_path not in original["selection"]["component_paths"]
+        path = root / relative_path
+        original_bytes = path.read_bytes()
+        path.write_bytes(original_bytes + b"\n# sidecar digest exclusion probe\n")
         changed = dependencies.compilation_dependency_manifest(package_root=root)
         assert changed["sha256"] == original["sha256"]
+        assert component_path not in changed["selection"]["component_paths"]
+        path.write_bytes(original_bytes)
 
 
 @pytest.mark.parametrize("distribution", ("networkx", "openai", "httpx"))

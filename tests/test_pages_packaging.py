@@ -795,6 +795,59 @@ def test_package_pages_generates_stable_links_deployment_zip_and_release_archive
         assert "deployments/test-area/review-map.zip" in archive.namelist()
 
 
+@pytest.mark.parametrize(
+    ("relative_path", "coordinates"),
+    (
+        ("network.geojson", [0.0, 91.0]),
+        ("network.geojson", [181.0, 0.0]),
+        ("map-artifacts/invalid.geojson", [0.0, float("inf")]),
+        ("map-artifacts/invalid.geojson", [float("nan"), 0.0]),
+    ),
+)
+def test_package_pages_rejects_non_wgs84_map_artifact_coordinates(
+    tmp_path: Path,
+    relative_path: str,
+    coordinates: list[float],
+) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    deployments = tmp_path / "deployments"
+    write_catalogue(catalogue)
+    write_bundle(deployments)
+    artifact = deployments / "test-area" / relative_path
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "id": "invalid-coordinate",
+                        "properties": {},
+                        "geometry": {"type": "Point", "coordinates": coordinates},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    lock_path = deployments / "test-area" / "provenance-lock.json"
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    lock["artifacts"][relative_path] = {
+        "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+        "size_bytes": artifact.stat().st_size,
+    }
+    lock_text = json.dumps(lock)
+    lock_path.write_text(lock_text, encoding="utf-8")
+    (tmp_path / "test-area" / "provenance-lock.json").write_text(
+        lock_text,
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="finite WGS84 longitude/latitude"):
+        package_pages(catalogue, deployments, tmp_path / "pages", tmp_path / "release.zip")
+
+
 def test_validate_pages_release_independently_checks_extracted_content(tmp_path: Path) -> None:
     catalogue = tmp_path / "catalogue.yaml"
     deployments = tmp_path / "deployments"

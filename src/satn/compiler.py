@@ -33,6 +33,7 @@ from satn.evidence import (
     STRATEGIC_CYCLE_ROUTE_TYPES,
     continuous_linework,
     empty_context,
+    govern_a_road_context,
     govern_network_scope_for_urban_communities,
     mark_ncn_edges,
 )
@@ -276,6 +277,11 @@ def _compile_network(
 ) -> CompiledNetwork:
     places = source["places"].copy().sort_values("place_id").reset_index(drop=True)
     context = source.get("context", empty_context(source["network"].crs)).copy()
+    official_road_classification = source.get("official_road_classification")
+    context, road_classification_disagreements = govern_a_road_context(
+        context,
+        official_road_classification,
+    )
     # Preserve raw current destination site/access-point geometry for the
     # profile-enabled sibling preparation.  The ordinary scoped context keeps
     # its existing schema and output behaviour.
@@ -372,7 +378,6 @@ def _compile_network(
     gaps = backbone.gaps.copy()
     agent_records = list(backbone.agent_records)
     crs = source["network"].crs
-    official_road_classification = source.get("official_road_classification")
     urban = derive_urban_structure(
         urban_communities,
         source["network"],
@@ -529,6 +534,7 @@ def _compile_network(
             config.compilation.network_selection,
             road_graph=road_graph,
             spine_access_connections=spine_access_connections,
+            access_obligations=access_obligations,
             context=strategic_corridor_context,
             source_config=config.source,
             config_directory=config.config_path.parent,
@@ -765,6 +771,7 @@ def _compile_network(
             "community_coverage": community_coverage,
             "urban_settlement_form_profiles": urban_settlement_form_profiles(communities),
             "urban_a_road_spine_coverage": urban_a_road_coverage,
+            "road_classification_disagreements": road_classification_disagreements,
             **(
                 {
                     "spine_access_candidate_preparation": (
@@ -1437,7 +1444,7 @@ def _degree_one_access_valid(
     obligations: gpd.GeoDataFrame,
     connections: gpd.GeoDataFrame,
 ) -> bool:
-    """Prove that every served rural Community is a leaf with one parent edge."""
+    """Prove each served rural Community has one edge or an exact zero-edge association."""
     served = obligations[
         (obligations["obligation_kind"] == "community")
         & (obligations["service_status"] == "served")
@@ -1446,14 +1453,36 @@ def _degree_one_access_valid(
     community_connections = connections[connections["obligation_kind"] == "community"]
     if community_connections["place_id"].duplicated().any():
         return False
-    expected = {
-        str(row["place_id"]): str(row["access_connection_id"]) for _, row in served.iterrows()
-    }
+    expected: dict[str, str] = {}
+    associated: set[str] = set()
+    for _, row in served.iterrows():
+        place_id = str(row["place_id"])
+        access_connection_id = row["access_connection_id"]
+        if access_connection_id is not None and not pd.isna(access_connection_id):
+            expected[place_id] = str(access_connection_id)
+            continue
+        provenance = json.loads(str(row["provenance"]))
+        if (
+            provenance.get("service_kind") != "backbone-access-association"
+            or provenance.get("association_kind")
+            not in {
+                "colocated-direct-strategic-spine",
+                "colocated-existing-backbone",
+            }
+            or not provenance.get("routing_node_id")
+            or provenance.get("root_spine_id") != row["root_spine_id"]
+            or not provenance.get("root_source_id")
+            or not provenance.get("root_evidence_id")
+            or not provenance.get("parent_role")
+            or not provenance.get("parent_target_id")
+        ):
+            return False
+        associated.add(place_id)
     actual = {
         str(row["place_id"]): str(row["access_connection_id"])
         for _, row in community_connections.iterrows()
     }
-    return actual == expected
+    return actual == expected and associated.isdisjoint(actual)
 
 
 def _cross_spine_status(

@@ -7,7 +7,7 @@ import hashlib
 import json
 import math
 import os
-import shutil
+import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -22,11 +22,15 @@ import pandas as pd
 from PIL import Image, ImageFile
 from shapely.geometry import Point
 
+from satn.content_identity import canonical_network_geometry_fingerprint
 from satn.ea_elevation import (
     CONTRACT_SCHEMA_VERSION,
+    DATASET_DECLARED_SURVEY_END,
+    DATASET_DECLARED_SURVEY_START,
     DTM_VERTICAL_ACCURACY,
     ELIGIBLE_FEATURE_TYPES,
     FIXED_POINT_PRIMARY_FIELD,
+    SAMPLE_LEDGER_SCHEMA_VERSION,
     WECA_PINNED_ELIGIBLE_ROUTE_BBOX,
     WECA_ROUTING_BUFFER_M,
     WECA_SURVEY_REQUEST_BBOX,
@@ -67,6 +71,14 @@ WECA_AUTHORITIES = (
 )
 MAX_WCS_ATTEMPTS = 3
 MAX_PROGRESS_HEARTBEATS = 20
+_TILE_RECEIPT_CONTRACT = "satn-ea-dtm-tile-receipt/v1"
+_WCS_VERSION = "2.0.1"
+_GEOTIFF_EPSG = 27700
+_GEOTIFF_NODATA = "-3.402823466e+38"
+_GEOTIFF_NODATA_VALUE = float(np.finfo(np.float32).min)
+_NODATA_POLICY = "non-finite-or-<=-3e38/v1"
+_VERTICAL_REFERENCE = "ODN"
+_TRANSFORMATION = "OSTN15"
 
 
 def route_sample_points(
@@ -107,6 +119,76 @@ def _route_identifier(row: pd.Series, position: object) -> str:
     return str(position)
 
 
+def _route_geometry_identity(
+    row: pd.Series,
+    position: object,
+    *,
+    crs: object,
+    source_path: Path,
+) -> str:
+    feature_id = _route_identifier(row, position)
+    try:
+        return canonical_network_geometry_fingerprint(row.geometry, crs)
+    except ValueError as error:
+        raise ValueError(
+            "EA fixed-point eligible route "
+            f"{feature_id!r} in {source_path} {error}; "
+            "regenerate the candidate network before acquiring elevation evidence"
+        ) from error
+
+
+def _canonicalize_nested_nonfinite_json(value: object) -> object:
+    """Replace non-finite values only inside a JSON object or array property."""
+
+    encoded = isinstance(value, str)
+    if encoded:
+        stripped = value.lstrip()
+        if not stripped or stripped[0] not in "[{":
+            return value
+        try:
+            nested = json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    elif isinstance(value, (dict, list)):
+        nested = value
+    else:
+        return value
+
+    def canonicalize(item: object) -> tuple[object, bool]:
+        if isinstance(item, float) and not math.isfinite(item):
+            return None, True
+        if isinstance(item, dict):
+            result: dict[object, object] = {}
+            changed = False
+            for key, child in item.items():
+                normalized, child_changed = canonicalize(child)
+                result[key] = normalized
+                changed = changed or child_changed
+            return result, changed
+        if isinstance(item, list):
+            result = []
+            changed = False
+            for child in item:
+                normalized, child_changed = canonicalize(child)
+                result.append(normalized)
+                changed = changed or child_changed
+            return result, changed
+        return item, False
+
+    normalized, changed = canonicalize(nested)
+    if not changed:
+        return value
+    if encoded:
+        return json.dumps(
+            normalized,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+    return normalized
+
+
 def _combined_sample_routes(
     primary_path: Path,
     supplemental_paths: list[Path],
@@ -115,7 +197,12 @@ def _combined_sample_routes(
     primary = gpd.read_file(primary_path)
     if primary.crs is None:
         raise ValueError("EA fixed-point primary routes require a CRS")
-    combined = primary.copy()
+    combined = primary[
+        primary["feature_type"].isin(ELIGIBLE_FEATURE_TYPES)
+        & primary["topography_profile_id"].notna()
+        & primary.geometry.notna()
+        & ~primary.geometry.is_empty
+    ].copy()
     combined["feature_id"] = [
         _route_identifier(row, position) for position, row in combined.iterrows()
     ]
@@ -124,15 +211,22 @@ def _combined_sample_routes(
     elif not combined[FIXED_POINT_PRIMARY_FIELD].eq(True).any():
         raise ValueError("EA sampled routes do not mark a fixed-point primary route set")
 
-    seen: set[bytes] = set()
-    for _position, row in combined.to_crs(27700).iterrows():
+    seen: set[str] = set()
+    for position, row in combined.to_crs(27700).iterrows():
         if (
             row.get("feature_type") in ELIGIBLE_FEATURE_TYPES
             and not pd.isna(row.get("topography_profile_id"))
             and row.geometry is not None
             and not row.geometry.is_empty
         ):
-            seen.add(bytes(row.geometry.normalize().wkb))
+            seen.add(
+                _route_geometry_identity(
+                    row,
+                    position,
+                    crs=27700,
+                    source_path=primary_path,
+                )
+            )
 
     additions: list[gpd.GeoDataFrame] = []
     for supplemental_path in supplemental_paths:
@@ -149,7 +243,12 @@ def _combined_sample_routes(
                 or row.geometry.is_empty
             ):
                 continue
-            geometry_key = bytes(row.geometry.normalize().wkb)
+            geometry_key = _route_geometry_identity(
+                row,
+                position,
+                crs=metric.crs,
+                source_path=supplemental_path,
+            )
             if geometry_key in seen:
                 continue
             seen.add(geometry_key)
@@ -173,6 +272,8 @@ def _combined_sample_routes(
             geometry="geometry",
             crs=primary.crs,
         )
+    if "provenance" in combined:
+        combined["provenance"] = combined["provenance"].map(_canonicalize_nested_nonfinite_json)
     return combined
 
 
@@ -205,6 +306,259 @@ def build_getcoverage_url(
     return f"{endpoint}?{query}"
 
 
+def _tile_request_payload(
+    key: tuple[int, int],
+    *,
+    tile_size_m: int,
+    spacing_m: float,
+    endpoint: str,
+) -> dict[str, object]:
+    """Return the local-path-free identity of one governed WCS tile request."""
+
+    if not isinstance(tile_size_m, int) or tile_size_m <= 0:
+        raise ValueError("EA WCS tile_size_m must be a positive integer")
+    if not isinstance(spacing_m, (int, float)) or not math.isfinite(spacing_m) or spacing_m <= 0:
+        raise ValueError("EA WCS spacing_m must be a positive finite number")
+    spacing_mm = round(float(spacing_m) * 1000)
+    if not math.isclose(float(spacing_m), spacing_mm / 1000, abs_tol=1e-9):
+        raise ValueError("EA WCS spacing_m must resolve exactly to millimetres")
+    if tile_size_m * 1000 % spacing_mm:
+        raise ValueError("EA WCS tile_size_m must be divisible by spacing_m")
+    east, north = key
+    minimum_east = east * tile_size_m
+    minimum_north = north * tile_size_m
+    return {
+        "contract": _TILE_RECEIPT_CONTRACT,
+        "source_id": SOURCE_ID,
+        "dataset_id": DATASET_ID,
+        "dataset_title": DATASET_TITLE,
+        "coverage_id": COVERAGE_ID,
+        "endpoint": endpoint,
+        "licence": LICENCE,
+        "attribution": ATTRIBUTION,
+        "acquisition_contract_version": CONTRACT_SCHEMA_VERSION,
+        "publisher_release": None,
+        "effective_date": None,
+        "dataset_declared_survey_period": {
+            "start": DATASET_DECLARED_SURVEY_START,
+            "end": DATASET_DECLARED_SURVEY_END,
+        },
+        "request": {
+            "service": "WCS",
+            "version": _WCS_VERSION,
+            "operation": "GetCoverage",
+            "format": "image/tiff",
+            "crs": "EPSG:27700",
+            "tile_key": [east, north],
+            "bounds_m": [
+                minimum_east,
+                minimum_north,
+                minimum_east + tile_size_m,
+                minimum_north + tile_size_m,
+            ],
+            "tile_size_m": tile_size_m,
+            "output_spacing_mm": spacing_mm,
+            "scale_factor": f"{1 / float(spacing_m):.8f}",
+        },
+        "vertical_reference": _VERTICAL_REFERENCE,
+        "transformation": _TRANSFORMATION,
+        "source_resolution_m": 1,
+        "vertical_accuracy": DTM_VERTICAL_ACCURACY,
+        "nodata_policy": _NODATA_POLICY,
+    }
+
+
+def _canonical_receipt_bytes(payload: dict[str, object]) -> bytes:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return (encoded + "\n").encode("utf-8")
+
+
+def _request_fingerprint(payload: dict[str, object]) -> str:
+    return hashlib.sha256(_canonical_receipt_bytes(payload)).hexdigest()
+
+
+def _tile_paths(cache_dir: Path, request_fingerprint: str, raw_sha256: str) -> tuple[Path, Path]:
+    return (
+        cache_dir / "receipts" / f"{request_fingerprint}.json",
+        cache_dir / "objects" / "sha256" / f"{raw_sha256}.tif",
+    )
+
+
+def _quarantine(path: Path, suffix: str) -> None:
+    if not path.exists():
+        return
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}{suffix}.", dir=path.parent)
+    os.close(descriptor)
+    quarantined = Path(temporary_name)
+    quarantined.unlink()
+    path.replace(quarantined)
+
+
+def _geotiff_metadata(
+    path: Path,
+) -> tuple[tuple[float, ...], tuple[int, ...], str | None, tuple[int, int]]:
+    ImageFile.LOAD_TRUNCATED_IMAGES = False
+    with Image.open(path) as image:
+        transform = image.tag_v2.get(34264)
+        geokeys = image.tag_v2.get(34735)
+        nodata = image.tag_v2.get(42113)
+        dimensions = image.size
+    if not transform or len(transform) != 16:
+        raise ValueError(f"GeoTIFF is missing ModelTransformationTag: {path}")
+    if not geokeys or len(geokeys) < 4:
+        raise ValueError(f"GeoTIFF is missing GeoKeyDirectoryTag: {path}")
+    return (
+        tuple(float(value) for value in transform),
+        tuple(int(value) for value in geokeys),
+        None if nodata is None else str(nodata).strip("\x00"),
+        (int(dimensions[0]), int(dimensions[1])),
+    )
+
+
+def _assert_geotiff_baseline(path: Path) -> tuple[float, ...]:
+    transform, geokeys, nodata, _dimensions = _geotiff_metadata(path)
+    if not all(math.isfinite(value) for value in transform):
+        raise ValueError(f"GeoTIFF has non-finite ModelTransformationTag: {path}")
+    if transform[0] == 0 or transform[5] == 0:
+        raise ValueError(f"GeoTIFF has non-invertible ModelTransformationTag: {path}")
+    entries = (geokeys[4 + offset : 8 + offset] for offset in range(0, 4 * geokeys[3], 4))
+    if (3072, 0, 1, _GEOTIFF_EPSG) not in set(entries):
+        raise ValueError(f"GeoTIFF CRS is not EPSG:27700: {path}")
+    try:
+        nodata_value = float(nodata) if nodata is not None else None
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"GeoTIFF has unsupported NoData representation: {path}") from error
+    if (
+        nodata_value is None
+        or not math.isfinite(nodata_value)
+        or float(np.float32(nodata_value)) != _GEOTIFF_NODATA_VALUE
+    ):
+        raise ValueError(f"GeoTIFF has unsupported NoData representation: {path}")
+    return transform
+
+
+def _validate_requested_tile(path: Path, payload: dict[str, object]) -> dict[str, object]:
+    """Prove a decoded GeoTIFF is exactly the WCS tile named by ``payload``."""
+
+    pixels, transform = load_tile(path)
+    request = payload["request"]
+    assert isinstance(request, dict)
+    bounds = request["bounds_m"]
+    assert isinstance(bounds, list) and len(bounds) == 4
+    spacing_m = int(request["output_spacing_mm"]) / 1000
+    expected_size = int(request["tile_size_m"]) / spacing_m
+    if not expected_size.is_integer() or pixels.shape != (int(expected_size), int(expected_size)):
+        raise ValueError(f"GeoTIFF dimensions do not match requested WCS tile: {path}")
+    expected_transform = (
+        spacing_m,
+        0.0,
+        0.0,
+        float(bounds[0]),
+        0.0,
+        -spacing_m,
+        0.0,
+        float(bounds[3]),
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    )
+    if transform != expected_transform:
+        raise ValueError(f"GeoTIFF transform does not match requested WCS tile: {path}")
+    return {
+        "crs": "EPSG:27700",
+        "dimensions": [pixels.shape[1], pixels.shape[0]],
+        "model_transformation": list(transform),
+        "nodata": _GEOTIFF_NODATA,
+        "nodata_observed": _geotiff_metadata(path)[2],
+    }
+
+
+def _read_receipt(
+    path: Path, payload: dict[str, object], request_fingerprint: str
+) -> tuple[str, int, dict[str, object]]:
+    raw = path.read_bytes()
+    try:
+        receipt = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise ValueError("EA tile receipt is invalid JSON") from error
+    if not isinstance(receipt, dict):
+        raise ValueError("EA tile receipt is not an object")
+    required_fields = {
+        *payload,
+        "request_fingerprint",
+        "raw_sha256",
+        "byte_count",
+        "observed_raster_metadata",
+    }
+    if set(receipt) != required_fields:
+        raise ValueError("EA tile receipt does not match the v1 schema")
+    if (
+        receipt.get("request") != payload["request"]
+        or {key: receipt.get(key) for key in payload} != payload
+    ):
+        raise ValueError("EA tile receipt identity differs from its requested WCS tile")
+    if receipt.get("request_fingerprint") != request_fingerprint:
+        raise ValueError("EA tile receipt fingerprint is invalid")
+    if raw != _canonical_receipt_bytes(receipt):
+        raise ValueError("EA tile receipt is not canonical")
+    digest = receipt.get("raw_sha256")
+    byte_count = receipt.get("byte_count")
+    if (
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or any(c not in "0123456789abcdef" for c in digest)
+    ):
+        raise ValueError("EA tile receipt raw SHA-256 is invalid")
+    if not isinstance(byte_count, int) or byte_count <= 0:
+        raise ValueError("EA tile receipt byte count is invalid")
+    observed = receipt.get("observed_raster_metadata")
+    if not isinstance(observed, dict):
+        raise ValueError("EA tile receipt has no observed raster metadata")
+    return digest, byte_count, observed
+
+
+def _publish_receipt(path: Path, receipt: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".part", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        expected = _canonical_receipt_bytes(receipt)
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(expected)
+            output.flush()
+            os.fsync(output.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError as error:
+            if path.read_bytes() != expected:
+                raise ValueError(
+                    "EA tile receipt publication conflicts with existing receipt"
+                ) from error
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _publish_object(temporary: Path, object_path: Path, raw_sha256: str) -> None:
+    """Publish a validated content-addressed object without replacing another writer's file."""
+
+    object_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(temporary, object_path)
+    except FileExistsError as error:
+        if hashlib.sha256(object_path.read_bytes()).hexdigest() != raw_sha256:
+            raise ValueError(
+                "EA tile object conflicts with its content-addressed digest"
+            ) from error
+
+
 def acquire_tile(
     key: tuple[int, int],
     cache_dir: Path,
@@ -216,48 +570,93 @@ def acquire_tile(
 ) -> tuple[tuple[int, int], Path | None, str, str | None, int, str | None]:
     """Acquire one tile with a bounded failure budget.
 
-    An exhausted WCS request becomes explicit NoData provenance. Its requested
-    samples remain in the immutable ledger instead of silently disappearing.
+    An exhausted WCS request becomes explicit-unknown provenance. Its requested
+    samples remain in the immutable ledger instead of silently disappearing;
+    NoData is reserved for a validated raster pixel with no source value.
     """
     if not 1 <= max_attempts <= MAX_WCS_ATTEMPTS:
         raise ValueError(f"max_attempts must be between 1 and {MAX_WCS_ATTEMPTS}")
+    if endpoint != ENDPOINT:
+        raise ValueError("EA governed tile receipts require the pinned official WCS endpoint")
     cache_dir.mkdir(parents=True, exist_ok=True)
-    path = cache_dir / f"ea-dtm-{key[0]}-{key[1]}-{spacing_m:g}m.tif"
+    # Coordinate-addressed legacy TIFFs have no immutable request receipt, so
+    # they are deliberately ignored.  Do not move, overwrite or adopt them.
+    request_payload = _tile_request_payload(
+        key, tile_size_m=tile_size_m, spacing_m=spacing_m, endpoint=endpoint
+    )
+    request_fingerprint = _request_fingerprint(request_payload)
+    receipt_path, _ = _tile_paths(cache_dir, request_fingerprint, "0" * 64)
     url = build_getcoverage_url(
         *key,
         tile_size_m=tile_size_m,
         spacing_m=spacing_m,
         endpoint=endpoint,
     )
+    expected_digest: str | None = None
+    expected_byte_count: int | None = None
+    if receipt_path.exists():
+        try:
+            expected_digest, expected_byte_count, expected_metadata = _read_receipt(
+                receipt_path, request_payload, request_fingerprint
+            )
+            _, cached_object = _tile_paths(cache_dir, request_fingerprint, expected_digest)
+            if (
+                cached_object.is_file()
+                and cached_object.stat().st_size == expected_byte_count
+                and hashlib.sha256(cached_object.read_bytes()).hexdigest() == expected_digest
+            ):
+                actual_metadata = _validate_requested_tile(cached_object, request_payload)
+                if actual_metadata != expected_metadata:
+                    raise ValueError("EA tile receipt raster metadata differs from its object")
+                return key, cached_object, url, expected_digest, 0, None
+        except (OSError, ValueError) as error:
+            return key, None, url, None, 0, f"{type(error).__name__}: {error}"
     failure: str | None = None
     for attempt in range(1, max_attempts + 1):
         try:
-            if path.exists():
-                # A partial/corrupt cached response must never become durable
-                # provenance.  Quarantine it before retrying the official WCS.
+            request = urllib.request.Request(url, headers={"User-Agent": "banes-satn/1"})
+            with urllib.request.urlopen(request, timeout=120) as response:
+                raw_bytes = response.read()
+            if not raw_bytes.startswith((b"II", b"MM")):
+                raise ValueError("EA WCS did not return a GeoTIFF")
+            raw_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+            if expected_digest is not None and raw_sha256 != expected_digest:
+                raise ValueError("EA WCS returned different bytes for an existing request receipt")
+            _, object_path = _tile_paths(cache_dir, request_fingerprint, raw_sha256)
+            object_path.parent.mkdir(parents=True, exist_ok=True)
+            if object_path.exists():
+                if hashlib.sha256(object_path.read_bytes()).hexdigest() != raw_sha256:
+                    _quarantine(object_path, ".corrupt")
+                else:
+                    _validate_requested_tile(object_path, request_payload)
+            if not object_path.exists():
+                descriptor, temporary_name = tempfile.mkstemp(
+                    prefix=f".{object_path.name}.", suffix=".part", dir=object_path.parent
+                )
+                temporary = Path(temporary_name)
                 try:
-                    load_tile(path)
-                except (OSError, ValueError):
-                    quarantined = path.with_suffix(path.suffix + ".corrupt")
-                    if quarantined.exists():
-                        quarantined.unlink()
-                    path.replace(quarantined)
-            if not path.exists():
-                request = urllib.request.Request(url, headers={"User-Agent": "banes-satn/1"})
-                with urllib.request.urlopen(request, timeout=120) as response:
-                    payload = response.read()
-                if not payload.startswith((b"II", b"MM")):
-                    raise ValueError("EA WCS did not return a GeoTIFF")
-                temporary = path.with_suffix(path.suffix + ".part")
-                try:
-                    temporary.write_bytes(payload)
-                    load_tile(temporary)
-                    os.replace(temporary, path)
+                    with os.fdopen(descriptor, "wb") as output:
+                        output.write(raw_bytes)
+                        output.flush()
+                        os.fsync(output.fileno())
+                    observed_metadata = _validate_requested_tile(temporary, request_payload)
+                    _publish_object(temporary, object_path, raw_sha256)
                 finally:
                     if temporary.exists():
                         temporary.unlink()
-            load_tile(path)
-            return key, path, url, hashlib.sha256(path.read_bytes()).hexdigest(), attempt, None
+            else:
+                observed_metadata = _validate_requested_tile(object_path, request_payload)
+            _publish_receipt(
+                receipt_path,
+                {
+                    **request_payload,
+                    "request_fingerprint": request_fingerprint,
+                    "raw_sha256": raw_sha256,
+                    "byte_count": len(raw_bytes),
+                    "observed_raster_metadata": observed_metadata,
+                },
+            )
+            return key, object_path, url, raw_sha256, attempt, None
         except (OSError, ValueError) as error:
             failure = f"{type(error).__name__}: {error}"
             if attempt < max_attempts:
@@ -270,20 +669,14 @@ def load_tile(path: Path) -> tuple[np.ndarray, tuple[float, ...]]:
     # provenance only after full decode, shape and georeferencing validation.
     ImageFile.LOAD_TRUNCATED_IMAGES = False
     with Image.open(path) as image:
-        transform = image.tag_v2.get(34264)
-        if not transform or len(transform) != 16:
-            raise ValueError(f"GeoTIFF is missing ModelTransformationTag: {path}")
         pixels = np.asarray(image, dtype=float).copy()
     if pixels.ndim != 2 or not pixels.shape[0] or not pixels.shape[1]:
         raise ValueError(f"GeoTIFF has unusable dimensions: {path}")
-    if not all(math.isfinite(float(value)) for value in transform):
-        raise ValueError(f"GeoTIFF has non-finite ModelTransformationTag: {path}")
-    if transform[0] == 0 or transform[5] == 0:
-        raise ValueError(f"GeoTIFF has non-invertible ModelTransformationTag: {path}")
+    transform = _assert_geotiff_baseline(path)
     # Force a representative pixel access after decoding, rather than trusting
     # TIFF metadata verification alone.
     _ = float(pixels[0, 0])
-    return pixels, tuple(float(value) for value in transform)
+    return pixels, transform
 
 
 def sample_grid(
@@ -594,6 +987,7 @@ def validate_weca_route_extent(route_path: Path, *, routing_buffer_m: float) -> 
 def validate_weca_samples(
     samples: list[dict[str, object]],
     sampled: dict[tuple[str, int], float | None],
+    availability: dict[tuple[str, int], str],
     authority_boundaries_path: Path,
     *,
     routing_buffer_m: float,
@@ -613,11 +1007,13 @@ def validate_weca_samples(
     cross_boundary_points = 0
     for normalised, authority in expected.items():
         authority_samples = [row for row in assigned if row["authority_key"] == normalised]
-        nodata = sum(sampled[_sample_identity(row)] is None for row in authority_samples)
-        available = len(authority_samples) - nodata
-        if authority_samples and nodata == 0:
+        counts = {
+            status: sum(availability[_sample_identity(row)] == status for row in authority_samples)
+            for status in ("available", "nodata", "explicit-unknown")
+        }
+        if authority_samples and counts["available"] == len(authority_samples):
             status = "available"
-        elif available:
+        elif counts["available"]:
             status = "partial"
         else:
             status = "unavailable"
@@ -627,8 +1023,9 @@ def validate_weca_samples(
                 "status": status,
                 "route_sample_count": len(authority_samples),
                 "requested_sample_count": len(authority_samples),
-                "available_sample_count": available,
-                "nodata_sample_count": nodata,
+                "available_sample_count": counts["available"],
+                "nodata_sample_count": counts["nodata"],
+                "explicit_unknown_sample_count": counts["explicit-unknown"],
             }
         )
     transitions: list[dict[str, object]] = []
@@ -655,21 +1052,29 @@ def validate_weca_samples(
             if before_available and after_available:
                 cross_boundary_points += 1
     buffer_samples = [row for row in assigned if row["authority_key"] == "routing-buffer"]
-    buffer_nodata = sum(sampled[_sample_identity(row)] is None for row in buffer_samples)
+    buffer_counts = {
+        status: sum(availability[_sample_identity(row)] == status for row in buffer_samples)
+        for status in ("available", "nodata", "explicit-unknown")
+    }
     rows.append(
         {
             "authority": "routing-buffer/outside-authority",
             "status": "available"
-            if buffer_samples and buffer_nodata == 0
+            if buffer_samples and buffer_counts["available"] == len(buffer_samples)
             else "partial"
-            if len(buffer_samples) - buffer_nodata
+            if buffer_counts["available"]
             else "unavailable",
             "route_sample_count": len(buffer_samples),
             "requested_sample_count": len(buffer_samples),
-            "available_sample_count": len(buffer_samples) - buffer_nodata,
-            "nodata_sample_count": buffer_nodata,
+            "available_sample_count": buffer_counts["available"],
+            "nodata_sample_count": buffer_counts["nodata"],
+            "explicit_unknown_sample_count": buffer_counts["explicit-unknown"],
         }
     )
+    total_counts = {
+        status: sum(int(row[f"{status.replace('-', '_')}_sample_count"]) for row in rows)
+        for status in ("available", "nodata", "explicit-unknown")
+    }
     return {
         "routing_buffer_m": routing_buffer_m,
         "authorities": rows,
@@ -683,7 +1088,23 @@ def validate_weca_samples(
             if any(row["available_sample_count"] for row in rows)
             else "unavailable"
         ),
+        "availability_outcome": _availability_outcome(total_counts),
     }
+
+
+def _availability_outcome(counts: dict[str, int]) -> str:
+    """Classify all-missing outcomes without conflating NoData and unknown."""
+
+    requested = sum(counts.values())
+    if requested and counts["available"] == requested:
+        return "available"
+    if counts["available"]:
+        return "partial"
+    if requested and counts["nodata"] == requested:
+        return "all-nodata"
+    if requested and counts["explicit-unknown"] == requested:
+        return "all-explicit-unknown"
+    return "all-missing-mixed"
 
 
 def _sample_identity(sample: dict[str, object]) -> tuple[str, int]:
@@ -709,12 +1130,10 @@ def write_evidence(
 ) -> dict[str, object]:
     supplemental_route_paths = supplemental_route_paths or []
     route_copy = output_path.with_name(f"{output_path.stem}.sampled-routes.geojson")
-    sampling_route_path = route_path
-    if supplemental_route_paths:
-        _combined_sample_routes(route_path, supplemental_route_paths).to_file(
-            route_copy, driver="GeoJSON"
-        )
-        sampling_route_path = route_copy
+    _combined_sample_routes(route_path, supplemental_route_paths).to_file(
+        route_copy, driver="GeoJSON"
+    )
+    sampling_route_path = route_copy
     if require_weca_preflight and (authority_boundaries_path is None or survey_index_path is None):
         raise ValueError(
             "WECA elevation acquisition requires authority boundaries and an EA survey index"
@@ -767,19 +1186,48 @@ def write_evidence(
     }
     grids = {key: load_tile(path) for key, path in tiles.items()}
     rows = []
-    elevations_by_coordinate: dict[tuple[float, float], float | None] = {}
+    tile_proofs = {
+        key: {
+            "request_fingerprint": _request_fingerprint(
+                _tile_request_payload(
+                    key, tile_size_m=tile_size_m, spacing_m=spacing_m, endpoint=endpoint
+                )
+            ),
+            "raw_sha256": digest,
+        }
+        for key, path, _url, digest, _attempts, _failure in acquired
+        if path is not None and digest is not None
+    }
+    observations_by_coordinate: dict[
+        tuple[float, float], tuple[float | None, str, dict[str, str] | None]
+    ] = {}
     for point in points:
-        grid = grids.get(tile_key(point, tile_size_m))
+        key = tile_key(point, tile_size_m)
+        grid = grids.get(key)
         elevation = sample_grid(grid, point) if grid is not None else None
-        elevations_by_coordinate[(round(point.x, 3), round(point.y, 3))] = elevation
+        observations_by_coordinate[(round(point.x, 3), round(point.y, 3))] = (
+            elevation,
+            "available"
+            if elevation is not None
+            else "nodata"
+            if grid is not None
+            else "explicit-unknown",
+            tile_proofs.get(key),
+        )
     sampled: dict[tuple[str, int], float | None] = {}
+    availability: dict[tuple[str, int], str] = {}
+    sample_tile_proofs: dict[tuple[str, int], dict[str, str] | None] = {}
     survey_choices: dict[tuple[str, int], dict[str, object] | None] | None = None
     evidence_hashes: dict[tuple[str, int], str] = {}
     for sample in ordered_samples:
         point = sample["geometry"]
-        elevation = elevations_by_coordinate[(round(point.x, 3), round(point.y, 3))]
+        elevation, status, tile_proof = observations_by_coordinate[
+            (round(point.x, 3), round(point.y, 3))
+        ]
         identity = _sample_identity(sample)
         sampled[identity] = elevation
+        availability[identity] = status
+        sample_tile_proofs[identity] = tile_proof
 
     if authority_boundaries_path is not None and survey_index_path is not None:
         survey_index = _SurveyAttributionIndex(gpd.read_file(survey_index_path))
@@ -793,6 +1241,7 @@ def write_evidence(
         for identity, chosen in survey_choices.items():
             if chosen is None:
                 sampled[identity] = None
+                availability[identity] = "explicit-unknown"
 
     for sample in ordered_samples:
         point = sample["geometry"]
@@ -838,8 +1287,6 @@ def write_evidence(
         crs=27700,
     ).to_crs(4326)
     evidence.sort_values("evidence_id").to_file(output_path, driver="GeoJSON")
-    if not supplemental_route_paths and route_copy.resolve() != route_path.resolve():
-        shutil.copy2(route_path, route_copy)
     # An acquisition directory may contain multiple outputs.  The sidecar owns
     # an output-specific sibling; snapshotting normalises the internal name.
     ledger_path = output_path.with_name(f"{output_path.stem}.sample-ledger.jsonl")
@@ -856,10 +1303,11 @@ def write_evidence(
             for route_position, sample in enumerate(route_samples_for_ledger):
                 identity = _sample_identity(sample)
                 point = sample["geometry"]
+                tile_proof = sample_tile_proofs[identity]
                 chosen = survey_choices[identity]
                 ledger_rows.append(
                     {
-                        "schema_version": "ea-lidar-sample-ledger/v1",
+                        "schema_version": SAMPLE_LEDGER_SCHEMA_VERSION,
                         "route_id": identity[0],
                         "sample_index": identity[1],
                         "route_position": route_position,
@@ -879,7 +1327,24 @@ def write_evidence(
                         "bucket": "authority"
                         if sample["authority_id"] != "routing-buffer"
                         else "routing-buffer",
-                        "availability": "available" if sampled[identity] is not None else "nodata",
+                        "availability": availability[identity],
+                        "tile_request_fingerprint": (
+                            tile_proof["request_fingerprint"]
+                            if tile_proof and availability[identity] != "explicit-unknown"
+                            else None
+                        ),
+                        "tile_raw_sha256": (
+                            tile_proof["raw_sha256"]
+                            if tile_proof and availability[identity] != "explicit-unknown"
+                            else None
+                        ),
+                        "tile_pixel_status": (
+                            "validated-value"
+                            if availability[identity] == "available"
+                            else "validated-nodata"
+                            if availability[identity] == "nodata"
+                            else "unavailable"
+                        ),
                         "elevation_m": (
                             round(float(sampled[identity]), 3)
                             if sampled[identity] is not None
@@ -898,6 +1363,7 @@ def write_evidence(
         validate_weca_samples(
             ordered_samples,
             sampled,
+            availability,
             authority_boundaries_path,
             routing_buffer_m=routing_buffer_m,
         )
@@ -920,11 +1386,20 @@ def write_evidence(
         "route_feature_count": len(feature_ids),
         "requested_point_count": len(ordered_samples),
         "evidence_sample_count": len(rows),
-        "nodata_sample_count": len(ordered_samples) - len(rows),
+        "nodata_sample_count": sum(status == "nodata" for status in availability.values()),
+        "explicit_unknown_sample_count": sum(
+            status == "explicit-unknown" for status in availability.values()
+        ),
+        "availability_outcome": _availability_outcome(
+            {
+                status: sum(value == status for value in availability.values())
+                for status in ("available", "nodata", "explicit-unknown")
+            }
+        ),
         "output_sha256": hashlib.sha256(output_path.read_bytes()).hexdigest(),
         "sample_ledger_path": ledger_path.name if ledger_sha256 else None,
         "sample_ledger_sha256": ledger_sha256,
-        "sample_ledger_schema_version": "ea-lidar-sample-ledger/v1" if ledger_sha256 else None,
+        "sample_ledger_schema_version": SAMPLE_LEDGER_SCHEMA_VERSION if ledger_sha256 else None,
         "sample_route_path": route_copy.name if ledger_sha256 else None,
         "sample_route_sha256": sha256_file(route_copy) if ledger_sha256 else None,
         "pre_elevation_network_sha256": fixed_point_route_fingerprint(
@@ -956,8 +1431,13 @@ def write_evidence(
             {
                 "tile": list(key),
                 "url": url,
+                "request_fingerprint": _request_fingerprint(
+                    _tile_request_payload(
+                        key, tile_size_m=tile_size_m, spacing_m=spacing_m, endpoint=endpoint
+                    )
+                ),
                 "sha256": digest,
-                "status": "available" if path is not None else "exhausted-nodata",
+                "status": "available" if path is not None else "explicit-unknown",
                 "attempts": attempts,
                 "failure": failure,
             }

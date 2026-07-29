@@ -13,6 +13,7 @@ from pathlib import Path
 
 import geopandas as gpd
 
+import satn.compilation_dependencies as compilation_dependencies
 from satn.agents import (
     AgentCompilationTerminated,
     AgentDecisionRequired,
@@ -32,6 +33,7 @@ from satn.compiler import (
 )
 from satn.constants import SCHEMA_VERSION
 from satn.content_identity import ordered_geometry_fingerprint
+from satn.ea_snapshot_recovery import load_legacy_ea_recovery_snapshot
 from satn.heartbeat import StageHeartbeat
 from satn.models import (
     AgentDecisionLedger,
@@ -48,6 +50,7 @@ from satn.models import (
 from satn.publisher import (
     publication_artifacts,
     publish,
+    retain_ea_recovery_candidate,
     validate_publication,
 )
 from satn.reference_application import (
@@ -183,6 +186,34 @@ def compile(
         },
     ) as heartbeat:
         return _compile(council, decision_ledger=decision_ledger, heartbeat=heartbeat)
+
+
+def compile_ea_recovery_candidate(config: AreaConfig | str | Path) -> Path:
+    """Compile the pinned invalid v10 only far enough to retain its replacement candidate."""
+
+    council = (
+        config
+        if isinstance(config, (AreaDefinition, CouncilConfig))
+        else AreaDefinition.from_yaml(config)
+    )
+    council.compilation.full = True
+    with StageHeartbeat(
+        LOGGER,
+        "ea-recovery-candidate",
+        {
+            "area_id": council.area_id,
+            "snapshot_id": council.source.snapshot_id,
+        },
+    ) as heartbeat:
+        result = _compile(
+            council,
+            heartbeat=heartbeat,
+            compiler_path="ea-recovery",
+        )
+    candidate = result.artifacts.get("candidate")
+    if candidate is None:
+        raise ValueError("EA recovery compilation retained no governed mismatch candidate")
+    return candidate
 
 
 def compile_reference_network(
@@ -486,12 +517,19 @@ def _compile(
     *,
     decision_ledger: AgentDecisionLedger | str | Path | None = None,
     heartbeat: StageHeartbeat | None = None,
+    compiler_path: CompilerPath = "network",
 ) -> CompilationResult:
     """Compile a parsed area definition, reporting its current long-running stage."""
+    if compiler_path not in {"network", "ea-recovery"}:
+        raise ValueError(f"unsupported orchestration compiler path: {compiler_path}")
+    recovery_candidate = compiler_path == "ea-recovery"
     started = time.perf_counter()
     council = config
     ledger = _load_decision_ledger(decision_ledger)
-    dependency_manifest = compilation_dependency_manifest(council)
+    dependency_manifest = compilation_dependency_manifest(
+        council,
+        compiler_path=compiler_path,
+    )
     governed_input_fingerprint = compilation_governed_input_fingerprint(
         council,
         dependency_manifest=dependency_manifest,
@@ -507,17 +545,25 @@ def _compile(
         council.source.snapshot_id,
         SCHEMA_VERSION,
     )
-    reused = _reuse_validated_publication(
-        council,
-        governed_input_fingerprint,
-        input_fingerprint,
-        dependency_manifest,
+    reused = (
+        None
+        if recovery_candidate
+        else _reuse_validated_publication(
+            council,
+            governed_input_fingerprint,
+            input_fingerprint,
+            dependency_manifest,
+        )
     )
     if reused is not None:
         return reused
     if heartbeat is not None:
         heartbeat.set_stage("snapshot-load")
-    source = load_snapshot(council)
+    source = (
+        load_legacy_ea_recovery_snapshot(council)
+        if recovery_candidate
+        else load_snapshot(council)
+    )
     LOGGER.info(
         "Snapshot loaded places=%d road_edges=%d context_features=%d",
         len(source["places"]),
@@ -819,12 +865,23 @@ def _compile(
     run_id = f"run-{hashlib.sha256(run_fingerprint.encode()).hexdigest()[:12]}"
     if heartbeat is not None:
         heartbeat.set_stage("publication")
-    artifacts = publish(council, compiled, run_id)
-    LOGGER.info(
-        "Publication validated output=%s elapsed_seconds=%.1f",
-        council.publication.output_dir,
-        time.perf_counter() - started,
+    artifacts = (
+        retain_ea_recovery_candidate(council, compiled, run_id)
+        if recovery_candidate
+        else publish(council, compiled, run_id)
     )
+    if not recovery_candidate:
+        LOGGER.info(
+            "Publication validated output=%s elapsed_seconds=%.1f",
+            council.publication.output_dir,
+            time.perf_counter() - started,
+        )
+    else:
+        LOGGER.info(
+            "Non-publishing compilation artifact validated artifacts=%s elapsed_seconds=%.1f",
+            sorted(artifacts),
+            time.perf_counter() - started,
+        )
     return CompilationResult(
         run_id=run_id,
         status=compiled.status,
@@ -1354,6 +1411,36 @@ def _compiler_digest() -> str:
     return digest
 
 
+def _review_map_assets_are_current(output: Path) -> bool:
+    """Return whether a reusable publication carries this installed UI shell."""
+    source_assets = compilation_dependencies._package_root() / "assets"
+    published_review = output / "review-map"
+    published_assets = published_review / "assets"
+    try:
+        html = (published_review / "index.html").read_text(encoding="utf-8")
+        for name in (
+            "maplibre-gl.js",
+            "maplibre-gl.css",
+            "MAPLIBRE-LICENSE.txt",
+            "review-map.js",
+            "review-map.css",
+        ):
+            content = (source_assets / name).read_bytes()
+            if (published_assets / name).read_bytes() != content:
+                return False
+            if name.startswith("review-map."):
+                path = Path(name)
+                digest = hashlib.sha256(content).hexdigest()[:12]
+                fingerprinted = f"{path.stem}.{digest}{path.suffix}"
+                if (published_assets / fingerprinted).read_bytes() != content:
+                    return False
+                if f"assets/{fingerprinted}" not in html:
+                    return False
+    except OSError:
+        return False
+    return True
+
+
 def _reuse_validated_publication(
     council: AreaConfig,
     governed_input_fingerprint: str,
@@ -1402,6 +1489,9 @@ def _reuse_validated_publication(
             return None
         if persisted_input_fingerprint != input_fingerprint:
             LOGGER.info("Existing publication input fingerprint differs; recompiling")
+            return None
+        if not _review_map_assets_are_current(output):
+            LOGGER.info("Existing publication review-map assets differ; republishing")
             return None
         validate_publication(output, council)
         agents_payload = json.loads((output / "agent-records.json").read_text(encoding="utf-8"))

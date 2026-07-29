@@ -520,6 +520,9 @@ def test_osm_snapshot_governs_official_road_classification(tmp_path: Path) -> No
             {
                 "osmid": "official-a",
                 "official_classification": "A road",
+                "road_classification_number": "A4",
+                "name_1": "Bath Road",
+                "road_function": "A Road",
                 "geometry": LineString([(-2.5, 51.39), (-2.5, 51.45)]),
             },
             {
@@ -562,6 +565,10 @@ def test_osm_snapshot_governs_official_road_classification(tmp_path: Path) -> No
     }
     assert set(snapshotted["source_id"]) == {"banes-highways-list"}
     assert set(snapshotted["content_fingerprint"]) == {governed["content_fingerprint"]}
+    official_a = snapshotted[snapshotted["official_feature_id"] == "official-a"].iloc[0]
+    assert official_a["official_road_number"] == "A4"
+    assert official_a["official_road_name"] == "Bath Road"
+    assert official_a["official_road_function"] == "A Road"
 
 
 def test_osm_snapshot_governs_observed_through_traffic(tmp_path: Path) -> None:

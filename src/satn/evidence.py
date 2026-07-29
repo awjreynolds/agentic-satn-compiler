@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 from collections import Counter
+from dataclasses import dataclass
+from typing import Literal
 
 import geopandas as gpd
 import networkx as nx
@@ -21,6 +23,11 @@ STRATEGIC_CYCLE_ROUTE_TYPES = {
     "greenway-cycleway",
 }
 PUBLIC_CYCLE_ROUTE_TYPES = {*STRATEGIC_CYCLE_ROUTE_TYPES, "ncn-link"}
+OFFICIAL_ROAD_DISAGREEMENT_TOLERANCE_M = 25.0
+RoadClassificationDisagreementType = Literal[
+    "official-non-a-road",
+    "no-overlapping-official-road",
+]
 
 CONTEXT_COLUMNS = [
     "evidence_id",
@@ -38,6 +45,48 @@ CONTEXT_COLUMNS = [
     "access_point_rationale",
     "geometry",
 ]
+
+
+@dataclass(frozen=True)
+class RoadClassificationDisagreement:
+    """One inspectable OSM/official hierarchy disagreement."""
+
+    disagreement_type: RoadClassificationDisagreementType
+    osm_evidence_id: str
+    osm_source_id: str
+    official_feature_id: str | None
+    official_classification: str | None
+    official_source_id: str | None
+    official_content_fingerprint: str | None
+
+    def __post_init__(self) -> None:
+        official_values = (
+            self.official_feature_id,
+            self.official_classification,
+            self.official_source_id,
+            self.official_content_fingerprint,
+        )
+        if self.disagreement_type == "no-overlapping-official-road":
+            if any(value is not None for value in official_values):
+                raise ValueError("unmatched OSM road disagreement cannot name an official road")
+        elif self.disagreement_type == "official-non-a-road":
+            if any(value is None for value in official_values):
+                raise ValueError("official road disagreement requires complete official provenance")
+        else:
+            raise ValueError("unsupported road classification disagreement type")
+
+    def canonical(self) -> dict[str, str | None]:
+        """Return the JSON-safe diagnostic record exposed by compilation."""
+
+        return {
+            "disagreement_type": self.disagreement_type,
+            "osm_evidence_id": self.osm_evidence_id,
+            "osm_source_id": self.osm_source_id,
+            "official_feature_id": self.official_feature_id,
+            "official_classification": self.official_classification,
+            "official_source_id": self.official_source_id,
+            "official_content_fingerprint": self.official_content_fingerprint,
+        }
 
 
 def empty_context(crs: object = 4326) -> gpd.GeoDataFrame:
@@ -67,6 +116,120 @@ def derive_context_layers(
         geometry="geometry",
         crs=network.crs,
     ).sort_values("evidence_id")
+
+
+def govern_a_road_context(
+    context: gpd.GeoDataFrame,
+    official_classification: gpd.GeoDataFrame | None,
+) -> tuple[gpd.GeoDataFrame, list[dict[str, str | None]]]:
+    """Replace provisional OSM A-road context with governed official A roads."""
+    if official_classification is None or official_classification.empty:
+        return context.copy(), []
+
+    feature_type = context.get("feature_type", pd.Series("", index=context.index, dtype=object))
+    osm_a_roads = context[feature_type.eq("a-road-spine")].copy()
+    other_context = context[~feature_type.eq("a-road-spine")].copy()
+    official_a_roads = official_classification[
+        official_classification["official_classification"].eq("a-road")
+    ].copy()
+    rows = [
+        {
+            "evidence_id": str(feature["official_feature_id"]),
+            "feature_type": "a-road-spine",
+            "name": str(
+                feature.get("official_road_number")
+                or feature.get("official_road_name")
+                or feature["official_feature_id"]
+            ),
+            "category": "Governed official A-road strategic spine",
+            "source_id": str(feature["source_id"]),
+            "feature_count": 1,
+            "network_scope": NetworkScope.UNRESOLVED.value,
+            "geometry": feature.geometry,
+        }
+        for _, feature in official_a_roads.iterrows()
+        if isinstance(feature.geometry, (LineString, MultiLineString))
+        and not feature.geometry.is_empty
+    ]
+    governed_a_roads = gpd.GeoDataFrame(
+        rows,
+        columns=CONTEXT_COLUMNS,
+        geometry="geometry",
+        crs=official_classification.crs,
+    )
+    if not governed_a_roads.empty:
+        governed_a_roads = governed_a_roads.to_crs(context.crs)
+    populated = [frame for frame in (other_context, governed_a_roads) if not frame.empty]
+    governed_context = (
+        gpd.GeoDataFrame(
+            pd.concat(populated, ignore_index=True, sort=False),
+            columns=CONTEXT_COLUMNS,
+            geometry="geometry",
+            crs=context.crs,
+        ).sort_values("evidence_id")
+        if populated
+        else empty_context(context.crs)
+    )
+    disagreements = _road_classification_disagreements(
+        osm_a_roads, official_classification
+    )
+    return governed_context, [disagreement.canonical() for disagreement in disagreements]
+
+
+def _road_classification_disagreements(
+    osm_a_roads: gpd.GeoDataFrame,
+    official_classification: gpd.GeoDataFrame,
+) -> tuple[RoadClassificationDisagreement, ...]:
+    if osm_a_roads.empty or official_classification.empty:
+        return ()
+    osm = osm_a_roads.to_crs(27700)
+    official = official_classification.to_crs(27700)
+    spatial_index = official.sindex
+    disagreements: list[RoadClassificationDisagreement] = []
+    grouped = osm.groupby(["evidence_id", "source_id"], sort=True, dropna=False)
+    for (evidence_id, source_id), evidence_rows in grouped:
+        evidence_geometry = evidence_rows.geometry.union_all()
+        search_area = evidence_geometry.buffer(OFFICIAL_ROAD_DISAGREEMENT_TOLERANCE_M)
+        candidate_indexes = list(spatial_index.query(search_area, predicate="intersects"))
+        if not candidate_indexes:
+            disagreements.append(
+                RoadClassificationDisagreement(
+                    disagreement_type="no-overlapping-official-road",
+                    osm_evidence_id=str(evidence_id),
+                    osm_source_id=str(source_id),
+                    official_feature_id=None,
+                    official_classification=None,
+                    official_source_id=None,
+                    official_content_fingerprint=None,
+                )
+            )
+            continue
+        for candidate_index in candidate_indexes:
+            candidate = official.iloc[candidate_index]
+            if str(candidate["official_classification"]) == "a-road":
+                continue
+            disagreements.append(
+                RoadClassificationDisagreement(
+                    disagreement_type="official-non-a-road",
+                    osm_evidence_id=str(evidence_id),
+                    osm_source_id=str(source_id),
+                    official_feature_id=str(candidate["official_feature_id"]),
+                    official_classification=str(candidate["official_classification"]),
+                    official_source_id=str(candidate["source_id"]),
+                    official_content_fingerprint=str(candidate["content_fingerprint"]),
+                )
+            )
+    return tuple(
+        sorted(
+            disagreements,
+            key=lambda item: (
+                item.osm_evidence_id,
+                item.osm_source_id,
+                item.disagreement_type,
+                item.official_feature_id or "",
+            ),
+        )
+    )
 
 
 def govern_network_scope(

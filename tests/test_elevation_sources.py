@@ -5,6 +5,7 @@ import json
 import os
 import shlex
 import shutil
+import tracemalloc
 import urllib.parse
 from pathlib import Path
 
@@ -12,21 +13,32 @@ import geopandas as gpd
 import pytest
 from shapely.geometry import LineString, Point
 
+import satn.ea_snapshot_recovery as recovery_module
+import satn.sources as sources_module
+import satn.streaming_geojson as streaming_geojson_module
 from satn import compile
 from satn.agents import FakeAgentRuntime
 from satn.compilation_dependencies import compilation_dependency_manifest
 from satn.compiler import compile_network
 from satn.ea_elevation import (
     DTM_ATTRIBUTION,
+    FIXED_POINT_PRIMARY_FIELD,
+    LEGACY_CONTRACT_SCHEMA_VERSION,
+    LEGACY_SAMPLE_LEDGER_SCHEMA_VERSION,
     SAMPLE_LEDGER_FILENAME,
     canonical_ea_elevation_evidence_bytes,
     eligible_route_fingerprint,
     evidence_row_sha256,
+    fixed_point_route_fingerprint,
+    read_sample_ledger,
+    sha256_file,
     write_sample_ledger,
 )
 from satn.models import (
     CouncilConfig,
     NationalElevationConfig,
+    ObservedThroughTrafficConfig,
+    OfficialRoadClassificationConfig,
     RetainedCoreSourceConfig,
     canonical_decision_ledger_payload,
 )
@@ -56,7 +68,9 @@ from satn.sources import (
     _replace_snapshot_directory,
     _validate_snapshot,
     load_snapshot,
+    promote_staged_snapshot,
     snapshot,
+    stage_retained_core_snapshot,
 )
 
 
@@ -171,6 +185,277 @@ def test_snapshot_rejects_unsafe_provenance_filename_before_reading_retained_fil
         _validate_snapshot(snapshot_path)
 
 
+def _streaming_snapshot(
+    tmp_path: Path,
+    *,
+    feature_lines: list[bytes],
+    crs_name: str = "urn:ogc:def:crs:EPSG::27700",
+) -> tuple[Path, Path]:
+    snapshot_path = tmp_path / "streaming-snapshot"
+    snapshot_path.mkdir()
+    routes = snapshot_path / EA_RETAINED_ROUTE_FILENAME
+    with routes.open("wb") as stream:
+        stream.write(b'{\n"type": "FeatureCollection",\n')
+        stream.write(
+            b'"crs":'
+            + json.dumps(
+                {
+                    "type": "name",
+                    "properties": {"name": crs_name},
+                }
+            ).encode()
+            + b",\n"
+        )
+        stream.write(b'"features": [\n')
+        for index, line in enumerate(feature_lines):
+            stream.write(line)
+            stream.write(b",\n" if index + 1 < len(feature_lines) else b"\n")
+        stream.write(b"]\n}\n")
+    manifest = {
+        "schema_version": sources_module.SCHEMA_VERSION,
+        "snapshot_id": snapshot_path.name,
+        "files": [routes.name],
+        "file_sha256": {routes.name: sha256_file(routes)},
+        "provenance_file_sha256": {},
+        "evidence_sources": {},
+    }
+    (snapshot_path / "snapshot.json").write_text(
+        json.dumps(manifest),
+        encoding="utf-8",
+    )
+    return snapshot_path, routes
+
+
+def _route_feature_line(feature_id: str = "route-a") -> bytes:
+    return json.dumps(
+        {
+            "type": "Feature",
+            "properties": {
+                "feature_id": feature_id,
+                "feature_type": "spine-access-connection",
+                "topography_profile_id": f"profile-{feature_id}",
+            },
+            "geometry": {
+                "type": "LineString",
+                "coordinates": [[350000, 150000], [350010, 150000]],
+            },
+        },
+        separators=(",", ":"),
+    ).encode()
+
+
+def _single_line_feature_collection(features: list[bytes]) -> bytes:
+    return (
+        b'{"type":"FeatureCollection","crs":{"type":"name","properties":'
+        b'{"name":"urn:ogc:def:crs:EPSG::27700"}},"features":['
+        + b",".join(features)
+        + b"]}"
+    )
+
+
+def _replace_streaming_routes(
+    snapshot_path: Path,
+    routes: Path,
+    payload: bytes,
+) -> None:
+    routes.write_bytes(payload)
+    manifest_path = snapshot_path / "snapshot.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["file_sha256"][routes.name] = sha256_file(routes)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+
+def test_snapshot_streaming_parser_accepts_single_line_collection_across_chunks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot_path, routes = _streaming_snapshot(
+        tmp_path,
+        feature_lines=[_route_feature_line()],
+    )
+    payload = _single_line_feature_collection(
+        [_route_feature_line(f"route-{index}") for index in range(2_000)]
+    )
+    _replace_streaming_routes(snapshot_path, routes, payload)
+    monkeypatch.setattr(sources_module, "STREAMING_GEOJSON_THRESHOLD_BYTES", 1)
+    monkeypatch.setattr(streaming_geojson_module, "READ_CHUNK_BYTES", 64)
+
+    _validate_snapshot(snapshot_path)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"garbage" + _single_line_feature_collection([_route_feature_line()]),
+        (
+            b'{"type":"FeatureCollection","features":['
+            + _route_feature_line()
+            + b"] garbage}"
+        ),
+        _single_line_feature_collection([_route_feature_line()]) + b"}",
+        _single_line_feature_collection([_route_feature_line()]) + b" true",
+    ],
+    ids=["prefix", "middle", "suffix", "trailing"],
+)
+def test_snapshot_streaming_parser_rejects_wrapper_garbage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    payload: bytes,
+) -> None:
+    snapshot_path, routes = _streaming_snapshot(
+        tmp_path,
+        feature_lines=[_route_feature_line()],
+    )
+    _replace_streaming_routes(snapshot_path, routes, payload)
+    monkeypatch.setattr(sources_module, "STREAMING_GEOJSON_THRESHOLD_BYTES", 1)
+    monkeypatch.setattr(streaming_geojson_module, "READ_CHUNK_BYTES", 17)
+
+    with pytest.raises(ValueError):
+        _validate_snapshot(snapshot_path)
+
+
+def test_large_snapshot_geojson_validation_has_bounded_python_memory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot_path, routes = _streaming_snapshot(
+        tmp_path,
+        feature_lines=[_route_feature_line(f"route-{index}") for index in range(20_000)],
+    )
+    monkeypatch.setattr(sources_module, "STREAMING_GEOJSON_THRESHOLD_BYTES", 1)
+    original_read_bytes = Path.read_bytes
+    original_read_file = gpd.read_file
+
+    def bounded_read_bytes(path: Path) -> bytes:
+        if path == routes:
+            raise AssertionError("large GeoJSON must not use Path.read_bytes")
+        return original_read_bytes(path)
+
+    def bounded_read_file(path: object, *args: object, **kwargs: object):
+        if Path(path) == routes:
+            raise AssertionError("large GeoJSON must not use geopandas.read_file")
+        return original_read_file(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_bytes", bounded_read_bytes)
+    monkeypatch.setattr(gpd, "read_file", bounded_read_file)
+    tracemalloc.start()
+    _validate_snapshot(snapshot_path)
+    _current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert routes.stat().st_size > 4_000_000
+    assert peak < 4_000_000
+
+
+def test_large_ea_route_reconciliation_streams_without_geopandas(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    feature = json.loads(_route_feature_line())
+    feature["properties"][FIXED_POINT_PRIMARY_FIELD] = True
+    _snapshot_path, routes = _streaming_snapshot(
+        tmp_path,
+        feature_lines=[json.dumps(feature, separators=(",", ":")).encode()],
+    )
+    rows = [
+        {"route_id": "route-a", "sample_index": 0, "east_mm": 350000000, "north_mm": 150000000},
+        {"route_id": "route-a", "sample_index": 1, "east_mm": 350010000, "north_mm": 150000000},
+    ]
+    expected_routes = gpd.GeoDataFrame(
+        [
+            {
+                "feature_id": "route-a",
+                "feature_type": "spine-access-connection",
+                "topography_profile_id": "profile-route-a",
+                FIXED_POINT_PRIMARY_FIELD: True,
+                "geometry": LineString([(350000, 150000), (350010, 150000)]),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    monkeypatch.setattr(sources_module, "STREAMING_GEOJSON_THRESHOLD_BYTES", 1)
+    original_read_file = gpd.read_file
+
+    def bounded_read_file(path: object, *args: object, **kwargs: object):
+        if Path(path) == routes:
+            raise AssertionError("large EA route reconciliation must stream")
+        return original_read_file(path, *args, **kwargs)
+
+    monkeypatch.setattr(gpd, "read_file", bounded_read_file)
+
+    has_primary, fingerprint = sources_module._validate_streaming_ea_ledger_completeness(
+        rows=rows,
+        route_path=routes,
+    )
+
+    assert has_primary
+    assert fingerprint == fixed_point_route_fingerprint(expected_routes)
+
+
+@pytest.mark.parametrize(
+    ("feature_lines", "crs_name", "message"),
+    [
+        ([], "urn:ogc:def:crs:EPSG::27700", "contains no features"),
+        ([_route_feature_line()], "not-a-real-crs", "CRS"),
+        ([b'{"type":"Feature","properties":'], "urn:ogc:def:crs:EPSG::27700", "invalid JSON"),
+        (
+            [
+                json.dumps(
+                    {
+                        "type": "Feature",
+                        "properties": {
+                            "feature_id": "collapsed",
+                            "feature_type": "spine-access-connection",
+                            "topography_profile_id": "profile-collapsed",
+                        },
+                        "geometry": {
+                            "type": "LineString",
+                            "coordinates": [[350000, 150000], [350000, 150000]],
+                        },
+                    },
+                    separators=(",", ":"),
+                ).encode()
+            ],
+            "urn:ogc:def:crs:EPSG::27700",
+            "collapses at identity precision",
+        ),
+    ],
+)
+def test_streaming_snapshot_validation_still_refuses_invalid_geojson(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    feature_lines: list[bytes],
+    crs_name: str,
+    message: str,
+) -> None:
+    snapshot_path, _routes = _streaming_snapshot(
+        tmp_path,
+        feature_lines=feature_lines,
+        crs_name=crs_name,
+    )
+    monkeypatch.setattr(sources_module, "STREAMING_GEOJSON_THRESHOLD_BYTES", 1)
+
+    with pytest.raises(ValueError, match=message):
+        _validate_snapshot(snapshot_path)
+
+
+def test_streaming_snapshot_validation_rejects_tampered_content(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot_path, routes = _streaming_snapshot(
+        tmp_path,
+        feature_lines=[_route_feature_line()],
+    )
+    with routes.open("ab") as stream:
+        stream.write(b"tampered")
+    monkeypatch.setattr(sources_module, "STREAMING_GEOJSON_THRESHOLD_BYTES", 1)
+
+    with pytest.raises(ValueError, match="content hash mismatch"):
+        _validate_snapshot(snapshot_path)
+
+
 def test_snapshot_replacement_restores_a_stale_backup_after_failed_replacement(
     tmp_path: Path,
 ) -> None:
@@ -193,8 +478,15 @@ def test_weca_bootstrap_and_final_definitions_are_separate_parseable_workflow_st
 
     assert bootstrap.source.national_elevation is None
     assert bootstrap.source.snapshot_id != final.source.snapshot_id
-    assert final.source.retained_core_source is not None
-    assert final.source.retained_core_source.snapshot_id == bootstrap.source.snapshot_id
+    assert final.source.retained_core_source == RetainedCoreSourceConfig(
+        snapshot_id=(
+            "weca-classification-elevation-2026-07-28-v11-"
+            "fp-20260729T104205170167Z-01"
+        ),
+        manifest_sha256=(
+            "adc24f10a297e75772b978aff496c3e4ae70c4252d750d381555b743659bc8dd"
+        ),
+    )
     assert bootstrap.publication.output_dir != final.publication.output_dir
     assert final.source.national_elevation is not None
     assert final.source.national_elevation.source_id == "ea-lidar-composite-dtm-1m"
@@ -601,26 +893,31 @@ def _write_synthetic_ea_snapshot(
                     "requested_sample_count": 1,
                     "available_sample_count": 1,
                     "nodata_sample_count": 0,
+                    "explicit_unknown_sample_count": 0,
                 },
                 {
                     "requested_sample_count": 0,
                     "available_sample_count": 0,
                     "nodata_sample_count": 0,
+                    "explicit_unknown_sample_count": 0,
                 },
                 {
                     "requested_sample_count": 0,
                     "available_sample_count": 0,
                     "nodata_sample_count": 0,
+                    "explicit_unknown_sample_count": 0,
                 },
                 {
                     "requested_sample_count": 0,
                     "available_sample_count": 0,
                     "nodata_sample_count": 0,
+                    "explicit_unknown_sample_count": 0,
                 },
                 {
                     "requested_sample_count": 0,
                     "available_sample_count": 0,
                     "nodata_sample_count": 0,
+                    "explicit_unknown_sample_count": 0,
                 },
             ],
             "cross_boundary_transitions": [],
@@ -654,6 +951,7 @@ def _write_synthetic_ea_snapshot(
                 "authority_boundaries_path": "authorities.geojson",
                 "evidence_sample_count": 1,
                 "nodata_sample_count": 0,
+                "explicit_unknown_sample_count": 0,
                 "survey_coverage_preflight": preflight,
                 "sample_validation": {"status": "available"},
                 "survey_index_path": index.name,
@@ -712,8 +1010,59 @@ def test_ea_acquisition_sidecar_binds_pre_elevation_network_to_snapshot(
         assert manifest["file_sha256"][record["path"]] == record["sha256"]
         assert manifest["provenance_file_sha256"][record["path"]] == record["sha256"]
     copied_sidecar = json.loads((path / "elevation-evidence.manifest.json").read_text())
+    assert copied_sidecar["contract_schema_version"] == LEGACY_CONTRACT_SCHEMA_VERSION
+    assert copied_sidecar["sample_ledger_schema_version"] == LEGACY_SAMPLE_LEDGER_SCHEMA_VERSION
+    assert "explicit_unknown_sample_count" not in elevation
+    assert all(
+        row["schema_version"] == LEGACY_SAMPLE_LEDGER_SCHEMA_VERSION
+        for row in read_sample_ledger(path / SAMPLE_LEDGER_FILENAME)
+    )
     assert copied_sidecar["authority_boundaries_path"] == "ea-authority-boundaries.geojson"
     assert copied_sidecar["survey_index_path"] == "ea-survey-index.geojson"
+
+
+def test_snapshot_refuses_degenerate_eligible_routes_before_sealing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config, _initial, _terrain_digest = _write_synthetic_ea_snapshot(
+        tmp_path,
+        monkeypatch,
+    )
+    feature_id = "spine-access-07d8d07fe59d"
+    retained_routes = tmp_path / "degenerate-sampled-routes.geojson"
+    routes = gpd.GeoDataFrame(
+        [
+            {
+                "feature_id": feature_id,
+                "feature_type": "spine-access-connection",
+                "topography_profile_id": "topography-profile-dc8152b42c505885",
+                "geometry": LineString(
+                    [
+                        (369092.3832793793, 169040.53825675382),
+                        (369092.3832793793, 169040.53825675382),
+                    ]
+                ),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    routes.to_file(retained_routes, driver="GeoJSON")
+    sidecar_path = config.source.national_elevation.path.with_suffix(".manifest.json")
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    sidecar["sample_route_path"] = retained_routes.name
+    sidecar["sample_route_sha256"] = hashlib.sha256(retained_routes.read_bytes()).hexdigest()
+    sidecar["pre_elevation_network_sha256"] = fixed_point_route_fingerprint(routes)
+    sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
+    config.source.snapshot_id = "degenerate-routes-must-not-seal"
+
+    with pytest.raises(
+        ValueError,
+        match=rf"{feature_id}.*collapses at identity precision",
+    ):
+        snapshot(config)
+
+    assert not (config.source.snapshot_dir / config.source.snapshot_id).exists()
 
 
 def test_lineaged_ea_snapshot_writer_output_passes_fixed_point_and_rejects_self_reseal(
@@ -825,10 +1174,16 @@ def test_lineaged_ea_fixed_point_rejects_forged_metadata_after_full_hash_reseal(
 def test_retained_core_snapshot_augmentation_keeps_core_bytes_unchanged(tmp_path: Path) -> None:
     config = copied_config(tmp_path)
     first = snapshot(config)
+    first_manifest = json.loads((first / "snapshot.json").read_text(encoding="utf-8"))
     core_hashes = {
         name: hashlib.sha256((first / name).read_bytes()).hexdigest()
         for name in ("boundary.geojson", "places.geojson", "network.geojson", "context.geojson")
     }
+    config.source.snapshot_id = "retained-core-augmented"
+    config.source.retained_core_source = RetainedCoreSourceConfig(
+        snapshot_id=first.name,
+        manifest_sha256=hashlib.sha256((first / "snapshot.json").read_bytes()).hexdigest(),
+    )
     terrain = tmp_path / "retained-core-elevation.geojson"
     gpd.GeoDataFrame(
         [{"sample": "elevation", "height": 10, "geometry": Point(-2.5, 51.4)}],
@@ -844,14 +1199,217 @@ def test_retained_core_snapshot_augmentation_keeps_core_bytes_unchanged(tmp_path
         elevation_field="height",
         identifier_field="sample",
     )
+    classification = tmp_path / "retained-core-road-classification.geojson"
+    gpd.GeoDataFrame(
+        [
+            {
+                "osmid": "official-a",
+                "official_classification": "A road",
+                "geometry": LineString([(-2.5, 51.39), (-2.5, 51.45)]),
+            }
+        ],
+        geometry="geometry",
+        crs=4326,
+    ).to_file(classification, driver="GeoJSON")
+    config.source.official_road_classification = OfficialRoadClassificationConfig(
+        path=classification,
+        source_id="retained-core-test-road-classification",
+        effective_date="2026-04-07",
+        licence="Synthetic fixture",
+    )
+    through_traffic = tmp_path / "retained-core-observed-through-traffic.geojson"
+    gpd.GeoDataFrame(
+        [
+            {
+                "id": "traffic-study-1",
+                "geometry": LineString([(-2.5, 51.4), (-2.48, 51.42)]),
+            }
+        ],
+        geometry="geometry",
+        crs=4326,
+    ).to_file(through_traffic, driver="GeoJSON")
+    config.source.observed_through_traffic = ObservedThroughTrafficConfig(
+        path=through_traffic,
+        source_id="retained-core-test-observed-through-traffic",
+        effective_date="2026-04-07",
+        licence="Synthetic fixture",
+    )
 
     augmented = snapshot(config, retain_core=True)
+    manifest = json.loads((augmented / "snapshot.json").read_text(encoding="utf-8"))
 
-    assert augmented == first
+    assert augmented != first
     assert {
         name: hashlib.sha256((augmented / name).read_bytes()).hexdigest() for name in core_hashes
     } == core_hashes
     assert (augmented / "elevation-evidence.geojson").exists()
+    assert (augmented / "official-road-classification.geojson").exists()
+    assert (augmented / "observed-through-traffic.geojson").exists()
+    assert manifest["attribution"] == first_manifest["attribution"]
+    assert manifest["evidence_sources"]["official_road_classification"]["attribution"] == (
+        "retained-core-test-road-classification; Synthetic fixture"
+    )
+    assert manifest["evidence_sources"]["observed_through_traffic"]["attribution"] == (
+        "retained-core-test-observed-through-traffic; Synthetic fixture"
+    )
+    assert snapshot(config, retain_core=True) == augmented
+
+
+def test_retained_core_snapshot_can_be_validated_before_absent_only_promotion(
+    tmp_path: Path,
+) -> None:
+    config = copied_config(tmp_path)
+    first = snapshot(config)
+    config.source.snapshot_id = "staged-retained-core"
+    config.source.retained_core_source = RetainedCoreSourceConfig(
+        snapshot_id=first.name,
+        manifest_sha256=hashlib.sha256((first / "snapshot.json").read_bytes()).hexdigest(),
+    )
+    terrain = tmp_path / "staged-elevation.geojson"
+    gpd.GeoDataFrame(
+        [{"sample": "elevation", "height": 10, "geometry": Point(-2.5, 51.4)}],
+        geometry="geometry",
+        crs=4326,
+    ).to_file(terrain, driver="GeoJSON")
+    config.source.national_elevation = NationalElevationConfig(
+        provider="local-geojson",
+        path=terrain,
+        source_id="staged-test-elevation",
+        licence="Synthetic fixture",
+        attribution="Synthetic fixture",
+        elevation_field="height",
+        identifier_field="sample",
+    )
+
+    staged = stage_retained_core_snapshot(config)
+    target = config.source.snapshot_dir / config.source.snapshot_id
+
+    assert staged.path.is_dir()
+    assert staged.destination == target
+    assert not target.exists()
+    _validate_snapshot(staged.path)
+
+    promoted = promote_staged_snapshot(staged)
+    assert promoted == target
+    assert target.is_dir()
+    assert not staged.path.exists()
+
+
+def test_ea_recovery_staging_accepts_only_the_exact_legacy_parent_and_seals_strict_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = copied_config(tmp_path)
+    parent = snapshot(config)
+    retained_routes = parent / EA_RETAINED_ROUTE_FILENAME
+    retained_routes.write_bytes(
+        b'{"type":"FeatureCollection","crs":{"type":"name","properties":'
+        b'{"name":"urn:ogc:def:crs:EPSG::27700"}},"features":['
+        b'{"type":"Feature","properties":{"feature_id":"legacy-route",'
+        b'"access_point_source_id":NaN},"geometry":{"type":"LineString",'
+        b'"coordinates":[[350000,150000],[350001,150001]]}}]}'
+    )
+    parent_manifest_path = parent / "snapshot.json"
+    parent_manifest = json.loads(parent_manifest_path.read_text(encoding="utf-8"))
+    parent_manifest["files"].append(EA_RETAINED_ROUTE_FILENAME)
+    parent_manifest["file_sha256"][EA_RETAINED_ROUTE_FILENAME] = hashlib.sha256(
+        retained_routes.read_bytes()
+    ).hexdigest()
+    parent_manifest_path.write_text(
+        json.dumps(parent_manifest, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    parent_manifest_sha256 = hashlib.sha256(
+        parent_manifest_path.read_bytes()
+    ).hexdigest()
+    monkeypatch.setattr(sources_module, "STREAMING_GEOJSON_THRESHOLD_BYTES", 1)
+    monkeypatch.setattr(
+        recovery_module,
+        "LEGACY_NAN_PARENT_SNAPSHOT_ID",
+        parent.name,
+    )
+    monkeypatch.setattr(
+        recovery_module,
+        "LEGACY_NAN_PARENT_MANIFEST_SHA256",
+        parent_manifest_sha256,
+    )
+    monkeypatch.setattr(recovery_module, "LEGACY_NAN_EXPECTED_COUNT", 1)
+
+    config.source.snapshot_id = "strict-recovered-v11"
+    config.source.retained_core_source = RetainedCoreSourceConfig(
+        snapshot_id=parent.name,
+        manifest_sha256=parent_manifest_sha256,
+    )
+    terrain = tmp_path / "strict-recovered-elevation.geojson"
+    gpd.GeoDataFrame(
+        [{"sample": "elevation", "height": 10, "geometry": Point(-2.5, 51.4)}],
+        geometry="geometry",
+        crs=4326,
+    ).to_file(terrain, driver="GeoJSON")
+    config.source.national_elevation = NationalElevationConfig(
+        provider="local-geojson",
+        path=terrain,
+        source_id="strict-recovered-test-elevation",
+        licence="Synthetic fixture",
+        attribution="Synthetic fixture",
+        elevation_field="height",
+        identifier_field="sample",
+    )
+
+    with pytest.raises(ValueError, match="invalid JSON value"):
+        stage_retained_core_snapshot(config)
+
+    staged = sources_module.stage_ea_recovery_snapshot(config)
+
+    assert staged.destination == config.source.snapshot_dir / config.source.snapshot_id
+    assert not staged.destination.exists()
+    assert not (staged.path / EA_RETAINED_ROUTE_FILENAME).exists()
+    _validate_snapshot(staged.path)
+    staged_manifest = json.loads(
+        (staged.path / "snapshot.json").read_text(encoding="utf-8")
+    )
+    assert staged_manifest["retained_core_lineage"] == {
+        "source_snapshot_id": parent.name,
+        "source_manifest_sha256": parent_manifest_sha256,
+    }
+
+
+def test_staged_snapshot_promotion_never_replaces_an_existing_target(
+    tmp_path: Path,
+) -> None:
+    config = copied_config(tmp_path)
+    first = snapshot(config)
+    config.source.snapshot_id = "staged-collision"
+    config.source.retained_core_source = RetainedCoreSourceConfig(
+        snapshot_id=first.name,
+        manifest_sha256=hashlib.sha256((first / "snapshot.json").read_bytes()).hexdigest(),
+    )
+    terrain = tmp_path / "collision-elevation.geojson"
+    gpd.GeoDataFrame(
+        [{"sample": "elevation", "height": 10, "geometry": Point(-2.5, 51.4)}],
+        geometry="geometry",
+        crs=4326,
+    ).to_file(terrain, driver="GeoJSON")
+    config.source.national_elevation = NationalElevationConfig(
+        provider="local-geojson",
+        path=terrain,
+        source_id="collision-test-elevation",
+        licence="Synthetic fixture",
+        attribution="Synthetic fixture",
+        elevation_field="height",
+        identifier_field="sample",
+    )
+    staged = stage_retained_core_snapshot(config)
+    staged_bytes = (staged.path / "snapshot.json").read_bytes()
+    target = staged.destination
+    target.mkdir()
+    (target / "attacker").write_text("do not replace", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="already exists"):
+        promote_staged_snapshot(staged)
+
+    assert (target / "attacker").read_text(encoding="utf-8") == "do not replace"
+    assert (staged.path / "snapshot.json").read_bytes() == staged_bytes
 
 
 def _banes_style_generic_elevation_snapshot(tmp_path: Path) -> tuple[CouncilConfig, Path]:
