@@ -403,6 +403,84 @@ def test_acquisition_retains_only_normalized_elevation_routes_without_supplement
     ]
 
 
+def test_acquisition_writes_strict_sample_routes_for_inferred_school_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    routes = tmp_path / "routes.geojson"
+    output = tmp_path / "elevation.geojson"
+    routes.write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "crs": {
+                    "type": "name",
+                    "properties": {"name": "urn:ogc:def:crs:EPSG::27700"},
+                },
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {
+                            "feature_id": "inferred-school-access",
+                            "feature_type": "spine-access-connection",
+                            "topography_profile_id": "profile-inferred-school",
+                            "access_point_source_id": None,
+                            "provenance": (
+                                '{"access_point_source_id": NaN, "access_point_status": "inferred"}'
+                            ),
+                        },
+                        "geometry": {
+                            "type": "LineString",
+                            "coordinates": [[350000, 150000], [350010, 150000]],
+                        },
+                    }
+                ],
+            },
+            allow_nan=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        acquisition,
+        "acquire_tile",
+        lambda key, *_args, **_kwargs: (
+            key,
+            tmp_path / "synthetic.tif",
+            "synthetic-url",
+            "a" * 64,
+            1,
+            None,
+        ),
+    )
+    monkeypatch.setattr(acquisition, "load_tile", lambda _path: object())
+    monkeypatch.setattr(acquisition, "sample_grid", lambda _grid, _point: 42.0)
+
+    acquisition.write_evidence(
+        routes,
+        output,
+        tmp_path / "cache",
+        spacing_m=10,
+        workers=1,
+    )
+
+    retained_path = output.with_name("elevation.sampled-routes.geojson")
+
+    def reject_nonstandard_constant(value: str) -> object:
+        raise ValueError(f"nonstandard JSON constant {value!r}")
+
+    retained = json.loads(
+        retained_path.read_text(encoding="utf-8"),
+        parse_constant=reject_nonstandard_constant,
+    )
+    provenance = retained["features"][0]["properties"]["provenance"]
+    if isinstance(provenance, str):
+        provenance = json.loads(
+            provenance,
+            parse_constant=reject_nonstandard_constant,
+        )
+    assert provenance["access_point_source_id"] is None
+    assert provenance["access_point_status"] == "inferred"
+
+
 def test_supplemental_routes_support_three_set_convergence(tmp_path: Path) -> None:
     route_paths = {
         name: tmp_path / f"{name}.geojson" for name in ("first", "second", "third")

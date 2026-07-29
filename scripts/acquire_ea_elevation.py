@@ -137,6 +137,58 @@ def _route_geometry_identity(
         ) from error
 
 
+def _canonicalize_nested_nonfinite_json(value: object) -> object:
+    """Replace non-finite values only inside a JSON object or array property."""
+
+    encoded = isinstance(value, str)
+    if encoded:
+        stripped = value.lstrip()
+        if not stripped or stripped[0] not in "[{":
+            return value
+        try:
+            nested = json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    elif isinstance(value, (dict, list)):
+        nested = value
+    else:
+        return value
+
+    def canonicalize(item: object) -> tuple[object, bool]:
+        if isinstance(item, float) and not math.isfinite(item):
+            return None, True
+        if isinstance(item, dict):
+            result: dict[object, object] = {}
+            changed = False
+            for key, child in item.items():
+                normalized, child_changed = canonicalize(child)
+                result[key] = normalized
+                changed = changed or child_changed
+            return result, changed
+        if isinstance(item, list):
+            result = []
+            changed = False
+            for child in item:
+                normalized, child_changed = canonicalize(child)
+                result.append(normalized)
+                changed = changed or child_changed
+            return result, changed
+        return item, False
+
+    normalized, changed = canonicalize(nested)
+    if not changed:
+        return value
+    if encoded:
+        return json.dumps(
+            normalized,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+    return normalized
+
+
 def _combined_sample_routes(
     primary_path: Path,
     supplemental_paths: list[Path],
@@ -220,6 +272,8 @@ def _combined_sample_routes(
             geometry="geometry",
             crs=primary.crs,
         )
+    if "provenance" in combined:
+        combined["provenance"] = combined["provenance"].map(_canonicalize_nested_nonfinite_json)
     return combined
 
 
