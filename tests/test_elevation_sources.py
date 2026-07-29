@@ -478,8 +478,15 @@ def test_weca_bootstrap_and_final_definitions_are_separate_parseable_workflow_st
 
     assert bootstrap.source.national_elevation is None
     assert bootstrap.source.snapshot_id != final.source.snapshot_id
-    assert final.source.retained_core_source is not None
-    assert final.source.retained_core_source.snapshot_id == bootstrap.source.snapshot_id
+    assert final.source.retained_core_source == RetainedCoreSourceConfig(
+        snapshot_id=(
+            "weca-classification-elevation-2026-07-28-v11-"
+            "fp-20260729T104205170167Z-01"
+        ),
+        manifest_sha256=(
+            "adc24f10a297e75772b978aff496c3e4ae70c4252d750d381555b743659bc8dd"
+        ),
+    )
     assert bootstrap.publication.output_dir != final.publication.output_dir
     assert final.source.national_elevation is not None
     assert final.source.national_elevation.source_id == "ea-lidar-composite-dtm-1m"
