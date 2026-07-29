@@ -164,6 +164,10 @@ CORE_COMPILATION_COMPONENTS: Final = frozenset(COMPILATION_COMPONENTS).differenc
 EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     "satn/assets/MAPLIBRE-LICENSE.txt": "review-map vendor licence text",
     "satn/assets/__init__.py": "review-map resource package marker",
+    "satn/assets/duckdb-spatial-runtime-lock.json": (
+        "pinned Local Evidence Store provisioning asset; "
+        "not a compiler input before equivalence cutover"
+    ),
     "satn/assets/maplibre-gl.css": "review-map presentation asset",
     "satn/assets/maplibre-gl.js": "review-map presentation asset",
     "satn/assets/osm-network-osmconf.ini": (
@@ -185,6 +189,14 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     ),
     "satn/evidence_replay.py": (
         "additive Local Evidence replay gate; not a compiler input before equivalence cutover"
+    ),
+    "satn/_evidence_operations.py": (
+        "private Local Evidence Store operations; "
+        "not a compiler input before equivalence cutover"
+    ),
+    "satn/evidence_cli.py": (
+        "additive Local Evidence Store command adapter; "
+        "not a compiler input before equivalence cutover"
     ),
     "satn/ea_fixed_point_convergence.py": (
         "bounded fixed-point orchestration without CompiledNetwork mutation"

@@ -1,0 +1,8 @@
+{
+  "contract": "satn-duckdb-spatial-runtime/v1",
+  "duckdb_version": "1.4.4",
+  "spatial_version": "f129b24",
+  "platform": "osx_arm64",
+  "extension_relative_path": "v1.4.4/osx_arm64/spatial.duckdb_extension",
+  "extension_sha256": "21a2d9de1bc82fde782b8b55822b5c5e94c487be8f239dff2f8241ffcc869f55"
+}
