@@ -5,12 +5,12 @@
   ],
   "root_files": {
     "catalogue.json": {
-      "sha256": "7bae6a0dc2fb97cea49d9a3f8721089425ccfc603dc6217855d49d17404fae1c",
-      "size_bytes": 2743
+      "sha256": "bb4a3bc8da3a9ca901e32562d48c700f1458a41fe3665467da709d1995fb3fce",
+      "size_bytes": 2760
     },
     "index.html": {
-      "sha256": "79dc59c1a98da0b59ddbe565c9b2e5c76c60b118aadb33d4df1c88296d71300c",
-      "size_bytes": 1076
+      "sha256": "913aa89c0f4258e0cf42140f8ba3c765d7543d192cf8e25b496bd00ce535536a",
+      "size_bytes": 1110
     }
   },
   "schema_version": "satn-pages-root-lock/v1"
