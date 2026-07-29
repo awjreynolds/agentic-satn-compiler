@@ -5,7 +5,7 @@ This context defines the language for a council-portable process that develops o
 ## Language
 
 **Agentic Network Compiler**:
-A deterministic geospatial compiler with an optional provider-neutral AI Agent Runtime at bounded decision points. The runtime can select only from compiler-authored actions using governed evidence; it cannot invent evidence, submit executable geometry, set policy or adopt a network. The published POC uses the deterministic fake provider rather than a live production AI service.
+A deterministic geospatial compiler that can stop at bounded decision points and issue structured investigation requests through an optional provider-neutral AI Agent Runtime. An approved agent may analyse governed evidence and use explicitly configured external evidence systems, then return a cited finding or select from compiler-authored actions. The deterministic compiler validates the response and alone creates a new versioned run; the agent cannot invent evidence, submit executable geometry, set policy or adopt a network. The published POC uses Deterministic Test Mode (`provider: fake`), which calls neither a live AI model nor an external system.
 _Avoid_: autonomous planner, AI route author, chatbot map, production AI claim
 
 **Community**:

@@ -2,9 +2,12 @@
 
 SATN is an experimental agentic (AI-assisted) network compiler. Its deterministic
 geospatial core turns governed transport evidence and explicit planning rules into
-inspectable network artifacts. Optional bounded AI agents can compare only choices
-defined by the compiler and cite the evidence supplied to them; they cannot invent
-routes, evidence or policy.
+inspectable network artifacts. At a bounded question requiring deeper
+investigation, the compiler can stop and issue a structured request to an AI agent.
+The agent examines the supplied evidence and, where an approved integration exists,
+may use an external evidence system. It returns a cited finding or selects from
+compiler-defined choices; the compiler validates that response before starting a
+new versioned run. The agent never edits the network directly.
 
 > Experimental SATN POC — not an adopted plan.
 
@@ -13,12 +16,16 @@ the B&NES or West of England Area Deployment, then inspect Strategic Spines,
 access connections, National Cycle Network evidence, Candidate Low-Traffic
 Areas, Schools and visible Network Gaps.
 
-Today's published B&NES and West of England maps use deterministic rules and the
-deterministic `fake` agent provider. They demonstrate reproducible baseline
-compilation and the boundaries placed around agent decisions, not a live
-production AI service. Every line and gap remains inspectable. The result is a
-planning hypothesis for officer discussion, not a scheme design, safety
-assessment, business case, consultation result or adopted plan.
+Today's published B&NES and West of England maps use **Deterministic Test Mode**.
+No live AI model or external evidence system was called. A predefined test
+response passes through the same stop, validation and restart boundary so that
+the agent workflow can be demonstrated reproducibly. The internal configuration
+name for this test substitute is `fake`; it does not mean that the map or
+evidence is fabricated.
+
+Every line and gap remains inspectable. The result is a planning hypothesis for
+officer discussion, not a scheme design, safety assessment, business case,
+consultation result or adopted plan.
 
 ## Why this matters for the West of England now
 
@@ -69,9 +76,9 @@ as the active-travel and access-planning companion to that work.
 
 | Status | What is available |
 | --- | --- |
-| **Published POC today** | Deterministic baseline compilation, inspectable maps and artifacts, visible gaps and provenance. It is not an autonomous planning service and does not demonstrate production AI operation. |
-| **Implemented components** | Provider-neutral, bounded agent and recorded-decision contracts plus wider LCWIP artifact pipelines. They are not yet presented as one production service. |
-| **Future roadmap** | A complete officer decision workflow, exact route controls and governed agent-assisted imagery surveys. |
+| **Published POC today** | Deterministic baseline compilation, inspectable maps and artifacts, visible gaps and provenance. Deterministic Test Mode exercises the agent boundary without calling a live AI model. |
+| **Implemented components** | The compiler can stop at bounded decision points and accept validated, traceable responses through provider-neutral agent and recorded-decision contracts. These components are not yet presented as one production service. |
+| **Future roadmap** | A complete officer decision workflow, exact route controls and governed agent-assisted street-level and aerial imagery surveys. |
 
 The compiler grows a rural Backbone-and-Access Network outward from governed
 A-road and established NCN Strategic Spines. Communities and Schools attach to
@@ -80,9 +87,10 @@ nearest-neighbour spider's web. Route choice remains separate from later demand
 or delivery prioritisation.
 
 > **AI assurance:** AI is bounded to compiler-defined questions and cited
-> evidence. It cannot create executable route geometry or make policy decisions.
-> Only validated compiler actions can create a new versioned network run; the
-> baseline is retained and material choices follow the configured human
+> evidence. Approved agents may undertake deeper investigation with configured
+> external tools, but they cannot create executable route geometry or make policy
+> decisions. Only validated compiler actions can create a new versioned network
+> run; the baseline is retained and material choices follow the configured human
 > acceptance route.
 
 ## Baseline first, officer decisions second
@@ -105,8 +113,12 @@ segment from strategic use, requiring use of a named cycleway, and commissioning
 agent-led street-level or aerial imagery observations. They are tracked in
 [the officer route-controls issue](https://github.com/awjreynolds/banes-satn/issues/236)
 and [the future visual-survey issue](https://github.com/awjreynolds/banes-satn/issues/238).
-Desktop imagery would be evidence for human review, never a substitute for a
-physical site, safety, engineering or legal survey.
+The architecture is intended to let a bounded agent investigate an exact
+compiler question using an approved service such as licensed Google Street View
+or aerial imagery. That provider integration and its licensing, privacy,
+provenance and human-acceptance controls are not implemented in the current
+published deployments. Desktop imagery would be evidence for human review,
+never a substitute for a physical site, safety, engineering or legal survey.
 
 ## Proposed WECA discovery
 
@@ -512,8 +524,10 @@ uv run lcwip agents validate-envelope path/to/envelope.json
 uv run lcwip agents validate-ledger path/to/ledger.json
 ```
 
-The default `fake` agent provider is deterministic and requires no credentials. It
-exercises the same typed compilation gate used by configured model providers.
+The default Deterministic Test Agent requires no credentials and makes no model
+or external-system call. Its internal provider name is `fake`. It supplies a
+predefined response through the same typed compilation gate used by configured
+AI model providers, allowing that boundary to be tested reproducibly.
 
 ## Publish an immutable LCWIP release bundle
 
@@ -977,10 +991,11 @@ proposal, critique, red-team, synthesis or divergence action-selection calls. A
 review, unresolved findings, missing evidence, available choices and the smallest human input
 needed. Ordinary no-path or missing-spine gaps do not create intervention requests.
 
-`fake` is the deterministic default. Any Pydantic AI model identifier can be supplied
-in Council Configuration as `compilation.agent.model`, with provider credentials read
-from its normal environment variables. Codex is not required. A live adapter check is
-explicit and opt-in:
+The Deterministic Test Agent (`provider: fake`) is the default. Any Pydantic AI
+model identifier can be supplied in Council Configuration as
+`compilation.agent.model`, with provider credentials read from its normal
+environment variables. Codex is not required. A live adapter check is explicit
+and opt-in:
 
 ```shell
 SATN_TEST_AGENT_MODEL=openai:gpt-5-mini \
