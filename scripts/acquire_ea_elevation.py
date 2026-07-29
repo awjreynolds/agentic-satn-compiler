@@ -7,7 +7,6 @@ import hashlib
 import json
 import math
 import os
-import shutil
 import time
 import urllib.parse
 import urllib.request
@@ -22,6 +21,7 @@ import pandas as pd
 from PIL import Image, ImageFile
 from shapely.geometry import Point
 
+from satn.content_identity import canonical_network_geometry_fingerprint
 from satn.ea_elevation import (
     CONTRACT_SCHEMA_VERSION,
     DTM_VERTICAL_ACCURACY,
@@ -107,6 +107,24 @@ def _route_identifier(row: pd.Series, position: object) -> str:
     return str(position)
 
 
+def _route_geometry_identity(
+    row: pd.Series,
+    position: object,
+    *,
+    crs: object,
+    source_path: Path,
+) -> str:
+    feature_id = _route_identifier(row, position)
+    try:
+        return canonical_network_geometry_fingerprint(row.geometry, crs)
+    except ValueError as error:
+        raise ValueError(
+            "EA fixed-point eligible route "
+            f"{feature_id!r} in {source_path} {error}; "
+            "regenerate the candidate network before acquiring elevation evidence"
+        ) from error
+
+
 def _combined_sample_routes(
     primary_path: Path,
     supplemental_paths: list[Path],
@@ -115,7 +133,12 @@ def _combined_sample_routes(
     primary = gpd.read_file(primary_path)
     if primary.crs is None:
         raise ValueError("EA fixed-point primary routes require a CRS")
-    combined = primary.copy()
+    combined = primary[
+        primary["feature_type"].isin(ELIGIBLE_FEATURE_TYPES)
+        & primary["topography_profile_id"].notna()
+        & primary.geometry.notna()
+        & ~primary.geometry.is_empty
+    ].copy()
     combined["feature_id"] = [
         _route_identifier(row, position) for position, row in combined.iterrows()
     ]
@@ -124,15 +147,22 @@ def _combined_sample_routes(
     elif not combined[FIXED_POINT_PRIMARY_FIELD].eq(True).any():
         raise ValueError("EA sampled routes do not mark a fixed-point primary route set")
 
-    seen: set[bytes] = set()
-    for _position, row in combined.to_crs(27700).iterrows():
+    seen: set[str] = set()
+    for position, row in combined.to_crs(27700).iterrows():
         if (
             row.get("feature_type") in ELIGIBLE_FEATURE_TYPES
             and not pd.isna(row.get("topography_profile_id"))
             and row.geometry is not None
             and not row.geometry.is_empty
         ):
-            seen.add(bytes(row.geometry.normalize().wkb))
+            seen.add(
+                _route_geometry_identity(
+                    row,
+                    position,
+                    crs=27700,
+                    source_path=primary_path,
+                )
+            )
 
     additions: list[gpd.GeoDataFrame] = []
     for supplemental_path in supplemental_paths:
@@ -149,7 +179,12 @@ def _combined_sample_routes(
                 or row.geometry.is_empty
             ):
                 continue
-            geometry_key = bytes(row.geometry.normalize().wkb)
+            geometry_key = _route_geometry_identity(
+                row,
+                position,
+                crs=metric.crs,
+                source_path=supplemental_path,
+            )
             if geometry_key in seen:
                 continue
             seen.add(geometry_key)
@@ -709,12 +744,10 @@ def write_evidence(
 ) -> dict[str, object]:
     supplemental_route_paths = supplemental_route_paths or []
     route_copy = output_path.with_name(f"{output_path.stem}.sampled-routes.geojson")
-    sampling_route_path = route_path
-    if supplemental_route_paths:
-        _combined_sample_routes(route_path, supplemental_route_paths).to_file(
-            route_copy, driver="GeoJSON"
-        )
-        sampling_route_path = route_copy
+    _combined_sample_routes(route_path, supplemental_route_paths).to_file(
+        route_copy, driver="GeoJSON"
+    )
+    sampling_route_path = route_copy
     if require_weca_preflight and (authority_boundaries_path is None or survey_index_path is None):
         raise ValueError(
             "WECA elevation acquisition requires authority boundaries and an EA survey index"
@@ -838,8 +871,6 @@ def write_evidence(
         crs=27700,
     ).to_crs(4326)
     evidence.sort_values("evidence_id").to_file(output_path, driver="GeoJSON")
-    if not supplemental_route_paths and route_copy.resolve() != route_path.resolve():
-        shutil.copy2(route_path, route_copy)
     # An acquisition directory may contain multiple outputs.  The sidecar owns
     # an output-specific sibling; snapshotting normalises the internal name.
     ledger_path = output_path.with_name(f"{output_path.stem}.sample-ledger.jsonl")

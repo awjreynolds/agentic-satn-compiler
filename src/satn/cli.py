@@ -6,6 +6,7 @@ from typing import Annotated
 
 import typer
 
+from satn.ea_fixed_point_operations import run_ea_fixed_point_convergence
 from satn.models import AreaDefinition
 from satn.pipeline import compile as compile_satn
 from satn.sources import snapshot as create_snapshot
@@ -80,6 +81,48 @@ def compile_command(
         return
     typer.echo(f"{result.status}: {result.connections} connections, {result.gaps} gaps")
     typer.echo(result.output_dir)
+
+
+@app.command("converge-ea-elevation")
+def fixed_point_convergence_command(
+    config: Path,
+    max_iterations: int = typer.Option(
+        4,
+        "--max-iterations",
+        min=1,
+        max=10,
+        help="Maximum full compile comparisons before refusing publication.",
+    ),
+    record: Annotated[
+        Path | None,
+        typer.Option(
+            "--record",
+            help="Write the immutable expected/actual convergence history here.",
+        ),
+    ] = None,
+    resume: bool = typer.Option(
+        False,
+        "--resume",
+        help="Resume the exact in-progress run held in --record.",
+    ),
+    log_level: str = typer.Option("INFO", "--log-level"),
+) -> None:
+    """Compile, reacquire and snapshot until governed EA routes reach equality."""
+    _configure_logging(log_level)
+    try:
+        result = run_ea_fixed_point_convergence(
+            config,
+            max_iterations=max_iterations,
+            record_path=record,
+            resume=resume,
+        )
+    except Exception:
+        LOGGER.exception("EA fixed-point convergence failed config=%s", config)
+        raise
+    typer.echo(f"{result.status}: {len(result.iterations)} compile comparison(s)")
+    typer.echo(result.record_path)
+    if result.status != "converged":
+        raise typer.Exit(code=2)
 
 
 if __name__ == "__main__":

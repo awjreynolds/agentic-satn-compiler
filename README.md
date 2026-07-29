@@ -664,7 +664,8 @@ The final Area Definition uses a different immutable snapshot ID and declares th
 historical bootstrap `snapshot_id` plus its exact `snapshot.json` SHA-256 under
 `source.retained_core_source`. `satn snapshot ... --retain-core` verifies that source,
 copies only its manifest-validated regular core siblings into a missing final target,
-then adds elevation atomically. Do not manually copy a snapshot directory. A repeated
+then adds configured elevation and governed spatial evidence atomically. Do not
+manually copy a snapshot directory. A repeated
 command validates and reuses the completed final target only when its recorded lineage
 still matches; it never rewrites the historical benchmark snapshot.
 Only the final WECA definition sets `acquisition_contract: ea-lidar-weca-v1`.

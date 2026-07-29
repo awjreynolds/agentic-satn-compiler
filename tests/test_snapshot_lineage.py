@@ -229,20 +229,31 @@ def test_snapshot_rejects_existing_target_file_before_acquisition_or_temp(
     assert not list(root.glob(".target-*"))
 
 
-def test_weca_final_snapshot_is_distinct_and_benchmark_fixture_is_byte_pinned() -> None:
+def test_weca_configured_snapshot_is_distinct_and_benchmark_fixture_is_byte_pinned() -> None:
     benchmark_path = PROJECT / "deployments/weca/area-125-benchmark.yaml"
     benchmark = CouncilConfig.from_yaml(benchmark_path)
     bootstrap = CouncilConfig.from_yaml(PROJECT / "deployments/weca/area-bootstrap.yaml")
-    final = CouncilConfig.from_yaml(PROJECT / "deployments/weca/area.yaml")
+    configured = CouncilConfig.from_yaml(PROJECT / "deployments/weca/area.yaml")
 
     assert hashlib.sha256(benchmark_path.read_bytes()).hexdigest() == WECA_BENCHMARK_SHA256
     assert benchmark.source.snapshot_id == bootstrap.source.snapshot_id == "weca-osm-current"
-    assert final.source.snapshot_id == "weca-elevation-2026-07-28-v5"
-    assert final.source.snapshot_id != bootstrap.source.snapshot_id
-    assert final.source.retained_core_source == RetainedCoreSourceConfig(
+    assert configured.source.snapshot_id == "weca-classification-elevation-2026-07-28-v10"
+    assert configured.source.snapshot_id != bootstrap.source.snapshot_id
+    assert configured.source.retained_core_source == RetainedCoreSourceConfig(
         snapshot_id="weca-osm-current",
         manifest_sha256="d4d8cbe37c13a6b9ae5d027693d64e89eab2edccf7b69afcdbec519883b1a988",
     )
+
+
+def test_weca_configured_snapshot_is_distinct_from_last_published_lock() -> None:
+    configured = CouncilConfig.from_yaml(PROJECT / "deployments/weca/area.yaml")
+    published_lock = json.loads(
+        (PROJECT / "deployments/weca/provenance-lock.json").read_text(encoding="utf-8")
+    )
+
+    assert configured.source.snapshot_id == "weca-classification-elevation-2026-07-28-v10"
+    assert published_lock["snapshot_id"] == "weca-elevation-2026-07-28-v5"
+    assert configured.source.snapshot_id != published_lock["snapshot_id"]
 
 
 def test_lineaged_retained_core_seeds_distinct_target_and_is_idempotent(tmp_path: Path) -> None:

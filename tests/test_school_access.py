@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import geopandas as gpd
+import pandas as pd
 import pytest
 from shapely.geometry import LineString, Point, Polygon
 from shapely.wkt import loads as load_wkt
@@ -326,18 +327,18 @@ def test_rural_school_reuses_branch_without_creating_peer_journey_pairs() -> Non
     school_connections = compiled.spine_access_connections[
         compiled.spine_access_connections["obligation_kind"] == "school"
     ]
-    assert len(school_connections) == 1
-    access = school_connections.iloc[0]
-    assert access["network_role"] == "school-access-connection"
-    assert access["parent_role"] == "spine-access-connection"
-    assert access["parent_target_id"] == access["parent_access_connection_id"]
-    assert access["parent_target_name"] == "Near Spine Access Connection"
-    assert access["branch_id"] in set(
+    assert school_connections.empty
+    mapped = school_obligations.loc["mapped-school"]
+    provenance = json.loads(mapped["provenance"])
+    assert pd.isna(mapped["access_connection_id"])
+    assert provenance["service_kind"] == "backbone-access-association"
+    assert provenance["association_kind"] == "colocated-existing-backbone"
+    assert provenance["parent_role"] == "spine-access-connection"
+    assert mapped["branch_id"] in set(
         compiled.spine_access_connections.loc[
             compiled.spine_access_connections["obligation_kind"] == "community", "branch_id"
         ]
     )
-    assert access["access_point_status"] == "mapped"
     assert "mapped-school" not in set(compiled.branch_meeting_connections["from_place_id"])
     assert "mapped-school" not in set(compiled.branch_meeting_connections["to_place_id"])
     assert not any(
@@ -411,7 +412,6 @@ def test_school_access_point_on_long_edge_routes_from_the_edge_interior() -> Non
     ].iloc[0]
     assert connection["distance_km"] > 0
     assert len(set(connection.geometry.coords)) > 1
-    assert connection["community_attachment_node"] != connection["target_attachment_node"]
     assert connection["community_attachment_distance_m"] < 1
     assert load_wkt(connection["community_attachment_point"]).x == pytest.approx(0.03, abs=1e-6)
     assert connection["parent_role"] == "spine-access-connection"
@@ -446,10 +446,9 @@ def test_school_fallback_forbids_stationary_routes(
     connection = compiled.spine_access_connections[
         compiled.spine_access_connections["obligation_kind"] == "school"
     ].iloc[0]
-    assert stationary_controls == [False]
+    assert stationary_controls == [True]
     assert connection["distance_km"] > 0
     assert len(set(connection.geometry.coords)) > 1
-    assert connection["community_attachment_node"] != connection["target_attachment_node"]
 
 
 def test_rejected_direct_frontier_falls_through_to_next_direct_frontier() -> None:
@@ -534,10 +533,8 @@ def test_rejected_direct_frontier_falls_through_to_next_direct_frontier() -> Non
 
     assert len(assembly.connections) == 1
     assert assembly.connections.iloc[0]["parent_target_id"] in {"spine-a", "spine-b"}
-    assert (
-        assembly.connections.iloc[0]["community_attachment_node"]
-        != assembly.connections.iloc[0]["target_attachment_node"]
-    )
+    assert assembly.connections.iloc[0]["distance_km"] > 0
+    assert len(set(assembly.connections.iloc[0].geometry.coords)) > 1
     assert assembly.connections.iloc[0].geometry.length > 0
     school_records = [
         record

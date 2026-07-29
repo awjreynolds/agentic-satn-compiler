@@ -36,9 +36,15 @@ def test_bath_prepares_separate_interurban_and_destination_units(tmp_path: Path)
     legacy = compiled.spine_access_candidate_preparation
     assert legacy is not None
     assert not legacy.prepared_spine_access_connections
-    assert {
-        row.disposition for row in legacy.connection_roster
-    } == {"out-of-scope-direct-strategic-spine"}
+    assert not legacy.connection_roster
+    saltford_obligation = compiled.access_obligations.set_index("place_id").loc[
+        "saltford"
+    ]
+    assert saltford_obligation["service_status"] == "served"
+    assert saltford_obligation["access_connection_id"] is None
+    assert not (
+        compiled.spine_access_connections["place_id"] == "saltford"
+    ).any()
 
     prepared = compiled.strategic_corridor_preparation
     assert prepared is not None and prepared.prepared
@@ -51,6 +57,13 @@ def test_bath_prepares_separate_interurban_and_destination_units(tmp_path: Path)
     }
 
     interurban = units[StrategicCorridorUnitRole.INTERURBAN_SPINE]
+    assert not interurban.anchor_connection_ids
+    assert set(interurban.anchor_obligation_ids) == set(
+        compiled.access_obligations.loc[
+            compiled.access_obligations["place_id"].isin({"bath-edge", "saltford"}),
+            "obligation_id",
+        ]
+    )
     assert interurban.candidate_set.endpoints == ("bath-edge", "saltford")
     assert {
         candidate.source_class.value for candidate in interurban.candidate_set.admitted_candidates
@@ -172,6 +185,7 @@ def test_missing_governed_destination_geometry_is_an_explicit_incomplete_issue(
         config.compilation.network_selection,
         road_graph=RoadGraph(mark_ncn_edges(source["network"], source["context"])),
         spine_access_connections=_compiled_network.spine_access_connections,
+        access_obligations=_compiled_network.access_obligations,
         context=context,
         source_config=config.source,
         config_directory=config.config_path.parent,
@@ -205,6 +219,7 @@ def test_destination_access_point_seven_metre_offset_is_not_attached(
         config.compilation.network_selection,
         road_graph=RoadGraph(mark_ncn_edges(source["network"], source["context"])),
         spine_access_connections=compiled.spine_access_connections,
+        access_obligations=compiled.access_obligations,
         context=context,
         source_config=config.source,
         config_directory=config.config_path.parent,
@@ -230,6 +245,7 @@ def test_strategic_preparation_is_deterministic_and_makes_no_delivery_claims(
         config.compilation.network_selection,
         road_graph=RoadGraph(mark_ncn_edges(source["network"], source["context"])),
         spine_access_connections=compiled.spine_access_connections,
+        access_obligations=compiled.access_obligations,
         context=source["context"],
         source_config=config.source,
         config_directory=config.config_path.parent,
