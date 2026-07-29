@@ -8,6 +8,10 @@ This context defines the language for a council-portable process that develops o
 A deterministic geospatial compiler that can stop at bounded decision points and issue structured investigation requests through an optional provider-neutral AI Agent Runtime. An approved agent may analyse governed evidence and use explicitly configured external evidence systems, then return a cited finding or select from compiler-authored actions. The deterministic compiler validates the response and alone creates a new versioned run; the agent cannot invent evidence, submit executable geometry, set policy or adopt a network. The published POC uses Deterministic Test Mode (`provider: fake`), which calls neither a live AI model nor an external system.
 _Avoid_: autonomous planner, AI route author, chatbot map, production AI claim
 
+**Network Compiler Pattern**:
+The reusable separation of governed domain evidence, explicit rules, deterministic network compilation, bounded agent investigation, attributable human scenarios, provenance and publication. The SATN POC demonstrates this pattern for strategic active travel. A Mass Transit Network compiler may reuse the pattern only after defining specialist contracts for corridors, modes, stops, services, capacity, demand, operations, constraints, costs and multimodal integration.
+_Avoid_: transport-mode-agnostic model, completed mass-transit compiler, automatic network design
+
 **Community**:
 A named, inhabited settlement or recognisable urban neighbourhood admitted as a Network Place. It is not defined by an administrative ward, a universal population threshold or an individual destination.
 _Avoid_: ward, destination, settlement point

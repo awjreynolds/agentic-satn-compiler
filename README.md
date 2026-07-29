@@ -57,6 +57,32 @@ that a formal full LCWIP refresh has started; that should be confirmed directly
 with officers. SATN does not currently design a mass-transit network. It can act
 as the active-travel and access-planning companion to that work.
 
+## Beyond SATN: a reusable network-compilation approach
+
+The POC demonstrates more than the ability to draw a Strategic Active Travel
+Network. It proves the core approach at POC level: governed evidence and explicit
+rules can be compiled into a reproducible network baseline; bounded AI agents can
+be asked to investigate difficult questions; human decisions can be recorded as
+traceable scenarios; and every output can retain its evidence and decision
+history.
+
+That same approach can be used to build a **Mass Transit Network compiler**. The
+reusable parts are the evidence governance, deterministic compilation,
+agent-investigation boundary, scenario comparison, provenance and publication
+model. A mass-transit implementation would replace the active-travel rules with
+new governed contracts for matters including:
+
+- candidate corridors, modes, stops, stations and interchanges;
+- service patterns, frequency, capacity, journey time and reliability;
+- demand, development, equality and first- and last-mile access;
+- engineering, land, utility, depot and operational constraints; and
+- costs, benefits, phasing and integration with bus, rail and active travel.
+
+This repository does not yet contain that complete mass-transit domain model or
+produce a mass-transit network. The POC demonstrates that the compiler
+architecture is transferable; building the transit evidence and decision
+contracts would be a distinct programme of work with transport specialists.
+
 ## What the POC demonstrates
 
 - One compiler can produce council-scale and West of England-scale networks from
@@ -73,12 +99,15 @@ as the active-travel and access-planning companion to that work.
 - The repository contains typed components for wider LCWIP evidence, demand,
   option comparison, intervention and prioritisation work. These components are
   not all presented as a deployed, production-ready end-to-end LCWIP service.
+- The separation of governed evidence, deterministic rules, bounded AI
+  investigation and attributable scenarios provides a reusable foundation for a
+  future Mass Transit Network compiler.
 
 | Status | What is available |
 | --- | --- |
 | **Published POC today** | Deterministic baseline compilation, inspectable maps and artifacts, visible gaps and provenance. Deterministic Test Mode exercises the agent boundary without calling a live AI model. |
 | **Implemented components** | The compiler can stop at bounded decision points and accept validated, traceable responses through provider-neutral agent and recorded-decision contracts. These components are not yet presented as one production service. |
-| **Future roadmap** | A complete officer decision workflow, exact route controls and governed agent-assisted street-level and aerial imagery surveys. |
+| **Future roadmap** | A complete officer decision workflow, exact route controls, governed agent-assisted imagery surveys, and a separately scoped mass-transit domain implementation. |
 
 The compiler grows a rural Backbone-and-Access Network outward from governed
 A-road and established NCN Strategic Spines. Communities and Schools attach to
