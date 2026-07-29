@@ -1635,6 +1635,60 @@ def test_recovery_target_requires_exact_parent_and_governed_classification(
         )
 
 
+def test_recovery_target_requires_invocation_elevation_and_candidate_identity(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "weca-v11"
+    target.mkdir()
+    (target / "snapshot.json").write_text(
+        json.dumps(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "snapshot_id": "weca-v11",
+                "retained_core_lineage": {
+                    "source_snapshot_id": "weca-v10",
+                    "source_manifest_sha256": "a" * 64,
+                },
+                "evidence_sources": {
+                    "official_road_classification": {
+                        "source_id": "os-open-roads-2026-04-07",
+                        "content_fingerprint": "b" * 64,
+                    },
+                    "elevation": {
+                        "acquisition_output_sha256": "c" * 64,
+                        "pre_elevation_network_sha256": "d" * 64,
+                    },
+                },
+                "files": [],
+                "file_sha256": {},
+                "provenance_file_sha256": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    arguments = {
+        "target_snapshot_id": "weca-v11",
+        "parent_snapshot_id": "weca-v10",
+        "parent_manifest_sha256": "a" * 64,
+        "official_source_id": "os-open-roads-2026-04-07",
+        "official_content_fingerprint": "b" * 64,
+        "elevation_output_sha256": "c" * 64,
+        "actual_eligible_route_fingerprint": "d" * 64,
+    }
+
+    validate_recovery_target(target, **arguments)
+    with pytest.raises(ValueError, match="elevation acquisition identity"):
+        validate_recovery_target(
+            target,
+            **{**arguments, "elevation_output_sha256": "e" * 64},
+        )
+    with pytest.raises(ValueError, match="pre-elevation candidate identity"):
+        validate_recovery_target(
+            target,
+            **{**arguments, "actual_eligible_route_fingerprint": "f" * 64},
+        )
+
+
 def test_official_identity_is_derived_from_verified_parent_not_target_claim(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

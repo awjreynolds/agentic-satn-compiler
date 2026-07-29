@@ -18,6 +18,7 @@ import geopandas as gpd
 import pandas as pd
 
 import satn.compiler as compiler
+from satn.compilation_dependencies import compilation_dependency_manifest
 from satn.content_identity import canonical_network_geometry_fingerprint
 from satn.ea_elevation import (
     ELIGIBLE_FEATURE_TYPES,
@@ -31,9 +32,26 @@ from satn.ea_fixed_point_convergence import (
     EAFixedPointSnapshot,
     EAFixedPointSnapshotCreation,
     converge_ea_fixed_point,
+    terminal_convergence_result,
 )
-from satn.models import AreaConfig, AreaDefinition, RetainedCoreSourceConfig
-from satn.pipeline import compile as compile_satn
+from satn.ea_snapshot_recovery import (
+    EARecoveryClosureProof,
+    atomic_replace_recovery_configuration,
+    promoted_recovery_configuration_bytes,
+    write_recovery_record,
+)
+from satn.models import (
+    AreaConfig,
+    AreaDefinition,
+    RetainedCoreSourceConfig,
+    safe_snapshot_id,
+)
+from satn.pipeline import (
+    compilation_governed_input_fingerprint,
+)
+from satn.pipeline import (
+    compile as compile_satn,
+)
 from satn.publisher import (
     EA_FIXED_POINT_CANDIDATE_NETWORK,
     EA_FIXED_POINT_CANDIDATE_SCHEMA_VERSION,
@@ -41,7 +59,7 @@ from satn.publisher import (
     _ea_fixed_point_candidate_path,
     _ea_fixed_point_next_step,
 )
-from satn.sources import _validated_ea_snapshot_replay_inputs
+from satn.sources import _validate_snapshot, _validated_ea_snapshot_replay_inputs
 from satn.sources import snapshot as create_snapshot
 
 _COMPILER_TIMING_LOCK = threading.Lock()
@@ -119,6 +137,11 @@ def _snapshot_state(
         governed_source_identities=tuple(governed_files.items()),
         parent_snapshot_id=parent_id,
         parent_manifest_sha256=parent_digest,
+        elevation_evidence_path=(
+            config.source.national_elevation.path.resolve()
+            if config.source.national_elevation is not None
+            else None
+        ),
     )
     if expected_parent is not None and (
         state.parent_snapshot_id != expected_parent.snapshot_id
@@ -183,6 +206,11 @@ class EAFixedPointProductionOperations:
                 snapshot_id=snapshot.parent_snapshot_id,
                 manifest_sha256=snapshot.parent_manifest_sha256,
             )
+        if (
+            snapshot.elevation_evidence_path is not None
+            and config.source.national_elevation is not None
+        ):
+            config.source.national_elevation.path = snapshot.elevation_evidence_path
         restored = _snapshot_state(config)
         if restored != snapshot:
             raise ValueError(
@@ -238,29 +266,33 @@ class EAFixedPointProductionOperations:
     ) -> EAFixedPointAcquisition:
         if not compilation.acquisition_command:
             raise ValueError("EA mismatch candidate has no governed acquisition command")
-        evidence_path = _validated_acquisition_command(
+        acquisition_command, evidence_path = _validated_acquisition_command(
             self._config(snapshot),
             snapshot,
             compilation,
+            run_token=self._run_token,
         )
-        completed = subprocess.run(
-            compilation.acquisition_command,
-            cwd=_PROJECT_ROOT,
-            check=False,
-        )
-        if completed.returncode != 0:
-            raise ValueError(
-                "EA governed acquisition failed "
-                f"with exit status {completed.returncode}"
+        family = _acquisition_output_family(evidence_path)
+        existing = tuple(path.exists() or path.is_symlink() for path in family)
+        if any(existing) and not all(existing):
+            raise ValueError("EA immutable acquisition output family is incomplete")
+        if not all(existing):
+            completed = subprocess.run(
+                acquisition_command,
+                cwd=_PROJECT_ROOT,
+                check=False,
             )
-        sampled_routes = evidence_path.with_name(
-            f"{evidence_path.stem}.sampled-routes.geojson"
-        )
-        primary = fixed_point_route_fingerprint(gpd.read_file(sampled_routes))
-        return EAFixedPointAcquisition(
-            primary_fingerprint=primary,
-            route_inventory=_sample_route_inventory(sampled_routes),
-            evidence_path=evidence_path,
+            if completed.returncode != 0:
+                raise ValueError(
+                    "EA governed acquisition failed "
+                    f"with exit status {completed.returncode}"
+                )
+            if not all(path.is_file() and not path.is_symlink() for path in family):
+                raise ValueError("EA immutable acquisition output family is incomplete")
+        return _validated_acquisition_output(
+            evidence_path,
+            compilation,
+            governed_input_fingerprint=acquisition_command[18],
         )
 
     def snapshot(
@@ -324,7 +356,9 @@ def _validated_acquisition_command(
     config: AreaConfig,
     snapshot: EAFixedPointSnapshot,
     compilation: EAFixedPointCompilation,
-) -> Path:
+    *,
+    run_token: str,
+) -> tuple[tuple[str, ...], Path]:
     command = compilation.acquisition_command
     if len(command) != 21 or command[:4] != (
         "uv",
@@ -383,7 +417,74 @@ def _validated_acquisition_command(
         raise ValueError("EA governed acquisition fingerprint is malformed")
     if not candidate_path.is_file():
         raise ValueError("EA governed acquisition candidate network is missing")
-    return evidence_path
+    candidate_sha256 = _sha256_file(candidate_path)
+    iteration_identity = hashlib.sha256(
+        json.dumps(
+            {
+                "candidate_sha256": candidate_sha256,
+                "governed_input_fingerprint": command[18],
+                "run_token": run_token,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    iteration_evidence = evidence_path.with_name(
+        f"{evidence_path.stem}.fixed-point-{iteration_identity}{evidence_path.suffix}"
+    )
+    command = (*command[:5], str(iteration_evidence), *command[6:])
+    return command, iteration_evidence
+
+
+def _acquisition_output_family(evidence_path: Path) -> tuple[Path, ...]:
+    return (
+        evidence_path,
+        evidence_path.with_suffix(".manifest.json"),
+        evidence_path.with_name(f"{evidence_path.stem}.sample-ledger.jsonl"),
+        evidence_path.with_name(f"{evidence_path.stem}.sampled-routes.geojson"),
+    )
+
+
+def _validated_acquisition_output(
+    evidence_path: Path,
+    compilation: EAFixedPointCompilation,
+    *,
+    governed_input_fingerprint: str,
+) -> EAFixedPointAcquisition:
+    evidence, manifest_path, ledger, sampled_routes = _acquisition_output_family(
+        evidence_path
+    )
+    if not all(
+        path.is_file() and not path.is_symlink()
+        for path in (evidence, manifest_path, ledger, sampled_routes)
+    ):
+        raise ValueError("EA immutable acquisition output family is incomplete")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError("EA immutable acquisition output identity is invalid") from error
+    required = {
+        "acquisition_protocol": "two-pass-fixed-point/v1",
+        "governed_input_fingerprint": governed_input_fingerprint,
+        "output_sha256": _sha256_file(evidence),
+        "pre_elevation_network_sha256": compilation.actual_fingerprint,
+        "sample_ledger_path": ledger.name,
+        "sample_ledger_sha256": _sha256_file(ledger),
+        "sample_route_path": sampled_routes.name,
+        "sample_route_sha256": _sha256_file(sampled_routes),
+    }
+    if not isinstance(manifest, dict) or any(
+        manifest.get(key) != value for key, value in required.items()
+    ):
+        raise ValueError("EA immutable acquisition output identity is invalid")
+    primary = fixed_point_route_fingerprint(gpd.read_file(sampled_routes))
+    if primary != compilation.actual_fingerprint:
+        raise ValueError("EA immutable acquisition output identity is invalid")
+    return EAFixedPointAcquisition(
+        primary_fingerprint=primary,
+        route_inventory=_sample_route_inventory(sampled_routes),
+        evidence_path=evidence_path,
+    )
 
 
 def _path_within_project(value: str, name: str) -> Path:
@@ -443,6 +544,183 @@ def _validated_candidate_status(
     return status
 
 
+def _regular_file_sha256(path: Path, label: str) -> str:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"EA terminal {label} is missing or unsafe")
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _revalidate_terminal_snapshot(snapshot_target: Path) -> None:
+    _validate_snapshot(snapshot_target)
+    _validated_ea_snapshot_replay_inputs(snapshot_target)
+
+
+def _finalize_terminal_convergence(
+    config_path: Path,
+    config: AreaConfig,
+    result: EAFixedPointConvergenceResult,
+    document: dict[str, object],
+) -> None:
+    snapshot = result.final_snapshot
+    evidence = snapshot.elevation_evidence_path
+    if (
+        evidence is None
+        or snapshot.parent_snapshot_id is None
+        or snapshot.parent_manifest_sha256 is None
+    ):
+        raise ValueError("EA terminal snapshot lacks exact evidence or lineage")
+    artifacts = document.get("terminal_artifacts")
+    if not isinstance(artifacts, dict):
+        raise ValueError("EA fixed-point terminal artifacts are invalid")
+    candidate = Path(str(artifacts.get("candidate_network")))
+    run_path = Path(str(artifacts.get("run_manifest")))
+    publication = config.publication.output_dir.resolve()
+    if (
+        config.publication.output_dir.is_symlink()
+        or candidate.resolve() != publication / "network.geojson"
+    ):
+        raise ValueError("EA terminal candidate is not the exact publication output")
+    if run_path.resolve() != publication / "run.json":
+        raise ValueError("EA terminal run manifest is not the candidate sibling")
+    candidate_sha256 = _regular_file_sha256(candidate, "candidate network")
+    if candidate_sha256 != artifacts.get("candidate_network_sha256"):
+        raise ValueError("EA terminal candidate network SHA-256 differs")
+    run_sha256 = _regular_file_sha256(run_path, "run manifest")
+    if run_sha256 != artifacts.get("run_manifest_sha256"):
+        raise ValueError("EA terminal run manifest SHA-256 differs")
+
+    snapshot_id = safe_snapshot_id(
+        snapshot.snapshot_id,
+        field_name="EA terminal snapshot identifier",
+    )
+    snapshot_root = config.source.snapshot_dir.resolve()
+    snapshot_target = config.source.snapshot_dir / snapshot_id
+    if snapshot_target.is_symlink() or not snapshot_target.resolve().is_relative_to(
+        snapshot_root
+    ):
+        raise ValueError("EA terminal snapshot target is outside its governed root")
+    snapshot_manifest = snapshot_target / "snapshot.json"
+    if _regular_file_sha256(
+        snapshot_manifest, "snapshot manifest"
+    ) != snapshot.manifest_sha256:
+        raise ValueError("EA terminal snapshot manifest SHA-256 differs")
+    if not evidence.resolve().is_relative_to(_PROJECT_ROOT.resolve()):
+        raise ValueError("EA terminal elevation evidence is outside the project")
+    evidence_sha256 = _regular_file_sha256(evidence, "elevation evidence")
+    try:
+        manifest = json.loads(snapshot_manifest.read_text(encoding="utf-8"))
+        elevation = manifest["evidence_sources"]["elevation"]
+        lineage = manifest["retained_core_lineage"]
+        run = json.loads(run_path.read_text(encoding="utf-8"))
+    except (KeyError, TypeError, json.JSONDecodeError) as error:
+        raise ValueError("EA terminal governed evidence is invalid") from error
+    if (
+        elevation.get("pre_elevation_network_sha256") != snapshot.primary_fingerprint
+        or elevation.get("acquisition_output_sha256") != evidence_sha256
+    ):
+        raise ValueError("EA terminal elevation evidence identity differs")
+    if (
+        not isinstance(lineage, dict)
+        or lineage.get("source_snapshot_id") != snapshot.parent_snapshot_id
+        or lineage.get("source_manifest_sha256") != snapshot.parent_manifest_sha256
+    ):
+        raise ValueError("EA terminal snapshot lineage identity differs")
+    actual = fixed_point_route_fingerprint(gpd.read_file(candidate))
+    if actual != snapshot.primary_fingerprint:
+        raise ValueError("EA terminal candidate route fingerprint differs")
+
+    final_config = config.model_copy(deep=True)
+    final_config.source.snapshot_id = snapshot.snapshot_id
+    final_config.source.retained_core_source = RetainedCoreSourceConfig(
+        snapshot_id=snapshot.parent_snapshot_id,
+        manifest_sha256=snapshot.parent_manifest_sha256,
+    )
+    if final_config.source.national_elevation is None:
+        raise ValueError("EA terminal configuration lacks national elevation")
+    final_config.source.national_elevation.path = evidence
+    dependencies = compilation_dependency_manifest(final_config, compiler_path="network")
+    governed = compilation_governed_input_fingerprint(
+        final_config, dependency_manifest=dependencies
+    )
+    if (
+        run.get("snapshot_manifest_sha256") != snapshot.manifest_sha256
+        or run.get("governed_input_fingerprint") != governed
+    ):
+        raise ValueError("EA terminal run manifest identity differs")
+    proof = EARecoveryClosureProof.create(
+        target_snapshot_id=snapshot.snapshot_id,
+        target_manifest_sha256=snapshot.manifest_sha256,
+        manifest_elevation_primary_fingerprint=snapshot.primary_fingerprint,
+        candidate_network_sha256=candidate_sha256,
+        governed_input_fingerprint=governed,
+        expected_eligible_route_fingerprint=snapshot.primary_fingerprint,
+        actual_eligible_route_fingerprint=actual,
+    )
+
+    original_sha256 = document.get("configuration_identity")
+    if not isinstance(original_sha256, str):
+        raise ValueError("EA terminal configuration identity is invalid")
+    current = config_path.read_bytes()
+    current_sha256 = hashlib.sha256(current).hexdigest()
+    closure_path = result.record_path.with_name(f"{result.record_path.stem}.closure.json")
+    base_record: dict[str, object] = {
+        "schema_version": "ea-fixed-point-finalization/v1",
+        "convergence_record_sha256": _sha256_file(result.record_path),
+        "terminal_run_manifest_sha256": run_sha256,
+        "elevation_evidence_sha256": evidence_sha256,
+        "original_configuration_sha256": original_sha256,
+        "fixed_point_closure": proof.record(),
+    }
+    if closure_path.is_symlink():
+        raise ValueError("EA terminal closure record is missing or unsafe")
+    closure_exists = closure_path.exists()
+    if closure_exists:
+        try:
+            closure = json.loads(closure_path.read_text(encoding="utf-8"))
+            promoted_sha256 = closure["promoted_configuration_sha256"]
+        except (KeyError, TypeError, json.JSONDecodeError, OSError) as error:
+            raise ValueError("EA terminal closure record is invalid") from error
+        if (
+            not isinstance(closure, dict)
+            or not isinstance(promoted_sha256, str)
+            or any(closure.get(key) != value for key, value in base_record.items())
+        ):
+            raise ValueError("EA terminal closure record identity differs")
+        if current_sha256 == promoted_sha256:
+            _revalidate_terminal_snapshot(snapshot_target)
+            return
+        if current_sha256 != original_sha256:
+            raise ValueError("EA terminal configuration identity differs")
+    elif current_sha256 != original_sha256:
+        raise ValueError("EA terminal configuration identity differs")
+
+    promoted = promoted_recovery_configuration_bytes(
+        current,
+        target_snapshot_id=snapshot.snapshot_id,
+        parent_snapshot_id=snapshot.parent_snapshot_id,
+        parent_manifest_sha256=snapshot.parent_manifest_sha256,
+        elevation_output=evidence,
+        config_path=config_path,
+    )
+    promoted_sha256 = hashlib.sha256(promoted).hexdigest()
+    if (
+        closure_exists
+        and promoted_sha256 != closure["promoted_configuration_sha256"]
+    ):
+        raise ValueError("EA terminal promoted configuration identity differs")
+    _revalidate_terminal_snapshot(snapshot_target)
+    if not closure_exists:
+        write_recovery_record(
+            closure_path,
+            {**base_record, "promoted_configuration_sha256": promoted_sha256},
+        )
+    atomic_replace_recovery_configuration(config_path, promoted)
+
+
 def run_ea_fixed_point_convergence(
     config_path: Path,
     *,
@@ -450,11 +728,15 @@ def run_ea_fixed_point_convergence(
     record_path: Path | None = None,
     resume: bool = False,
 ) -> EAFixedPointConvergenceResult:
+    if config_path.is_symlink() or not config_path.is_file():
+        raise ValueError("EA fixed-point configuration is missing or unsafe")
     config = AreaDefinition.from_yaml(config_path)
     configuration_identity = _sha256_file(config_path.resolve())
     if resume:
         if record_path is None:
             raise ValueError("EA fixed-point resume requires an explicit record path")
+        if record_path.is_symlink() or not record_path.is_file():
+            raise ValueError("EA fixed-point resume record is missing or unsafe")
         try:
             checkpoint = json.loads(record_path.read_text(encoding="utf-8"))
             run_token = checkpoint["run_token"]
@@ -462,6 +744,12 @@ def run_ea_fixed_point_convergence(
             raise ValueError("EA fixed-point resume record is unreadable") from error
         if not isinstance(run_token, str):
             raise ValueError("EA fixed-point resume run token is invalid")
+        if checkpoint.get("status") == "converged" or "terminal_artifacts" in checkpoint:
+            result = terminal_convergence_result(record_path, checkpoint)
+            if result.max_iterations != max_iterations:
+                raise ValueError("EA fixed-point resume record identity differs")
+            _finalize_terminal_convergence(config_path, config, result, checkpoint)
+            return result
     else:
         run_token = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     operations = EAFixedPointProductionOperations(config, run_token=run_token)
@@ -471,7 +759,7 @@ def run_ea_fixed_point_convergence(
         / ".satn-ea-fixed-point-convergence"
         / f"{config.area_id}-{run_token}.json"
     )
-    return converge_ea_fixed_point(
+    result = converge_ea_fixed_point(
         initial,
         operations=operations,
         max_iterations=max_iterations,
@@ -480,3 +768,7 @@ def run_ea_fixed_point_convergence(
         resume=resume,
         configuration_identity=configuration_identity,
     )
+    if result.status == "converged":
+        document = json.loads(record.read_text(encoding="utf-8"))
+        _finalize_terminal_convergence(config_path, config, result, document)
+    return result

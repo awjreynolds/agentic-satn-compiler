@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import shlex
@@ -26,6 +27,7 @@ from satn.models import AreaDefinition
 from satn.publisher import (
     WECA_PINNED_ELIGIBLE_ROUTE_BBOX,
     WECA_SURVEY_REQUEST_BBOX,
+    _ea_fixed_point_candidate_path,
     _ea_fixed_point_next_step,
 )
 
@@ -34,6 +36,144 @@ SPEC = importlib.util.spec_from_file_location("acquire_ea_elevation_convergence"
 assert SPEC and SPEC.loader
 acquisition = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(acquisition)
+
+
+def _production_acquisition_case(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[
+    EAFixedPointProductionOperations,
+    EAFixedPointSnapshot,
+    EAFixedPointCompilation,
+    Path,
+    Path,
+    gpd.GeoDataFrame,
+]:
+    config = AreaDefinition.from_yaml(
+        Path(__file__).parents[1] / "deployments" / "weca" / "area.yaml"
+    )
+    config.publication.output_dir = tmp_path / "compiled" / "weca"
+    config.source.snapshot_dir = tmp_path / "snapshots"
+    assert config.source.national_elevation is not None
+    configured_evidence = tmp_path / "elevation" / "elevation.geojson"
+    config.source.national_elevation.path = configured_evidence
+    configured_evidence.parent.mkdir(parents=True)
+    configured_evidence.write_text("sealed-governed-evidence", encoding="utf-8")
+
+    candidate = _ea_fixed_point_candidate_path(config) / "network.geojson"
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    candidate.write_bytes(b"candidate-network")
+    replay_dir = tmp_path / "replay"
+    replay_dir.mkdir()
+    authority = replay_dir / "ea-authority-boundaries.geojson"
+    survey = replay_dir / "ea-survey-index.geojson"
+    supplemental = replay_dir / "ea-elevation-sampled-routes.geojson"
+    for path in (authority, survey, supplemental):
+        path.write_text(path.name, encoding="utf-8")
+    monkeypatch.setattr(
+        "satn.ea_fixed_point_operations._validated_ea_snapshot_replay_inputs",
+        lambda _snapshot: {
+            "authority_boundaries": authority,
+            "survey_index": survey,
+            "sample_routes": supplemental,
+        },
+    )
+    monkeypatch.setattr("satn.ea_fixed_point_operations._PROJECT_ROOT", tmp_path)
+
+    routes = gpd.GeoDataFrame(
+        [
+            {
+                "feature_id": "primary-spine",
+                "feature_type": "strategic-spine",
+                "topography_profile_id": "profile-primary",
+                "geometry": LineString([(350000, 150000), (350010, 150000)]),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    actual_fingerprint = eligible_route_fingerprint(routes)
+    snapshot = EAFixedPointSnapshot(
+        snapshot_id=config.source.snapshot_id,
+        manifest_sha256="a" * 64,
+        primary_fingerprint="b" * 64,
+        retained_sample_routes=supplemental,
+        route_inventory=("route-a",),
+        governed_source_identities=(("network.geojson", "c" * 64),),
+    )
+    compilation = EAFixedPointCompilation(
+        expected_fingerprint=snapshot.primary_fingerprint,
+        actual_fingerprint=actual_fingerprint,
+        candidate_network=candidate,
+        urban_access_ms=0,
+        topography_ms=0,
+        acquisition_command=(
+            "uv",
+            "run",
+            "python",
+            "scripts/acquire_ea_elevation.py",
+            str(candidate),
+            str(configured_evidence),
+            "--cache-dir",
+            str(configured_evidence.parent / "ea-dtm-cache"),
+            "--spacing-m",
+            "10",
+            "--authority-boundaries",
+            str(authority),
+            "--survey-index",
+            str(survey),
+            "--weca-preflight",
+            "--routing-buffer-m",
+            "15000",
+            "--governed-input-fingerprint",
+            "e" * 64,
+            "--supplemental-routes",
+            str(supplemental),
+        ),
+    )
+    return (
+        EAFixedPointProductionOperations(config, run_token="test"),
+        snapshot,
+        compilation,
+        configured_evidence,
+        supplemental,
+        routes,
+    )
+
+
+def _write_completed_acquisition_output(
+    evidence_path: Path,
+    routes: gpd.GeoDataFrame,
+    *,
+    governed_input_fingerprint: str,
+) -> None:
+    sampled_routes = evidence_path.with_name(
+        f"{evidence_path.stem}.sampled-routes.geojson"
+    )
+    ledger = evidence_path.with_name(f"{evidence_path.stem}.sample-ledger.jsonl")
+    manifest = evidence_path.with_suffix(".manifest.json")
+    evidence_path.write_text('{"type":"FeatureCollection","features":[]}\n', encoding="utf-8")
+    routes.to_file(sampled_routes, driver="GeoJSON")
+    ledger.write_text("{}\n", encoding="utf-8")
+    manifest.write_text(
+        json.dumps(
+            {
+                "acquisition_protocol": "two-pass-fixed-point/v1",
+                "governed_input_fingerprint": governed_input_fingerprint,
+                "output_sha256": hashlib.sha256(evidence_path.read_bytes()).hexdigest(),
+                "pre_elevation_network_sha256": eligible_route_fingerprint(routes),
+                "sample_ledger_path": ledger.name,
+                "sample_ledger_sha256": hashlib.sha256(ledger.read_bytes()).hexdigest(),
+                "sample_route_path": sampled_routes.name,
+                "sample_route_sha256": hashlib.sha256(
+                    sampled_routes.read_bytes()
+                ).hexdigest(),
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def test_acquisition_refuses_an_eligible_route_collapsed_to_one_point(
@@ -223,6 +363,226 @@ def test_acquisition_path_escape_is_refused_before_execution(
     monkeypatch.setattr("satn.ea_fixed_point_operations.subprocess.run", unexpected_run)
 
     with pytest.raises(ValueError, match="path escapes"):
+        operations.acquire(snapshot, compilation)
+
+    assert not executed
+
+
+def test_acquisition_writes_a_hash_bound_sibling_without_touching_governed_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (
+        operations,
+        snapshot,
+        compilation,
+        configured_evidence,
+        supplemental,
+        routes,
+    ) = _production_acquisition_case(tmp_path, monkeypatch)
+    commands: list[tuple[str, ...]] = []
+
+    def run(
+        command: tuple[str, ...],
+        **_kwargs: object,
+    ) -> SimpleNamespace:
+        commands.append(command)
+        _write_completed_acquisition_output(
+            Path(command[5]),
+            routes,
+            governed_input_fingerprint=command[18],
+        )
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("satn.ea_fixed_point_operations.subprocess.run", run)
+
+    result = operations.acquire(snapshot, compilation)
+
+    expected = configured_evidence.with_name(
+        "elevation.fixed-point-"
+        "8cd099f39e067bdee532480bc0e117e7a34e3c29b072a7c936f10fb01f7826ff"
+        ".geojson"
+    )
+    assert commands[0][5] == str(expected)
+    assert commands[0][7] == str(configured_evidence.parent / "ea-dtm-cache")
+    assert commands[0][20] == str(supplemental)
+    assert configured_evidence.read_text(encoding="utf-8") == "sealed-governed-evidence"
+    assert result.evidence_path == expected
+
+
+def test_acquisition_identity_separates_distinct_governed_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (
+        operations,
+        snapshot,
+        compilation,
+        _configured_evidence,
+        _supplemental,
+        routes,
+    ) = _production_acquisition_case(tmp_path, monkeypatch)
+    commands: list[tuple[str, ...]] = []
+
+    def run(command: tuple[str, ...], **_kwargs: object) -> SimpleNamespace:
+        commands.append(command)
+        _write_completed_acquisition_output(
+            Path(command[5]),
+            routes,
+            governed_input_fingerprint=command[18],
+        )
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("satn.ea_fixed_point_operations.subprocess.run", run)
+    operations.acquire(snapshot, compilation)
+    changed_command = (
+        *compilation.acquisition_command[:18],
+        "f" * 64,
+        *compilation.acquisition_command[19:],
+    )
+    changed = EAFixedPointCompilation(
+        expected_fingerprint=compilation.expected_fingerprint,
+        actual_fingerprint=compilation.actual_fingerprint,
+        candidate_network=compilation.candidate_network,
+        urban_access_ms=0,
+        topography_ms=0,
+        acquisition_command=changed_command,
+    )
+
+    operations.acquire(snapshot, changed)
+
+    assert len(commands) == 2
+    assert commands[0][5] != commands[1][5]
+    assert Path(commands[0][5]).stem.endswith(
+        "8cd099f39e067bdee532480bc0e117e7a34e3c29b072a7c936f10fb01f7826ff"
+    )
+    assert Path(commands[1][5]).stem.endswith(
+        "841939112684e7d908cf327f77f665fda8520fc45db1d258c2917edf7f3d54d7"
+    )
+    for command in commands:
+        output = Path(command[5])
+        family = (
+            output.name,
+            output.with_suffix(".manifest.json").name,
+            output.with_name(f"{output.stem}.sample-ledger.jsonl").name,
+            output.with_name(f"{output.stem}.sampled-routes.geojson").name,
+        )
+        assert max(len(name.encode()) for name in family) <= 255
+
+
+def test_acquisition_refuses_a_partial_immutable_output_family_before_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (
+        operations,
+        snapshot,
+        compilation,
+        configured_evidence,
+        _supplemental,
+        _routes,
+    ) = _production_acquisition_case(tmp_path, monkeypatch)
+    expected = configured_evidence.with_name(
+        "elevation.fixed-point-"
+        "8cd099f39e067bdee532480bc0e117e7a34e3c29b072a7c936f10fb01f7826ff"
+        ".geojson"
+    )
+    expected.write_text("interrupted acquisition", encoding="utf-8")
+    executed = False
+
+    def unexpected_run(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        nonlocal executed
+        executed = True
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(
+        "satn.ea_fixed_point_operations.subprocess.run",
+        unexpected_run,
+    )
+
+    with pytest.raises(ValueError, match="output family is incomplete"):
+        operations.acquire(snapshot, compilation)
+
+    assert not executed
+    assert expected.read_text(encoding="utf-8") == "interrupted acquisition"
+
+
+def test_acquisition_resume_reuses_a_complete_immutable_output_family(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (
+        operations,
+        snapshot,
+        compilation,
+        configured_evidence,
+        _supplemental,
+        routes,
+    ) = _production_acquisition_case(tmp_path, monkeypatch)
+    expected = configured_evidence.with_name(
+        "elevation.fixed-point-"
+        "8cd099f39e067bdee532480bc0e117e7a34e3c29b072a7c936f10fb01f7826ff"
+        ".geojson"
+    )
+    _write_completed_acquisition_output(
+        expected,
+        routes,
+        governed_input_fingerprint="e" * 64,
+    )
+    executed = False
+
+    def unexpected_run(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        nonlocal executed
+        executed = True
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(
+        "satn.ea_fixed_point_operations.subprocess.run",
+        unexpected_run,
+    )
+
+    result = operations.acquire(snapshot, compilation)
+
+    assert not executed
+    assert result.primary_fingerprint == compilation.actual_fingerprint
+    assert result.evidence_path == expected
+
+
+def test_acquisition_resume_refuses_output_with_a_different_governed_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (
+        operations,
+        snapshot,
+        compilation,
+        configured_evidence,
+        _supplemental,
+        routes,
+    ) = _production_acquisition_case(tmp_path, monkeypatch)
+    expected = configured_evidence.with_name(
+        "elevation.fixed-point-"
+        "8cd099f39e067bdee532480bc0e117e7a34e3c29b072a7c936f10fb01f7826ff"
+        ".geojson"
+    )
+    _write_completed_acquisition_output(
+        expected,
+        routes,
+        governed_input_fingerprint="f" * 64,
+    )
+    executed = False
+
+    def unexpected_run(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        nonlocal executed
+        executed = True
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(
+        "satn.ea_fixed_point_operations.subprocess.run",
+        unexpected_run,
+    )
+
+    with pytest.raises(ValueError, match="output identity is invalid"):
         operations.acquire(snapshot, compilation)
 
     assert not executed

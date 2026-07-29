@@ -23,6 +23,7 @@ GOVERNED_SOURCES = (("network.geojson", "d" * 64),)
 class FakeConvergenceOperations:
     actual_fingerprints: list[str]
     next_route_inventories: list[tuple[str, ...]]
+    artifact_dir: Path
     compile_index: int = 0
     acquisition_supplements: list[tuple[str, ...]] = field(default_factory=list)
     crash_snapshot_once: bool = False
@@ -35,10 +36,13 @@ class FakeConvergenceOperations:
     def compile(self, snapshot: EAFixedPointSnapshot) -> EAFixedPointCompilation:
         actual = self.actual_fingerprints[self.compile_index]
         self.compile_index += 1
+        candidate = self.artifact_dir / f"candidate-{self.compile_index}.geojson"
+        candidate.write_text('{"type":"FeatureCollection","features":[]}\n')
+        (self.artifact_dir / "run.json").write_text("{}\n")
         return EAFixedPointCompilation(
             expected_fingerprint=snapshot.primary_fingerprint,
             actual_fingerprint=actual,
-            candidate_network=Path(f"candidate-{self.compile_index}.geojson"),
+            candidate_network=candidate,
             urban_access_ms=self.compile_index * 10,
             topography_ms=self.compile_index * 20,
         )
@@ -97,6 +101,7 @@ def test_two_cycle_convergence_accumulates_prior_routes_and_records_phase_timing
     operations = FakeConvergenceOperations(
         actual_fingerprints=[FP_B, FP_B],
         next_route_inventories=[("route-a", "route-b")],
+        artifact_dir=tmp_path,
     )
 
     result = converge_ea_fixed_point(
@@ -142,6 +147,7 @@ def test_three_set_convergence_retains_every_prior_sampled_alternative(
             ("route-a", "route-b"),
             ("route-a", "route-b", "route-c"),
         ],
+        artifact_dir=tmp_path,
     )
 
     result = converge_ea_fixed_point(
@@ -184,6 +190,7 @@ def test_bounded_non_convergence_records_history_without_starting_extra_work(
     operations = FakeConvergenceOperations(
         actual_fingerprints=[FP_B, FP_C],
         next_route_inventories=[("route-a", "route-b")],
+        artifact_dir=tmp_path,
     )
 
     result = converge_ea_fixed_point(
@@ -220,6 +227,7 @@ def test_existing_record_is_refused_before_any_expensive_work(tmp_path: Path) ->
     operations = FakeConvergenceOperations(
         actual_fingerprints=[FP_A],
         next_route_inventories=[],
+        artifact_dir=tmp_path,
     )
 
     with pytest.raises(ValueError, match="record already exists"):
@@ -249,6 +257,7 @@ def test_restart_resumes_after_completed_acquisition_without_repeating_it(
     operations = FakeConvergenceOperations(
         actual_fingerprints=[FP_B, FP_B],
         next_route_inventories=[("route-a", "route-b")],
+        artifact_dir=tmp_path,
         crash_snapshot_once=True,
     )
 
@@ -296,6 +305,7 @@ def test_restart_refuses_a_different_configuration_identity(tmp_path: Path) -> N
     operations = FakeConvergenceOperations(
         actual_fingerprints=[FP_B],
         next_route_inventories=[("route-a", "route-b")],
+        artifact_dir=tmp_path,
         crash_snapshot_once=True,
     )
     with pytest.raises(RuntimeError, match="simulated crash"):

@@ -13,6 +13,7 @@ from pathlib import Path
 
 import geopandas as gpd
 import pandas as pd
+import yaml
 from pyproj import CRS, Transformer
 from shapely import wkt
 from shapely.geometry import LineString, Point
@@ -37,6 +38,7 @@ from satn.streaming_geojson import iter_geojson_features
 
 RECOVERY_SCHEMA_VERSION = "ea-snapshot-recovery/v1"
 RECOVERY_TRANSACTION_SCHEMA_VERSION = "ea-snapshot-recovery-transaction/v1"
+EA_RECOVERY_CLOSURE_PROOF_SCHEMA_VERSION = "ea-recovery-closure-proof/v1"
 LEGACY_NAN_PARENT_SNAPSHOT_ID = "weca-classification-elevation-2026-07-28-v10"
 LEGACY_NAN_PARENT_MANIFEST_SHA256 = (
     "1993f2f66aaf9fabf95bb5621502a0b8d17430e1d12b49abfc0f03d61d830729"
@@ -54,6 +56,137 @@ class ValidatedEARecoveryParent:
     snapshot_id: str
     manifest_sha256: str
     manifest_bytes: bytes
+
+
+@dataclass(frozen=True)
+class EARecoveryClosureProof:
+    """Content-bound proof that a recovered snapshot compiles to its own route set."""
+
+    target_snapshot_id: str
+    target_manifest_sha256: str
+    manifest_elevation_primary_fingerprint: str
+    candidate_network_sha256: str
+    governed_input_fingerprint: str
+    expected_eligible_route_fingerprint: str
+    actual_eligible_route_fingerprint: str
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        target_snapshot_id: str,
+        target_manifest_sha256: str,
+        manifest_elevation_primary_fingerprint: str,
+        candidate_network_sha256: str,
+        governed_input_fingerprint: str,
+        expected_eligible_route_fingerprint: str,
+        actual_eligible_route_fingerprint: str,
+    ) -> EARecoveryClosureProof:
+        """Validate exact target, candidate and compiler identities before sealing."""
+
+        if (
+            not isinstance(target_snapshot_id, str)
+            or not target_snapshot_id
+            or target_snapshot_id.strip() != target_snapshot_id
+        ):
+            raise ValueError("EA recovery closure proof target snapshot is invalid")
+        identities = {
+            "target manifest": target_manifest_sha256,
+            "manifest elevation primary": manifest_elevation_primary_fingerprint,
+            "candidate network": candidate_network_sha256,
+            "governed input": governed_input_fingerprint,
+            "expected eligible route fingerprint": expected_eligible_route_fingerprint,
+            "actual eligible route fingerprint": actual_eligible_route_fingerprint,
+        }
+        for label, value in identities.items():
+            _canonical_sha256(value, f"closure proof {label}")
+        if (
+            manifest_elevation_primary_fingerprint
+            != expected_eligible_route_fingerprint
+        ):
+            raise ValueError(
+                "EA recovery closure proof manifest elevation primary differs "
+                "from the compile expectation"
+            )
+        if (
+            expected_eligible_route_fingerprint
+            != actual_eligible_route_fingerprint
+        ):
+            raise ValueError(
+                "EA recovery closure proof does not close: expected and actual "
+                "eligible route fingerprints differ"
+            )
+        return cls(
+            target_snapshot_id=target_snapshot_id,
+            target_manifest_sha256=target_manifest_sha256,
+            manifest_elevation_primary_fingerprint=(
+                manifest_elevation_primary_fingerprint
+            ),
+            candidate_network_sha256=candidate_network_sha256,
+            governed_input_fingerprint=governed_input_fingerprint,
+            expected_eligible_route_fingerprint=(
+                expected_eligible_route_fingerprint
+            ),
+            actual_eligible_route_fingerprint=actual_eligible_route_fingerprint,
+        )
+
+    @classmethod
+    def from_record(cls, value: object) -> EARecoveryClosureProof:
+        """Parse an exact canonical closure-proof record without coercion."""
+
+        fields = {
+            "schema_version",
+            "target_snapshot_id",
+            "target_manifest_sha256",
+            "manifest_elevation_primary_fingerprint",
+            "candidate_network_sha256",
+            "governed_input_fingerprint",
+            "expected_eligible_route_fingerprint",
+            "actual_eligible_route_fingerprint",
+        }
+        if (
+            not isinstance(value, Mapping)
+            or set(value) != fields
+            or value.get("schema_version")
+            != EA_RECOVERY_CLOSURE_PROOF_SCHEMA_VERSION
+            or any(not isinstance(value.get(field), str) for field in fields)
+        ):
+            raise ValueError("EA snapshot recovery sealed record lacks a valid closure proof")
+        return cls.create(
+            target_snapshot_id=value["target_snapshot_id"],
+            target_manifest_sha256=value["target_manifest_sha256"],
+            manifest_elevation_primary_fingerprint=value[
+                "manifest_elevation_primary_fingerprint"
+            ],
+            candidate_network_sha256=value["candidate_network_sha256"],
+            governed_input_fingerprint=value["governed_input_fingerprint"],
+            expected_eligible_route_fingerprint=value[
+                "expected_eligible_route_fingerprint"
+            ],
+            actual_eligible_route_fingerprint=value[
+                "actual_eligible_route_fingerprint"
+            ],
+        )
+
+    def record(self) -> dict[str, str]:
+        """Return the canonical persisted proof payload."""
+
+        return {
+            "schema_version": EA_RECOVERY_CLOSURE_PROOF_SCHEMA_VERSION,
+            "target_snapshot_id": self.target_snapshot_id,
+            "target_manifest_sha256": self.target_manifest_sha256,
+            "manifest_elevation_primary_fingerprint": (
+                self.manifest_elevation_primary_fingerprint
+            ),
+            "candidate_network_sha256": self.candidate_network_sha256,
+            "governed_input_fingerprint": self.governed_input_fingerprint,
+            "expected_eligible_route_fingerprint": (
+                self.expected_eligible_route_fingerprint
+            ),
+            "actual_eligible_route_fingerprint": (
+                self.actual_eligible_route_fingerprint
+            ),
+        }
 
 
 def validate_legacy_ea_recovery_parent(
@@ -475,6 +608,104 @@ def write_recovery_record(path: Path, record: dict[str, object]) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def promoted_recovery_configuration_bytes(
+    original: bytes,
+    *,
+    target_snapshot_id: str,
+    parent_snapshot_id: str,
+    parent_manifest_sha256: str,
+    elevation_output: Path,
+    config_path: Path,
+) -> bytes:
+    """Update only the four recovery source scalars while preserving YAML layout."""
+
+    relative_elevation = Path(
+        os.path.relpath(elevation_output, config_path.parent)
+    ).as_posix()
+    replacements = {
+        ("source", "snapshot_id"): target_snapshot_id,
+        ("source", "retained_core_source", "snapshot_id"): parent_snapshot_id,
+        (
+            "source",
+            "retained_core_source",
+            "manifest_sha256",
+        ): parent_manifest_sha256,
+        ("source", "national_elevation", "path"): relative_elevation,
+    }
+    lines = original.decode("utf-8").splitlines(keepends=True)
+    stack: list[tuple[int, str]] = []
+    found: set[tuple[str, ...]] = set()
+    for index, line in enumerate(lines):
+        stripped = line.lstrip(" ")
+        if not stripped or stripped.startswith("#") or ":" not in stripped:
+            continue
+        indentation = len(line) - len(stripped)
+        key, remainder = stripped.split(":", 1)
+        while stack and stack[-1][0] >= indentation:
+            stack.pop()
+        path = (*[item[1] for item in stack], key)
+        if path in replacements:
+            if path in found:
+                raise ValueError(
+                    f"EA recovery configuration repeats {'.'.join(path)}"
+                )
+            newline = "\n" if line.endswith("\n") else ""
+            lines[index] = (
+                f"{' ' * indentation}{key}: "
+                f"{json.dumps(replacements[path])}{newline}"
+            )
+            found.add(path)
+        if not remainder.strip():
+            stack.append((indentation, key))
+    if found != set(replacements):
+        missing = ", ".join(".".join(path) for path in set(replacements) - found)
+        raise ValueError(f"EA recovery configuration lacks required fields: {missing}")
+    promoted = "".join(lines).encode()
+    parsed = yaml.safe_load(promoted)
+    if (
+        not isinstance(parsed, dict)
+        or parsed.get("source", {}).get("snapshot_id") != target_snapshot_id
+        or parsed.get("source", {}).get("retained_core_source")
+        != {
+            "snapshot_id": parent_snapshot_id,
+            "manifest_sha256": parent_manifest_sha256,
+        }
+        or parsed.get("source", {}).get("national_elevation", {}).get("path")
+        != relative_elevation
+    ):
+        raise ValueError("EA recovery promoted configuration is invalid")
+    return promoted
+
+
+def atomic_replace_recovery_configuration(path: Path, content: bytes) -> None:
+    """Atomically replace a validated existing recovery configuration."""
+
+    _atomic_replace_bytes(path, content)
+
+
+def create_recovery_prepared_configuration(path: Path, content: bytes) -> None:
+    """Create one prepared Area YAML atomically without replacing existing state."""
+
+    if path.is_symlink() or path.exists():
+        raise ValueError("EA recovery prepared configuration already exists or is unsafe")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("xb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError as error:
+            raise ValueError(
+                "EA recovery prepared configuration already exists or is unsafe"
+            ) from error
+        _fsync_directory(path.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def promote_recovery_transaction(
     *,
     staged_snapshot: StagedSnapshot | None,
@@ -731,6 +962,8 @@ def validate_recovery_target(
     parent_manifest_sha256: str,
     official_source_id: str,
     official_content_fingerprint: str,
+    elevation_output_sha256: str | None = None,
+    actual_eligible_route_fingerprint: str | None = None,
 ) -> None:
     """Verify exact recovery lineage and configured official-road provenance."""
 
@@ -760,6 +993,31 @@ def validate_recovery_target(
         raise ValueError(
             "EA snapshot recovery official-road classification identity differs"
         )
+    if (
+        elevation_output_sha256 is not None
+        or actual_eligible_route_fingerprint is not None
+    ):
+        _canonical_sha256(elevation_output_sha256, "elevation output")
+        _canonical_sha256(
+            actual_eligible_route_fingerprint,
+            "actual eligible-route fingerprint",
+        )
+        elevation = sources.get("elevation") if isinstance(sources, dict) else None
+        if (
+            not isinstance(elevation, dict)
+            or elevation.get("acquisition_output_sha256")
+            != elevation_output_sha256
+        ):
+            raise ValueError(
+                "EA snapshot recovery elevation acquisition identity differs"
+            )
+        if (
+            elevation.get("pre_elevation_network_sha256")
+            != actual_eligible_route_fingerprint
+        ):
+            raise ValueError(
+                "EA snapshot recovery pre-elevation candidate identity differs"
+            )
 
 
 def _validate_promoted_recovery_target(

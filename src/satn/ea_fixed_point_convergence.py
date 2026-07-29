@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -19,6 +20,14 @@ def _sha256(value: str, name: str) -> str:
     if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
         raise ValueError(f"{name} must be a lowercase full SHA-256")
     return value
+
+
+def _sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _route_inventory(values: tuple[str, ...]) -> tuple[str, ...]:
@@ -59,6 +68,7 @@ class EAFixedPointSnapshot:
     governed_source_identities: tuple[tuple[str, str], ...]
     parent_snapshot_id: str | None = None
     parent_manifest_sha256: str | None = None
+    elevation_evidence_path: Path | None = None
 
     def __post_init__(self) -> None:
         if not self.snapshot_id or self.snapshot_id.strip() != self.snapshot_id:
@@ -207,6 +217,7 @@ class EAFixedPointConvergenceResult:
     record_path: Path
     run_token: str
     configuration_identity: str | None = None
+    terminal_candidate_network: Path | None = None
 
 
 def converge_ea_fixed_point(
@@ -365,6 +376,7 @@ def converge_ea_fixed_point(
                 record_path=record_path,
                 run_token=run_token,
                 configuration_identity=configuration_identity,
+                terminal_candidate_network=compilation.candidate_network,
             )
             _write_convergence_record(result)
             return result
@@ -408,6 +420,19 @@ def _write_convergence_record(result: EAFixedPointConvergenceResult) -> None:
         "final_snapshot": _snapshot_record(result.final_snapshot),
         "iterations": [_iteration_record(item) for item in result.iterations],
     }
+    if result.status == "converged":
+        candidate = result.terminal_candidate_network
+        if candidate is None or not candidate.is_file() or candidate.is_symlink():
+            raise ValueError("EA terminal candidate network is missing or unsafe")
+        run_manifest = candidate.parent / "run.json"
+        if not run_manifest.is_file() or run_manifest.is_symlink():
+            raise ValueError("EA terminal run manifest is missing or unsafe")
+        document["terminal_artifacts"] = {
+            "candidate_network": str(candidate),
+            "candidate_network_sha256": _sha256_path(candidate),
+            "run_manifest": str(run_manifest),
+            "run_manifest_sha256": _sha256_path(run_manifest),
+        }
     _atomic_write_document(result.record_path, document, create=False)
 
 
@@ -568,6 +593,11 @@ def _snapshot_record(snapshot: EAFixedPointSnapshot) -> dict[str, object]:
         "manifest_sha256": snapshot.manifest_sha256,
         "primary_fingerprint": snapshot.primary_fingerprint,
         "retained_sample_routes": str(snapshot.retained_sample_routes),
+        "elevation_evidence_path": (
+            str(snapshot.elevation_evidence_path)
+            if snapshot.elevation_evidence_path is not None
+            else None
+        ),
         "route_inventory": list(snapshot.route_inventory),
         "governed_source_identities": {
             name: digest for name, digest in snapshot.governed_source_identities
@@ -592,7 +622,129 @@ def _snapshot_from_record(value: object) -> EAFixedPointSnapshot:
         governed_source_identities=tuple(sources.items()),
         parent_snapshot_id=value["parent_snapshot_id"],
         parent_manifest_sha256=value["parent_manifest_sha256"],
+        elevation_evidence_path=(
+            Path(value["elevation_evidence_path"])
+            if value.get("elevation_evidence_path") is not None
+            else None
+        ),
     )
+
+
+def terminal_convergence_result(
+    record_path: Path,
+    document: object,
+) -> EAFixedPointConvergenceResult:
+    """Parse a terminal record as a strict, internally closed replay capability."""
+
+    fields = {
+        "schema_version",
+        "status",
+        "run_token",
+        "configuration_identity",
+        "max_iterations",
+        "final_snapshot",
+        "terminal_artifacts",
+        "iterations",
+    }
+    snapshot_fields = {
+        "snapshot_id",
+        "manifest_sha256",
+        "primary_fingerprint",
+        "retained_sample_routes",
+        "elevation_evidence_path",
+        "route_inventory",
+        "governed_source_identities",
+        "parent_snapshot_id",
+        "parent_manifest_sha256",
+    }
+    artifact_fields = {
+        "candidate_network",
+        "candidate_network_sha256",
+        "run_manifest",
+        "run_manifest_sha256",
+    }
+    iteration_fields = {
+        "iteration",
+        "snapshot_id",
+        "snapshot_manifest_sha256",
+        "expected_fingerprint",
+        "actual_fingerprint",
+        "route_inventory",
+        "governed_source_identities",
+        "timings_ms",
+    }
+    timing_fields = {
+        "acquisition",
+        "snapshot_seal",
+        "snapshot_validation",
+        "urban_access",
+        "topography",
+    }
+    try:
+        if (
+            not isinstance(document, dict)
+            or set(document) != fields
+            or document["schema_version"] != "ea-fixed-point-convergence/v2"
+            or document["status"] != "converged"
+            or not isinstance(document["run_token"], str)
+            or not document["run_token"]
+            or document["run_token"].strip() != document["run_token"]
+        ):
+            raise TypeError
+        _sha256(document["configuration_identity"], "terminal configuration identity")
+        maximum = document["max_iterations"]
+        if type(maximum) is not int or not 1 <= maximum <= MAX_FIXED_POINT_ITERATIONS:
+            raise TypeError
+        snapshot_record = document["final_snapshot"]
+        artifacts = document["terminal_artifacts"]
+        iteration_records = document["iterations"]
+        if (
+            not isinstance(snapshot_record, dict)
+            or set(snapshot_record) != snapshot_fields
+            or not isinstance(snapshot_record["retained_sample_routes"], str)
+            or not isinstance(snapshot_record["elevation_evidence_path"], str)
+            or not isinstance(snapshot_record["parent_snapshot_id"], str)
+            or not isinstance(artifacts, dict)
+            or set(artifacts) != artifact_fields
+            or any(not isinstance(artifacts[field], str) for field in artifact_fields)
+            or not isinstance(iteration_records, list)
+            or not 1 <= len(iteration_records) <= maximum
+        ):
+            raise TypeError
+        _sha256(artifacts["candidate_network_sha256"], "terminal candidate")
+        _sha256(artifacts["run_manifest_sha256"], "terminal run manifest")
+        for position, item in enumerate(iteration_records, start=1):
+            if (
+                not isinstance(item, dict)
+                or set(item) != iteration_fields
+                or item["iteration"] != position
+                or not isinstance(item["timings_ms"], dict)
+                or set(item["timings_ms"]) != timing_fields
+                or any(type(item["timings_ms"][key]) is not int for key in timing_fields)
+            ):
+                raise TypeError
+        snapshot = _snapshot_from_record(snapshot_record)
+        iterations = tuple(_iteration_from_record(item) for item in iteration_records)
+        last = iterations[-1]
+        if (
+            last.expected_fingerprint != last.actual_fingerprint
+            or last.expected_fingerprint != snapshot.primary_fingerprint
+            or last.snapshot_id != snapshot.snapshot_id
+            or last.snapshot_manifest_sha256 != snapshot.manifest_sha256
+        ):
+            raise TypeError
+        return EAFixedPointConvergenceResult(
+            status="converged",
+            final_snapshot=snapshot,
+            iterations=iterations,
+            max_iterations=maximum,
+            record_path=record_path,
+            run_token=document["run_token"],
+            configuration_identity=document["configuration_identity"],
+            terminal_candidate_network=Path(artifacts["candidate_network"]),
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("EA fixed-point terminal record is invalid") from error
 
 
 def _compilation_record(

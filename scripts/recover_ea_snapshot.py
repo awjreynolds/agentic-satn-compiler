@@ -4,32 +4,39 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
 
-import yaml
-
 from satn.compilation_dependencies import compilation_dependency_manifest
 from satn.ea_elevation import sha256_file
 from satn.ea_fixed_point_convergence import EAFixedPointSnapshot
-from satn.ea_fixed_point_operations import _validated_candidate_status
+from satn.ea_fixed_point_operations import (
+    _validated_candidate_status,
+    run_ea_fixed_point_convergence,
+)
 from satn.ea_snapshot_recovery import (
+    EARecoveryClosureProof,
+    atomic_replace_recovery_configuration,
+    create_recovery_prepared_configuration,
     preflight_recovery_output_family,
-    promote_recovery_transaction,
+    promoted_recovery_configuration_bytes,
     reconcile_stationary_route_recovery,
-    recovery_transaction_artifact,
-    recovery_transaction_plan,
+    recovery_output_family,
     validate_recovery_output_family,
     validate_recovery_sampled_route_output,
+    validate_recovery_target,
     verified_official_road_identity,
+    write_recovery_record,
 )
 from satn.models import AreaDefinition, RetainedCoreSourceConfig, safe_snapshot_id
 from satn.pipeline import compilation_governed_input_fingerprint
-from satn.sources import _validated_ea_snapshot_replay_inputs, stage_ea_recovery_snapshot
+from satn.sources import (
+    _validated_ea_snapshot_replay_inputs,
+    promote_staged_snapshot,
+    stage_ea_recovery_snapshot,
+)
 
 
 def main() -> None:
@@ -40,6 +47,7 @@ def main() -> None:
     parser.add_argument("target_snapshot_id")
     parser.add_argument("record", type=Path)
     parser.add_argument("--cache-dir", type=Path, required=True)
+    parser.add_argument("--max-iterations", type=int, default=3)
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parents[1]
@@ -58,19 +66,22 @@ def main() -> None:
     )
     config = AreaDefinition.from_yaml(config_path)
     original_config_bytes = config_path.read_bytes()
-    original_config_sha256 = hashlib.sha256(original_config_bytes).hexdigest()
     target = config.source.snapshot_dir / target_snapshot_id
-    existing_plan = recovery_transaction_plan(record_path)
-    if config.source.snapshot_id == target_snapshot_id and existing_plan is not None:
-        _resume_completed_recovery(
-            config=config,
+    prepared_config_path, convergence_record_path = _recovery_bridge_paths(
+        config_path,
+        record_path,
+    )
+    if record_path.exists():
+        final_target = _complete_bounded_recovery(
             config_path=config_path,
-            config_bytes=original_config_bytes,
-            target=target,
-            record_path=record_path,
-            plan=existing_plan,
+            prepared_config_path=prepared_config_path,
+            convergence_record_path=convergence_record_path,
+            recovery_record_path=record_path,
+            base_record={},
+            max_iterations=args.max_iterations,
+            expected_prepared_config_bytes=None,
         )
-        print(target)
+        print(config.source.snapshot_dir / final_target.name)
         print(record_path)
         return
     parent_id = config.source.snapshot_id
@@ -125,17 +136,29 @@ def main() -> None:
         raise ValueError("EA recovery requires configured national elevation")
     recovered.source.national_elevation.path = elevation_output
 
-    staged = None
-    target_manifest_sha256: str | None = None
-    resumed = recovery_transaction_artifact(record_path, target=target)
-    if resumed is not None:
-        staged, target_manifest_sha256 = resumed
-    elif target.exists():
-        raise ValueError(
-            "EA snapshot recovery target exists without its transaction journal; "
-            "refusing ambiguous ownership"
+    prepared_config_bytes = promoted_recovery_configuration_bytes(
+        original_config_bytes,
+        target_snapshot_id=target_snapshot_id,
+        parent_snapshot_id=parent_id,
+        parent_manifest_sha256=parent_manifest_sha256,
+        elevation_output=elevation_output,
+        config_path=prepared_config_path,
+    )
+    if prepared_config_path.is_symlink():
+        raise ValueError("EA recovery prepared configuration is unsafe")
+    if not prepared_config_path.exists():
+        create_recovery_prepared_configuration(
+            prepared_config_path,
+            prepared_config_bytes,
         )
-    else:
+    elif not prepared_config_path.is_file():
+        raise ValueError("EA recovery prepared configuration is unsafe")
+
+    output_family = recovery_output_family(elevation_output)
+    existing_outputs = tuple(path.exists() or path.is_symlink() for path in output_family)
+    if any(existing_outputs) and not all(existing_outputs):
+        raise ValueError("EA snapshot recovery output is incomplete")
+    if not all(existing_outputs):
         preflight_recovery_output_family(elevation_output)
         replay = _validated_ea_snapshot_replay_inputs(parent_dir)
         command = (
@@ -162,42 +185,273 @@ def main() -> None:
             raise ValueError(
                 f"EA clean-baseline recovery acquisition failed: {completed.returncode}"
             )
-        validate_recovery_output_family(elevation_output)
-        sampled = elevation_output.with_name(
-            f"{elevation_output.stem}.sampled-routes.geojson"
+    validate_recovery_output_family(elevation_output)
+    sampled = elevation_output.with_name(
+        f"{elevation_output.stem}.sampled-routes.geojson"
+    )
+    validate_recovery_sampled_route_output(sampled)
+
+    actual_eligible_route_fingerprint = status.get(
+        "actual_eligible_route_fingerprint"
+    )
+    if not isinstance(actual_eligible_route_fingerprint, str):
+        raise ValueError("EA recovery candidate actual fingerprint is invalid")
+    elevation_output_sha256 = sha256_file(elevation_output)
+    if target.exists():
+        validate_recovery_target(
+            target,
+            target_snapshot_id=target_snapshot_id,
+            parent_snapshot_id=parent_id,
+            parent_manifest_sha256=parent_manifest_sha256,
+            official_source_id=official_identity["source_id"],
+            official_content_fingerprint=official_identity["content_fingerprint"],
+            elevation_output_sha256=elevation_output_sha256,
+            actual_eligible_route_fingerprint=actual_eligible_route_fingerprint,
         )
-        validate_recovery_sampled_route_output(sampled)
+        target_manifest_sha256 = sha256_file(target / "snapshot.json")
+    else:
         staged = stage_ea_recovery_snapshot(recovered)
         target_manifest_sha256 = sha256_file(staged.path / "snapshot.json")
+        promote_staged_snapshot(staged)
+        validate_recovery_target(
+            target,
+            target_snapshot_id=target_snapshot_id,
+            parent_snapshot_id=parent_id,
+            parent_manifest_sha256=parent_manifest_sha256,
+            official_source_id=official_identity["source_id"],
+            official_content_fingerprint=official_identity["content_fingerprint"],
+            elevation_output_sha256=elevation_output_sha256,
+            actual_eligible_route_fingerprint=actual_eligible_route_fingerprint,
+        )
 
-    if target_manifest_sha256 is None:  # pragma: no cover - branches establish it.
-        raise ValueError("EA recovery target manifest identity is unavailable")
-    record["status"] = "sealed"
-    record["target_manifest_sha256"] = target_manifest_sha256
+    record["status"] = "clean-baseline-staged"
+    record["clean_baseline_target_manifest_sha256"] = target_manifest_sha256
     record["official_road_classification"] = official_identity
-    promoted_config_bytes = _promoted_configuration_bytes(
-        original_config_bytes,
-        target_snapshot_id=target_snapshot_id,
-        parent_snapshot_id=parent_id,
-        parent_manifest_sha256=parent_manifest_sha256,
-        elevation_output=elevation_output,
+    final_target = _complete_bounded_recovery(
         config_path=config_path,
+        prepared_config_path=prepared_config_path,
+        convergence_record_path=convergence_record_path,
+        recovery_record_path=record_path,
+        base_record=record,
+        max_iterations=args.max_iterations,
+        expected_prepared_config_bytes=prepared_config_bytes,
     )
-    promote_recovery_transaction(
-        staged_snapshot=staged,
-        target=target,
-        record_path=record_path,
-        config_path=config_path,
-        expected_config_sha256=original_config_sha256,
-        promoted_config_bytes=promoted_config_bytes,
-        record=record,
-        parent_snapshot_id=parent_id,
-        parent_manifest_sha256=parent_manifest_sha256,
-        official_source_id=official_identity["source_id"],
-        official_content_fingerprint=official_identity["content_fingerprint"],
-    )
-    print(target)
+    print(config.source.snapshot_dir / final_target.name)
     print(record_path)
+
+
+def _recovery_bridge_paths(
+    config_path: Path,
+    record_path: Path,
+) -> tuple[Path, Path]:
+    prepared = config_path.with_name(
+        f".{config_path.name}.{record_path.stem}.ea-recovery-prepared.yaml"
+    )
+    convergence = record_path.with_name(
+        f".{record_path.stem}.ea-fixed-point-convergence.json"
+    )
+    return prepared, convergence
+
+
+def _regular_sha256(path: Path, label: str) -> str:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"EA recovery {label} is missing or unsafe")
+    return sha256_file(path)
+
+
+def _read_document(path: Path, label: str) -> dict[str, object]:
+    _regular_sha256(path, label)
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise ValueError(f"EA recovery {label} is invalid JSON") from error
+    if not isinstance(document, dict):
+        raise ValueError(f"EA recovery {label} is invalid")
+    return document
+
+
+def _terminal_prepared_configuration_is_bound(
+    prepared_config_path: Path,
+    convergence_record_path: Path,
+) -> bool:
+    closure_path = convergence_record_path.with_name(
+        f"{convergence_record_path.stem}.closure.json"
+    )
+    if not convergence_record_path.exists() or not closure_path.exists():
+        return False
+    closure = _read_document(closure_path, "convergence closure")
+    return (
+        closure.get("schema_version") == "ea-fixed-point-finalization/v1"
+        and closure.get("convergence_record_sha256")
+        == _regular_sha256(convergence_record_path, "convergence record")
+        and closure.get("promoted_configuration_sha256")
+        == _regular_sha256(prepared_config_path, "prepared configuration")
+    )
+
+
+def _completed_recovery_target(
+    *,
+    config_path: Path,
+    prepared_config_path: Path,
+    convergence_record_path: Path,
+    recovery_record_path: Path,
+    max_iterations: int,
+) -> Path:
+    record = _read_document(recovery_record_path, "governed record")
+    bridge = record.get("bounded_convergence")
+    if (
+        record.get("schema_version") != "ea-snapshot-recovery/v1"
+        or record.get("status") != "sealed"
+        or not isinstance(bridge, dict)
+        or bridge.get("schema_version")
+        != "ea-recovery-bounded-convergence/v1"
+    ):
+        raise ValueError("EA recovery governed record is not a completed convergence")
+    proof = EARecoveryClosureProof.from_record(record.get("fixed_point_closure"))
+    if (
+        record.get("target_snapshot_id") != proof.target_snapshot_id
+        or record.get("target_manifest_sha256") != proof.target_manifest_sha256
+    ):
+        raise ValueError("EA recovery governed record target differs from its closure")
+    terminal = run_ea_fixed_point_convergence(
+        prepared_config_path,
+        max_iterations=max_iterations,
+        record_path=convergence_record_path,
+        resume=True,
+    )
+    if (
+        terminal.status != "converged"
+        or terminal.final_snapshot.snapshot_id != proof.target_snapshot_id
+        or terminal.final_snapshot.manifest_sha256 != proof.target_manifest_sha256
+    ):
+        raise ValueError("EA recovery terminal convergence result differs")
+    closure_path = convergence_record_path.with_name(
+        f"{convergence_record_path.stem}.closure.json"
+    )
+    if (
+        _regular_sha256(convergence_record_path, "convergence record")
+        != bridge.get("convergence_record_sha256")
+        or _regular_sha256(closure_path, "convergence closure")
+        != bridge.get("closure_record_sha256")
+        or _regular_sha256(prepared_config_path, "prepared configuration")
+        != bridge.get("final_configuration_sha256")
+    ):
+        raise ValueError("EA recovery bounded convergence identity differs")
+    closure = _read_document(closure_path, "convergence closure")
+    if (
+        closure.get("schema_version") != "ea-fixed-point-finalization/v1"
+        or closure.get("convergence_record_sha256")
+        != bridge.get("convergence_record_sha256")
+        or closure.get("promoted_configuration_sha256")
+        != bridge.get("final_configuration_sha256")
+        or closure.get("fixed_point_closure") != proof.record()
+    ):
+        raise ValueError("EA recovery convergence closure differs")
+    original_sha256 = bridge.get("original_configuration_sha256")
+    final_sha256 = bridge.get("final_configuration_sha256")
+    current_sha256 = _regular_sha256(config_path, "main configuration")
+    if current_sha256 == final_sha256:
+        return Path(proof.target_snapshot_id)
+    if current_sha256 != original_sha256:
+        raise ValueError("EA recovery main configuration changed outside the bridge")
+    atomic_replace_recovery_configuration(
+        config_path,
+        prepared_config_path.read_bytes(),
+    )
+    return Path(proof.target_snapshot_id)
+
+
+def _complete_bounded_recovery(
+    *,
+    config_path: Path,
+    prepared_config_path: Path,
+    convergence_record_path: Path,
+    recovery_record_path: Path,
+    base_record: dict[str, object],
+    max_iterations: int,
+    expected_prepared_config_bytes: bytes | None,
+) -> Path:
+    if recovery_record_path.exists() or recovery_record_path.is_symlink():
+        return _completed_recovery_target(
+            config_path=config_path,
+            prepared_config_path=prepared_config_path,
+            convergence_record_path=convergence_record_path,
+            recovery_record_path=recovery_record_path,
+            max_iterations=max_iterations,
+        )
+    if expected_prepared_config_bytes is None:
+        raise ValueError("EA recovery expected prepared configuration is missing")
+    _regular_sha256(prepared_config_path, "prepared configuration")
+    if prepared_config_path.read_bytes() != expected_prepared_config_bytes and not (
+        _terminal_prepared_configuration_is_bound(
+            prepared_config_path,
+            convergence_record_path,
+        )
+    ):
+        raise ValueError("EA recovery prepared configuration identity differs")
+    original_configuration_sha256 = _regular_sha256(
+        config_path,
+        "main configuration",
+    )
+    result = run_ea_fixed_point_convergence(
+        prepared_config_path,
+        max_iterations=max_iterations,
+        record_path=convergence_record_path,
+        resume=convergence_record_path.exists(),
+    )
+    if result.status != "converged":
+        raise ValueError("EA recovery bounded fixed-point run did not converge")
+    closure_path = convergence_record_path.with_name(
+        f"{convergence_record_path.stem}.closure.json"
+    )
+    closure = _read_document(closure_path, "convergence closure")
+    proof = EARecoveryClosureProof.from_record(closure.get("fixed_point_closure"))
+    final_snapshot = result.final_snapshot
+    if (
+        proof.target_snapshot_id != final_snapshot.snapshot_id
+        or proof.target_manifest_sha256 != final_snapshot.manifest_sha256
+    ):
+        raise ValueError("EA recovery convergence result differs from its closure")
+    convergence_sha256 = _regular_sha256(
+        convergence_record_path,
+        "convergence record",
+    )
+    final_configuration_sha256 = _regular_sha256(
+        prepared_config_path,
+        "prepared configuration",
+    )
+    if (
+        closure.get("schema_version") != "ea-fixed-point-finalization/v1"
+        or closure.get("convergence_record_sha256") != convergence_sha256
+        or closure.get("promoted_configuration_sha256")
+        != final_configuration_sha256
+    ):
+        raise ValueError("EA recovery convergence closure is invalid")
+    final_record = {
+        **base_record,
+        "status": "sealed",
+        "target_snapshot_id": proof.target_snapshot_id,
+        "target_manifest_sha256": proof.target_manifest_sha256,
+        "fixed_point_closure": proof.record(),
+        "bounded_convergence": {
+            "schema_version": "ea-recovery-bounded-convergence/v1",
+            "convergence_record_sha256": convergence_sha256,
+            "closure_record_sha256": _regular_sha256(
+                closure_path,
+                "convergence closure",
+            ),
+            "original_configuration_sha256": original_configuration_sha256,
+            "final_configuration_sha256": final_configuration_sha256,
+        },
+    }
+    write_recovery_record(recovery_record_path, final_record)
+    return _completed_recovery_target(
+        config_path=config_path,
+        prepared_config_path=prepared_config_path,
+        convergence_record_path=convergence_record_path,
+        recovery_record_path=recovery_record_path,
+        max_iterations=max_iterations,
+    )
 
 
 def _validate_recovery_transaction_candidate_fingerprint(
@@ -224,142 +478,6 @@ def _contained(path: Path, root: Path, label: str) -> Path:
     if not resolved.is_relative_to(root):
         raise ValueError(f"EA recovery {label} escapes the project root")
     return resolved
-
-
-def _promoted_configuration_bytes(
-    original: bytes,
-    *,
-    target_snapshot_id: str,
-    parent_snapshot_id: str,
-    parent_manifest_sha256: str,
-    elevation_output: Path,
-    config_path: Path,
-) -> bytes:
-    """Update only recovery source scalars while preserving the Area YAML layout."""
-
-    text = original.decode("utf-8")
-    relative_elevation = Path(
-        os.path.relpath(elevation_output, config_path.parent)
-    ).as_posix()
-    replacements = {
-        ("source", "snapshot_id"): target_snapshot_id,
-        ("source", "retained_core_source", "snapshot_id"): parent_snapshot_id,
-        (
-            "source",
-            "retained_core_source",
-            "manifest_sha256",
-        ): parent_manifest_sha256,
-        ("source", "national_elevation", "path"): relative_elevation,
-    }
-    lines = text.splitlines(keepends=True)
-    stack: list[tuple[int, str]] = []
-    found: set[tuple[str, ...]] = set()
-    for index, line in enumerate(lines):
-        stripped = line.lstrip(" ")
-        if not stripped or stripped.startswith("#") or ":" not in stripped:
-            continue
-        indentation = len(line) - len(stripped)
-        key, remainder = stripped.split(":", 1)
-        while stack and stack[-1][0] >= indentation:
-            stack.pop()
-        path = (*[item[1] for item in stack], key)
-        if path in replacements:
-            if path in found:
-                raise ValueError(
-                    f"EA recovery configuration repeats {'.'.join(path)}"
-                )
-            newline = "\n" if line.endswith("\n") else ""
-            lines[index] = (
-                f"{' ' * indentation}{key}: "
-                f"{json.dumps(replacements[path])}{newline}"
-            )
-            found.add(path)
-        if not remainder.strip():
-            stack.append((indentation, key))
-    if found != set(replacements):
-        missing = ", ".join(".".join(path) for path in set(replacements) - found)
-        raise ValueError(f"EA recovery configuration lacks required fields: {missing}")
-    promoted = "".join(lines).encode()
-    parsed = yaml.safe_load(promoted)
-    if (
-        not isinstance(parsed, dict)
-        or parsed.get("source", {}).get("snapshot_id") != target_snapshot_id
-        or parsed.get("source", {}).get("retained_core_source")
-        != {
-            "snapshot_id": parent_snapshot_id,
-            "manifest_sha256": parent_manifest_sha256,
-        }
-        or parsed.get("source", {}).get("national_elevation", {}).get("path")
-        != relative_elevation
-    ):
-        raise ValueError("EA recovery promoted configuration is invalid")
-    return promoted
-
-
-def _resume_completed_recovery(
-    *,
-    config: AreaDefinition,
-    config_path: Path,
-    config_bytes: bytes,
-    target: Path,
-    record_path: Path,
-    plan: dict[str, object],
-) -> None:
-    """Validate and replay a transaction whose configuration already names v11."""
-
-    parent_snapshot_id = plan.get("parent_snapshot_id")
-    parent_manifest_sha256 = plan.get("parent_manifest_sha256")
-    expected_config_sha256 = plan.get("expected_configuration_sha256")
-    promoted_config_sha256 = plan.get("promoted_configuration_sha256")
-    if (
-        not isinstance(parent_snapshot_id, str)
-        or not isinstance(parent_manifest_sha256, str)
-        or not isinstance(expected_config_sha256, str)
-        or not isinstance(promoted_config_sha256, str)
-        or hashlib.sha256(config_bytes).hexdigest() != promoted_config_sha256
-    ):
-        raise ValueError("EA recovery completed transaction identity differs")
-    lineage = config.source.retained_core_source
-    if (
-        lineage is None
-        or lineage.snapshot_id != parent_snapshot_id
-        or lineage.manifest_sha256 != parent_manifest_sha256
-    ):
-        raise ValueError("EA recovery completed configuration lineage differs")
-    governed = config.source.official_road_classification
-    if governed is None:
-        raise ValueError(
-            "EA recovery requires configured official-road classification"
-        )
-    parent = config.source.snapshot_dir / parent_snapshot_id
-    official_identity = verified_official_road_identity(
-        parent,
-        parent_manifest_sha256=parent_manifest_sha256,
-        governed=governed,
-    )
-    try:
-        record = json.loads(record_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise ValueError("EA recovery completed record is unreadable") from error
-    if not isinstance(record, dict):
-        raise ValueError("EA recovery completed record is invalid")
-    artifact = recovery_transaction_artifact(record_path, target=target)
-    if artifact is None:
-        raise ValueError("EA recovery completed transaction journal is missing")
-    staged, _target_manifest_sha256 = artifact
-    promote_recovery_transaction(
-        staged_snapshot=staged,
-        target=target,
-        record_path=record_path,
-        config_path=config_path,
-        expected_config_sha256=expected_config_sha256,
-        promoted_config_bytes=config_bytes,
-        record=record,
-        parent_snapshot_id=parent_snapshot_id,
-        parent_manifest_sha256=parent_manifest_sha256,
-        official_source_id=official_identity["source_id"],
-        official_content_fingerprint=official_identity["content_fingerprint"],
-    )
 
 
 if __name__ == "__main__":
