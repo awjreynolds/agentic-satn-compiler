@@ -1,16 +1,17 @@
 {
   "deployment_roots": [
     "deployments/banes",
+    "deployments/oxfordshire",
     "deployments/weca"
   ],
   "root_files": {
     "catalogue.json": {
-      "sha256": "ad63a0cd167c956fee4f87f672089083638a646f5d4fe3663dae6212f6ed2ba2",
-      "size_bytes": 2760
+      "sha256": "adcc4575be1ca049a77205232d5f5faa4418d08e02d860d0ffd4263e950b7fb9",
+      "size_bytes": 3924
     },
     "index.html": {
-      "sha256": "913aa89c0f4258e0cf42140f8ba3c765d7543d192cf8e25b496bd00ce535536a",
-      "size_bytes": 1110
+      "sha256": "ca82d2aebd006195bcdba38a4c98905d419bd2d5f44f762ff28b820599ad7fb6",
+      "size_bytes": 1465
     }
   },
   "schema_version": "satn-pages-root-lock/v1"
