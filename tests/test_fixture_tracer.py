@@ -177,7 +177,7 @@ def test_public_api_runs_complete_fixture(tmp_path: Path) -> None:
     assert 'id="feature-details"' in html
     assert 'id="layer-community-connections"' not in html
     assert 'id="layer-spine-access-connections"' in html
-    assert 'href="https://github.com/awjreynolds/banes-satn"' in html
+    assert 'href="https://github.com/awjreynolds/agentic-satn-compiler"' in html
     assert 'id="layer-strategic-network" type="checkbox" checked' in html
     assert 'id="layer-spine-access-connections"' in html
     assert "A roads, established National Cycle Network routes" in html
@@ -196,7 +196,7 @@ def test_public_api_runs_complete_fixture(tmp_path: Path) -> None:
     assert (result.artifacts["review_map"].parent / "agent-records.json").exists()
     assert '"place_name": "Eastfield"' in data
     assert '"place_name": "Westfield"' in data
-    assert "[Open SATN Deployments](https://awjreynolds.github.io/banes-satn/)" in (
+    assert "[Open SATN Deployments](https://awjreynolds.github.io/agentic-satn-compiler/)" in (
         PROJECT / "README.md"
     ).read_text(encoding="utf-8")
 

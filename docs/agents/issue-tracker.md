@@ -2,7 +2,7 @@
 
 Issues and PRDs for this repo live as GitHub issues. Use the `gh` CLI for all operations.
 
-Repository: `awjreynolds/banes-satn`
+Repository: `awjreynolds/agentic-satn-compiler`
 
 ## Conventions
 

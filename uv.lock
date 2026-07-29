@@ -51,7 +51,7 @@ wheels = [
 ]
 
 [[package]]
-name = "banes-satn"
+name = "agentic-satn-compiler"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

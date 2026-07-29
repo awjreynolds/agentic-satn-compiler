@@ -23,7 +23,7 @@ def test_catalogue_builds_a_small_root_selector_with_stable_area_links(tmp_path:
     banes_snapshot_id = AreaDefinition.from_yaml(banes_definition).source.snapshot_id
     weca_snapshot_id = AreaDefinition.from_yaml(weca_definition).source.snapshot_id
     assert publication["schema_version"] == "satn-deployment-catalogue/v1"
-    assert publication["title"] == "SATN deployments"
+    assert publication["title"] == "Agentic SATN Compiler deployments"
     assert publication["deployments"] == [
         {
             "deployment_id": "banes",

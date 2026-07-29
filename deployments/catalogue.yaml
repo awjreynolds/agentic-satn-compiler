@@ -1,5 +1,5 @@
 schema_version: satn-deployment-catalogue/v1
-title: SATN deployments
+title: Agentic SATN Compiler deployments
 # deployment_id is the stable published identity and Pages path. The referenced
 # Area Definition supplies the geographical area_id written to publication.json.
 deployments:

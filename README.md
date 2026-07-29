@@ -1,6 +1,7 @@
-# SATN: an agentic (AI) network compiler
+# Agentic SATN Compiler (ASATNC)
 
-SATN is an experimental agentic (AI-assisted) network compiler. Its deterministic
+ASATNC is an experimental agentic (AI-assisted) network compiler for Strategic
+Active Travel Networks. Its deterministic
 geospatial core turns governed transport evidence and explicit planning rules into
 inspectable network artifacts. At a bounded question requiring deeper
 investigation, the compiler can stop and issue a structured request to an AI agent.
@@ -11,7 +12,7 @@ new versioned run. The agent never edits the network directly.
 
 > Experimental SATN POC — not an adopted plan.
 
-**[Open SATN Deployments](https://awjreynolds.github.io/banes-satn/)** — choose
+**[Open SATN Deployments](https://awjreynolds.github.io/agentic-satn-compiler/)** — choose
 the B&NES or West of England Area Deployment, then inspect Strategic Spines,
 access connections, National Cycle Network evidence, Candidate Low-Traffic
 Areas, Schools and visible Network Gaps.
@@ -140,8 +141,8 @@ accountable role without exposing unnecessary personal data.
 Some important decision types remain future features: excluding an exact road
 segment from strategic use, requiring use of a named cycleway, and commissioning
 agent-led street-level or aerial imagery observations. They are tracked in
-[the officer route-controls issue](https://github.com/awjreynolds/banes-satn/issues/236)
-and [the future visual-survey issue](https://github.com/awjreynolds/banes-satn/issues/238).
+[the officer route-controls issue](https://github.com/awjreynolds/agentic-satn-compiler/issues/236)
+and [the future visual-survey issue](https://github.com/awjreynolds/agentic-satn-compiler/issues/238).
 The architecture is intended to let a bounded agent investigate an exact
 compiler question using an approved service such as licensed Google Street View
 or aerial imagery. That provider integration and its licensing, privacy,
@@ -1224,7 +1225,7 @@ uv run pytest --browser -m browser tests/test_review_map_browser.py
 ```
 
 The Pages root is a lightweight
-[SATN Deployment Catalogue](https://awjreynolds.github.io/banes-satn/), not an alias
+[SATN Deployment Catalogue](https://awjreynolds.github.io/agentic-satn-compiler/), not an alias
 for one authority. Each Area Deployment has a stable interactive map, printable A2/A3
 PDF and portable Review Map ZIP. The initial map loads only the strategic network and
 named constituent-authority boundaries. Optional contextual and gradient evidence is
@@ -1245,7 +1246,7 @@ workflow. Generated snapshots, compiled outputs, deployment directories, PDFs, Z
 and Pages trees are reproducible process artifacts and are not committed to Git. The
 packager fails before publication if the configured Pages size budget would be
 exceeded. Production promotion is fail-closed on runtime governance and required
-governed urban-road evidence: [#121](https://github.com/awjreynolds/banes-satn/issues/121)
+governed urban-road evidence: [#121](https://github.com/awjreynolds/agentic-satn-compiler/issues/121)
 still blocks promotion until a production runtime is approved.
 
 Canonical Pages publication always runs the production release gate; manual dispatch

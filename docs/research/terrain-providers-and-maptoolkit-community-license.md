@@ -1,6 +1,6 @@
 # Terrain providers and the MapToolkit Community licence
 
-Research for [Set the resilient terrain-provider and licensing boundary](https://github.com/awjreynolds/banes-satn/issues/75).
+Research for [Set the resilient terrain-provider and licensing boundary](https://github.com/awjreynolds/agentic-satn-compiler/issues/75).
 
 - Retrieved: 2026-07-23
 - MapToolkit hosted Terms effective: 2026-07-01

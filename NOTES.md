@@ -1,6 +1,6 @@
 # Workspace Notes
 
-- Work is tracked in GitHub Issues for `awjreynolds/banes-satn`.
+- Work is tracked in GitHub Issues for `awjreynolds/agentic-satn-compiler`.
 - Issue #31 is the spine-led Backbone-and-Access Network specification.
 - Issues #32–#43 are implementation tickets with native blocking relationships.
 - Issue #32 is the current implementation frontier. Completing it unlocks #33, #36 and #40.

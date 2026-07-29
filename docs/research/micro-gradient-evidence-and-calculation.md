@@ -1,6 +1,6 @@
 # Micro-gradient evidence and calculation
 
-Research for [Establish the evidence basis for micro-gradient analysis](https://github.com/awjreynolds/banes-satn/issues/74).
+Research for [Establish the evidence basis for micro-gradient analysis](https://github.com/awjreynolds/agentic-satn-compiler/issues/74).
 
 - Retrieved: 2026-07-23
 - Research branch: `research/micro-gradient-evidence`

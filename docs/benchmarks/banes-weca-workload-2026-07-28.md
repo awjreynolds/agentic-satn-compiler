@@ -1,6 +1,6 @@
 # B&NES and WECA workload benchmark corpus
 
-Issue [#191](https://github.com/awjreynolds/banes-satn/issues/191) records a
+Issue [#191](https://github.com/awjreynolds/agentic-satn-compiler/issues/191) records a
 reproducible workload corpus, not an optimisation claim. Timings use wall clock
 (`/usr/bin/time -l`); no measurement means **unknown**, never pass.
 
