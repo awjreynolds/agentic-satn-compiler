@@ -30,6 +30,7 @@ from satn.evidence_contracts import (
     SourceExport,
     evidence_fingerprint,
 )
+from satn.models import OfficialRoadClassification
 
 SOURCE_LAYER = "os-open-roads/RoadLink"
 ATTRIBUTES = (
@@ -45,6 +46,32 @@ SOURCE_SCHEMA = (
     "road_classification_number",
     "name_1",
 )
+
+
+def canonical_official_classification(value: object) -> OfficialRoadClassification:
+    """Map an Open Roads classification onto the shared source-frame contract."""
+
+    text = (
+        value.strip().lower().replace("_", " ").replace("-", " ")
+        if isinstance(value, str)
+        else ""
+    )
+    if text in {"a", "a road", "class a"}:
+        return OfficialRoadClassification.A_ROAD
+    if text in {"b", "b road", "class b"}:
+        return OfficialRoadClassification.B_ROAD
+    if text in {
+        "c",
+        "c road",
+        "class c",
+        "cu",
+        "classified unnumbered",
+        "classified unnumbered road",
+    }:
+        return OfficialRoadClassification.CLASSIFIED_UNNUMBERED
+    if text in {"unclassified", "u", "unclassified road"}:
+        return OfficialRoadClassification.UNCLASSIFIED
+    return OfficialRoadClassification.UNKNOWN
 
 
 @dataclass(frozen=True)
@@ -142,12 +169,8 @@ def validate_export(source_export: SourceExport, ingestion_contract: IngestionCo
     if _sha256_file(source_path) != source_export.raw_bytes_sha256:
         raise ValueError("governed Source Export checksum does not match retained bytes")
     try:
-        layers = gpd.list_layers(source_path)
-        if source_export.layer not in set(layers["name"].astype(str)):
-            raise ValueError(
-                f"governed Source Export does not contain layer {source_export.layer}"
-            )
-        info = pyogrio.read_info(source_path, layer=source_export.layer)
+        physical_layer = _physical_layer_name(source_path, source_export)
+        info = pyogrio.read_info(source_path, layer=physical_layer)
     except ValueError:
         raise
     except Exception as error:
@@ -191,9 +214,10 @@ def read_partition(
     cell_geometry = box(*_bng_10km_bounds(partition_key.cell))
     source_bounds = _bounds_from_bng(cell_geometry.bounds, source_export.declared_crs)
     try:
+        physical_layer = _physical_layer_name(source_path, source_export)
         frame = gpd.read_file(
             source_path,
-            layer=source_export.layer,
+            layer=physical_layer,
             bbox=source_bounds,
             columns=list(SOURCE_SCHEMA),
         )
@@ -235,6 +259,17 @@ def read_partition(
             )
         )
     return OpenRoadsPartition(partition_key=partition_key, features=tuple(features))
+
+
+def _physical_layer_name(source_path: Path, source_export: SourceExport) -> str:
+    layers = tuple(gpd.list_layers(source_path)["name"].astype(str))
+    if source_export.format == "GeoJSON":
+        if len(layers) != 1:
+            raise ValueError("governed GeoJSON Source Export must contain exactly one layer")
+        return layers[0]
+    if source_export.layer not in layers:
+        raise ValueError(f"governed Source Export does not contain layer {source_export.layer}")
+    return source_export.layer
 
 
 def _sha256_file(path: Path) -> str:
