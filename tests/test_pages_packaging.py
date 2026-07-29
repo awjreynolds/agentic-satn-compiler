@@ -12,6 +12,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
+import yaml
 
 from satn.constants import DISCLAIMER
 from satn.deployment import DEFERRED_GROUPS, build_area_deployment
@@ -487,11 +488,29 @@ def test_production_release_validator_cannot_be_bypassed_by_local_packaging(tmp_
 def test_published_pages_workflow_requires_the_independent_production_gate() -> None:
     """Canonical Pages publication never bypasses the production gate."""
 
-    workflow = (PROJECT / ".github" / "workflows" / "pages.yml").read_text(encoding="utf-8")
-    assert "allow_non_production" not in workflow
-    assert "--allow-non-production" not in workflow
+    workflow = yaml.load(
+        (PROJECT / ".github" / "workflows" / "pages.yml").read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+    triggers = workflow["on"]
+    assert triggers["release"]["types"] == ["released"]
+    preview_input = triggers["workflow_dispatch"]["inputs"]["allow_non_production"]
+    assert preview_input["required"] == "false"
+    assert preview_input["default"] == "false"
+
+    validation_step = next(
+        step
+        for step in workflow["jobs"]["validate-release"]["steps"]
+        if step.get("name") == "Safely extract and validate the Pages release"
+    )
+    assert validation_step["env"]["ALLOW_NON_PRODUCTION"] == (
+        "${{ github.event_name == 'workflow_dispatch' && inputs.allow_non_production }}"
+    )
+    validation_script = validation_step["run"]
+    assert 'if [[ "$ALLOW_NON_PRODUCTION" == "true" ]]; then' in validation_script
+    assert "validator_args+=(--allow-non-production)" in validation_script
     validation_command = 'python scripts/validate_pages_release.py "${validator_args[@]}"'
-    assert validation_command in workflow
+    assert validation_command in validation_script
 
 
 def write_layer_shard(
