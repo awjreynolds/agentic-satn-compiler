@@ -498,6 +498,29 @@ is:
 uv run pytest --live-osm -m live_osm tests/test_osm_sources.py
 ```
 
+For replayable Local Evidence, acquire the network separately as a bounded raw OSM
+XML Source Export:
+
+```shell
+uv run python scripts/acquire_osm_network.py \
+  --bbox 51.28 -2.39 51.40 -2.19 \
+  --cache-dir .satn/evidence/osm \
+  --endpoint https://overpass-api.de/api/interpreter \
+  --timeout-seconds 180
+```
+
+This is the only operation in the Local Evidence path that contacts Overpass. It
+issues a closed `way["highway"]` plus referenced-node query for the exact WGS84
+bbox, then validates the response through the closed OSM adapter before publishing
+anything. Exact received bytes are retained as
+`objects/sha256/<digest>.osm`; retrieval, query, area, HTTP metadata, OSM
+`generator`/`osm_base`, ODbL attribution and the Source Export declaration are
+retained in a content-addressed receipt. `load_acquisition_receipt()` verifies that
+receipt and raw object offline and returns the Source Export consumed by Local
+Evidence refresh. Run the command separately for disconnected areas; no intervening
+geography is acquired. Ordinary `satn snapshot` and `satn compile` keep their
+existing behaviour and never invoke this operation.
+
 ## How routes are compiled
 
 Schema 2.0 uses Backbone-Outward Assembly as the only authoritative rural network
