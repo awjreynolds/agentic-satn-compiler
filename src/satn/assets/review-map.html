@@ -69,11 +69,6 @@
         <p id="gradient-path-status" role="status" aria-live="polite">No path selected.</p>
       </section>
 
-      <section id="feature-details" aria-live="polite" aria-labelledby="details-heading">
-        <h2 id="details-heading">Artifact evidence</h2>
-        <p>Select any visible map artifact to inspect its context. Click to pin its evidence.</p>
-      </section>
-
       <details id="feature-index">
         <summary>Published feature index</summary>
         <div id="connection-list"></div>
@@ -95,7 +90,7 @@
       <p class="project-link"><a href="https://github.com/awjreynolds/agentic-satn-compiler">Source, methodology and issues</a></p>
     </aside>
 
-    <section class="workspace" aria-label="Map and linear evidence">
+    <section class="workspace" aria-label="Map and evidence">
       <section class="map-shell" aria-label="Map view">
         <div id="map" role="application" aria-label="Interactive SATN review map"></div>
         <div class="terrain-switch">
@@ -119,17 +114,27 @@
         </details>
       </section>
 
-      <section id="linear-evidence-panel" aria-labelledby="linear-evidence-heading">
-        <header>
-          <div>
-            <h2 id="linear-evidence-heading">Linear Evidence Panel</h2>
-            <p id="route-summary">Build a continuous Gradient Inspection Path to compare distance-aligned evidence.</p>
-          </div>
-          <p id="evidence-disclosure">Gradient evidence comes from governed Topography Profiles. 3D terrain is contextual only.</p>
+      <section id="linear-evidence-panel" aria-labelledby="evidence-panel-heading">
+        <header class="evidence-panel-header">
+          <h2 id="evidence-panel-heading">Evidence Panel</h2>
+          <p>Hover over a visible map artifact to preview its evidence. Click to pin it; click empty map space to unlock the panel.</p>
         </header>
-        <div id="linear-evidence-chart" aria-live="polite">
-          <p class="empty-evidence">No Gradient Inspection Path selected.</p>
-        </div>
+        <section id="feature-details" aria-live="polite" aria-labelledby="details-heading">
+          <h3 id="details-heading">Artifact evidence</h3>
+          <p>Hover over any visible map artifact to inspect its context. Click to pin its evidence.</p>
+        </section>
+        <section id="linear-evidence-view" aria-labelledby="linear-evidence-heading" hidden>
+          <header>
+            <div>
+              <h3 id="linear-evidence-heading">Linear Evidence</h3>
+              <p id="route-summary">Build a continuous Gradient Inspection Path to compare distance-aligned evidence.</p>
+            </div>
+            <p id="evidence-disclosure">Gradient evidence comes from governed Topography Profiles. 3D terrain is contextual only.</p>
+          </header>
+          <div id="linear-evidence-chart" aria-live="polite">
+            <p class="empty-evidence">No Gradient Inspection Path selected.</p>
+          </div>
+        </section>
       </section>
     </section>
   </main>

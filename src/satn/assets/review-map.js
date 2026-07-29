@@ -785,14 +785,17 @@
   }
 
   function renderLinearEvidence() {
+    const view = document.querySelector("#linear-evidence-view");
     const chart = document.querySelector("#linear-evidence-chart");
     const summary = document.querySelector("#route-summary");
     chart.replaceChildren();
     if (!state.inspectionPath.length) {
+      view.hidden = true;
       chart.innerHTML = '<p class="empty-evidence">No Gradient Inspection Path selected.</p>';
       summary.textContent = "Build a continuous Gradient Inspection Path to compare distance-aligned evidence.";
       return;
     }
+    view.hidden = false;
     const segments = state.inspectionPath.map((item) => {
       const profile = profileFor(item.feature);
       const distance = Number(profile?.properties?.distance_m || item.feature.properties.topography_distance_m || 0);
@@ -1025,12 +1028,12 @@
   function renderEmptyArtifactPanel() {
     const panel = document.querySelector("#feature-details");
     panel.replaceChildren();
-    const heading = document.createElement("h2");
+    const heading = document.createElement("h3");
     heading.id = "details-heading";
     heading.textContent = "Artifact evidence";
     const guidance = document.createElement("p");
     guidance.textContent =
-      "Select any visible map artifact to inspect its context. Click to pin its evidence.";
+      "Hover over any visible map artifact to inspect its context. Click to pin its evidence.";
     panel.append(heading, guidance);
   }
 
@@ -1063,7 +1066,7 @@
     const properties = artifact.feature.properties || {};
     const panel = document.querySelector("#feature-details");
     panel.replaceChildren();
-    const heading = document.createElement("h2");
+    const heading = document.createElement("h3");
     heading.id = "details-heading";
     heading.textContent = value(
       properties.name,
@@ -1138,7 +1141,7 @@
     const properties = feature.properties;
     const panel = document.querySelector("#feature-details");
     panel.replaceChildren();
-    const heading = document.createElement("h2");
+    const heading = document.createElement("h3");
     heading.id = "details-heading";
     const isConnection = ["gap", "spine-access-connection", "school-access-connection", "school-access-gap", "branch-meeting-connection", "cross-spine-connector"].includes(properties.feature_type);
     heading.textContent = isConnection
@@ -1358,6 +1361,13 @@
           warning.textContent = "Elevation challenge retained";
           button.append(warning);
         }
+        const preview = () => {
+          if (!state.pinnedArtifact) showArtifactDetails(networkArtifact(feature.id));
+        };
+        button.addEventListener("mouseenter", preview);
+        button.addEventListener("focus", preview);
+        button.addEventListener("mouseleave", clearTransient);
+        button.addEventListener("blur", clearTransient);
         button.addEventListener("click", () => togglePin(feature.id));
         list.append(button);
       });
@@ -1723,7 +1733,14 @@
     });
     map.on("click", (event) => {
       const artifact = artifactAt(event.point);
-      if (artifact) toggleArtifactPin(artifact);
+      if (artifact) {
+        toggleArtifactPin(artifact);
+      } else if (state.pinnedArtifact) {
+        state.pinnedArtifact = null;
+        state.pinned = null;
+        clearTransient();
+        updateGradientCandidate();
+      }
     });
     map.getCanvas().addEventListener("mouseleave", () => {
       map.getCanvas().style.cursor = "";

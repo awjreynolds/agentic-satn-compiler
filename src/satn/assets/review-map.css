@@ -24,7 +24,7 @@ main { display: grid; grid-template-columns: var(--rail-width) minmax(0, 1fr); h
 }
 .rail-header h1 { margin: 0 0 .4rem; font-size: 1.15rem; }
 .notice { margin: 0 0 .65rem; padding: .55rem; background: #fff4cc; border-left: 4px solid #f1c40f; font-size: .78rem; }
-fieldset, #gradient-path-controls, #feature-details, #deployment-context {
+fieldset, #gradient-path-controls, #deployment-context {
   margin: .65rem 0;
   padding: .65rem;
   border: 1px solid var(--border);
@@ -82,8 +82,6 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 #complete-region-controls { margin: .65rem 0; padding: .55rem; border: 1px solid #ccd1d1; border-radius: .35rem; background: #f8f9f9; }
 #complete-region-controls h2 { margin: 0; font-size: .92rem; }
 #complete-region-controls p { margin: .35rem 0; font-size: .76rem; }
-#feature-details { max-height: min(24rem, 42vh); overflow: auto; }
-#feature-details h2 { margin-top: 0; }
 .artifact-origin {
   margin-top: .65rem;
   padding-top: .55rem;
@@ -173,8 +171,27 @@ nav { display: flex; flex-wrap: wrap; gap: .4rem; font-size: .78rem; }
   border-top: 2px solid #708090;
   background: #fbfcfc;
 }
-#linear-evidence-panel > header { display: flex; align-items: start; justify-content: space-between; gap: 1rem; }
+#linear-evidence-panel > .evidence-panel-header { margin-bottom: .55rem; }
 #linear-evidence-panel h2 { margin: 0; font-size: 1rem; }
+.evidence-panel-header p {
+  margin: .15rem 0 0;
+  color: var(--muted);
+  font-size: .78rem;
+}
+#feature-details {
+  padding: .55rem .65rem;
+  border: 1px solid var(--border);
+  border-radius: .35rem;
+  background: var(--surface);
+}
+#feature-details h3, #linear-evidence-view h3 { margin: 0; font-size: .9rem; }
+#feature-details p { margin: .25rem 0; }
+#linear-evidence-view {
+  margin-top: .65rem;
+  padding-top: .55rem;
+  border-top: 1px solid var(--border);
+}
+#linear-evidence-view > header { display: flex; align-items: start; justify-content: space-between; gap: 1rem; }
 #route-summary, #evidence-disclosure { margin: .15rem 0 .45rem; font-size: .78rem; color: var(--muted); }
 .evidence-rationale { margin: .1rem 0 .45rem; color: var(--muted); font-size: .72rem; }
 #evidence-disclosure { max-width: 32rem; text-align: right; }
