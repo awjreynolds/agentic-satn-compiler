@@ -209,7 +209,7 @@ def test_candidate_only_writer_refuses_even_if_legacy_parent_matches(
     assert not config.publication.output_dir.exists()
 
 
-def test_recovery_entrypoint_injects_only_recovery_loader_and_candidate_writer(
+def test_recovery_entrypoint_selects_narrow_recovery_orchestration(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -234,5 +234,6 @@ def test_recovery_entrypoint_injects_only_recovery_loader_and_candidate_writer(
     assert len(calls) == 1
     assert calls[0]["args"] == (config,)
     assert calls[0]["heartbeat"] is not None
-    assert calls[0]["source_loader"] is recovery_module.load_legacy_ea_recovery_snapshot
-    assert calls[0]["publisher"] is publisher_module.retain_ea_recovery_candidate
+    assert calls[0]["compiler_path"] == "ea-recovery"
+    assert "source_loader" not in calls[0]
+    assert "publisher" not in calls[0]

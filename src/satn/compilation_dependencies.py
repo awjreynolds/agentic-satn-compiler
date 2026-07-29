@@ -25,7 +25,12 @@ from typing import TYPE_CHECKING, Final, Literal
 if TYPE_CHECKING:
     from satn.models import AreaConfig
 
-CompilerPath = Literal["network", "reference", "strategic-reference"]
+CompilerPath = Literal[
+    "network",
+    "reference",
+    "strategic-reference",
+    "ea-recovery",
+]
 
 MANIFEST_SCHEMA_VERSION: Final = "satn-compilation-dependency-manifest/v3"
 DEPENDENCY_SET_VERSION: Final = "satn-compiled-network/v3"
@@ -52,6 +57,10 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
     "satn/constants.py": ("module", "compiler schema and source constants"),
     "satn/cross_spine.py": ("module", "Cross-Spine Connector assembly"),
     "satn/ea_elevation.py": ("module", "governed elevation contract and sampling"),
+    "satn/ea_snapshot_recovery.py": (
+        "module",
+        "pinned snapshot recovery loader and exhaustive reconciliation proof",
+    ),
     "satn/education_access.py": (
         "module",
         "School Access Obligation and destination evidence assessment",
@@ -77,6 +86,10 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
     ),
     "satn/pipeline.py": ("module", "compilation orchestration and reuse binding"),
     "satn/population_reach.py": ("module", "governed Population Reach evidence assessment"),
+    "satn/publisher.py": (
+        "module",
+        "EA recovery candidate fixed-point validation and immutable retention",
+    ),
     "satn/psa_evidence_loaders.py": (
         "module",
         "strict governed Preferred Strategic Alignment evidence loading",
@@ -118,6 +131,12 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
 OPTIONAL_COMPONENT_GROUPS: Final[dict[str, frozenset[str]]] = {
     "atm-comparison": frozenset({"satn/atm.py"}),
     "elevation-source": frozenset({"satn/ea_elevation.py"}),
+    "ea-recovery": frozenset(
+        {
+            "satn/ea_snapshot_recovery.py",
+            "satn/publisher.py",
+        }
+    ),
     "network-selection": frozenset(
         {
             "satn/alignment_selection.py",
@@ -173,9 +192,6 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     "satn/ea_fixed_point_operations.py": (
         "local fixed-point command operations without CompiledNetwork mutation"
     ),
-    "satn/ea_snapshot_recovery.py": (
-        "one-time snapshot recovery evidence without CompiledNetwork mutation"
-    ),
     "satn/heartbeat.py": "operational progress reporting",
     "satn/local_evidence_store.py": (
         "additive Local Evidence Store sidecar; not a compiler input before equivalence cutover"
@@ -191,7 +207,6 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     "satn/psa_criteria_assembly.py": (
         "post-compile governed criteria assembly without CompiledNetwork mutation"
     ),
-    "satn/publisher.py": "publication, PDF and review-map serialization",
     "satn/reference_application.py": (
         "post-adoption Reference replay planning without CompiledNetwork mutation"
     ),
@@ -381,7 +396,12 @@ def _active_dependency_groups(
 ) -> set[str]:
     """Resolve conservative optional bundles from one configured execution."""
 
-    if compiler_path not in {"network", "reference", "strategic-reference"}:
+    if compiler_path not in {
+        "network",
+        "reference",
+        "strategic-reference",
+        "ea-recovery",
+    }:
         raise ValueError(f"unsupported compiler dependency path: {compiler_path}")
     if config is None:
         return {
@@ -397,6 +417,8 @@ def _active_dependency_groups(
         groups.add("network-selection")
     if compiler_path == "strategic-reference":
         groups.add("strategic-reference")
+    if compiler_path == "ea-recovery":
+        groups.add("ea-recovery")
     if (
         config.compilation.agent.response_mode == "direct-runtime"
         and config.compilation.agent.review_statuses
@@ -578,7 +600,8 @@ def validate_compilation_dependency_manifest(
         *OPTIONAL_RUNTIME_DISTRIBUTION_GROUPS,
     }
     if (
-        compiler_path not in {"network", "reference", "strategic-reference"}
+        compiler_path
+        not in {"network", "reference", "strategic-reference", "ea-recovery"}
         or not isinstance(configuration_sensitive, bool)
         or not isinstance(active_groups, list)
         or not active_groups

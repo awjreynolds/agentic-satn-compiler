@@ -13,6 +13,7 @@ from pathlib import Path
 
 import yaml
 
+from satn.compilation_dependencies import compilation_dependency_manifest
 from satn.ea_elevation import sha256_file
 from satn.ea_fixed_point_convergence import EAFixedPointSnapshot
 from satn.ea_fixed_point_operations import _validated_candidate_status
@@ -112,9 +113,7 @@ def main() -> None:
         snapshot,
         candidate_network.parent,
     )
-    expected_governed = compilation_governed_input_fingerprint(config)
-    if status["governed_input_fingerprint"] != expected_governed:
-        raise ValueError("EA recovery candidate governed-input fingerprint is stale")
+    _validate_recovery_transaction_candidate_fingerprint(config, status)
 
     recovered = config.model_copy(deep=True)
     recovered.source.snapshot_id = target_snapshot_id
@@ -199,6 +198,25 @@ def main() -> None:
     )
     print(target)
     print(record_path)
+
+
+def _validate_recovery_transaction_candidate_fingerprint(
+    config: AreaDefinition,
+    status: dict[str, object],
+) -> str:
+    """Bind recovery transaction input to the recovery compiler path."""
+
+    dependency_manifest = compilation_dependency_manifest(
+        config,
+        compiler_path="ea-recovery",
+    )
+    expected = compilation_governed_input_fingerprint(
+        config,
+        dependency_manifest=dependency_manifest,
+    )
+    if status.get("governed_input_fingerprint") != expected:
+        raise ValueError("EA recovery candidate governed-input fingerprint is stale")
+    return expected
 
 
 def _contained(path: Path, root: Path, label: str) -> Path:

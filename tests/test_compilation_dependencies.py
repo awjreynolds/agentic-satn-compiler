@@ -7,7 +7,7 @@ import pytest
 
 import satn.compilation_dependencies as dependencies
 from satn.models import AreaDefinition
-from satn.pipeline import _compiler_digest
+from satn.pipeline import _compiler_digest, compilation_governed_input_fingerprint
 
 PROJECT = Path(__file__).parents[1]
 
@@ -46,7 +46,7 @@ def test_manifest_is_explicit_complete_and_records_component_digests() -> None:
         "runtime-distribution/shapely",
     } <= components
     assert all(len(component["sha256"]) == 64 for component in manifest["components"])
-    assert "satn/publisher.py" not in components
+    assert "satn/publisher.py" in components
     assert "satn/pages_packaging.py" not in components
     assert "satn/local_evidence_store.py" not in components
     assert "satn/open_roads_adapter.py" not in components
@@ -176,6 +176,75 @@ def test_strategic_reference_path_adds_replay_dependency() -> None:
     assert strategic["sha256"] != ordinary["sha256"]
 
 
+def test_ea_recovery_code_is_active_only_for_recovery_candidate_identity(
+    tmp_path: Path,
+) -> None:
+    root = copied_compiler_tree(tmp_path)
+    config = AreaDefinition.from_yaml(PROJECT / "deployments" / "banes" / "area.yaml")
+    ordinary = dependencies.compilation_dependency_manifest(
+        config,
+        package_root=root,
+    )
+    recovery = dependencies.compilation_dependency_manifest(
+        config,
+        compiler_path="ea-recovery",
+        package_root=root,
+    )
+    recovery_path = "satn/ea_snapshot_recovery.py"
+    recovery_publisher_path = "satn/publisher.py"
+
+    assert recovery_path not in ordinary["selection"]["component_paths"]
+    assert recovery_publisher_path not in ordinary["selection"]["component_paths"]
+    assert recovery_path in {
+        component["path"] for component in ordinary["inactive_components"]
+    }
+    assert recovery["selection"]["active_groups"] == [
+        "core",
+        "ea-recovery",
+        "elevation-source",
+        "osm-source",
+    ]
+    assert recovery_path in recovery["selection"]["component_paths"]
+    assert recovery_publisher_path in recovery["selection"]["component_paths"]
+    assert recovery["sha256"] != ordinary["sha256"]
+
+    ordinary_fingerprint = compilation_governed_input_fingerprint(
+        config,
+        dependency_manifest=ordinary,
+    )
+    recovery_fingerprint = compilation_governed_input_fingerprint(
+        config,
+        dependency_manifest=recovery,
+    )
+    for relative_path in ("ea_snapshot_recovery.py", "publisher.py"):
+        module = root / relative_path
+        original_bytes = module.read_bytes()
+        module.write_bytes(
+            original_bytes + b"\n# active recovery dependency probe\n"
+        )
+        unchanged_ordinary = dependencies.compilation_dependency_manifest(
+            config,
+            package_root=root,
+        )
+        changed_recovery = dependencies.compilation_dependency_manifest(
+            config,
+            compiler_path="ea-recovery",
+            package_root=root,
+        )
+
+        assert unchanged_ordinary["sha256"] == ordinary["sha256"]
+        assert changed_recovery["sha256"] != recovery["sha256"]
+        assert compilation_governed_input_fingerprint(
+            config,
+            dependency_manifest=unchanged_ordinary,
+        ) == ordinary_fingerprint
+        assert compilation_governed_input_fingerprint(
+            config,
+            dependency_manifest=changed_recovery,
+        ) != recovery_fingerprint
+        module.write_bytes(original_bytes)
+
+
 def test_external_direct_runtime_versions_are_selected_only_when_configured() -> None:
     fixture = AreaDefinition.from_yaml(PROJECT / "examples" / "fixture" / "council.yaml")
     external_agent = fixture.compilation.agent.model_copy(
@@ -271,7 +340,11 @@ def test_compiler_semantic_module_changes_change_the_manifest_digest(tmp_path: P
 
 def test_review_map_and_release_packaging_changes_do_not_change_the_digest(tmp_path: Path) -> None:
     root = copied_compiler_tree(tmp_path)
-    original = dependencies.compilation_dependency_manifest(package_root=root)
+    config = AreaDefinition.from_yaml(PROJECT / "deployments" / "banes" / "area.yaml")
+    original = dependencies.compilation_dependency_manifest(
+        config,
+        package_root=root,
+    )
 
     for relative_path in (
         "assets/review-map.js",
@@ -280,7 +353,10 @@ def test_review_map_and_release_packaging_changes_do_not_change_the_digest(tmp_p
     ):
         path = root / relative_path
         path.write_bytes(path.read_bytes() + b"\n/* dependency-manifest regression probe */\n")
-        changed = dependencies.compilation_dependency_manifest(package_root=root)
+        changed = dependencies.compilation_dependency_manifest(
+            config,
+            package_root=root,
+        )
         assert changed["sha256"] == original["sha256"]
 
 

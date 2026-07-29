@@ -8,7 +8,6 @@ import logging
 import os
 import time
 from collections import Counter
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -209,8 +208,7 @@ def compile_ea_recovery_candidate(config: AreaConfig | str | Path) -> Path:
         result = _compile(
             council,
             heartbeat=heartbeat,
-            source_loader=load_legacy_ea_recovery_snapshot,
-            publisher=retain_ea_recovery_candidate,
+            compiler_path="ea-recovery",
         )
     candidate = result.artifacts.get("candidate")
     if candidate is None:
@@ -519,20 +517,19 @@ def _compile(
     *,
     decision_ledger: AgentDecisionLedger | str | Path | None = None,
     heartbeat: StageHeartbeat | None = None,
-    source_loader: Callable[
-        [AreaConfig], dict[str, gpd.GeoDataFrame]
-    ]
-    | None = None,
-    publisher: Callable[
-        [AreaConfig, CompiledNetwork, str], dict[str, Path]
-    ]
-    | None = None,
+    compiler_path: CompilerPath = "network",
 ) -> CompilationResult:
     """Compile a parsed area definition, reporting its current long-running stage."""
+    if compiler_path not in {"network", "ea-recovery"}:
+        raise ValueError(f"unsupported orchestration compiler path: {compiler_path}")
+    recovery_candidate = compiler_path == "ea-recovery"
     started = time.perf_counter()
     council = config
     ledger = _load_decision_ledger(decision_ledger)
-    dependency_manifest = compilation_dependency_manifest(council)
+    dependency_manifest = compilation_dependency_manifest(
+        council,
+        compiler_path=compiler_path,
+    )
     governed_input_fingerprint = compilation_governed_input_fingerprint(
         council,
         dependency_manifest=dependency_manifest,
@@ -548,17 +545,25 @@ def _compile(
         council.source.snapshot_id,
         SCHEMA_VERSION,
     )
-    reused = _reuse_validated_publication(
-        council,
-        governed_input_fingerprint,
-        input_fingerprint,
-        dependency_manifest,
+    reused = (
+        None
+        if recovery_candidate
+        else _reuse_validated_publication(
+            council,
+            governed_input_fingerprint,
+            input_fingerprint,
+            dependency_manifest,
+        )
     )
     if reused is not None:
         return reused
     if heartbeat is not None:
         heartbeat.set_stage("snapshot-load")
-    source = (source_loader or load_snapshot)(council)
+    source = (
+        load_legacy_ea_recovery_snapshot(council)
+        if recovery_candidate
+        else load_snapshot(council)
+    )
     LOGGER.info(
         "Snapshot loaded places=%d road_edges=%d context_features=%d",
         len(source["places"]),
@@ -860,8 +865,12 @@ def _compile(
     run_id = f"run-{hashlib.sha256(run_fingerprint.encode()).hexdigest()[:12]}"
     if heartbeat is not None:
         heartbeat.set_stage("publication")
-    artifacts = (publisher or publish)(council, compiled, run_id)
-    if publisher is None:
+    artifacts = (
+        retain_ea_recovery_candidate(council, compiled, run_id)
+        if recovery_candidate
+        else publish(council, compiled, run_id)
+    )
+    if not recovery_candidate:
         LOGGER.info(
             "Publication validated output=%s elapsed_seconds=%.1f",
             council.publication.output_dir,
