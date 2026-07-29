@@ -8,6 +8,7 @@ import pytest
 from shapely.geometry import LineString, Point, Polygon
 from shapely.wkt import loads as load_wkt
 
+import satn.backbone as backbone_module
 from satn.agents import AgentRole, CompilationGate, FakeAgentRuntime
 from satn.backbone import assemble_backbone_outward
 from satn.compiler import compile_network
@@ -408,11 +409,47 @@ def test_school_access_point_on_long_edge_routes_from_the_edge_interior() -> Non
     connection = compiled.spine_access_connections[
         compiled.spine_access_connections["obligation_kind"] == "school"
     ].iloc[0]
-    assert connection["distance_km"] == 0
+    assert connection["distance_km"] > 0
+    assert len(set(connection.geometry.coords)) > 1
+    assert connection["community_attachment_node"] != connection["target_attachment_node"]
     assert connection["community_attachment_distance_m"] < 1
     assert load_wkt(connection["community_attachment_point"]).x == pytest.approx(0.03, abs=1e-6)
-    assert load_wkt(connection["target_attachment_point"]).x == pytest.approx(0.03, abs=1e-6)
     assert connection["parent_role"] == "spine-access-connection"
+
+
+def test_school_fallback_forbids_stationary_routes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = school_source()
+    school_index = source["context"].index[source["context"]["evidence_id"] == "mapped-school"][0]
+    source["context"].loc[school_index, "geometry"] = Point(0.03, 0)
+    source["context"] = source["context"][
+        source["context"]["evidence_id"] != "unresolved-school"
+    ].copy()
+    stationary_controls: list[bool] = []
+    original = RoadGraph.best_point_attachment
+
+    def tracked(
+        self: RoadGraph,
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        if "allow_stationary" in kwargs:
+            stationary_controls.append(bool(kwargs["allow_stationary"]))
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(backbone_module, "_direct_school_candidate", lambda *_args: None)
+    monkeypatch.setattr(RoadGraph, "best_point_attachment", tracked)
+
+    compiled = compile_network(config(), source, FakeAgentRuntime())
+
+    connection = compiled.spine_access_connections[
+        compiled.spine_access_connections["obligation_kind"] == "school"
+    ].iloc[0]
+    assert stationary_controls == [False]
+    assert connection["distance_km"] > 0
+    assert len(set(connection.geometry.coords)) > 1
+    assert connection["community_attachment_node"] != connection["target_attachment_node"]
 
 
 def test_rejected_direct_frontier_falls_through_to_next_direct_frontier() -> None:
@@ -497,9 +534,11 @@ def test_rejected_direct_frontier_falls_through_to_next_direct_frontier() -> Non
 
     assert len(assembly.connections) == 1
     assert assembly.connections.iloc[0]["parent_target_id"] in {"spine-a", "spine-b"}
-    assert assembly.connections.iloc[0]["community_attachment_node"].startswith(
-        "school-frontier-attachment-"
+    assert (
+        assembly.connections.iloc[0]["community_attachment_node"]
+        != assembly.connections.iloc[0]["target_attachment_node"]
     )
+    assert assembly.connections.iloc[0].geometry.length > 0
     school_records = [
         record
         for record in assembly.agent_records

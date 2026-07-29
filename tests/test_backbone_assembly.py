@@ -1918,6 +1918,40 @@ def test_unreachable_community_becomes_a_gap_without_fabricated_linework() -> No
     assert compiled.criteria["spine_network"]["all_access_obligations_resolved"] == "red"
 
 
+def test_colocated_community_never_becomes_a_zero_length_access_route() -> None:
+    source = parallel_spine_source()
+    source["places"] = frame(
+        [
+            *source["places"].to_dict("records"),
+            {
+                "place_id": "community-colocated",
+                "name": "Community Colocated",
+                "kind": "community",
+                "place_class": "village",
+                "geometry": Point(0, 0),
+            },
+        ]
+    )
+
+    compiled = compile_network(config(), source, FakeAgentRuntime())
+
+    access = compiled.spine_access_connections[
+        compiled.spine_access_connections["place_id"] == "community-colocated"
+    ]
+    gaps = compiled.gaps[
+        (compiled.gaps["network_role"] == "spine-access-gap")
+        & (compiled.gaps["from_place"] == "community-colocated")
+    ]
+    assert len(access) + len(gaps) == 1
+    if not access.empty:
+        assert float(access.to_crs(27700).geometry.length.iloc[0]) > 0
+        assert access.iloc[0]["community_attachment_node"] != access.iloc[0][
+            "target_attachment_node"
+        ]
+    else:
+        assert gaps.iloc[0]["criterion_continuity"] == "red"
+
+
 def test_agent_gate_rejection_cannot_enter_validated_backbone_state() -> None:
     runtime = FakeAgentRuntime(
         {
@@ -2073,7 +2107,9 @@ def test_growth_uses_lazy_bounds_to_avoid_redundant_searches_at_representative_s
 
     assert len(compiled.spine_access_connections) == community_count
     diagnostics = compiled.compilation_diagnostics
-    assert calls == community_count
+    # The first Community is exactly on the initial Spine attachment. Refusing its
+    # stationary route admits one bounded retry against the newly served frontier.
+    assert calls == community_count + 1
     assert diagnostics["candidate_evaluations"] == calls
     assert diagnostics["candidate_pairs_enqueued"] == (
         community_count + community_count * (community_count - 1) // 2

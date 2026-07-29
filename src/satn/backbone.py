@@ -14,14 +14,10 @@ import geopandas as gpd
 import networkx as nx
 import pandas as pd
 from shapely.geometry import LineString, MultiPoint, Point
-from shapely.ops import nearest_points
 
 from satn.agents import CompilationGate
 from satn.alignment_selection import CanonicalLineString
-from satn.content_identity import (
-    canonical_network_geometry_fingerprint,
-    canonical_undirected_pair,
-)
+from satn.content_identity import canonical_undirected_pair
 from satn.identifiers import stable_id as _stable_id
 from satn.models import (
     ACCESS_OBLIGATION_COLUMNS,
@@ -42,7 +38,6 @@ from satn.routing import (
     RouteOption,
     choose_alignment,
     serialise_options,
-    stationary_route_option,
 )
 from satn.topography_alternatives import TopographyComparison, compare_alignment_topography
 
@@ -751,6 +746,7 @@ def _assemble_backbone_outward(
                     work.frontier,
                     graph,
                     obligation_kind="community",
+                    allow_stationary=False,
                     elevation_evidence=elevation_evidence,
                     topography_config=topography_config,
                 )
@@ -1648,6 +1644,7 @@ def _school_candidate(
         school.geometry,
         MAX_SCHOOL_ATTACHMENT_M,
         ends,
+        allow_stationary=False,
         excluded_pairs=excluded_pairs,
     )
     if choice is None:
@@ -1707,51 +1704,69 @@ def _direct_school_candidate(
     excluded_pairs: set[tuple[str, str]],
 ) -> _Candidate | None:
     projected_school = gpd.GeoSeries([school.geometry], crs=graph.crs).to_crs(27700).iloc[0]
-    nearby: list[tuple[float, _Frontier, Point, str]] = []
+    nearby: list[tuple[float, _Frontier]] = []
     for frontier in frontiers:
         distance_m = float(projected_school.distance(frontier.projected_geometry))
         if distance_m > MAX_SCHOOL_ATTACHMENT_M:
             continue
-        _, projected_attachment = nearest_points(projected_school, frontier.projected_geometry)
-        attachment = gpd.GeoSeries([projected_attachment], crs=27700).to_crs(graph.crs).iloc[0]
-        virtual_node = _stable_id(
-            "school-frontier-attachment",
-            frontier.target_id,
-            canonical_network_geometry_fingerprint(attachment, graph.crs),
-        )
-        if (virtual_node, virtual_node) not in excluded_pairs:
-            nearby.append((distance_m, frontier, attachment, virtual_node))
-    if not nearby or not graph.has_point_attachment(school.geometry, MAX_SCHOOL_ATTACHMENT_M):
+        if any(snap_m <= MAX_SPINE_ATTACHMENT_M for _, snap_m in frontier.attachments):
+            nearby.append((distance_m, frontier))
+    if not nearby:
         return None
-    association_m, frontier, attachment, virtual_node = min(
-        nearby,
-        key=lambda match: (round(match[0], 9), _frontier_key(match[1])),
+    choice = graph.best_point_attachment(
+        school.geometry,
+        MAX_SCHOOL_ATTACHMENT_M,
+        [
+            attachment
+            for _, frontier in nearby
+            for attachment in frontier.attachments
+            if attachment[1] <= MAX_SPINE_ATTACHMENT_M
+        ],
+        allow_stationary=False,
+        excluded_pairs=excluded_pairs,
     )
-    option = stationary_route_option(attachment)
+    if choice is None:
+        return None
+    matching_frontiers = [
+        (distance_m, snap_m, frontier)
+        for distance_m, frontier in nearby
+        for node_id, snap_m in frontier.attachments
+        if node_id == choice.end_node and snap_m <= MAX_SPINE_ATTACHMENT_M
+    ]
+    if not matching_frontiers:
+        return None
+    _, _, frontier = min(
+        matching_frontiers,
+        key=lambda match: (
+            round(match[0], 9),
+            round(match[1], 9),
+            _frontier_key(match[2]),
+        ),
+    )
     return _Candidate(
         rank=(
-            round(association_m / 1000, 9),
+            round(choice.total_distance_km, 9),
             str(school["place_id"]),
             0 if frontier.target_role == "strategic-spine" else 1,
             frontier.root_spine_id,
             frontier.target_id,
-            virtual_node,
-            virtual_node,
+            choice.start_node,
+            choice.end_node,
             "school",
         ),
         place=school,
         frontier=frontier,
-        option=option,
-        options=(option,),
+        option=choice.option,
+        options=(choice.option,),
         topography=None,
-        start_node=virtual_node,
-        start_snap_m=association_m,
-        end_node=virtual_node,
-        end_snap_m=0.0,
-        start_point=attachment,
-        end_point=attachment,
-        start_attachment_id=virtual_node,
-        end_attachment_id=virtual_node,
+        start_node=choice.start_node,
+        start_snap_m=choice.start_snap_m,
+        end_node=choice.end_node,
+        end_snap_m=choice.end_snap_m,
+        start_point=choice.start_point,
+        end_point=choice.end_point,
+        start_attachment_id=choice.start_attachment_id,
+        end_attachment_id=choice.end_attachment_id,
     )
 
 
