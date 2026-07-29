@@ -39,9 +39,8 @@ from typing import Any
 import geopandas as gpd
 import pyogrio
 from pyproj import Transformer
-from shapely.geometry import Point, box
-from shapely.ops import transform, unary_union
-
+from shapely.geometry import box
+from shapely.ops import unary_union
 
 STORE_CRS = "EPSG:27700"
 LAYERS = ("roads", "network", "elevation")
@@ -171,7 +170,8 @@ def gpkg_has_rtree(path: Path, layer: str) -> bool:
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
         ).fetchone()
         extension = connection.execute(
-            "SELECT 1 FROM gpkg_extensions WHERE table_name = ? AND extension_name = 'gpkg_rtree_index'",
+            "SELECT 1 FROM gpkg_extensions "
+            "WHERE table_name = ? AND extension_name = 'gpkg_rtree_index'",
             (layer,),
         ).fetchone()
     return found is not None and extension is not None
@@ -208,7 +208,11 @@ def build_gpkg(scratch: Path, layers: dict[str, gpd.GeoDataFrame]) -> dict[str, 
         "total_build_ms": total_ms,
         "disk_bytes": output.stat().st_size,
         "per_layer_rtree_verified": indexes,
-        "note": "GDAL/Pyogrio builds the GeoPackage RTree in its layer write path; index time is the paired no-index/with-index difference, not a bare SQLite index operation.",
+        "note": (
+            "GDAL/Pyogrio builds the GeoPackage RTree in its layer write path; "
+            "index time is the paired no-index/with-index difference, not a bare "
+            "SQLite index operation."
+        ),
     }
 
 
@@ -221,7 +225,9 @@ def duckdb_connection(path: Path, extension_dir: Path) -> Any:
     return connection
 
 
-def build_duckdb(scratch: Path, layers: dict[str, gpd.GeoDataFrame], extension_dir: Path) -> dict[str, Any]:
+def build_duckdb(
+    scratch: Path, layers: dict[str, gpd.GeoDataFrame], extension_dir: Path
+) -> dict[str, Any]:
     path = scratch / "stores" / "prototype.duckdb"
     if path.exists():
         path.unlink()
@@ -235,7 +241,9 @@ def build_duckdb(scratch: Path, layers: dict[str, gpd.GeoDataFrame], extension_d
         started = time.perf_counter_ns()
         connection.register("incoming", tabular)
         connection.execute(
-            f"CREATE TABLE {name} AS SELECT feature_id, properties_json, ST_GeomFromWKB(geometry_wkb) AS geom FROM incoming"
+            f"CREATE TABLE {name} AS "
+            "SELECT feature_id, properties_json, "
+            "ST_GeomFromWKB(geometry_wkb) AS geom FROM incoming"
         )
         connection.unregister("incoming")
         imports[name] = elapsed_ms(started)
@@ -256,8 +264,12 @@ def build_duckdb(scratch: Path, layers: dict[str, gpd.GeoDataFrame], extension_d
 def gpkg_query(path: Path, layer: str, shape: Any) -> tuple[int, int, str]:
     candidates = pyogrio.read_dataframe(path, layer=layer, bbox=shape.bounds)
     exact = candidates[candidates.geometry.intersects(shape)]
-    return len(candidates), len(exact), geometry_hash(
-        (row.feature_id, row.geometry.wkb, row.properties_json) for row in exact.itertuples()
+    return (
+        len(candidates),
+        len(exact),
+        geometry_hash(
+            (row.feature_id, row.geometry.wkb, row.properties_json) for row in exact.itertuples()
+        ),
     )
 
 
@@ -273,11 +285,21 @@ def duckdb_query(path: Path, extension_dir: Path, layer: str, shape: Any) -> tup
         f"WHERE ST_Intersects(geom, ST_GeomFromText('{wkt}'))"
     ).fetchall()
     connection.close()
-    return candidate_count, len(rows), geometry_hash((str(row[0]), bytes(row[1]), str(row[2])) for row in rows)
+    return (
+        candidate_count,
+        len(rows),
+        geometry_hash((str(row[0]), bytes(row[1]), str(row[2])) for row in rows),
+    )
 
 
-def query_once(engine: str, path: Path, extension_dir: Path, shapes: dict[str, Any]) -> dict[str, Any]:
-    query = gpkg_query if engine == "gpkg" else lambda store, layer, shape: duckdb_query(store, extension_dir, layer, shape)
+def query_once(
+    engine: str, path: Path, extension_dir: Path, shapes: dict[str, Any]
+) -> dict[str, Any]:
+    query = (
+        gpkg_query
+        if engine == "gpkg"
+        else lambda store, layer, shape: duckdb_query(store, extension_dir, layer, shape)
+    )
     results: dict[str, Any] = {}
     for query_name, shape in shapes.items():
         for layer in LAYERS:
@@ -301,11 +323,19 @@ def child_query(args: argparse.Namespace) -> None:
 def child_warm_query(args: argparse.Namespace) -> None:
     shapes = query_shapes(Path(args.source_root))
     trials = warm_trials(
-        args.engine, Path(args.store), Path(args.duckdb_extension_dir), shapes, args.warm_repetitions
+        args.engine,
+        Path(args.store),
+        Path(args.duckdb_extension_dir),
+        shapes,
+        args.warm_repetitions,
     )
     print(
         json.dumps(
-            {"trials": trials, "summary": summary(trials, child=False), "peak_rss_mib": peak_rss_mib()},
+            {
+                "trials": trials,
+                "summary": summary(trials, child=False),
+                "peak_rss_mib": peak_rss_mib(),
+            },
             sort_keys=True,
         )
     )
@@ -320,13 +350,20 @@ def child_build(args: argparse.Namespace) -> None:
         built = build_gpkg(scratch, layers)
     else:
         built = build_duckdb(scratch, layers, Path(args.duckdb_extension_dir))
-    print(json.dumps({"inventory": inventory, "build": built, "peak_rss_mib": peak_rss_mib()}, sort_keys=True))
+    print(
+        json.dumps(
+            {"inventory": inventory, "build": built, "peak_rss_mib": peak_rss_mib()}, sort_keys=True
+        )
+    )
 
 
 def child_replacement(args: argparse.Namespace) -> None:
     shapes = query_shapes(Path(args.source_root))
     result = replacement_cost(
-        Path(args.scratch), Path(args.store), shapes["whole_council_polygon"], Path(args.duckdb_extension_dir)
+        Path(args.scratch),
+        Path(args.store),
+        shapes["whole_council_polygon"],
+        Path(args.duckdb_extension_dir),
     )
     print(json.dumps({"replacement": result, "peak_rss_mib": peak_rss_mib()}, sort_keys=True))
 
@@ -345,11 +382,15 @@ def build_in_child(script: Path, args: argparse.Namespace, engine: str) -> dict[
         "--duckdb-extension-dir",
         args.duckdb_extension_dir,
     ]
-    completed = subprocess.run(command, check=True, capture_output=True, text=True, env=dict(os.environ))
+    completed = subprocess.run(
+        command, check=True, capture_output=True, text=True, env=dict(os.environ)
+    )
     return json.loads(completed.stdout)
 
 
-def reopened_trials(script: Path, args: argparse.Namespace, engine: str, store: Path) -> list[dict[str, Any]]:
+def reopened_trials(
+    script: Path, args: argparse.Namespace, engine: str, store: Path
+) -> list[dict[str, Any]]:
     trials = []
     for _ in range(3):
         environment = dict(os.environ)
@@ -367,7 +408,9 @@ def reopened_trials(script: Path, args: argparse.Namespace, engine: str, store: 
             args.duckdb_extension_dir,
         ]
         started = time.perf_counter_ns()
-        completed = subprocess.run(command, check=True, capture_output=True, text=True, env=environment)
+        completed = subprocess.run(
+            command, check=True, capture_output=True, text=True, env=environment
+        )
         trial = json.loads(completed.stdout)
         trial["process_elapsed_ms"] = elapsed_ms(started)
         trials.append(trial)
@@ -405,7 +448,10 @@ def replacement_cost(
     gpkg = build_gpkg(replacement, subset)
     duckdb = build_duckdb(replacement, subset, extension_dir)
     result = {
-        "replacement_semantics": "fresh B&NES-area store build, not in-place mutation; this matches the proposed atomic replacement lifecycle",
+        "replacement_semantics": (
+            "fresh B&NES-area store build, not in-place mutation; this matches "
+            "the proposed atomic replacement lifecycle"
+        ),
         "subset_feature_counts": {name: len(frame) for name, frame in subset.items()},
         "gpkg_total_build_ms": gpkg["total_build_ms"],
         "duckdb_total_build_ms": duckdb["total_build_ms"],
@@ -422,7 +468,8 @@ def report_environment(extension_dir: Path) -> dict[str, Any]:
     connection = duckdb.connect()
     connection.execute(f"SET extension_directory = '{extension_dir.as_posix()}'")
     spatial = connection.execute(
-        "SELECT extension_name, extension_version, installed, loaded FROM duckdb_extensions() WHERE extension_name = 'spatial'"
+        "SELECT extension_name, extension_version, installed, loaded "
+        "FROM duckdb_extensions() WHERE extension_name = 'spatial'"
     ).fetchone()
     connection.close()
     return {
@@ -471,7 +518,8 @@ def benchmark(args: argparse.Namespace) -> None:
     for key, gpkg_result in warm["gpkg"][0].items():
         duckdb_result = warm["duckdb"][0][key]
         equivalence[key] = {
-            "same_candidate_count": gpkg_result["candidate_count"] == duckdb_result["candidate_count"],
+            "same_candidate_count": gpkg_result["candidate_count"]
+            == duckdb_result["candidate_count"],
             "same_exact_count": gpkg_result["exact_count"] == duckdb_result["exact_count"],
             "same_result_sha256": gpkg_result["result_sha256"] == duckdb_result["result_sha256"],
             "result_sha256": gpkg_result["result_sha256"],
@@ -486,17 +534,35 @@ def benchmark(args: argparse.Namespace) -> None:
         },
         "environment": report_environment(extension_dir),
         "inventory": inventory,
-        "query_shapes": {name: {"bounds": shape.bounds, "wkt_sha256": hashlib.sha256(shape.wkb).hexdigest()} for name, shape in shapes.items()},
+        "query_shapes": {
+            name: {"bounds": shape.bounds, "wkt_sha256": hashlib.sha256(shape.wkb).hexdigest()}
+            for name, shape in shapes.items()
+        },
         "build": {"gpkg": gpkg, "duckdb": duckdb},
         "cold_process_reopen": cold,
-        "cold_process_reopen_summary": {name: summary(trials, child=True) for name, trials in cold.items()},
-        "warm_same_process_summary": {name: summary(trials, child=False) for name, trials in warm.items()},
+        "cold_process_reopen_summary": {
+            name: summary(trials, child=True) for name, trials in cold.items()
+        },
+        "warm_same_process_summary": {
+            name: summary(trials, child=False) for name, trials in warm.items()
+        },
         "result_equivalence": equivalence,
         "area_replacement": area_replacement,
         "notes": [
-            "Cold means a newly spawned process reconnecting to an existing store; OS file-page cache was not cleared and is not claimed cold.",
-            "GeoParquet direct scan is deliberately not included: issue #190 makes it conditional and the decision is already between the two indexed embedded stores.",
-            "All generated stores, replacement stores, extension binaries and JSON output are disposable paths under --scratch or --duckdb-extension-dir.",
+            (
+                "Cold means a newly spawned process reconnecting to an existing "
+                "store; OS file-page cache was not cleared and is not claimed cold."
+            ),
+            (
+                "GeoParquet direct scan is deliberately not included: issue #190 "
+                "makes it conditional and the decision is already between the two "
+                "indexed embedded stores."
+            ),
+            (
+                "All generated stores, replacement stores, extension binaries and "
+                "JSON output are disposable paths under --scratch or "
+                "--duckdb-extension-dir."
+            ),
         ],
     }
     output = scratch / "benchmark-result.json"
