@@ -156,6 +156,13 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     "satn/deployment.py": "isolated deployment assembly",
     "satn/deployment_catalogue.py": "deployment catalogue assembly",
     "satn/deployment_provenance.py": "deployment lock validation",
+    "satn/ea_raster_evidence.py": (
+        "additive Environment Agency raster evidence sidecar; "
+        "not a compiler input before equivalence cutover"
+    ),
+    "satn/evidence_replay.py": (
+        "additive Local Evidence replay gate; not a compiler input before equivalence cutover"
+    ),
     "satn/heartbeat.py": "operational progress reporting",
     "satn/local_evidence_store.py": (
         "additive Local Evidence Store sidecar; not a compiler input before equivalence cutover"

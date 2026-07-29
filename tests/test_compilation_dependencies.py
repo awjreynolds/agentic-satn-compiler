@@ -266,6 +266,28 @@ def test_review_map_and_release_packaging_changes_do_not_change_the_digest(tmp_p
         assert changed["sha256"] == original["sha256"]
 
 
+def test_additive_evidence_sidecars_do_not_change_the_ordinary_compiler_digest(
+    tmp_path: Path,
+) -> None:
+    root = copied_compiler_tree(tmp_path)
+    original = dependencies.compilation_dependency_manifest(package_root=root)
+    excluded = {
+        component["path"] for component in original["excluded_components"]
+    }
+
+    for relative_path in ("ea_raster_evidence.py", "evidence_replay.py"):
+        component_path = f"satn/{relative_path}"
+        assert component_path in excluded
+        assert component_path not in original["selection"]["component_paths"]
+        path = root / relative_path
+        original_bytes = path.read_bytes()
+        path.write_bytes(original_bytes + b"\n# sidecar digest exclusion probe\n")
+        changed = dependencies.compilation_dependency_manifest(package_root=root)
+        assert changed["sha256"] == original["sha256"]
+        assert component_path not in changed["selection"]["component_paths"]
+        path.write_bytes(original_bytes)
+
+
 @pytest.mark.parametrize("distribution", ("networkx", "openai", "httpx"))
 def test_runtime_distribution_version_change_invalidates_manifest(
     distribution: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

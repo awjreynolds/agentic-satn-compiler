@@ -731,7 +731,8 @@ def resolve_elevation_sampling_read_set(
         is not None
     }
     if verify_files:
-        for receipt in used_receipts.values():
+        for receipt_fingerprint in sorted(used_receipts):
+            receipt = used_receipts[receipt_fingerprint]
             _verify_receipt_files(
                 cache_dir,
                 receipt,
@@ -828,10 +829,14 @@ def sample_elevation(
     for receipt_fingerprint in sorted(work):
         receipt = used_receipts[receipt_fingerprint]
         object_path = _object_path(cache_dir, receipt.raw_sha256)
-        pixels, transform = _load_verified_tile(
-            object_path,
-            receipt,
-            io_observer=io_observer,
+        pixels, transform = (
+            _load_verified_tile(object_path, receipt)
+            if io_observer is None
+            else _load_verified_tile(
+                object_path,
+                receipt,
+                io_observer=io_observer,
+            )
         )
         try:
             for index, distance_mm, east_mm, north_mm in work[receipt_fingerprint]:
