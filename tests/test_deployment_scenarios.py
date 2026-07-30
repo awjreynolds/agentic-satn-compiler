@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import date
 from pathlib import Path
 
+import geopandas as gpd
 import pytest
 import yaml
+from shapely.geometry import LineString
 from typer.testing import CliRunner
 
 from satn.cli import app
@@ -18,6 +21,7 @@ from satn.deployment_scenarios import (
     DeploymentRequestRegister,
     DeploymentScenarioConfiguration,
     NamedOfficerScenarioDeployment,
+    RoadGraphRouteControlScenarioBinding,
     compile_clean_baseline_deployment,
     compile_named_officer_scenario,
     export_response_packet,
@@ -28,6 +32,7 @@ from satn.officer_decisions import (
     ActionableHumanInterventionRequest,
     ClassifyCommunityAction,
     CleanSATNBaseline,
+    ExcludeFromRoutingAction,
     GovernedBaselineTarget,
     HumanInterventionRecord,
     HumanInterventionResponse,
@@ -43,6 +48,8 @@ from satn.officer_decisions import (
     parse_canonical_officer_decision_ledger,
     publication_label,
 )
+from satn.route_controls import EdgeBindingMode
+from satn.routing import RoadGraph
 
 PROJECT = Path(__file__).parents[1]
 TODAY = date(2026, 7, 30)
@@ -452,25 +459,139 @@ def test_route_control_integration_remains_a_small_required_binding(
             effective_on=TODAY,
         )
 
-    seen: list[str] = []
 
-    def apply_route_controls(
-        baseline: CleanSATNBaseline,
-        ledger: OfficerDecisionLedger,
-        scenario: object,
-        binding_id: str,
-    ) -> object:
-        assert baseline.baseline_fingerprint == ledger.baseline_fingerprint
-        seen.append(binding_id)
-        return scenario
 
-    compile_named_officer_scenario(
+def test_route_control_binding_compiles_scenario_through_constrained_road_graph(
+    tmp_path: Path,
+) -> None:
+    edges = gpd.GeoDataFrame(
+        [
+            {
+                "osmid": "road-ab",
+                "u": "a",
+                "v": "b",
+                "length": 100,
+                "highway": "primary",
+                "geometry": LineString([(0, 0), (100, 0)]),
+            },
+            {
+                "osmid": "road-ba",
+                "u": "b",
+                "v": "a",
+                "length": 100,
+                "highway": "primary",
+                "geometry": LineString([(100, 0), (0, 0)]),
+            },
+            {
+                "osmid": "cycle-ac",
+                "u": "a",
+                "v": "c",
+                "length": 130,
+                "highway": "cycleway",
+                "geometry": LineString([(0, 0), (50, 30)]),
+            },
+            {
+                "osmid": "cycle-ca",
+                "u": "c",
+                "v": "a",
+                "length": 130,
+                "highway": "cycleway",
+                "geometry": LineString([(50, 30), (0, 0)]),
+            },
+            {
+                "osmid": "cycle-cb",
+                "u": "c",
+                "v": "b",
+                "length": 130,
+                "highway": "cycleway",
+                "geometry": LineString([(50, 30), (100, 0)]),
+            },
+            {
+                "osmid": "cycle-bc",
+                "u": "b",
+                "v": "c",
+                "length": 130,
+                "highway": "cycleway",
+                "geometry": LineString([(100, 0), (50, 30)]),
+            },
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    snapshot = hashlib.sha256(b"route-snapshot").hexdigest()
+    profile = hashlib.sha256(b"route-profile").hexdigest()
+    binding = RoadGraph(edges).bind_route_edge(
+        "a",
+        "b",
+        evidence_snapshot_fingerprint=snapshot,
+        mode=EdgeBindingMode.BIDIRECTIONAL,
+    )
+    clean = CleanSATNBaseline(
+        baseline_id="route-baseline",
+        network_json='{"features":[],"type":"FeatureCollection"}',
+        evidence_snapshot_fingerprint=snapshot,
+        profile_fingerprint=profile,
+        governed_evidence_ids=("edge-survey",),
+        targets=(
+            GovernedBaselineTarget(
+                target=OfficerDecisionTarget(
+                    kind=OfficerTargetKind.ROUTING_EDGE,
+                    target_id=binding.binding_id,
+                )
+            ),
+        ),
+    )
+    decision = OfficerDecision(
+        decision_id="officer-route-decision",
+        decision_type=OfficerDecisionType.EXCLUDE_FROM_ROUTING,
+        target=OfficerDecisionTarget(
+            kind=OfficerTargetKind.ROUTING_EDGE,
+            target_id=binding.binding_id,
+        ),
+        action=ExcludeFromRoutingAction(),
+        decision_maker="Alex Officer",
+        decision_maker_role="Principal Transport Planner",
+        organisation="Example Council",
+        decision_date=TODAY,
+        rationale="Use the governed cycleway in this scenario.",
+        evidence_ids=("edge-survey",),
+        source_url="https://example.test/route-decisions/1",
+        effective_from=TODAY,
+        baseline_fingerprint=clean.baseline_fingerprint,
+        evidence_snapshot_fingerprint=snapshot,
+        profile_fingerprint=profile,
+    )
+    ledger = OfficerDecisionLedger(
+        baseline_fingerprint=clean.baseline_fingerprint,
+        evidence_snapshot_fingerprint=snapshot,
+        profile_fingerprint=profile,
+        decisions=(decision,),
+    )
+    configuration = named_configuration(
+        tmp_path,
+        route_control_binding="route-controls-v1",
+    )
+    route_binding = RoadGraphRouteControlScenarioBinding(
+        binding_id="route-controls-v1",
+        edges=edges,
+        route_edge_bindings=(binding,),
+    )
+
+    publication = compile_named_officer_scenario(
         configuration,
         clean,
-        officer_ledger(clean),
+        ledger,
         "officer-rural",
         runtime_provider="pydantic-ai",
         effective_on=TODAY,
-        route_control_binding=apply_route_controls,  # type: ignore[arg-type]
+        route_control_binding=route_binding,
     )
-    assert seen == ["route-controls-v1"]
+
+    assert publication.scenario.route_controls is not None
+    assert publication.scenario.route_control_fingerprint in (
+        publication.scenario.dependency_fingerprints
+    )
+    constrained = route_binding.constrained_graph(publication.scenario)
+    option = constrained.option("a", "b", "direct")
+    assert option is not None
+    assert option.edge_ids == ["cycle-ac", "cycle-cb"]

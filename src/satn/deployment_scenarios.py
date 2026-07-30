@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from datetime import date
 from enum import StrEnum
 from pathlib import Path
 from typing import Literal, Protocol, Self
 
+import geopandas as gpd
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -26,6 +28,8 @@ from satn.officer_decisions import (
     parse_canonical_officer_decision_ledger,
     publication_label,
 )
+from satn.route_controls import RouteEdgeBinding
+from satn.routing import RoadGraph
 
 _ID = re.compile(r"^[a-z0-9][a-z0-9._:-]*$")
 _SLUG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -342,15 +346,59 @@ class DeploymentScenarioPublication(BaseModel):
 
 
 class RouteControlScenarioBinding(Protocol):
-    """Small #236 integration seam for route-control overlay interpretation."""
+    """Compile officer controls and prove they bind the configured RoadGraph."""
+
+    binding_id: str
 
     def __call__(
         self,
         baseline: CleanSATNBaseline,
         ledger: OfficerDecisionLedger,
-        scenario: OfficerScenarioCompilation,
-        binding_id: str,
+        *,
+        effective_on: date,
     ) -> OfficerScenarioCompilation: ...
+
+
+@dataclass(frozen=True)
+class RoadGraphRouteControlScenarioBinding:
+    """Concrete governed bridge from officer edge decisions to constrained routing."""
+
+    binding_id: str
+    edges: gpd.GeoDataFrame
+    route_edge_bindings: tuple[RouteEdgeBinding, ...]
+
+    def __post_init__(self) -> None:
+        if _ID.fullmatch(self.binding_id) is None:
+            raise ValueError("route-control scenario binding ID must be canonical")
+
+    def __call__(
+        self,
+        baseline: CleanSATNBaseline,
+        ledger: OfficerDecisionLedger,
+        *,
+        effective_on: date,
+    ) -> OfficerScenarioCompilation:
+        scenario = apply_officer_decision_ledger(
+            baseline,
+            ledger,
+            effective_on=effective_on,
+            route_edge_bindings=self.route_edge_bindings,
+        )
+        if scenario.route_controls is None:
+            raise ValueError(
+                "configured route-control binding produced no active route controls"
+            )
+        constrained = self.constrained_graph(scenario)
+        if constrained.route_control_fingerprint != scenario.route_control_fingerprint:
+            raise ValueError("constrained RoadGraph route-control lineage differs from scenario")
+        return scenario
+
+    def constrained_graph(self, scenario: OfficerScenarioCompilation) -> RoadGraph:
+        """Construct the governed routing view for subsequent scenario compilation."""
+
+        if scenario.route_controls is None:
+            raise ValueError("scenario has no governed route controls")
+        return RoadGraph(self.edges, route_controls=scenario.route_controls)
 
 
 def _runtime_kind(provider: str) -> AuthorityRecordKind:
@@ -412,24 +460,28 @@ def compile_named_officer_scenario(
     route_control_binding: RouteControlScenarioBinding | None = None,
 ) -> DeploymentScenarioPublication:
     deployment = configuration.named_scenario(scenario_name)
-    scenario = apply_officer_decision_ledger(
-        baseline,
-        ledger,
-        effective_on=effective_on,
-    )
-    if not scenario.applied_decision_ids:
-        raise ValueError("named officer scenario requires at least one applied decision")
     if deployment.route_control_binding is not None:
         if route_control_binding is None:
             raise ValueError(
                 "named scenario requires the configured route-control binding"
             )
+        if route_control_binding.binding_id != deployment.route_control_binding:
+            raise ValueError(
+                "route-control binding does not match the named scenario configuration"
+            )
         scenario = route_control_binding(
             baseline,
             ledger,
-            scenario,
-            deployment.route_control_binding,
+            effective_on=effective_on,
         )
+    else:
+        scenario = apply_officer_decision_ledger(
+            baseline,
+            ledger,
+            effective_on=effective_on,
+        )
+    if not scenario.applied_decision_ids:
+        raise ValueError("named officer scenario requires at least one applied decision")
     authority = DeploymentAuthorityRecord(
         authority_state=NetworkPublicationKind.OFFICER_INFORMED_SCENARIO,
         public_label=publication_label(
