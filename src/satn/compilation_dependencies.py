@@ -107,6 +107,10 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
         "private deterministic strategic Reference replay materialisation",
     ),
     "satn/routing.py": ("module", "routable network and route selection"),
+    "satn/route_controls.py": (
+        "module",
+        "governed route exclusions, preferences and retained-gap constraints",
+    ),
     "satn/school_street.py": ("module", "school-street assessment"),
     "satn/settlement.py": ("module", "settlement and urban eligibility"),
     "satn/sources.py": ("module", "governed snapshot and source loading"),
@@ -186,6 +190,10 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     "satn/deployment.py": "isolated deployment assembly",
     "satn/deployment_catalogue.py": "deployment catalogue assembly",
     "satn/deployment_provenance.py": "deployment lock validation",
+    "satn/deployment_scenario_cli.py": "post-compile officer-scenario command adapter",
+    "satn/deployment_scenarios.py": (
+        "post-compile clean-baseline and officer-scenario assembly"
+    ),
     "satn/ea_raster_evidence.py": (
         "additive Environment Agency raster evidence sidecar; "
         "not a compiler input before equivalence cutover"
@@ -230,6 +238,9 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
         "additive OpenStreetMap Local Evidence source adapter; "
         "not a compiler input before equivalence cutover"
     ),
+    "satn/officer_decisions.py": (
+        "post-compile human decision ledger and scenario translation"
+    ),
     "satn/pages_packaging.py": "Pages release packaging",
     "satn/psa_criteria_assembly.py": (
         "post-compile governed criteria assembly without CompiledNetwork mutation"
@@ -256,6 +267,10 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     ),
     "satn/strategic_reference_publication.py": (
         "publication-only strategic Reference provenance record; no compiler authority"
+    ),
+    "satn/visual_survey.py": (
+        "governed external visual-survey evidence contract; "
+        "not an automatic compiler input"
     ),
 }
 

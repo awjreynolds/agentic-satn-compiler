@@ -67,6 +67,11 @@ def _stable_id(prefix: str, value: object) -> str:
     return f"{prefix}-{_fingerprint(value)[:20]}"
 
 
+def _provenance_id(value: str) -> str:
+    """Retain canonical source IDs and bind compound external IDs deterministically."""
+    return value if _ID.fullmatch(value) is not None else _stable_id("source-reference", value)
+
+
 class StrategicCorridorUnitRole(StrEnum):
     """The two separately governed logical roles in this narrow seam."""
 
@@ -767,7 +772,14 @@ def _candidate_set(
             source_class=source_class,
             geometry=geometry,
             evidence_fingerprints=(_fingerprint(payload),),
-            provenance_ids=tuple(sorted({*source_ids, *evidence_ids, *option.edge_ids})),
+            provenance_ids=tuple(
+                sorted(
+                    {
+                        _provenance_id(item)
+                        for item in (*source_ids, *evidence_ids, *option.edge_ids)
+                    }
+                )
+            ),
             topology_state=(
                 CriterionState.SATISFIED
                 if option.bidirectional
