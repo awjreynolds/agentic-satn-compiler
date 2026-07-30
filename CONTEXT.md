@@ -530,6 +530,22 @@ _Avoid_: cache clear, overwrite run
 A structured request for evidence absent from an Evidence Packet, to be acquired and governed outside the compilation run.
 _Avoid_: live browsing, unsupported assumption
 
+**Visual Survey Request**:
+A versioned, explicitly enabled request that binds finite compiler-authored evidence questions to exact governed feature IDs and location or corridor geometry fingerprints. Only an allow-listed provider adapter may answer it; the clean Baseline Scenario Compilation does not commission one.
+_Avoid_: autonomous browsing, general area search, implicit provider access
+
+**Desktop Imagery Observation**:
+An attributable, source- and licence-bound observation from approved street-level, aerial/satellite or manually supplied imagery, retaining image date, retrieval date, viewpoint, coverage, limitations, confidence, privacy treatment and redistribution permission. Missing, old, obscured or conflicting imagery remains explicit, and the observation cannot create executable geometry or claim safety, legality, feasibility or design compliance.
+_Avoid_: verified site survey, current-condition proof, route edit
+
+**Officer-Accepted Desktop Observation**:
+A Desktop Imagery Observation that an attributable human has accepted for use as bounded evidence in one Officer-Informed Scenario Compilation. The acceptance and observation are separately fingerprinted, and changed imagery or acceptance creates new scenario evidence identity.
+_Avoid_: agent approval, silent evidence promotion, physical survey
+
+**Physical Site Survey**:
+An accountable in-person assessment governed outside the desktop imagery workflow. A visual-survey provider may request one as missing evidence but can never label its own output as one.
+_Avoid_: Street View survey, aerial survey, agent observation
+
 **Demand Planning Pass**:
 A deterministic LCWIP analytical pass that derives Origin–Destination Flows and Cycling Desire Lines, requests finite Demand Route Alternatives, assesses them under the active Guidance Profile and reconciles the result with SATN and other governed network hypotheses. It runs after the Baseline Evidence Gate and outside the SATN Wayfinding Pass; demand divergence is reported and never silently mutates SATN.
 _Avoid_: Wayfinding Pass, delivery prioritisation, hidden network rewrite
