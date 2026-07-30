@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from satn.deployment_catalogue import DeploymentCatalogue
 
 GITHUB_PAGES_LIMIT_BYTES = 1_000_000_000
-DEFAULT_MAXIMUM_BYTES = 900_000_000
+DEFAULT_MAXIMUM_BYTES = 950_000_000
 RELEASE_ARTIFACT_NAME = "satn-pages.zip"
 SCHEMA_VERSION = "satn-deployment-catalogue/v1"
 DISCLAIMER = "Experimental SATN POC — not an adopted plan."

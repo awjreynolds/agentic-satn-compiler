@@ -1,5 +1,5 @@
 {
-  "accepted_decisions_sha256": "91c07bdcd437aaa4980fc0ece88b285b0d7bc957bac47660b58091ea238ec81c",
+  "accepted_decisions_sha256": "34e8ec85fb7605894f674dc4c0cdf2eda675c3152c3af79e8ad84aed0a68af40",
   "area_definition_sha256": "6fba4006fcee54480de25194b810b337d450239ca01fb80df45a2815db12dffb",
   "area_id": "oxfordshire",
   "area_name": "Oxfordshire",
@@ -13,7 +13,7 @@
       "size_bytes": 184
     },
     "agent-records.json": {
-      "sha256": "fe346313b1da845ef407a40bbab857720435cbea6d78b4c4465371d8f9de4914",
+      "sha256": "fbc5466d1e7a58db3776bf3d6121482b80d969cc741fecbe319fdaf8817cb284",
       "size_bytes": 1168241
     },
     "assets/MAPLIBRE-LICENSE.txt": {
@@ -49,11 +49,11 @@
       "size_bytes": 1600
     },
     "compiler-run.json": {
-      "sha256": "b4886aea20e5faece5f5204fc2344e82600a12d9a8bdf13b692b5b19f67413d9",
-      "size_bytes": 845260
+      "sha256": "7b518baed7e3be4b927ea9f1dbe1352c15d8fe7673581571a1fe51eb3c7c0ad3",
+      "size_bytes": 846133
     },
     "data.js": {
-      "sha256": "a41941401027e0e7e1b0fb38e542276b47ed1517f500bc16852621c8e313d773",
+      "sha256": "5f5905502b5cb886d19e198f3dc715fb3652715445eafacf8d4b91d662b83d30",
       "size_bytes": 614067
     },
     "divergence-records.json": {
@@ -725,7 +725,7 @@
       "size_bytes": 103801
     },
     "network-map.pdf": {
-      "sha256": "fa8e6d2464c61e456b4fe00ed8259e7daeae80cf7fb803110d1fa1cad7d41cc8",
+      "sha256": "0b93317312de4e897c5fe0e7a4503768d9fa156f5997b1d363a0e28056730409",
       "size_bytes": 5084009
     },
     "network.geojson": {
@@ -733,11 +733,11 @@
       "size_bytes": 14644975
     },
     "publication.json": {
-      "sha256": "e050f458ecfdb7c01aa0f3edcc601939e5fabe43ee309deaccc2bfd4e5061d26",
+      "sha256": "ab933cfa20266fc6628f95c81175f937cd7224bc2bb4e5c6da2d004d53c022ad",
       "size_bytes": 627743
     },
     "service-worker.js": {
-      "sha256": "b4b30f8c265f0ae9b4b6fffb80c7b26a68f22134b5d6016c5a5dd3a38128a429",
+      "sha256": "21f91b5dad45c128b327a22b32f35173a4559342a4c2004c41b9259bec87ab08",
       "size_bytes": 1625
     },
     "topography-manifest.json": {
@@ -1213,7 +1213,7 @@
       "size_bytes": 72702
     }
   },
-  "compilation_input_fingerprint": "1714146759e7c0cbda46ece22a3f2f0941e390a86d76953bf6f97e32dac61d92",
+  "compilation_input_fingerprint": "1bd4f4a9702a0f5ea0f5e74c836a338fe09477610efc798f43f7d9bb30a4dc1e",
   "connection_count": 405,
   "criteria": {
     "atm_comparison": {
@@ -1273,7 +1273,7 @@
   "decision_ledger_input_sha256": "67779ed4c174e52fe6267892a335d34d6acb63c7fcbca50b7a61d1c48596c9c9",
   "deployment_id": "oxfordshire",
   "gap_count": 552,
-  "governed_input_fingerprint": "8dce8f21f1f00348dc3d449b8ac82ba7609d094aff2fdc2fb81cdc83a6713c3e",
+  "governed_input_fingerprint": "96e2c285f6c64fcc40c8611cbb2a032ab897cdf233a91405b8de9e3933b381b0",
   "layer_counts": {
     "a_road_spines": 7428,
     "access_obligations": 897,
@@ -1297,8 +1297,8 @@
     "urban_classification_unknowns": 0,
     "urban_spines": 0
   },
-  "run_id": "run-93186a8034fd",
-  "runtime_governance_sha256": "7e112ca51264156788fcd27d42b5642478125daa3b51bed0d148dae9709876fc",
+  "run_id": "run-9f5b602ae6c1",
+  "runtime_governance_sha256": "8abe23c17b2cc2fc2464e639ce9879793f075d5bde865debbf9578b945a26297",
   "schema_version": "satn-deployment-provenance-lock/v2",
   "scope": {
     "area_id": "oxfordshire",

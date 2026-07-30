@@ -2,16 +2,17 @@
   "deployment_roots": [
     "deployments/banes",
     "deployments/oxfordshire",
+    "deployments/torbay-south-devon",
     "deployments/weca"
   ],
   "root_files": {
     "catalogue.json": {
-      "sha256": "adcc4575be1ca049a77205232d5f5faa4418d08e02d860d0ffd4263e950b7fb9",
-      "size_bytes": 3924
+      "sha256": "2e1f7a88a0fd10c08f6cd9888ba34053da61a1d29c32a7c114cb652d82a27158",
+      "size_bytes": 5370
     },
     "index.html": {
-      "sha256": "ca82d2aebd006195bcdba38a4c98905d419bd2d5f44f762ff28b820599ad7fb6",
-      "size_bytes": 1465
+      "sha256": "ef25515be06302041a0ed871d354e7e4013314613b2d90e8a6df6ef1aa694c19",
+      "size_bytes": 1889
     }
   },
   "schema_version": "satn-pages-root-lock/v1"

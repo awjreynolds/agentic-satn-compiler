@@ -17,6 +17,7 @@ from satn.routing import RoadGraph
 from satn.sources import load_snapshot, snapshot
 from satn.strategic_corridors import (
     StrategicCorridorUnitRole,
+    _provenance_id,
     prepare_strategic_corridors,
 )
 
@@ -26,6 +27,16 @@ def _compiled(tmp_path: Path):
     snapshot(config)
     source = load_snapshot(config)
     return config, source, compile_network(config, source, FakeAgentRuntime())
+
+
+def test_compound_external_edge_ids_have_stable_canonical_provenance_ids() -> None:
+    assert _provenance_id("source-edge-1") == "source-edge-1"
+    assert _provenance_id("[1001848710, 33175860]") == (
+        "source-reference-4cea4d0a166e52d52240"
+    )
+    assert _provenance_id("[1001848710, 33175860]") == _provenance_id(
+        "[1001848710, 33175860]"
+    )
 
 
 def test_bath_prepares_separate_interurban_and_destination_units(tmp_path: Path) -> None:

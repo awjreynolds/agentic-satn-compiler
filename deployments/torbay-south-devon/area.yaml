@@ -1,0 +1,42 @@
+# Governed cross-boundary analytical Area Definition for the current full
+# authority areas of Torbay (E06000027), Teignbridge (E07000045) and
+# South Hams (E07000044). Generated artifacts remain below ignored data/
+# and build/ directories.
+area_id: torbay-south-devon
+area_name: Torbay and South Devon (Torbay, Teignbridge and South Hams)
+deployment_id: torbay-south-devon
+source:
+  kind: osm
+  osm_place_queries:
+    - Torbay, England, United Kingdom
+    - Teignbridge, Devon, England, United Kingdom
+    - South Hams, Devon, England, United Kingdom
+  ncn_feature_service_url: https://services5.arcgis.com/1ZHcUS1lwPTg4ms0/arcgis/rest/services/National_Cycle_Network_Public/FeatureServer
+  reclassified_ncn_feature_service_url: https://services5.arcgis.com/1ZHcUS1lwPTg4ms0/arcgis/rest/services/Reclassified_Routes_Public/FeatureServer
+  snapshot_dir: ../../data/snapshots
+  snapshot_id: torbay-south-devon-osm-2026-07-30
+  network_type: bike
+  overpass_url: https://overpass-api.de/api
+  osm_timeout_seconds: 600
+  external_buffer_km: 15
+  internal_portal_threshold_km: 1
+  community_place_types: [town, village, suburb, quarter, neighbourhood]
+  urban_place_types: [city, town, suburb, quarter, neighbourhood]
+  urban_scope_buffer_km: 2
+compilation:
+  max_connection_km: 15
+  criteria_version: "1"
+  agent:
+    provider: fake
+    response_mode: direct-runtime
+    review_statuses: [amber, red]
+    max_requests: 1000
+atm:
+  enabled: false
+  mode: blind
+  redistribution_permitted: false
+publication:
+  output_dir: ../../build/compiled/torbay-south-devon
+  title: Torbay and South Devon Strategic Active Travel Network Review
+  pdf_page_size: A2
+  audience: public

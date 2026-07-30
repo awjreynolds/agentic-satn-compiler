@@ -59,7 +59,7 @@ jobs:
       - name: Safely extract and validate the Pages release
         env:
           ALLOW_NON_PRODUCTION: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_non_production }}
-          SATN_PAGES_MAX_BYTES: "900000000"
+          SATN_PAGES_MAX_BYTES: "950000000"
         run: |
           set -euo pipefail
           validator_args=(
