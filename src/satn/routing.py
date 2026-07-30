@@ -16,6 +16,14 @@ import pandas as pd
 from shapely.geometry import LineString, Point
 from shapely.ops import linemerge, substring, unary_union
 
+from satn.content_identity import canonical_network_geometry_fingerprint
+from satn.route_controls import (
+    DirectedEdgeBinding,
+    EdgeBindingMode,
+    RouteControlNetworkGap,
+    RouteControlSet,
+    RouteEdgeBinding,
+)
 from satn.tags import tag_values as _tag_values
 
 LOW_TRAFFIC = {
@@ -93,7 +101,12 @@ class PointAttachment:
 
 
 class RoadGraph:
-    def __init__(self, edges: gpd.GeoDataFrame):
+    def __init__(
+        self,
+        edges: gpd.GeoDataFrame,
+        *,
+        route_controls: RouteControlSet | None = None,
+    ):
         self.crs = edges.crs
         self.graph = nx.DiGraph()
         self.node_points: dict[str, Point] = {}
@@ -137,13 +150,38 @@ class RoadGraph:
             if not _present(row.get("u")) and not attrs["oneway"]:
                 reverse = attrs | {"geometry": LineString(list(geometry.coords)[::-1])}
                 self._add_best_edge(v, u, reverse)
+        self.route_controls = (
+            RouteControlSet.model_validate(route_controls.model_dump(mode="python"))
+            if route_controls is not None
+            else None
+        )
+        (
+            self._routing_excluded_pairs,
+            self._strategic_excluded_pairs,
+        ) = self._validated_control_pairs()
+        self._routing_graph = nx.subgraph_view(
+            self.graph,
+            filter_edge=lambda left, right: (
+                str(left),
+                str(right),
+            )
+            not in self._routing_excluded_pairs,
+        )
+        self._strategic_graph = nx.subgraph_view(
+            self._routing_graph,
+            filter_edge=lambda left, right: (
+                str(left),
+                str(right),
+            )
+            not in self._strategic_excluded_pairs,
+        )
         self._set_lower_bound_cost_factor()
         # Access connections must work in both directions. Searching only edges
         # with an explicit reciprocal prevents a one-way result from triggering
         # a combinatorial retry across every possible start/end pairing.
         self._attachment_graph = nx.DiGraph()
-        for u, v, attrs in self.graph.edges(data=True):
-            if self.graph.has_edge(v, u):
+        for u, v, attrs in self._routing_graph.edges(data=True):
+            if self._routing_graph.has_edge(v, u):
                 self._attachment_graph.add_edge(u, v, **attrs)
         self._set_attachment_lower_bound_cost_factor()
         self._node_ids = list(self._attachment_graph.nodes)
@@ -168,10 +206,13 @@ class RoadGraph:
         self._projected_node_index = self._projected_nodes.sindex
         edge_rows = [
             {"u": u, "v": v, "geometry": attrs["geometry"]}
-            for u, v, attrs in self.graph.edges(data=True)
+            for u, v, attrs in self._routing_graph.edges(data=True)
         ]
         self._projected_edges = gpd.GeoDataFrame(
-            edge_rows, geometry="geometry", crs=self.crs
+            edge_rows,
+            columns=["u", "v", "geometry"],
+            geometry="geometry",
+            crs=self.crs,
         ).to_crs(27700)
         self._projected_edge_index = self._projected_edges.sindex
 
@@ -179,6 +220,160 @@ class RoadGraph:
         existing = self.graph.get_edge_data(u, v)
         if existing is None or float(attrs["length_m"]) < float(existing["length_m"]):
             self.graph.add_edge(u, v, **attrs)
+
+    def bind_route_edge(
+        self,
+        from_node_id: str,
+        to_node_id: str,
+        *,
+        evidence_snapshot_fingerprint: str,
+        mode: EdgeBindingMode = EdgeBindingMode.DIRECTIONAL,
+    ) -> RouteEdgeBinding:
+        """Bind a current directed edge or explicit reciprocal pair for a decision."""
+
+        directions = [
+            self._directed_edge_binding(
+                from_node_id,
+                to_node_id,
+                evidence_snapshot_fingerprint=evidence_snapshot_fingerprint,
+            )
+        ]
+        if mode == EdgeBindingMode.BIDIRECTIONAL:
+            directions.append(
+                self._directed_edge_binding(
+                    to_node_id,
+                    from_node_id,
+                    evidence_snapshot_fingerprint=evidence_snapshot_fingerprint,
+                )
+            )
+        return RouteEdgeBinding(mode=mode, directions=tuple(directions))
+
+    def _directed_edge_binding(
+        self,
+        from_node_id: str,
+        to_node_id: str,
+        *,
+        evidence_snapshot_fingerprint: str,
+    ) -> DirectedEdgeBinding:
+        attrs = self.graph.get_edge_data(from_node_id, to_node_id)
+        if attrs is None:
+            raise ValueError(
+                f"current RoadGraph has no directed edge {from_node_id!r}->{to_node_id!r}"
+            )
+        return DirectedEdgeBinding(
+            evidence_snapshot_fingerprint=evidence_snapshot_fingerprint,
+            source_edge_id=str(attrs["edge_id"]),
+            from_node_id=from_node_id,
+            to_node_id=to_node_id,
+            geometry_fingerprint=canonical_network_geometry_fingerprint(
+                attrs["geometry"],
+                self.crs,
+            ),
+        )
+
+    def _validated_control_pairs(
+        self,
+    ) -> tuple[frozenset[tuple[str, str]], frozenset[tuple[str, str]]]:
+        if self.route_controls is None:
+            return frozenset(), frozenset()
+        routing = self._validate_bindings(self.route_controls.routing_exclusions)
+        strategic = self._validate_bindings(
+            self.route_controls.strategic_spine_exclusions
+        )
+        return frozenset(routing), frozenset(strategic)
+
+    def _validate_bindings(
+        self,
+        bindings: tuple[RouteEdgeBinding, ...],
+    ) -> set[tuple[str, str]]:
+        pairs: set[tuple[str, str]] = set()
+        for binding in bindings:
+            for direction in binding.directions:
+                attrs = self.graph.get_edge_data(
+                    direction.from_node_id,
+                    direction.to_node_id,
+                )
+                if attrs is None:
+                    raise ValueError(
+                        "route control edge binding is missing from the current RoadGraph"
+                    )
+                geometry_fingerprint = canonical_network_geometry_fingerprint(
+                    attrs["geometry"],
+                    self.crs,
+                )
+                if (
+                    str(attrs["edge_id"]) != direction.source_edge_id
+                    or geometry_fingerprint != direction.geometry_fingerprint
+                ):
+                    raise ValueError(
+                        "route control edge binding is stale or geometry-mismatched"
+                    )
+                pairs.add(direction.directed_key)
+        return pairs
+
+    @property
+    def route_control_fingerprint(self) -> str | None:
+        """Return the governed routing dependency, absent for a clean baseline."""
+
+        return (
+            self.route_controls.control_fingerprint
+            if self.route_controls is not None
+            else None
+        )
+
+    def edge_restrictions(
+        self,
+        from_node_id: str,
+        to_node_id: str,
+    ) -> tuple[dict[str, str], ...]:
+        """Expose restrictions while retaining the underlying edge as evidence."""
+
+        if self.route_controls is None:
+            return ()
+        records: list[dict[str, str]] = []
+        for restriction, bindings in (
+            ("exclude-from-strategic-spine", self.route_controls.strategic_spine_exclusions),
+            ("exclude-from-routing", self.route_controls.routing_exclusions),
+        ):
+            for binding in bindings:
+                if any(
+                    item.directed_key == (from_node_id, to_node_id)
+                    for item in binding.directions
+                ):
+                    records.append(
+                        {
+                            "restriction": restriction,
+                            "binding_id": binding.binding_id,
+                            "route_control_fingerprint": (
+                                self.route_controls.control_fingerprint
+                            ),
+                        }
+                    )
+        return tuple(sorted(records, key=lambda item: (item["restriction"], item["binding_id"])))
+
+    def edge_is_allowed(
+        self,
+        from_node_id: str,
+        to_node_id: str,
+        *,
+        strategic_use: bool = False,
+    ) -> bool:
+        """Return whether the exact directed edge may be traversed."""
+
+        pair = (from_node_id, to_node_id)
+        return pair not in self._routing_excluded_pairs and (
+            not strategic_use or pair not in self._strategic_excluded_pairs
+        )
+
+    def _graph_for_role(
+        self,
+        role: str,
+        *,
+        strategic_use: bool = False,
+    ) -> nx.DiGraph:
+        if strategic_use or role == "strategic-spine":
+            return self._strategic_graph
+        return self._routing_graph
 
     @property
     def lower_bound_cost_factor(self) -> float:
@@ -223,10 +418,10 @@ class RoadGraph:
         endpoint does not agree with the canonical node coordinate, the graph can make a
         geometric jump and no Euclidean-derived bound is sound.
         """
-        if self.graph.number_of_edges() == 0:
+        if self._routing_graph.number_of_edges() == 0:
             return
         ratios: list[float] = []
-        for u, v, attrs in self.graph.edges(data=True):
+        for u, v, attrs in self._routing_graph.edges(data=True):
             geometry = attrs["geometry"]
             if (
                 not isinstance(geometry, LineString)
@@ -463,13 +658,13 @@ class RoadGraph:
                 continue
             u = str(projected["u"])
             v = str(projected["v"])
-            if not self.graph.has_edge(v, u):
+            if not self._routing_graph.has_edge(v, u):
                 continue
             fraction = float(distance_along / projected_geometry.length)
             if fraction <= 1e-9 or fraction >= 1 - 1e-9:
                 continue
-            attrs = self.graph[u][v]
-            reverse = self.graph[v][u]
+            attrs = self._routing_graph[u][v]
+            reverse = self._routing_graph[v][u]
             reverse_geometry = reverse["geometry"]
             if (
                 not isinstance(reverse_geometry, LineString)
@@ -810,19 +1005,34 @@ class RoadGraph:
         if source in self._shortest_lengths:
             return
         self._shortest_lengths[source] = nx.single_source_dijkstra_path_length(
-            self.graph, source, weight="length_m"
+            self._routing_graph, source, weight="length_m"
         )
 
-    def option(self, start: str, end: str, role: str) -> RouteOption | None:
+    def option(
+        self,
+        start: str,
+        end: str,
+        role: str,
+        *,
+        strategic_use: bool = False,
+    ) -> RouteOption | None:
+        route_graph = self._graph_for_role(role, strategic_use=strategic_use)
         try:
-            nodes = nx.shortest_path(self.graph, start, end, weight=_weight_for(role))
+            nodes = nx.shortest_path(route_graph, start, end, weight=_weight_for(role))
         except (nx.NetworkXNoPath, nx.NodeNotFound):
             return None
-        return self._option_from_nodes(nodes, role)
+        return self._option_from_nodes(nodes, role, strategic_use=strategic_use)
 
-    def _option_from_nodes(self, nodes: list[str], role: str) -> RouteOption | None:
+    def _option_from_nodes(
+        self,
+        nodes: list[str],
+        role: str,
+        *,
+        strategic_use: bool = False,
+    ) -> RouteOption | None:
         weight = _weight_for(role)
-        edge_data = [self.graph[a][b] for a, b in pairwise(nodes)]
+        route_graph = self._graph_for_role(role, strategic_use=strategic_use)
+        edge_data = [route_graph[a][b] for a, b in pairwise(nodes)]
         if not edge_data:
             return None
         geometry = _merge_route([edge["geometry"] for edge in edge_data])
@@ -833,9 +1043,19 @@ class RoadGraph:
         ncn_length = sum(float(edge["length_m"]) for edge in edge_data if edge["ncn"])
         try:
             reverse_nodes = list(reversed(nodes))
-            if not all(self.graph.has_edge(left, right) for left, right in pairwise(reverse_nodes)):
-                reverse_nodes = nx.shortest_path(self.graph, nodes[-1], nodes[0], weight=weight)
-            reverse_edges = [self.graph[left][right] for left, right in pairwise(reverse_nodes)]
+            if not all(
+                route_graph.has_edge(left, right)
+                for left, right in pairwise(reverse_nodes)
+            ):
+                reverse_nodes = nx.shortest_path(
+                    route_graph,
+                    nodes[-1],
+                    nodes[0],
+                    weight=weight,
+                )
+            reverse_edges = [
+                route_graph[left][right] for left, right in pairwise(reverse_nodes)
+            ]
             reverse_geometry = _merge_route([edge["geometry"] for edge in reverse_edges])
         except (nx.NetworkXNoPath, nx.NodeNotFound):
             reverse_edges = []
@@ -871,18 +1091,79 @@ class RoadGraph:
             ),
         )
 
+    def governed_option_or_gap(
+        self,
+        start: str,
+        end: str,
+        role: str,
+        *,
+        strategic_use: bool = False,
+        unsatisfied_network_place_ids: tuple[str, ...] = (),
+        unsatisfied_access_obligation_ids: tuple[str, ...] = (),
+        unsatisfied_strategic_destination_ids: tuple[str, ...] = (),
+    ) -> RouteOption | RouteControlNetworkGap:
+        """Return a route or an explicit no-geometry gap for a governed scenario."""
+
+        if self.route_controls is None:
+            raise ValueError("a governed route outcome requires a RouteControlSet")
+        option = self.option(
+            start,
+            end,
+            role,
+            strategic_use=strategic_use,
+        )
+        if option is not None:
+            return option
+        return RouteControlNetworkGap(
+            from_node_id=start,
+            to_node_id=end,
+            route_role=role,
+            unsatisfied_network_place_ids=unsatisfied_network_place_ids,
+            unsatisfied_access_obligation_ids=unsatisfied_access_obligation_ids,
+            unsatisfied_strategic_destination_ids=(
+                unsatisfied_strategic_destination_ids
+            ),
+            evidence_snapshot_fingerprint=(
+                self.route_controls.evidence_snapshot_fingerprint
+            ),
+            route_control_fingerprint=self.route_controls.control_fingerprint,
+            excluded_edge_binding_ids=self.route_controls.excluded_binding_ids,
+        )
+
 
 def choose_alignment(
     graph: RoadGraph,
     start: str,
     end: str,
+    *,
+    strategic_use: bool = False,
 ) -> tuple[RouteOption | None, list[RouteOption], str]:
-    direct = graph.option(start, end, "direct")
+    direct = graph.option(
+        start,
+        end,
+        "direct",
+        strategic_use=strategic_use,
+    )
     if direct is None:
         return None, [], "No continuous OSM cycling-network path exists."
-    strategic = graph.option(start, end, "strategic-spine")
-    ncn = graph.option(start, end, "ncn-informed")
-    quiet = graph.option(start, end, "low-traffic")
+    strategic = graph.option(
+        start,
+        end,
+        "strategic-spine",
+        strategic_use=strategic_use,
+    )
+    ncn = graph.option(
+        start,
+        end,
+        "ncn-informed",
+        strategic_use=strategic_use,
+    )
+    quiet = graph.option(
+        start,
+        end,
+        "low-traffic",
+        strategic_use=strategic_use,
+    )
     options = _unique_options([direct, strategic, ncn, quiet])
 
     if (
