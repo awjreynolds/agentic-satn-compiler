@@ -18,6 +18,8 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from satn.route_controls import RouteControlSet, RouteEdgeBinding
+
 _ID = re.compile(r"^[a-z0-9][a-z0-9._:-]*$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -69,6 +71,8 @@ class OfficerDecisionStatus(StrEnum):
 
 class OfficerDecisionType(StrEnum):
     CLASSIFY_COMMUNITY = "classify-community"
+    EXCLUDE_FROM_ROUTING = "exclude-from-routing"
+    EXCLUDE_FROM_STRATEGIC_SPINE = "exclude-from-strategic-spine"
     RETAIN_NETWORK_GAP = "retain-network-gap"
     SELECT_ALIGNMENT = "select-alignment"
     SET_TARGET_ELIGIBILITY = "set-target-eligibility"
@@ -100,6 +104,20 @@ class RetainNetworkGapAction(BaseModel):
     kind: Literal["retain-network-gap"] = "retain-network-gap"
 
 
+class ExcludeFromRoutingAction(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    kind: Literal["exclude-from-routing"] = "exclude-from-routing"
+
+
+class ExcludeFromStrategicSpineAction(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    kind: Literal["exclude-from-strategic-spine"] = (
+        "exclude-from-strategic-spine"
+    )
+
+
 class SelectAlignmentAction(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -115,6 +133,8 @@ class SetTargetEligibilityAction(BaseModel):
 
 OfficerDecisionAction = Annotated[
     ClassifyCommunityAction
+    | ExcludeFromRoutingAction
+    | ExcludeFromStrategicSpineAction
     | RetainNetworkGapAction
     | SelectAlignmentAction
     | SetTargetEligibilityAction,
@@ -124,6 +144,8 @@ OfficerDecisionAction = Annotated[
 
 _ACTION_TARGETS: dict[str, frozenset[OfficerTargetKind]] = {
     "classify-community": frozenset({OfficerTargetKind.COMMUNITY}),
+    "exclude-from-routing": frozenset({OfficerTargetKind.ROUTING_EDGE}),
+    "exclude-from-strategic-spine": frozenset({OfficerTargetKind.ROUTING_EDGE}),
     "retain-network-gap": frozenset({OfficerTargetKind.NETWORK_GAP}),
     "select-alignment": frozenset({OfficerTargetKind.ALIGNMENT_CANDIDATE}),
     "set-target-eligibility": frozenset(OfficerTargetKind),
@@ -246,6 +268,78 @@ class OfficerDecisionLedger(BaseModel):
 
     def canonical_json(self) -> bytes:
         return _canonical_json(self.model_dump(mode="json")).encode("ascii")
+
+
+def route_controls_from_officer_decisions(
+    ledger: OfficerDecisionLedger,
+    *,
+    edge_bindings: tuple[RouteEdgeBinding, ...],
+    effective_on: date,
+) -> RouteControlSet:
+    """Translate active edge decisions into the sole deterministic route contract."""
+
+    bindings = tuple(
+        sorted(
+            (
+                RouteEdgeBinding.model_validate(item.model_dump(mode="python"))
+                for item in edge_bindings
+            ),
+            key=lambda item: item.binding_id,
+        )
+    )
+    by_id = {item.binding_id: item for item in bindings}
+    if len(by_id) != len(bindings):
+        raise ValueError("route edge bindings must be unique")
+    active = tuple(
+        item
+        for item in ledger.decisions
+        if item.status == OfficerDecisionStatus.ACTIVE
+        and item.effective_from <= effective_on
+        and (item.effective_until is None or effective_on <= item.effective_until)
+    )
+    route_decisions = tuple(
+        item
+        for item in active
+        if isinstance(
+            item.action,
+            (ExcludeFromRoutingAction, ExcludeFromStrategicSpineAction),
+        )
+    )
+    missing = tuple(
+        item.decision_id
+        for item in route_decisions
+        if item.target.target_id not in by_id
+    )
+    if missing:
+        raise OfficerDecisionApplicationError(
+            "officer route decision has no exact current edge binding",
+            missing,
+        )
+    selected = tuple(by_id[item.target.target_id] for item in route_decisions)
+    if any(
+        binding.evidence_snapshot_fingerprint
+        != ledger.evidence_snapshot_fingerprint
+        for binding in selected
+    ):
+        raise OfficerDecisionApplicationError(
+            "officer route decision edge binding is stale for the evidence snapshot",
+            tuple(item.decision_id for item in route_decisions),
+        )
+    strategic = tuple(
+        by_id[item.target.target_id]
+        for item in route_decisions
+        if isinstance(item.action, ExcludeFromStrategicSpineAction)
+    )
+    routing = tuple(
+        by_id[item.target.target_id]
+        for item in route_decisions
+        if isinstance(item.action, ExcludeFromRoutingAction)
+    )
+    return RouteControlSet(
+        evidence_snapshot_fingerprint=ledger.evidence_snapshot_fingerprint,
+        strategic_spine_exclusions=strategic,
+        routing_exclusions=routing,
+    )
 
 
 def parse_canonical_officer_decision_ledger(value: bytes) -> OfficerDecisionLedger:
@@ -514,6 +608,9 @@ class OfficerScenarioCompilation(BaseModel):
     network_json: str
     network_sha256: str = Field(pattern=_SHA256.pattern)
     ledger_fingerprint: str = Field(pattern=_SHA256.pattern)
+    route_controls: RouteControlSet | None = None
+    route_control_fingerprint: str | None = Field(default=None, pattern=_SHA256.pattern)
+    dependency_fingerprints: tuple[str, ...] = Field(min_length=1)
     applied_decision_ids: tuple[str, ...] = ()
     rejected_decision_ids: tuple[str, ...] = ()
     superseded_decision_ids: tuple[str, ...] = ()
@@ -521,6 +618,39 @@ class OfficerScenarioCompilation(BaseModel):
     baseline_to_scenario_change_summary: tuple[str, ...]
     scenario_id: str
     scenario_fingerprint: str
+
+    @model_validator(mode="after")
+    def bind_route_control_lineage(self) -> Self:
+        controls = (
+            RouteControlSet.model_validate(
+                self.route_controls.model_dump(mode="python")
+            )
+            if self.route_controls is not None
+            else None
+        )
+        expected_control_fingerprint = (
+            controls.control_fingerprint if controls is not None else None
+        )
+        if self.route_control_fingerprint != expected_control_fingerprint:
+            raise ValueError("scenario route control fingerprint is stale")
+        dependencies = tuple(sorted(set(self.dependency_fingerprints)))
+        if dependencies != self.dependency_fingerprints:
+            raise ValueError("scenario dependency fingerprints must be canonical")
+        required = {
+            self.baseline_fingerprint,
+            self.evidence_snapshot_fingerprint,
+            self.profile_fingerprint,
+            self.ledger_fingerprint,
+            *(
+                (expected_control_fingerprint,)
+                if expected_control_fingerprint is not None
+                else ()
+            ),
+        }
+        if not required.issubset(dependencies):
+            raise ValueError("scenario dependency lineage is incomplete")
+        object.__setattr__(self, "route_controls", controls)
+        return self
 
 
 class OfficerDecisionApplicationError(ValueError):
@@ -536,6 +666,10 @@ def _decision_summary(decision: OfficerDecision) -> str:
     target = f"{decision.target.kind.value} {decision.target.target_id}"
     if isinstance(decision.action, ClassifyCommunityAction):
         action = f"classified as {decision.action.classification}"
+    elif isinstance(decision.action, ExcludeFromRoutingAction):
+        action = "excluded from governed routing"
+    elif isinstance(decision.action, ExcludeFromStrategicSpineAction):
+        action = "excluded from Strategic Spine use"
     elif isinstance(decision.action, RetainNetworkGapAction):
         action = "retained as a visible Network Gap"
     elif isinstance(decision.action, SelectAlignmentAction):
@@ -550,6 +684,7 @@ def apply_officer_decision_ledger(
     ledger: OfficerDecisionLedger,
     *,
     effective_on: date,
+    route_edge_bindings: tuple[RouteEdgeBinding, ...] = (),
 ) -> OfficerScenarioCompilation:
     """Validate a ledger and create a separate scenario without baseline mutation."""
 
@@ -607,6 +742,43 @@ def apply_officer_decision_ledger(
         if item.status == OfficerDecisionStatus.SUPERSEDED
     )
     applied_ids = tuple(item.decision_id for item in applied)
+    active_route_decisions = tuple(
+        item
+        for item in applied
+        if isinstance(
+            item.action,
+            (ExcludeFromRoutingAction, ExcludeFromStrategicSpineAction),
+        )
+    )
+    route_controls = (
+        route_controls_from_officer_decisions(
+            ledger,
+            edge_bindings=route_edge_bindings,
+            effective_on=effective_on,
+        )
+        if active_route_decisions
+        else None
+    )
+    route_control_fingerprint = (
+        route_controls.control_fingerprint
+        if route_controls is not None
+        else None
+    )
+    dependencies = tuple(
+        sorted(
+            {
+                baseline.baseline_fingerprint,
+                baseline.evidence_snapshot_fingerprint,
+                baseline.profile_fingerprint,
+                ledger.ledger_fingerprint,
+                *(
+                    (route_control_fingerprint,)
+                    if route_control_fingerprint is not None
+                    else ()
+                ),
+            }
+        )
+    )
     if not applied_ids:
         kind = NetworkPublicationKind.GENERATED_BASELINE
         scenario_id = baseline.baseline_id
@@ -621,6 +793,12 @@ def apply_officer_decision_ledger(
             "applied_decision_ids": applied_ids,
             "rejected_decision_ids": rejected_ids,
             "superseded_decision_ids": superseded_ids,
+            "route_control_fingerprint": route_control_fingerprint,
+            "excluded_edge_binding_ids": (
+                route_controls.excluded_binding_ids
+                if route_controls is not None
+                else ()
+            ),
         }
         scenario_fingerprint = _fingerprint(scenario_payload)
         scenario_id = f"officer-scenario-{scenario_fingerprint[:20]}"
@@ -635,6 +813,9 @@ def apply_officer_decision_ledger(
         network_json=baseline.network_json,
         network_sha256=baseline.network_sha256,
         ledger_fingerprint=ledger.ledger_fingerprint,
+        route_controls=route_controls,
+        route_control_fingerprint=route_control_fingerprint,
+        dependency_fingerprints=dependencies,
         applied_decision_ids=applied_ids,
         rejected_decision_ids=rejected_ids,
         superseded_decision_ids=superseded_ids,

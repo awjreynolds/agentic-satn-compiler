@@ -1,12 +1,27 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import date
 
 import geopandas as gpd
 import pytest
 from pydantic import ValidationError
 from shapely.geometry import LineString
 
+from satn.officer_decisions import (
+    CleanSATNBaseline,
+    ExcludeFromRoutingAction,
+    ExcludeFromStrategicSpineAction,
+    GovernedBaselineTarget,
+    NetworkPublicationKind,
+    OfficerDecision,
+    OfficerDecisionApplicationError,
+    OfficerDecisionLedger,
+    OfficerDecisionTarget,
+    OfficerDecisionType,
+    OfficerTargetKind,
+    apply_officer_decision_ledger,
+)
 from satn.route_controls import (
     EdgeBindingMode,
     RouteControlNetworkGap,
@@ -321,4 +336,109 @@ def test_one_edge_cannot_mix_strategic_and_routing_exclusion_meanings() -> None:
             evidence_snapshot_fingerprint=snapshot,
             strategic_spine_exclusions=(binding,),
             routing_exclusions=(binding,),
+        )
+
+
+@pytest.mark.parametrize(
+    ("decision_type", "action", "expected_restriction"),
+    (
+        (
+            OfficerDecisionType.EXCLUDE_FROM_ROUTING,
+            ExcludeFromRoutingAction(),
+            "exclude-from-routing",
+        ),
+        (
+            OfficerDecisionType.EXCLUDE_FROM_STRATEGIC_SPINE,
+            ExcludeFromStrategicSpineAction(),
+            "exclude-from-strategic-spine",
+        ),
+    ),
+)
+def test_officer_edge_decision_translates_to_route_controls_and_scenario_lineage(
+    decision_type: OfficerDecisionType,
+    action: ExcludeFromRoutingAction | ExcludeFromStrategicSpineAction,
+    expected_restriction: str,
+) -> None:
+    edges = parallel_edges()
+    snapshot = digest("officer-evidence-snapshot")
+    binding = RoadGraph(edges).bind_route_edge(
+        "a",
+        "b",
+        evidence_snapshot_fingerprint=snapshot,
+        mode=EdgeBindingMode.BIDIRECTIONAL,
+    )
+    clean = CleanSATNBaseline(
+        baseline_id="route-control-baseline",
+        network_json='{"features":[],"type":"FeatureCollection"}',
+        evidence_snapshot_fingerprint=snapshot,
+        profile_fingerprint=digest("profile"),
+        governed_evidence_ids=("edge-survey",),
+        targets=(
+            GovernedBaselineTarget(
+                target=OfficerDecisionTarget(
+                    kind=OfficerTargetKind.ROUTING_EDGE,
+                    target_id=binding.binding_id,
+                )
+            ),
+        ),
+    )
+    decision = OfficerDecision(
+        decision_id=f"decision-{decision_type.value}",
+        decision_type=decision_type,
+        target=OfficerDecisionTarget(
+            kind=OfficerTargetKind.ROUTING_EDGE,
+            target_id=binding.binding_id,
+        ),
+        action=action,
+        decision_maker="Alex Officer",
+        decision_maker_role="Principal Transport Planner",
+        organisation="Example Council",
+        decision_date=date(2026, 7, 30),
+        rationale="The governed evidence supports this scenario restriction.",
+        evidence_ids=("edge-survey",),
+        source_url="https://example.test/route-decisions/1",
+        effective_from=date(2026, 7, 30),
+        baseline_fingerprint=clean.baseline_fingerprint,
+        evidence_snapshot_fingerprint=snapshot,
+        profile_fingerprint=clean.profile_fingerprint,
+    )
+    ledger = OfficerDecisionLedger(
+        baseline_fingerprint=clean.baseline_fingerprint,
+        evidence_snapshot_fingerprint=snapshot,
+        profile_fingerprint=clean.profile_fingerprint,
+        decisions=(decision,),
+    )
+
+    scenario = apply_officer_decision_ledger(
+        clean,
+        ledger,
+        effective_on=date(2026, 7, 30),
+        route_edge_bindings=(binding,),
+    )
+    assert scenario.publication_kind == NetworkPublicationKind.OFFICER_INFORMED_SCENARIO
+    assert scenario.route_controls is not None
+    assert scenario.route_control_fingerprint == scenario.route_controls.control_fingerprint
+    assert scenario.route_control_fingerprint in scenario.dependency_fingerprints
+    assert binding.binding_id in scenario.route_controls.excluded_binding_ids
+    assert decision.decision_id in scenario.baseline_to_scenario_change_summary[0]
+
+    graph = RoadGraph(edges, route_controls=scenario.route_controls)
+    assert graph.edge_restrictions("a", "b")[0]["restriction"] == expected_restriction
+    ordinary = graph.option("a", "c", "direct")
+    strategic = graph.option("a", "c", "direct", strategic_use=True)
+    assert ordinary is not None and strategic is not None
+    if decision_type == OfficerDecisionType.EXCLUDE_FROM_ROUTING:
+        assert ordinary.edge_ids == ["cycleway-east-1", "cycleway-east-2"]
+    else:
+        assert ordinary.edge_ids == ["a-road-east-1", "a-road-east-2"]
+        assert strategic.edge_ids == ["cycleway-east-1", "cycleway-east-2"]
+
+    with pytest.raises(
+        OfficerDecisionApplicationError,
+        match="no exact current edge binding",
+    ):
+        apply_officer_decision_ledger(
+            clean,
+            ledger,
+            effective_on=date(2026, 7, 30),
         )
