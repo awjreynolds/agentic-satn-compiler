@@ -184,6 +184,18 @@ _Avoid_: automatically adopted network, only possible network, final scheme
 A new immutable Scenario Compilation containing attributable accepted human decisions, including responsible officer or role, organisation, date, rationale and evidence, and compared with rather than silently substituted for its Baseline Scenario Compilation. Public metadata need not expose personal details beyond the accountable role.
 _Avoid_: mutable override layer, hidden exception, rewritten baseline
 
+**Officer Decision**:
+A frozen, versioned and attributable human planning decision bound to one explicit compiler target and the exact Baseline Scenario Compilation, evidence snapshot and Network Selection Profile against which it was made. It records the responsible officer and role, date, rationale, governed evidence, source, effective period and status without embedding geometry in free text.
+_Avoid_: agent decision, Area Definition exception, hidden override, edited evidence
+
+**Officer Decision Ledger**:
+The immutable canonical set of Officer Decisions applied as a governed overlay to one clean baseline. An empty ledger preserves the clean baseline network byte-for-byte; a non-empty valid ledger creates a separately identified Officer-Informed Scenario Compilation while stale, unknown, duplicate or conflicting active decisions fail closed.
+_Avoid_: mutable configuration, second network source, agent ledger, output patch
+
+**Human Intervention Response**:
+A frozen, versioned human answer to one exact current Human Intervention Request, selecting one compiler-offered action and retaining its request, baseline, evidence and profile lineage. An accepted response is translated into the Officer Decision Ledger rather than creating another mutation path.
+_Avoid_: free-form instruction, invented action, agent response, suspended compilation
+
 **Network Gap**:
 An unresolved absence of a continuous, bidirectionally traversable connection with plausible intervention coverage. A Network Gap prevents a network being Complete.
 _Avoid_: visual gap, omitted link
