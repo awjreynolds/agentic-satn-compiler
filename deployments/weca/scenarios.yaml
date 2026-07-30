@@ -1,0 +1,8 @@
+schema_version: satn-deployment-scenarios/v1
+deployment_id: weca
+clean_baseline:
+  name: clean-baseline
+  publication_path: baseline
+  authority_state: generated-baseline
+officer_scenarios: []
+reference_satn: null

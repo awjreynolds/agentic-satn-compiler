@@ -196,6 +196,10 @@ _Avoid_: mutable configuration, second network source, agent ledger, output patc
 A frozen, versioned human answer to one exact current Human Intervention Request, selecting one compiler-offered action and retaining its request, baseline, evidence and profile lineage. An accepted response is translated into the Officer Decision Ledger rather than creating another mutation path.
 _Avoid_: free-form instruction, invented action, agent response, suspended compilation
 
+**Deployment Authority State**:
+The explicit public status of one deployment output as a generated clean baseline, an Officer-Informed Scenario Compilation or a formally adopted Reference SATN. Compiler output, Agent Runtime activity, Officer Decisions and formal adoption remain separately labelled authority records; a development or fake runtime cannot substantiate an officer-review or adoption claim.
+_Avoid_: generic published network, implied officer approval, agent adoption
+
 **Network Gap**:
 An unresolved absence of a continuous, bidirectionally traversable connection with plausible intervention coverage. A Network Gap prevents a network being Complete.
 _Avoid_: visual gap, omitted link
