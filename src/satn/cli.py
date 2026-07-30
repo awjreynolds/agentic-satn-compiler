@@ -6,6 +6,7 @@ from typing import Annotated
 
 import typer
 
+from satn.deployment_scenario_cli import scenario_app
 from satn.ea_fixed_point_operations import run_ea_fixed_point_convergence
 from satn.evidence_cli import evidence_app
 from satn.models import AreaDefinition
@@ -15,6 +16,7 @@ from satn.sources import snapshot as create_snapshot
 
 app = typer.Typer(no_args_is_help=True, help="Compile strategic active travel networks.")
 app.add_typer(evidence_app, name="evidence")
+app.add_typer(scenario_app, name="scenario")
 LOGGER = logging.getLogger(__name__)
 
 

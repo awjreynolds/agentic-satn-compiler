@@ -50,6 +50,13 @@ compilation:
     response_mode: direct-runtime
     review_statuses: [amber, red]
     max_requests: 1000
+  network_selection:
+    profile_id: weca-network-selection-v1
+    candidate_source_precedence:
+      - verified-existing-asset
+      - a-road-corridor
+      - b-road-corridor
+      - other-routable
 atm:
   enabled: false
   mode: blind

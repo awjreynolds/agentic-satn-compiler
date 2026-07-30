@@ -44,6 +44,13 @@ compilation:
     provider: fake
     response_mode: direct-runtime
     review_statuses: [amber, red]
+  network_selection:
+    profile_id: banes-network-selection-v1
+    candidate_source_precedence:
+      - verified-existing-asset
+      - a-road-corridor
+      - b-road-corridor
+      - other-routable
 atm:
   enabled: false
   mode: blind
