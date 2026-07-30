@@ -547,6 +547,7 @@ def _unique_edge_chain(
             str(target)
             for _, target, attrs in graph.graph.out_edges(node, data=True)
             if str(attrs.get("edge_id")) == expected
+            and graph.edge_is_allowed(node, str(target), strategic_use=True)
         )
         for target in matches:
             walk(target, offset + 1, (*nodes, target))

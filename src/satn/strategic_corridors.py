@@ -695,7 +695,12 @@ def _candidate_set(
     context: gpd.GeoDataFrame,
     strategic_destination_id: str | None,
 ) -> tuple[AlignmentCandidateSet, tuple[StrategicCorridorCandidateRecord, ...]]:
-    _selected, options, _rationale = choose_alignment(graph, start_node, end_node)
+    _selected, options, _rationale = choose_alignment(
+        graph,
+        start_node,
+        end_node,
+        strategic_use=True,
+    )
     strategic_destination_ids = (
         (strategic_destination_id,) if strategic_destination_id is not None else ()
     )
