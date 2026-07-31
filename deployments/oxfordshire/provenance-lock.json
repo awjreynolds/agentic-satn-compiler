@@ -1,5 +1,5 @@
 {
-  "accepted_decisions_sha256": "34e8ec85fb7605894f674dc4c0cdf2eda675c3152c3af79e8ad84aed0a68af40",
+  "accepted_decisions_sha256": "a0279a9cb19e57676b327768836690550e5b495a9309ccbd208c1528abd9ada2",
   "area_definition_sha256": "6fba4006fcee54480de25194b810b337d450239ca01fb80df45a2815db12dffb",
   "area_id": "oxfordshire",
   "area_name": "Oxfordshire",
@@ -13,7 +13,7 @@
       "size_bytes": 184
     },
     "agent-records.json": {
-      "sha256": "fbc5466d1e7a58db3776bf3d6121482b80d969cc741fecbe319fdaf8817cb284",
+      "sha256": "e7cc37402a09b101b4e8c20764a4c965276d36484f9915a942742e86ee91e55c",
       "size_bytes": 1168241
     },
     "assets/MAPLIBRE-LICENSE.txt": {
@@ -28,33 +28,33 @@
       "sha256": "b5a34e6930ff937dbbb9eec8892cffb80ba473cce88ae5ca8c4654432f5f0ebc",
       "size_bytes": 939308
     },
-    "assets/review-map.01481314720e.js": {
-      "sha256": "01481314720e162e5710a9954f585abf9cbc56b1ecd23181ab31121af121a7f8",
-      "size_bytes": 92022
+    "assets/review-map.16461c56c22b.css": {
+      "sha256": "16461c56c22bebfc7fc3c52222f20765acda3d9d05dac5857b511a4e7bb6d482",
+      "size_bytes": 9389
     },
-    "assets/review-map.c0bd0bf7966d.css": {
-      "sha256": "c0bd0bf7966dce6861edca15f5e0b35314e55fa8449caea1eb5bd7a3b88d7a7b",
-      "size_bytes": 9076
+    "assets/review-map.420a770a6d70.js": {
+      "sha256": "420a770a6d70b79f61166c613940d86752180e7447ff4a808878b4f28169d430",
+      "size_bytes": 96541
     },
     "assets/review-map.css": {
-      "sha256": "c0bd0bf7966dce6861edca15f5e0b35314e55fa8449caea1eb5bd7a3b88d7a7b",
-      "size_bytes": 9076
+      "sha256": "16461c56c22bebfc7fc3c52222f20765acda3d9d05dac5857b511a4e7bb6d482",
+      "size_bytes": 9389
     },
     "assets/review-map.js": {
-      "sha256": "01481314720e162e5710a9954f585abf9cbc56b1ecd23181ab31121af121a7f8",
-      "size_bytes": 92022
+      "sha256": "420a770a6d70b79f61166c613940d86752180e7447ff4a808878b4f28169d430",
+      "size_bytes": 96541
     },
     "backbone-comparison.json": {
       "sha256": "a439e717e06ab1433829f781fa52b656ae49445912c0be69c01417aca146ddc6",
       "size_bytes": 1600
     },
     "compiler-run.json": {
-      "sha256": "7b518baed7e3be4b927ea9f1dbe1352c15d8fe7673581571a1fe51eb3c7c0ad3",
-      "size_bytes": 846133
+      "sha256": "0bb045a1da5d34cb175e3e2ba581d973f20a39cc20b7ca0217eab3ab9f88e164",
+      "size_bytes": 846766
     },
     "data.js": {
-      "sha256": "5f5905502b5cb886d19e198f3dc715fb3652715445eafacf8d4b91d662b83d30",
-      "size_bytes": 614067
+      "sha256": "554eedfa625af10bf847ad08d5c432e884dc249314c64d98c4f3e5b4db29438f",
+      "size_bytes": 614099
     },
     "divergence-records.json": {
       "sha256": "de0d6326acf13734774a77465c9e26a6098aaa696a67e5ed7a492f2f91626afa",
@@ -85,8 +85,8 @@
       "size_bytes": 115
     },
     "index.html": {
-      "sha256": "681bd7a89c236acd88d185b5d021c9c598dfff591f42d04c0d89aff38df1200f",
-      "size_bytes": 16186
+      "sha256": "ca6b5ebbb77c268129fc37dd2e5cd3a4bcdaa4e29c6a48d65cbecf3fa468522c",
+      "size_bytes": 16931
     },
     "layer-manifest.json": {
       "sha256": "d882ddeb4289f5a005f88dc23e831f7eb59a69ab32190853daf73be8fc0fc90d",
@@ -725,7 +725,7 @@
       "size_bytes": 103801
     },
     "network-map.pdf": {
-      "sha256": "0b93317312de4e897c5fe0e7a4503768d9fa156f5997b1d363a0e28056730409",
+      "sha256": "caa1fff9feb8132c8024efedb1681fb0ba058c01385cb717bfc86bfa76a9c94f",
       "size_bytes": 5084009
     },
     "network.geojson": {
@@ -733,11 +733,11 @@
       "size_bytes": 14644975
     },
     "publication.json": {
-      "sha256": "ab933cfa20266fc6628f95c81175f937cd7224bc2bb4e5c6da2d004d53c022ad",
-      "size_bytes": 627743
+      "sha256": "bcf4a9222e57307dba5e4b64a954d11c519082e194f91c308e9127bd8ba8d3ed",
+      "size_bytes": 627781
     },
     "service-worker.js": {
-      "sha256": "21f91b5dad45c128b327a22b32f35173a4559342a4c2004c41b9259bec87ab08",
+      "sha256": "245ccb4ea108ec442c493e70ed6fd59a8eb6083a0871014bdde174ad9cd0e1d2",
       "size_bytes": 1625
     },
     "topography-manifest.json": {
@@ -1213,7 +1213,7 @@
       "size_bytes": 72702
     }
   },
-  "compilation_input_fingerprint": "1bd4f4a9702a0f5ea0f5e74c836a338fe09477610efc798f43f7d9bb30a4dc1e",
+  "compilation_input_fingerprint": "1abd0419fc4f56ad418da838eebacdfee61d54b90b5b50760cfa6293b16f40ae",
   "connection_count": 405,
   "criteria": {
     "atm_comparison": {
@@ -1273,7 +1273,7 @@
   "decision_ledger_input_sha256": "67779ed4c174e52fe6267892a335d34d6acb63c7fcbca50b7a61d1c48596c9c9",
   "deployment_id": "oxfordshire",
   "gap_count": 552,
-  "governed_input_fingerprint": "96e2c285f6c64fcc40c8611cbb2a032ab897cdf233a91405b8de9e3933b381b0",
+  "governed_input_fingerprint": "72de613924f917b8fe916df37bb2687f9ab080bd53f3b9898b630f132f5c0ffe",
   "layer_counts": {
     "a_road_spines": 7428,
     "access_obligations": 897,
@@ -1286,6 +1286,7 @@
     "healthcare": 236,
     "low_traffic_area_portals": 14,
     "ncn_routes": 777,
+    "population_display_sections": 0,
     "retail_centres": 350,
     "school_access_obligations": 366,
     "school_street_assessments": 366,
@@ -1297,8 +1298,8 @@
     "urban_classification_unknowns": 0,
     "urban_spines": 0
   },
-  "run_id": "run-9f5b602ae6c1",
-  "runtime_governance_sha256": "8abe23c17b2cc2fc2464e639ce9879793f075d5bde865debbf9578b945a26297",
+  "run_id": "run-21d2cfcad1b5",
+  "runtime_governance_sha256": "8742d6435e794aeb6c656b25bb63d53fd2f4209d1b0ad6c197ada8871eb11038",
   "schema_version": "satn-deployment-provenance-lock/v2",
   "scope": {
     "area_id": "oxfordshire",

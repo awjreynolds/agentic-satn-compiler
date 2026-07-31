@@ -30,7 +30,7 @@ _RUNTIME_CONTRACT = importlib.util.module_from_spec(_RUNTIME_CONTRACT_SPEC)
 _RUNTIME_CONTRACT_SPEC.loader.exec_module(_RUNTIME_CONTRACT)
 
 GITHUB_PAGES_LIMIT_BYTES = 1_000_000_000
-DEFAULT_MAXIMUM_BYTES = 900_000_000
+DEFAULT_MAXIMUM_BYTES = 950_000_000
 SCHEMA_VERSION = "satn-deployment-catalogue/v1"
 _ARTIFACTS = ("review_map", "network_map_pdf", "review_map_zip")
 DISCLAIMER = "Experimental SATN POC — not an adopted plan."

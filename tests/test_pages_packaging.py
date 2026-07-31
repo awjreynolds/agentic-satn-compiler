@@ -20,6 +20,7 @@ from satn.deployment_catalogue import generate_catalogue_lock
 from satn.deployment_provenance import generate_lock
 from satn.models import AgentDecisionLedger, AreaDefinition
 from satn.pages_packaging import (
+    DEFAULT_MAXIMUM_BYTES,
     GITHUB_PAGES_LIMIT_BYTES,
     package_pages,
 )
@@ -43,6 +44,10 @@ _VALIDATOR = importlib.util.module_from_spec(_VALIDATOR_SPEC)
 sys.modules[_VALIDATOR_SPEC.name] = _VALIDATOR
 _VALIDATOR_SPEC.loader.exec_module(_VALIDATOR)
 validate_pages_release = _VALIDATOR.validate_pages_release
+
+
+def test_standalone_validator_uses_the_packager_size_budget() -> None:
+    assert _VALIDATOR.DEFAULT_MAXIMUM_BYTES == DEFAULT_MAXIMUM_BYTES
 
 
 def write_catalogue(path: Path) -> None:

@@ -28,6 +28,51 @@ Every line and gap remains inspectable. The result is a planning hypothesis for
 officer discussion, not a scheme design, safety assessment, business case,
 consultation result or adopted plan.
 
+## The compiler in one picture
+
+```mermaid
+flowchart LR
+    area["Area Definition<br/>scope, rules, profiles"]
+    snapshot["Immutable evidence snapshot<br/>places, roads, context, elevation"]
+    ledger["Optional decision ledger<br/>request + fingerprint + choice IDs only"]
+
+    subgraph compiler["Deterministic compiler — the only network authority"]
+        identity["Fingerprint inputs<br/>or reuse an identical validated run"]
+        graph["Govern evidence<br/>and build the routable road graph"]
+        network["Compile the network<br/>backbone, access, urban fabric, schools, topography"]
+        gate{"Bounded decision<br/>point?"}
+        validate["Validate the response<br/>and apply a compiler-authored action"]
+        gaps["Keep unresolved evidence<br/>as visible Network Gaps"]
+        publish["Fingerprint the run<br/>and validate every artifact"]
+
+        identity --> graph --> network --> gate
+        gate -- "no" --> gaps --> publish
+        validate --> network
+    end
+
+    agent["Optional Agent Runtime<br/>selects from a finite menu;<br/>never supplies geometry"]
+    outputs["Atomic publication<br/>review map · GeoJSON · GeoPackage<br/>PDF · audit and provenance records"]
+
+    area --> identity
+    snapshot --> identity
+    ledger --> identity
+    gate -.->|one typed request| agent
+    agent -.->|request ID + offered choice ID| validate
+    publish --> outputs
+```
+
+The unusual part is the authority boundary: the system can stop to ask for bounded
+investigation or a choice, but the agent cannot invent evidence, submit executable
+geometry, change policy or publish a network. A caller response starts a fresh run;
+the compiler regenerates the question, checks its dependency fingerprint and applies
+its own typed action. Failed or unresolved decisions publish nothing and preserve the
+previous valid result.
+
+See **[How the Agentic SATN Compiler works](docs/compiler-architecture.md)** for the
+full visual walkthrough of the compilation pipeline, Backbone-Outward Assembly,
+key compiler loops, agent decision protocol, input trust boundaries, failure controls
+and publication contract.
+
 ## Why this matters for the West of England now
 
 The immediate opportunity is not to automate WECA's planning judgement. It is to

@@ -98,6 +98,20 @@ def test_review_map_zip_requires_exact_member_bytes_and_unique_members(tmp_path:
         _validate_review_map_zip(archive_path, review)
 
 
+def test_review_map_zip_accepts_large_exact_static_mirror(tmp_path: Path) -> None:
+    review = tmp_path / "review-map"
+    review.mkdir()
+    large_member = review / "network.geojson"
+    with large_member.open("wb") as stream:
+        stream.seek(100 * 1024 * 1024)
+        stream.write(b"\n")
+    archive_path = tmp_path / "review-map.zip"
+    with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.write(large_member, "review-map/network.geojson")
+
+    _validate_review_map_zip(archive_path, review)
+
+
 def test_review_map_zip_rejects_high_ratio_from_metadata(tmp_path: Path) -> None:
     review = tmp_path / "review-map"
     review.mkdir()
