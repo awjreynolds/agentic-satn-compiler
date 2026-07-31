@@ -7,6 +7,7 @@ import json
 import re
 import shutil
 import sqlite3
+import stat
 import tempfile
 import zipfile
 from datetime import date
@@ -483,6 +484,9 @@ ARTIFACTS = (
     "source-coverage-quality.json",
     "lcwip-release.zip",
 )
+LCWIP_ZIP_MAX_MEMBER_BYTES = 100 * 1024 * 1024
+LCWIP_ZIP_MAX_TOTAL_BYTES = 500 * 1024 * 1024
+LCWIP_ZIP_MAX_COMPRESSION_RATIO = 200
 
 
 class PublicationManifest(PublicationContract):
@@ -1964,13 +1968,44 @@ def _validate_pdf(path: Path, manifest: PublicationManifest) -> None:
 def _validate_zip(path: Path, manifest: PublicationManifest) -> None:
     try:
         with zipfile.ZipFile(path) as archive:
-            if archive.testzip() is not None:
-                raise ValueError("ZIP member checksum failed")
             expected = set(ARTIFACTS) - {"lcwip-release.zip"}
-            if set(archive.namelist()) != expected:
+            infos = archive.infolist()
+            names = [info.filename for info in infos]
+            if len(names) != len(set(names)) or set(names) != expected:
                 raise ValueError("ZIP artifact set differs")
             if json.loads(archive.comment) != _json(manifest.watermark):
                 raise ValueError("ZIP watermark differs")
+            total_size = 0
+            for info in infos:
+                pure = PurePosixPath(info.filename)
+                mode = info.external_attr >> 16
+                if (
+                    info.is_dir()
+                    or pure.is_absolute()
+                    or ".." in pure.parts
+                    or not pure.parts
+                    or (mode and stat.S_IFMT(mode) not in {0, stat.S_IFREG})
+                    or info.file_size > LCWIP_ZIP_MAX_MEMBER_BYTES
+                ):
+                    raise ValueError("ZIP contains an unsafe member")
+                total_size += info.file_size
+                if total_size > LCWIP_ZIP_MAX_TOTAL_BYTES:
+                    raise ValueError("ZIP exceeds uncompressed size budget")
+                if info.file_size and (
+                    info.compress_size == 0
+                    or info.file_size / info.compress_size > LCWIP_ZIP_MAX_COMPRESSION_RATIO
+                ):
+                    raise ValueError("ZIP exceeds compression ratio budget")
+            for info in infos:
+                plain_path = path.parent / info.filename
+                with archive.open(info) as zipped, plain_path.open("rb") as plain:
+                    while True:
+                        zipped_chunk = zipped.read(64 * 1024)
+                        plain_chunk = plain.read(64 * 1024)
+                        if zipped_chunk != plain_chunk:
+                            raise ValueError("ZIP member differs from publication artifact")
+                        if not zipped_chunk:
+                            break
     except (OSError, zipfile.BadZipFile, json.JSONDecodeError) as error:
         raise ValueError("invalid LCWIP publication: ZIP is invalid") from error
 

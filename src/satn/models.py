@@ -25,6 +25,7 @@ from satn.network_selection import (
     SchoolRegisterEvidenceConfig,
     StrategicEducationDestinationAdmissionConfig,
 )
+from satn.remote_endpoints import validate_configured_https_endpoint
 
 PublicationContractText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
@@ -185,6 +186,10 @@ class NationalElevationConfig(BaseModel):
             raise ValueError("local national Elevation Evidence requires path")
         if self.provider == "remote-geojson" and not self.url:
             raise ValueError("remote national Elevation Evidence requires url")
+        if self.url is not None:
+            self.url = validate_configured_https_endpoint(
+                self.url, field_name="national elevation url"
+            )
         if self.acquisition_contract == "ea-lidar-weca-v1" and (
             self.source_id != "ea-lidar-composite-dtm-1m" or self.provider != "local-geojson"
         ):
@@ -288,6 +293,18 @@ class SourceConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_boundary_queries(self) -> SourceConfig:
+        for field_name in (
+            "ncn_feature_service_url",
+            "reclassified_ncn_feature_service_url",
+            "overpass_url",
+        ):
+            value = getattr(self, field_name)
+            if value is not None:
+                setattr(
+                    self,
+                    field_name,
+                    validate_configured_https_endpoint(value, field_name=field_name),
+                )
         if self.osm_place_query and self.osm_place_queries:
             raise ValueError("configure either osm_place_query or osm_place_queries, not both")
         if any(not query.strip() for query in self.osm_place_queries):

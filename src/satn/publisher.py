@@ -6,15 +6,17 @@ import hashlib
 import json
 import logging
 import math
+import os
 import shlex
 import shutil
+import stat
 import tempfile
 import zipfile
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from html import escape
 from importlib.resources import files
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import geopandas as gpd
 import networkx as nx
@@ -39,6 +41,10 @@ from satn.ea_elevation import (
     eligible_route_fingerprint,
     eligible_route_samples,
     governed_survey_request_bbox,
+)
+from satn.filesystem_safety import (
+    unique_absent_backup_sibling,
+    validate_replaceable_destination,
 )
 from satn.models import (
     AgentDecisionLedger,
@@ -75,6 +81,9 @@ EA_FIXED_POINT_CANDIDATE_SCHEMA_VERSION = "ea-fixed-point-candidate/v1"
 EA_FIXED_POINT_CANDIDATE_DIRECTORY = ".satn-ea-fixed-point-candidates"
 EA_FIXED_POINT_CANDIDATE_NETWORK = "network.geojson"
 EA_FIXED_POINT_CANDIDATE_STATUS = "status.json"
+REVIEW_MAP_ZIP_MAX_MEMBER_BYTES = 100 * 1024 * 1024
+REVIEW_MAP_ZIP_MAX_TOTAL_BYTES = 500 * 1024 * 1024
+REVIEW_MAP_ZIP_MAX_COMPRESSION_RATIO = 200
 
 
 class EAFixedPointMismatchError(ValueError):
@@ -313,8 +322,10 @@ def publish(
         compiled,
     )
     output = config.publication.output_dir
+    validate_replaceable_destination(output, repository_root=Path(__file__).parents[2])
     LOGGER.info("Publication started temporary_parent=%s", output.parent)
     output.parent.mkdir(parents=True, exist_ok=True)
+    validate_replaceable_destination(output, repository_root=Path(__file__).parents[2])
     temporary = Path(tempfile.mkdtemp(prefix=f".{output.name}-", dir=output.parent))
     try:
         _write_geopackage(temporary / "network.gpkg", compiled)
@@ -358,16 +369,14 @@ def publish(
         _write_pdf(temporary / "network-map.pdf", config, compiled)
         _validate_artifacts(temporary, config)
         LOGGER.info("Publication artifacts validated temporary=%s", temporary)
-        backup = output.with_name(f".{output.name}-previous")
-        if backup.exists():
-            shutil.rmtree(backup)
+        backup = unique_absent_backup_sibling(output)
         if output.exists():
             output.replace(backup)
         try:
             temporary.replace(output)
         except Exception:
             if backup.exists() and not output.exists():
-                backup.replace(output)
+                os.replace(backup, output)
             raise
         else:
             if backup.exists():
@@ -4311,14 +4320,7 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
     ):
         if f'id="{control}"' not in html:
             raise ValueError(f"review map control missing: {control}")
-    expected_zip_files = {
-        f"review-map/{item.relative_to(output / 'review-map')}"
-        for item in (output / "review-map").rglob("*")
-        if item.is_file()
-    }
-    with zipfile.ZipFile(output / "review-map.zip") as archive:
-        if set(archive.namelist()) != expected_zip_files:
-            raise ValueError("review-map ZIP differs from the static directory")
+    _validate_review_map_zip(output / "review-map.zip", output / "review-map")
     if not (output / "network-map.pdf").read_bytes().startswith(b"%PDF"):
         raise ValueError("invalid PDF output")
     pdf_text = "\n".join(
@@ -4338,6 +4340,53 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
             raise ValueError(
                 f"PDF edge register differs for authoritative feature: {connection_id}"
             )
+
+
+def _validate_review_map_zip(archive_path: Path, review_directory: Path) -> None:
+    """Require the portable map archive to be a bounded byte-for-byte copy."""
+    expected = {
+        f"review-map/{item.relative_to(review_directory).as_posix()}": item
+        for item in review_directory.rglob("*")
+        if item.is_file()
+    }
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            infos = archive.infolist()
+            names = [info.filename for info in infos]
+            if len(names) != len(set(names)) or set(names) != set(expected):
+                raise ValueError("review-map ZIP differs from the static directory")
+            total_size = 0
+            for info in infos:
+                pure = PurePosixPath(info.filename)
+                mode = info.external_attr >> 16
+                if (
+                    info.is_dir()
+                    or pure.is_absolute()
+                    or ".." in pure.parts
+                    or not pure.parts
+                    or (mode and stat.S_IFMT(mode) not in {0, stat.S_IFREG})
+                    or info.file_size > REVIEW_MAP_ZIP_MAX_MEMBER_BYTES
+                ):
+                    raise ValueError("review-map ZIP contains an unsafe member")
+                total_size += info.file_size
+                if total_size > REVIEW_MAP_ZIP_MAX_TOTAL_BYTES:
+                    raise ValueError("review-map ZIP exceeds uncompressed size budget")
+                if info.file_size and (
+                    info.compress_size == 0
+                    or info.file_size / info.compress_size > REVIEW_MAP_ZIP_MAX_COMPRESSION_RATIO
+                ):
+                    raise ValueError("review-map ZIP exceeds compression ratio budget")
+            for info in infos:
+                with archive.open(info) as archived, expected[info.filename].open("rb") as static:
+                    while True:
+                        archived_chunk = archived.read(64 * 1024)
+                        static_chunk = static.read(64 * 1024)
+                        if archived_chunk != static_chunk:
+                            raise ValueError("review-map ZIP member bytes differ from static map")
+                        if not archived_chunk:
+                            break
+    except (OSError, zipfile.BadZipFile) as error:
+        raise ValueError("review-map ZIP is invalid") from error
 
 
 def _unique_authoritative_feature_registry(

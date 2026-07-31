@@ -100,6 +100,10 @@ ELEVATION_ARTIFACT_FILENAMES = frozenset(
         EA_RETAINED_ROUTE_FILENAME,
     }
 )
+REMOTE_ELEVATION_MAX_RESPONSE_BYTES = 50 * 1024 * 1024
+ARCGIS_MAX_PAGE_RESPONSE_BYTES = 20 * 1024 * 1024
+ARCGIS_MAX_PAGES = 100
+ARCGIS_MAX_FEATURES = 100_000
 ROAD_CLASSIFICATION_COLUMNS = [
     "official_feature_id",
     "official_classification",
@@ -2509,7 +2513,15 @@ def _load_remote_elevation(
     url = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query)))
     request = urllib.request.Request(url, headers={"Accept": "application/geo+json"})
     with urllib.request.urlopen(request, timeout=governed.timeout_seconds) as response:
-        payload = json.loads(response.read())
+        payload = json.loads(
+            _read_response_with_limit(
+                response,
+                max_bytes=REMOTE_ELEVATION_MAX_RESPONSE_BYTES,
+                source_label="remote national Elevation Evidence",
+            )
+        )
+    if not isinstance(payload, dict):
+        raise ValueError("remote national Elevation Evidence is not a JSON object")
     if payload.get("type") != "FeatureCollection":
         raise ValueError("remote national Elevation Evidence is not a GeoJSON FeatureCollection")
     features = payload.get("features", [])
@@ -2652,6 +2664,8 @@ def _load_arcgis_cycle_routes(
     features: list[dict[str, object]] = []
     page_fingerprints: set[str] = set()
     while True:
+        if len(page_fingerprints) >= ARCGIS_MAX_PAGES:
+            raise ValueError(f"{source_label} feature service exceeded page budget")
         parameters = urllib.parse.urlencode(
             {
                 "f": "geojson",
@@ -2672,7 +2686,15 @@ def _load_arcgis_cycle_routes(
             headers={"User-Agent": "banes-satn/0.1 cycle-route snapshot"},
         )
         with urllib.request.urlopen(request, timeout=90) as response:
-            payload = json.load(response)
+            payload = json.loads(
+                _read_response_with_limit(
+                    response,
+                    max_bytes=ARCGIS_MAX_PAGE_RESPONSE_BYTES,
+                    source_label=f"{source_label} feature service page",
+                )
+            )
+        if not isinstance(payload, dict):
+            raise ValueError(f"{source_label} feature service returned an invalid response")
         if "error" in payload:
             raise ValueError(f"{source_label} feature service failed: {payload['error']}")
         page = payload.get("features", [])
@@ -2686,6 +2708,8 @@ def _load_arcgis_cycle_routes(
         if page and fingerprint in page_fingerprints:
             raise ValueError(f"{source_label} feature service repeated a page while paginating")
         page_fingerprints.add(fingerprint)
+        if len(features) + len(page) > ARCGIS_MAX_FEATURES:
+            raise ValueError(f"{source_label} feature service exceeded feature budget")
         features.extend(page)
         properties = payload.get("properties")
         transfer_limit = payload.get("exceededTransferLimit")
@@ -2704,6 +2728,40 @@ def _load_arcgis_cycle_routes(
     if not features:
         return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs=4326)
     return gpd.GeoDataFrame.from_features(features, crs=4326)
+
+
+def _read_response_with_limit(
+    response: object,
+    *,
+    max_bytes: int,
+    source_label: str,
+) -> bytes:
+    """Read a remote response without allocating beyond its declared byte budget."""
+    read = getattr(response, "read", None)
+    if not callable(read):
+        raise ValueError(f"{source_label} response is unreadable")
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        try:
+            chunk = read(min(64 * 1024, max_bytes - total + 1))
+        except TypeError:
+            # Lightweight test doubles and legacy file-like adapters sometimes
+            # expose only ``read()``.  Production HTTPResponse supports a size.
+            chunk = read()
+            if not isinstance(chunk, bytes):
+                raise ValueError(f"{source_label} response did not return bytes") from None
+            if len(chunk) > max_bytes:
+                raise ValueError(f"{source_label} exceeded response byte budget") from None
+            return chunk
+        if not chunk:
+            return b"".join(chunks)
+        if not isinstance(chunk, bytes):
+            raise ValueError(f"{source_label} response did not return bytes")
+        total += len(chunk)
+        if total > max_bytes:
+            raise ValueError(f"{source_label} exceeded response byte budget")
+        chunks.append(chunk)
 
 
 def derive_network_places(

@@ -115,6 +115,10 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
         "module",
         "governed route exclusions, preferences and retained-gap constraints",
     ),
+    "satn/remote_endpoints.py": (
+        "module",
+        "configured remote snapshot endpoint validation",
+    ),
     "satn/school_street.py": ("module", "school-street assessment"),
     "satn/settlement.py": ("module", "settlement and urban eligibility"),
     "satn/sources.py": ("module", "governed snapshot and source loading"),
@@ -226,6 +230,7 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
         "additive Local Evidence Store command adapter; "
         "not a compiler input before equivalence cutover"
     ),
+    "satn/filesystem_safety.py": "publication and deployment replacement guard",
     "satn/ea_fixed_point_convergence.py": (
         "bounded fixed-point orchestration without CompiledNetwork mutation"
     ),

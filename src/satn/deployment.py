@@ -13,6 +13,7 @@ from pathlib import Path
 
 from satn.constants import DISCLAIMER
 from satn.deployment_provenance import LOCK_NAME, SCHEMA_VERSION, verify_lock
+from satn.filesystem_safety import validate_replaceable_destination
 from satn.models import AreaConfig, AreaDefinition, canonical_decision_ledger_payload
 from satn.pipeline import (
     area_definition_sha256,
@@ -288,7 +289,9 @@ def build_area_deployment(
     *,
     bootstrap: bool = False,
 ) -> Path:
+    validate_replaceable_destination(destination, repository_root=PROJECT)
     destination.parent.mkdir(parents=True, exist_ok=True)
+    validate_replaceable_destination(destination, repository_root=PROJECT)
     output = definition.publication.output_dir
     run_path = output / "run.json"
     review_map = output / "review-map"
@@ -629,10 +632,8 @@ def build_area_deployment(
 def main() -> None:
     args = _arguments()
     definition = AreaDefinition.from_yaml(args.area_definition)
-    destination = (
-        args.destination.resolve()
-        if args.destination
-        else PROJECT / "build" / "deployments" / definition.deployment_slug
+    destination = args.destination or (
+        PROJECT / "build" / "deployments" / definition.deployment_slug
     )
     destination.parent.mkdir(parents=True, exist_ok=True)
     print(build_area_deployment(definition, destination, bootstrap=args.bootstrap))

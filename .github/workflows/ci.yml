@@ -11,12 +11,16 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
       - run: uv python install 3.12
       - run: uv sync --frozen --all-groups
+      - run: uv export --frozen --group dev --no-emit-project --output-file .audit-requirements.txt
+      - run: uv run pip-audit -r .audit-requirements.txt --strict
       - run: uv run ruff check .
       # Routine regression is fixture-only; the explicit WECA compiler benchmark
       # is a manual governed release gate and must never run in CI.
@@ -28,8 +32,10 @@ jobs:
   portable-network-identifiers:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
       - run: uv python install 3.12
