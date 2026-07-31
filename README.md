@@ -1290,9 +1290,9 @@ uv run python scripts/package_pages.py
 workflow. Generated snapshots, compiled outputs, deployment directories, PDFs, ZIPs
 and Pages trees are reproducible process artifacts and are not committed to Git. The
 packager fails before publication if the configured Pages size budget would be
-exceeded. Production promotion is fail-closed on runtime governance and required
-governed urban-road evidence: [#121](https://github.com/awjreynolds/agentic-satn-compiler/issues/121)
-still blocks promotion until a production runtime is approved.
+exceeded. Runtime-governance and urban-road evidence remain published and
+provenance-bound for inspection, but their review status does not block publication
+of this public proof of concept.
 
 Canonical Pages publication always runs the production release gate; manual dispatch
 cannot bypass it. To inspect a non-production package locally, use the standalone

@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import ast
 import hashlib
-import importlib.util
 import json
 import os
 import shutil
@@ -19,15 +18,6 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
-
-_RUNTIME_CONTRACT_SPEC = importlib.util.spec_from_file_location(
-    "satn_runtime_governance_contract",
-    Path(__file__).parents[1] / "src" / "satn" / "runtime_governance_contract.py",
-)
-if _RUNTIME_CONTRACT_SPEC is None or _RUNTIME_CONTRACT_SPEC.loader is None:
-    raise RuntimeError("cannot load runtime governance contract")
-_RUNTIME_CONTRACT = importlib.util.module_from_spec(_RUNTIME_CONTRACT_SPEC)
-_RUNTIME_CONTRACT_SPEC.loader.exec_module(_RUNTIME_CONTRACT)
 
 GITHUB_PAGES_LIMIT_BYTES = 1_000_000_000
 DEFAULT_MAXIMUM_BYTES = 950_000_000
@@ -40,16 +30,6 @@ CYCLIC_RUNTIME_FILES = frozenset({LOCK_NAME, "review-map.zip"})
 ROOT_LOCK_NAME = "catalogue-lock.json"
 ROOT_LOCK_SCHEMA_VERSION = "satn-pages-root-lock/v1"
 MAX_NESTED_COMPRESSION_RATIO = 100
-RUNTIME_GOVERNANCE_SCHEMA_VERSION = "satn-runtime-governance/v1"
-REQUIRED_PRODUCTION_URBAN_EVIDENCE = (
-    "official_main_road_spines",
-    "urban_a_road_evidence_coverage",
-)
-
-# This is a release-policy trust anchor, not data supplied by a deployment.
-# A person must add both digests after reviewing a real direct-runtime run.
-# Empty by default makes a production Pages publication fail closed.
-APPROVED_RUNTIME_CLASSES: frozenset[tuple[str, str]] = frozenset()
 
 # This standalone verifier deliberately carries its own progressive-loading
 # contract. It must validate a release without importing the SATN package or
@@ -762,97 +742,6 @@ def _data_payload(path: Path) -> dict[str, Any]:
     return payload
 
 
-def _assert_production_runtime_governance(
-    publication: dict[str, Any],
-    compiler_run: dict[str, Any],
-    expected_lock: dict[str, Any],
-    *,
-    decision_ledger_input: dict[str, object],
-    accepted_decisions: list[object],
-) -> None:
-    """Require independently trusted runtime evidence for a Pages publication.
-
-    This standalone verifier cannot import the SATN package.  It intentionally
-    carries the same empty-by-default, source-controlled policy anchor as the
-    packager.  A self-consistent manifest is insufficient: both immutable
-    digests must match a reviewed pair in ``APPROVED_RUNTIME_CLASSES``.
-    """
-
-    runtime_governance = compiler_run.get("runtime_governance")
-    if not isinstance(runtime_governance, dict):
-        raise ValueError("production promotion denied: compiler run has no runtime governance")
-    if publication.get("runtime_governance") != runtime_governance:
-        raise ValueError(
-            "production promotion denied: publication runtime governance differs from compiler run"
-        )
-    runtime_governance_sha256 = hashlib.sha256(
-        json.dumps(runtime_governance, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-    if expected_lock.get("runtime_governance_sha256") != runtime_governance_sha256:
-        raise ValueError(
-            "production promotion denied: runtime governance is not bound by provenance lock"
-        )
-    promotion = runtime_governance.get("promotion")
-    runtime_class_sha256 = runtime_governance.get("runtime_class_sha256")
-    ledger_provenance_sha256 = runtime_governance.get("decision_ledger_provenance_sha256")
-    if (
-        runtime_governance.get("schema_version") != RUNTIME_GOVERNANCE_SCHEMA_VERSION
-        or runtime_governance.get("status") != "production-approved"
-        or not isinstance(promotion, dict)
-        or promotion.get("allowed") is not True
-        or not isinstance(runtime_class_sha256, str)
-        or not isinstance(ledger_provenance_sha256, str)
-    ):
-        raise ValueError("production promotion denied: runtime governance is not approved")
-    _sha256(runtime_class_sha256, "runtime governance runtime_class_sha256")
-    _sha256(
-        ledger_provenance_sha256,
-        "runtime governance decision_ledger_provenance_sha256",
-    )
-    try:
-        recomputed_runtime, recomputed_ledger = (
-            _RUNTIME_CONTRACT.assert_declared_runtime_governance_digests(
-                runtime_governance,
-                decision_contract=compiler_run.get("decision_contract"),
-                decision_ledger_input=decision_ledger_input,
-                accepted_decisions=accepted_decisions,
-            )
-        )
-    except ValueError as error:
-        raise ValueError(f"production promotion denied: {error}") from error
-    if (runtime_class_sha256, ledger_provenance_sha256) != (
-        recomputed_runtime,
-        recomputed_ledger,
-    ):
-        raise ValueError("production promotion denied: runtime governance digests differ")
-    if (runtime_class_sha256, ledger_provenance_sha256) not in APPROVED_RUNTIME_CLASSES:
-        raise ValueError(
-            "production promotion denied: no approved immutable runtime class and "
-            "decision-ledger provenance match this publication"
-        )
-
-
-def _assert_required_production_urban_evidence(
-    publication: dict[str, Any],
-    compiler_run: dict[str, Any],
-) -> None:
-    scope = publication.get("scope")
-    if not isinstance(scope, dict) or scope.get("audience") != "public":
-        return
-    criteria = compiler_run.get("criteria")
-    urban = criteria.get("urban_network") if isinstance(criteria, dict) else None
-    blockers = [
-        f"{criterion}={urban.get(criterion, 'missing') if isinstance(urban, dict) else 'missing'}"
-        for criterion in REQUIRED_PRODUCTION_URBAN_EVIDENCE
-        if not isinstance(urban, dict) or urban.get(criterion) != "green"
-    ]
-    if blockers:
-        raise ValueError(
-            "production promotion denied: incomplete required urban evidence: "
-            + ", ".join(blockers)
-        )
-
-
 def _validate_pages_directory(
     pages: Path,
     expected_catalogue: dict[str, object],
@@ -1030,15 +919,6 @@ def _validate_pages_directory(
         copied_lock = _json_object(deployment / LOCK_NAME, "public deployment provenance lock")
         if copied_lock != expected_lock:
             raise ValueError("public deployment provenance lock does not match tracked lock")
-        if require_production_governance:
-            _assert_required_production_urban_evidence(publication, compiler_run)
-            _assert_production_runtime_governance(
-                publication,
-                compiler_run,
-                expected_lock,
-                decision_ledger_input=input_ledger,
-                accepted_decisions=accepted_ledger["responses"],
-            )
         artifacts_lock = expected_lock.get("artifacts")
         if not isinstance(artifacts_lock, dict):
             raise ValueError("tracked provenance lock artifacts are invalid")

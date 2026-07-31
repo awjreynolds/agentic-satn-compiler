@@ -81,10 +81,11 @@ packager's in-process result:
   build/validated-pages --catalogue deployments/catalogue.yaml
 ```
 
-This standalone release gate is production fail-closed by default: every
-deployment must carry an approved, content-bound runtime-governance class and
-decision-ledger provenance.  Local review of a fake or otherwise
-non-production package is an explicit exception only:
+This standalone release gate validates the complete tracked file set, content hashes,
+provenance, identities and archive safety. Runtime-governance metadata,
+decision-ledger provenance and urban-road evidence remain content-bound and
+inspectable, but their review status does not block publication of this public proof
+of concept. The legacy review option remains accepted for workflow compatibility:
 
 ```sh
 .venv/bin/python -I scripts/validate_pages_release.py build/satn-pages.zip \

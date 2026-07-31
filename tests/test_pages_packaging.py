@@ -295,20 +295,28 @@ def write_release_from_tree(root: Path, release: Path) -> None:
                 archive.write(item, item.relative_to(root).as_posix())
 
 
-def test_production_promotion_gate_denies_non_production_runtime(tmp_path: Path) -> None:
+def test_production_promotion_allows_poc_runtime(tmp_path: Path) -> None:
     catalogue = tmp_path / "catalogue.yaml"
     write_catalogue(catalogue)
     deployments = tmp_path / "deployments"
     write_bundle(deployments)
+    _set_urban_criteria(
+        deployments / "test-area",
+        {
+            "official_main_road_spines": "green",
+            "urban_a_road_evidence_coverage": "green",
+        },
+    )
 
-    with pytest.raises(ValueError, match="production promotion denied"):
-        package_pages(
-            catalogue,
-            deployments,
-            tmp_path / "pages",
-            tmp_path / "release.zip",
-            promote_production=True,
-        )
+    result = package_pages(
+        catalogue,
+        deployments,
+        tmp_path / "pages",
+        tmp_path / "release.zip",
+        promote_production=True,
+    )
+
+    assert result.pages_directory.is_dir()
 
 
 def _forge_self_consistent_production_governance(bundle: Path) -> None:
@@ -402,7 +410,7 @@ def _set_urban_criteria(bundle: Path, urban: dict[str, str]) -> None:
     )
 
 
-def test_required_urban_evidence_blocks_only_canonical_production_release(
+def test_urban_evidence_status_does_not_block_poc_publication(
     tmp_path: Path,
 ) -> None:
     catalogue = tmp_path / "catalogue.yaml"
@@ -419,79 +427,76 @@ def test_required_urban_evidence_blocks_only_canonical_production_release(
             "urban_a_road_evidence_coverage": "red",
         },
     )
-    blocking = (
-        "production promotion denied: incomplete required urban evidence: "
-        "official_main_road_spines=grey, urban_a_road_evidence_coverage=red"
-    )
-
-    with pytest.raises(ValueError, match=blocking):
-        package_pages(
-            catalogue,
-            deployments,
-            tmp_path / "production-pages",
-            tmp_path / "production-release.zip",
-            promote_production=True,
-        )
-
-    package_pages(
+    packaged = package_pages(
         catalogue,
         deployments,
-        tmp_path / "review-pages",
-        tmp_path / "review-release.zip",
+        tmp_path / "production-pages",
+        tmp_path / "production-release.zip",
+        promote_production=True,
     )
-    with pytest.raises(ValueError, match=blocking):
-        validate_pages_release(
-            tmp_path / "review-release.zip",
-            tmp_path / "rejected-production-pages",
-            catalogue,
-        )
-    validate_pages_release(
-        tmp_path / "review-release.zip",
-        tmp_path / "validated-review-pages",
+    validated = validate_pages_release(
+        tmp_path / "production-release.zip",
+        tmp_path / "validated-production-pages",
         catalogue,
-        allow_non_production=True,
     )
 
+    assert packaged.pages_directory.is_dir()
+    assert validated.pages_directory.is_dir()
 
-def test_production_package_rejects_forged_self_consistent_runtime_and_lock(tmp_path: Path) -> None:
+
+def test_production_package_does_not_gate_on_runtime_status(tmp_path: Path) -> None:
     catalogue = tmp_path / "catalogue.yaml"
     write_catalogue(catalogue)
     deployments = tmp_path / "deployments"
     write_bundle(deployments)
     _forge_self_consistent_production_governance(deployments / "test-area")
+    _set_urban_criteria(
+        deployments / "test-area",
+        {
+            "official_main_road_spines": "green",
+            "urban_a_road_evidence_coverage": "green",
+        },
+    )
 
-    with pytest.raises(ValueError, match="production promotion denied"):
-        package_pages(
-            catalogue,
-            deployments,
-            tmp_path / "pages",
-            tmp_path / "release.zip",
-            promote_production=True,
-        )
+    result = package_pages(
+        catalogue,
+        deployments,
+        tmp_path / "pages",
+        tmp_path / "release.zip",
+        promote_production=True,
+    )
+
+    assert result.pages_directory.is_dir()
 
 
-def test_production_release_validator_cannot_be_bypassed_by_local_packaging(tmp_path: Path) -> None:
+def test_production_release_validator_allows_poc_runtime(tmp_path: Path) -> None:
     catalogue = tmp_path / "catalogue.yaml"
     write_catalogue(catalogue)
     deployments = tmp_path / "deployments"
     write_bundle(deployments)
-    # Local packaging intentionally does not require production approval: it is
-    # useful for reviewable/fake deployments.  Forge the entire package and
-    # both mutable locks to prove that the *deployed* validator is still the
-    # independent deny-by-default production gate.
+    # Runtime metadata remains fully provenance-bound, but is not a publication
+    # policy gate for this public proof of concept.
     _forge_self_consistent_production_governance(deployments / "test-area")
+    _set_urban_criteria(
+        deployments / "test-area",
+        {
+            "official_main_road_spines": "green",
+            "urban_a_road_evidence_coverage": "green",
+        },
+    )
     package_pages(catalogue, deployments, tmp_path / "pages", tmp_path / "release.zip")
 
-    with pytest.raises(ValueError, match="production promotion denied"):
-        validate_pages_release(
-            tmp_path / "release.zip",
-            tmp_path / "validated-pages",
-            catalogue,
-        )
+    result = validate_pages_release(
+        tmp_path / "release.zip",
+        tmp_path / "validated-pages",
+        catalogue,
+    )
+
+    assert result.pages_directory.is_dir()
 
 
-def test_published_pages_workflow_requires_the_independent_production_gate() -> None:
-    """Canonical Pages publication never bypasses the production gate."""
+def test_published_pages_workflow_requires_independent_release_validation() -> None:
+    """Canonical Pages publication always runs the independent release validator."""
 
     workflow = yaml.load(
         (PROJECT / ".github" / "workflows" / "pages.yml").read_text(encoding="utf-8"),

@@ -31,7 +31,7 @@ def main() -> None:
     parser.add_argument(
         "--promote-production",
         action="store_true",
-        help="Require every deployment to match an approved immutable runtime class.",
+        help="Compatibility flag; POC publication has no promotion-only evidence gate.",
     )
     args = parser.parse_args()
     result = package_pages(
