@@ -163,6 +163,10 @@ nav { display: flex; flex-wrap: wrap; gap: .4rem; font-size: .78rem; }
 .map-key.place { background: #17202a; }
 .map-key.gap { background: #c0392b; }
 .map-key.warning { background: #f39c12; border: 1px solid #17202a; }
+.population-scale-title { display: block; margin-bottom: .2rem; font-weight: 750; }
+.population-scale-items { display: grid; gap: .18rem; }
+.population-scale-item { display: flex; align-items: center; gap: .4rem; }
+.population-scale-swatch { width: 1.5rem; height: .7rem; border: 1px solid rgb(23 32 42 / 50%); }
 
 #linear-evidence-panel {
   min-height: 0;

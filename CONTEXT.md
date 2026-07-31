@@ -113,12 +113,52 @@ A degree-one endpoint of the authority-wide network, normally a Cross-Boundary G
 _Avoid_: dead end, dangling route
 
 **Alignment Option**:
-One evidence-backed, end-to-end way of realising a Community Connection. Only one Alignment Option may be selected into a published network.
+One evidence-backed, end-to-end way of realising a Community Connection. It may follow one source corridor or form a continuous composite from compatible Parallel Alignment Sections. Only one Alignment Option may be selected into a published network.
 _Avoid_: parallel connection, final design
 
 **Alignment Candidate Set**:
 The finite, evidence-backed Alignment Options generated for one strategic Community Connection before substitute/complementary classification and selection.
 _Avoid_: unconstrained route search, alternative network
+
+**Alignment Choice Point**:
+A governed topological point that bounds a real corridor choice: an Alignment Option endpoint, a usable divergence or rejoining point, or a connector or crossing where a continuous selected alignment could switch between alternatives. An ordinary intermediate RoadGraph node, evidence change or access attachment is not a choice point unless it changes that switchability.
+_Avoid_: every graph node, visual crossing, evidence-section boundary
+
+**Parallel Alignment Section**:
+A maximal continuous chain between two Alignment Choice Points, potentially spanning many RoadGraph nodes and several places, compared with nearby chains that perform the same strategic continuity role. Sections are coalesced by unchanged corridor membership and switchability rather than a minimum length, so a short genuine divergence remains visible. Sections may be selected in different combinations to form continuous end-to-end Alignment Options; proximity alone does not make them substitutes.
+_Avoid_: arbitrary source edge, adjacent-node fragment, minimum-length cutoff, whole-corridor alternative, topology-free shortcut
+
+**Parallel Alignment Candidate Set**:
+The finite, order-independent group of every same-role, boundary-equivalent Parallel Alignment Section connected by the qualifying pairwise relationship in the Parallel Candidate Proximity Profile. Two outer members need not qualify directly when an intermediate member connects them into the same corridor family. Singular Parallel Selection chooses once across the whole group and retains every other valid member as a Non-Selected Parallel Alignment; it never creates overlapping or order-sensitive pairwise tournaments.
+_Avoid_: two-route-only comparison, sequential elimination, overlapping decision sets, hidden discarded candidate
+
+**Parallel Candidate Proximity Profile**:
+A frozen, versioned discovery rule declaring the scope-sensitive distance and minimum symmetric coverage needed for two continuous chains to become parallel candidates. The initial thresholds are 500 metres in governed urban `network_scope` and 1,500 metres in governed rural `network_scope`, with at least 80% symmetric coverage; their mixed-scope application remains an explicit decision rather than an inferred boundary rule. The values remain configurable and sensitivity-visible. Passing the profile finds a comparison candidate but does not establish that the chains are substitutes.
+_Avoid_: nearest-point match, one-sided overlap, Dutch standard, automatic substitution
+
+**Bounded Parallel Candidate Generation**:
+The deterministic formation of parallel-corridor choices solely from finite compiler-authored Alignment Options and separately governed pre-loaded alignments. Their sections may be recombined only at proven Alignment Choice Points under declared structural bounds; generation may calculate governed facts and threshold flags but does not qualitatively decide whether population, topography, access or existing-alignment evidence justifies a transition. The compiler does not enumerate arbitrary RoadGraph paths, and a corridor absent from the bounded inputs remains a visible candidate-generation gap.
+_Avoid_: all-path search, qualitative route choice, agent-invented corridor, hidden graph exploration
+
+**Singular Parallel Selection**:
+The Backbone-and-Access rule that a same-role, boundary-equivalent set of substitute Parallel Alignment Sections contributes exactly one selected section to the Strategic Spine direction. Rejected substitutes remain inspectable evidence, while local places and access obligations are served through bounded access branches or exposed as Network Gaps; multiple strategic sections remain only when distinct complementary roles are established.
+_Avoid_: parallel backbone bundle, duplicate strategic spine, access branch promoted by default, cost claim
+
+**Non-Selected Parallel Alignment**:
+A valid substitute Alignment Option that Singular Parallel Selection did not choose for the generated strategic network. It retains its geometry, evidence, comparison reason, decision provenance and change conditions and remains visibly inspectable as a muted alternative; non-selection is not a finding that the route is bad, invalid or unavailable to a later governed scenario.
+_Avoid_: deleted route, invalid route, hidden loser, abandoned scheme
+
+**Composite Alignment Continuity**:
+The requirement that consecutive selected Parallel Alignment Sections meet at the same governed Alignment Choice Point through a continuous, bidirectionally traversable connection. A missing bridge, crossing or link remains a Network Gap with any applicable Intervention Archetype; proximity or an indicative intervention cannot silently join the sections or make the network Complete.
+_Avoid_: geometric snap, inferred bridge, topology-free composite
+
+**Alignment Transition**:
+One switch between distinct competing corridor chains at an Alignment Choice Point. Changes of RoadGraph edge, source feature, road name or road class along the same continuous corridor are not transitions; leaving one corridor for a parallel chain and later rejoining creates two.
+_Avoid_: graph-edge boundary, road-class change, evidence-section boundary
+
+**Strategic Route Coherence**:
+The inspectable continuity of one end-to-end Alignment Option across its selected Parallel Alignment Sections and corridor transitions. When population, topography, access and existing-alignment evidence are materially equivalent, the option with fewer unnecessary corridor transitions is preferred; a transition remains valid when a material evidenced advantage justifies it.
+_Avoid_: no-hybrid rule, hidden transition penalty, shortest-edge-chain assumption
 
 **Preferred Strategic Alignment**:
 The one selected Alignment Option for a substitute Alignment Candidate Set under a declared Network Selection Profile, with rejected alternatives and change conditions retained for inspection. It is not final design, a safety finding, feasibility evidence or a funding decision.
@@ -129,8 +169,32 @@ A frozen, versioned, data-only local policy declaration that orders candidate cl
 _Avoid_: hidden score, agent policy, mutable setting
 
 **Population Reach Profile**:
-The governed whole-Output-Area measure of residents whose population-weighted centroids lie within a declared straight-line corridor around an Alignment Option, with its source date, radii and sensitivity retained. It is not predicted demand, accessible population or a walking-time claim.
-_Avoid_: five-minute catchment, demand model, connected homes
+The governed whole-Output-Area measure of residents whose population-weighted centroids lie within a declared straight-line corridor around one complete end-to-end Alignment Option, with its source date, configurable radii and sensitivity retained. The measure belongs to the whole option even when its geometry is rendered as several line sections; those sections do not independently redefine or subdivide its population reach. It is not predicted demand, accessible population or a walking-time claim.
+_Avoid_: segment population, five-minute catchment, demand model, connected homes
+
+**Section Population Capture**:
+A governed local map measure of the whole-Output-Area residents whose population-weighted centroids lie within a declared straight-line corridor around one population display section of the strategic network. It describes the population passed by that part of the network, not an end-to-end journey or the number of people expected to cycle the complete route. Every resident covered by governed evidence counts regardless of which side of the commissioning authority's boundary they live on; Area Definition membership is retained as an inside/outside breakdown for inspection rather than used as a demand cut-off. Each Output Area is counted once within a section but may legitimately appear in the evidence for neighbouring sections; displayed section values must not be summed without a separate geometry-level deduplication step. A map user may select several sections to obtain a deduplicated population capture for their combined geometry, but that is an exploratory view rather than a new governed corridor or travel claim.
+_Avoid_: end-to-end ridership, expected trip length, additive segment totals, connected population
+
+**Population Display Section**:
+A deterministic subdivision of selected or non-selected strategic alignment geometry used to calculate and colour Section Population Capture. Its along-route display length is configurable independently of the lateral population-capture radius: the default is 100 metres and the permitted maximum is one kilometre. A section is shortened where the governed geometry ends, reaches an Alignment Choice Point or crosses a governed `network_scope` boundary at which its population-capture radius changes. Display cuts are evidence-rendering boundaries only and do not become graph nodes, Alignment Choice Points or Alignment Transitions.
+_Avoid_: arbitrary graph edge, new routing node, strategic corridor boundary, journey-length assumption
+
+**Population Capture Radius Profile**:
+The frozen declaration of the lateral straight-line selection radius used for Section Population Capture in each governed `network_scope`. The initial explicit values are 250 metres for urban sections and 750 metres for rural sections, reflecting half of the initial 500-metre urban and 1,500-metre rural parallel-candidate distances without being calculated from them automatically. The selecting agent receives only these frozen scenario values. Optional wider radii may be precompiled as labelled exploratory inspection layers, but switching layers does not reroute the compiled scenario; changing a selection radius requires a new compilation and decision record.
+_Avoid_: display-section length, walking-time claim, derived half-distance, dynamic rerouting, hidden radius
+
+**Candidate Population Trace**:
+The ordered sequence of Section Population Capture observations supplied for one parallel candidate, retaining each 100-metre display section's position, governed `network_scope`, applied selection radius and resident count so the selecting agent can see where population rises and falls. It does not collapse a long corridor into an end-to-end population or journey claim. Any deterministic compression must preserve the locations and lengths of sustained differences between candidates.
+_Avoid_: forty-mile population total, expected riders, unordered histogram, colour-only evidence
+
+**Material Population Difference**:
+A deterministic evidence flag indicating that corresponding local portions of one parallel candidate capture at least 500 more residents and at least 50% more residents than the alternative for a continuous corridor distance of at least 500 metres. The absolute, relative and persistence thresholds are frozen configurable profile values. The flag helps the selecting agent locate a sustained difference but does not select a route, suppress shorter observations or replace the complete Candidate Population Trace.
+_Avoid_: automatic population winner, percentage-only difference, isolated 100-metre spike, hidden weighted score
+
+**Population Capture Colour Scale**:
+A deterministic presentation scale calculated from the complete compiled scenario's Section Population Capture values for the active inspection layer, never from the current viewport. It may adapt its numeric breaks so rural-only and mixed urban/rural maps remain legible, but it must display the resulting numeric legend and must not be supplied to the selecting agent in place of resident counts. Exact palette and class-count calibration belong to review-map prototyping.
+_Avoid_: viewport rescaling, colour as decision evidence, hidden legend, cross-scenario colour claim
 
 **Education Access Profile**:
 The frozen, evidence-bounded declaration of which education-access measures may inform Alignment Option comparison, including the independent-travel phases and the boundary between school-register and supplementary evidence. It does not create a school safety finding, travel-demand model or access guarantee.
@@ -144,9 +208,21 @@ _Avoid_: school safety verdict, accessibility guarantee, demand score
 A bounded selection advantage based on separately recorded recognised-corridor, reusable-asset or delivery evidence. Current route status alone does not establish condition, legal access, low cost or feasibility; declassified status alone receives no advantage.
 _Avoid_: existing-route preference, assumed cheapness, feasibility finding
 
+**Strategic Destination Profile**:
+A frozen, versioned declaration of the governed physical-site classes that automatically become Strategic Destination Access Obligations, together with their evidence and usable-access-point requirements. Its initial mandatory classes are further- and higher-education campuses and acute, general and major community hospitals; lower-order amenities remain contextual unless another declared class admits them.
+_Avoid_: undifferentiated amenity layer, hidden destination list, individual building promotion
+
+**Strategic Destination Access Obligation**:
+A requirement for each governed physical site admitted by the Strategic Destination Profile to have a real topological connection from a usable site access point into the selected strategic network. An unresolved connection is published as a prominent Network Gap for investigation rather than stopping compilation.
+_Avoid_: proximity-only service claim, mandatory backbone waypoint, alignment veto
+
 **Strategic Education Destination**:
-A college, university or other non-school education site admitted by a versioned local record as a strategic destination. It remains contextual evidence until that admission exists.
-_Avoid_: every education site, School Access Obligation, implied destination
+A governed physical further- or higher-education campus admitted automatically as a Strategic Destination Access Obligation by the active Strategic Destination Profile. An institution with several campuses creates separate site obligations; its individual academic buildings do not.
+_Avoid_: discretionary campus admission, every education building, School Access Obligation
+
+**Strategic Healthcare Destination**:
+A governed physical acute, general or major community hospital admitted automatically as a Strategic Destination Access Obligation by the active Strategic Destination Profile. GP surgeries, pharmacies and small clinics remain contextual unless another declared destination class admits them.
+_Avoid_: undifferentiated healthcare amenity, every clinical service, proximity-only service claim
 
 **Scenario Compilation**:
 One immutable compilation defined by an Area Definition, evidence snapshot, Criteria Set, Network Selection Profile and accepted decisions. It may be compared with other scenarios but does not itself create authority for a Reference SATN.
@@ -261,8 +337,8 @@ A recursively assembled chain or tree of Spine Access Connections grown outward 
 _Avoid_: independent nearest-neighbour links, general-purpose mesh, disconnected feeder
 
 **School Access Obligation**:
-A requirement for a rural School to have a valid Spine Access Connection, or for an urban School's usable entrance to connect through continuous Low-Traffic Area street or path fabric to a portal on an Urban Main-Road Spine. It does not create a route to a Community or another School, and an urban residential-street centreline is not asserted.
-_Avoid_: School Network Place, school-to-school route, school-to-Community route
+A highest-priority requirement for a rural School to have a valid Spine Access Connection, or for an urban School's usable entrance to connect through continuous Low-Traffic Area street or path fabric to a portal on an Urban Main-Road Spine. It requires a real topological connection from the School Access Point into the selected strategic network but does not require the strategic alignment itself to pass the School. An unresolved connection is published as a prominent Network Gap for investigation rather than making every otherwise reviewable alignment ineligible or stopping compilation. It does not create a route to a Community or another School, and an urban residential-street centreline is not asserted.
+_Avoid_: School Network Place, mandatory backbone waypoint, alignment veto, school-to-school route, school-to-Community route
 
 **Urban Main-Road Spine**:
 An urban A Road, B Road or Classified Unnumbered Road assigned to carry through motor traffic, bound Low-Traffic Areas and provide protected cycling infrastructure along the corridor.
@@ -300,9 +376,9 @@ _Avoid_: hill ban, hidden routing penalty, assumed accessibility
 A continuous part of a network edge for which local gradient severity and sustained length are displayed. Initial adjustable severity bands are Gentle at up to 3%, Noticeable above 3% and up to 5%, Steep above 5% and up to 8%, Very Steep above 8% and up to 12.5%, and Severe above 12.5%. Noticeable and short steeper sections remain visible even when they do not affect route selection. The bands use a sequential terrain palette distinct from Criterion Status colours and never imply that the edge is invalid.
 _Avoid_: endpoint-average gradient, isolated noisy sample, red-means-rejected
 
-**Topography Alternative Trigger**:
-An adjustable trial condition requiring comparison with an easier Alignment Option when an edge contains a Steep Gradient Section for at least 100 metres, a Very Steep section for at least 50 metres, a Severe section for at least 30 metres, or repeated shorter climbs whose cumulative ascent makes the route materially harder. Triggering comparison does not reject the original edge when no materially better alignment exists.
-_Avoid_: gradient prohibition, invisible routing weight, permanent design standard
+**Topography Evidence Threshold**:
+An adjustable condition that flags potentially material climbing evidence when an edge contains a Steep Gradient Section for at least 100 metres, a Very Steep section for at least 50 metres, a Severe section for at least 30 metres, or repeated shorter climbs whose cumulative ascent makes the route materially harder. The flag may be supplied to an agent comparing already-identified Alignment Options, but it neither initiates a route decision nor rejects or selects an option by itself.
+_Avoid_: automatic alternative trigger, gradient prohibition, invisible routing weight, elevation score
 
 **Topography Profile**:
 The distance and per-direction cumulative-ascent, cumulative-descent, Gradient Sections and steepest-sustained-gradient evidence displayed for an Alignment Option to support human and agent judgement. It is derived from elevation throughout the alignment rather than endpoint difference, and the measures are not collapsed into a composite effort score.
@@ -407,6 +483,10 @@ _Avoid_: automatic approval, agent override, optional report view
 **Agent Decision Record**:
 A schema-valid audit record for a compilation decision, stating its governing Criterion Status, effective Agent Review Policy, whether review was required, and either the complete fingerprinted menu and accepted caller choice, the typed direct-runtime result, or the deterministic outcome. A caller-mediated record includes the mapped compiler action, responder mode, validation result and affected feature identifiers. It never directly changes compiled state.
 _Avoid_: free-form answer, silent edit, unrecorded deterministic skip
+
+**Agent Decision Explanation**:
+A deterministic, replaceable presentation derived from one validated Agent Decision Record, its selected compiler-authored choice, decisive criterion findings and governed citations. It may explain why one Alignment Option was selected and another retained as rejected evidence, but it cannot add reasons, authority or evidence absent from the underlying record.
+_Avoid_: agent-authored public rationale, approval note, hidden prompt summary
 
 **Agent Review Policy**:
 The exact set of Green, Amber, Red and Grey Criterion Statuses in Council Configuration that require an Agent Decision Request. It applies to the status governing an individual decision, never a Criteria Section aggregate; an empty set means no Agent Runtime is constructed or called.

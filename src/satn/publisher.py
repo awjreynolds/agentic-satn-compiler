@@ -1159,6 +1159,10 @@ def _write_geopackage(path: Path, compiled: CompiledNetwork) -> None:
         compiled.topography_profiles.to_file(path, layer="topography_profiles", driver="GPKG")
     if not compiled.gradient_sections.empty:
         compiled.gradient_sections.to_file(path, layer="gradient_sections", driver="GPKG")
+    if not compiled.population_display_sections.empty:
+        _population_display_geopackage(compiled.population_display_sections).to_file(
+            path, layer="population_display_sections", driver="GPKG"
+        )
     if not compiled.elevation_corroboration.empty:
         compiled.elevation_corroboration.to_file(
             path, layer="elevation_corroboration", driver="GPKG"
@@ -1229,6 +1233,16 @@ def _geopackage_safe(frame: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     return frame.rename(columns=renamed)
 
 
+def _population_display_geopackage(frame: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Store captured OA IDs as canonical JSON, not a driver-specific list repr."""
+    safe = _geopackage_safe(frame).copy()
+    if "captured_oa_ids" in safe:
+        safe["captured_oa_ids"] = safe["captured_oa_ids"].map(
+            lambda value: json.dumps(_json_value(value), separators=(",", ":"))
+        )
+    return safe
+
+
 def _features(frame: gpd.GeoDataFrame, feature_type: str) -> list[dict[str, object]]:
     return [
         {
@@ -1263,6 +1277,7 @@ def _feature_id(row: pd.Series, feature_type: str | None = None) -> str:
         "school-street-assessment": "assessment_id",
         "topography-profile": "profile_id",
         "gradient-section": "section_id",
+        "population-display-section": "section_id",
         "elevation-corroboration": "corroboration_id",
         "spine-access-connection": "access_connection_id",
         "school-access-connection": "access_connection_id",
@@ -1388,6 +1403,10 @@ def _network_collection(compiled: CompiledNetwork) -> dict[str, object]:
             + _features(compiled.topography_profiles, "topography-profile")
             + _features(compiled.gradient_sections, "gradient-section")
             + _features(
+                compiled.population_display_sections,
+                "population-display-section",
+            )
+            + _features(
                 compiled.elevation_corroboration,
                 "elevation-corroboration",
             )
@@ -1437,6 +1456,7 @@ def _layer_counts(compiled: CompiledNetwork) -> dict[str, int]:
         "school_street_assessments": len(compiled.school_street_assessments),
         "topography_profiles": len(compiled.topography_profiles),
         "gradient_sections": len(compiled.gradient_sections),
+        "population_display_sections": len(compiled.population_display_sections),
         "elevation_corroboration": len(compiled.elevation_corroboration),
         "retail_centres": len(compiled.retail_centres),
         "healthcare": len(compiled.healthcare),
@@ -4112,6 +4132,7 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
         "school_street_assessments": ("school-street-assessment",),
         "topography_profiles": ("topography-profile",),
         "gradient_sections": ("gradient-section",),
+        "population_display_sections": ("population-display-section",),
         "elevation_corroboration": ("elevation-corroboration",),
         "retail_centres": ("retail-centre",),
         "healthcare": ("healthcare",),
@@ -4214,6 +4235,48 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
             ):
                 if not _artifact_values_equal(feature["properties"].get(field), row[field]):
                     raise ValueError(f"Gradient Section {section_id} differs for {field}")
+    population_display_features = {
+        feature["id"]: feature
+        for feature in geojson["features"]
+        if feature["properties"].get("feature_type") == "population-display-section"
+    }
+    if population_display_features:
+        population_sections = gpd.read_file(
+            output / "network.gpkg",
+            layer="population_display_sections",
+        )
+        population_rows = population_sections.set_index("section_id", drop=False)
+        if set(population_display_features) != set(population_rows.index):
+            raise ValueError("Population Display Section identifiers differ between artifacts")
+        for section_id, feature in population_display_features.items():
+            row = population_rows.loc[section_id]
+            for field in (
+                "candidate_group_id",
+                "alignment_id",
+                "section_order",
+                "start_distance_m",
+                "end_distance_m",
+                "length_m",
+                "alignment_length_m",
+                "network_scope",
+                "capture_radius_m",
+                "total_residents",
+                "inside_area_residents",
+                "outside_area_residents",
+                "captured_oa_ids",
+            ):
+                published_value = row[field]
+                if field == "captured_oa_ids" and isinstance(published_value, str):
+                    try:
+                        published_value = json.loads(published_value)
+                    except json.JSONDecodeError as error:
+                        raise ValueError(
+                            f"Population Display Section {section_id} has invalid captured OA IDs"
+                        ) from error
+                if not _artifact_values_equal(feature["properties"].get(field), published_value):
+                    raise ValueError(
+                        f"Population Display Section {section_id} differs for {field}"
+                    )
     for filename in (
         "agent-records.json",
         "divergence-records.json",
@@ -4240,6 +4303,7 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
         "layer-schools",
         "layer-school-streets",
         "layer-gradient-sections",
+        "layer-population-display-sections",
         "layer-retail-centres",
         "layer-healthcare",
         "layer-atm",

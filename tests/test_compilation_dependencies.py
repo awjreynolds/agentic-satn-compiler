@@ -38,6 +38,7 @@ def test_manifest_is_explicit_complete_and_records_component_digests() -> None:
         "satn/education_access.py",
         "satn/ea_elevation.py",
         "satn/population_reach.py",
+        "satn/section_population.py",
         "satn/alignment_selection.py",
         "runtime-distribution/geopandas",
         "runtime-distribution/httpx",
@@ -95,14 +96,16 @@ def test_banes_manifest_records_resolved_configuration_sensitive_dependency_set(
     assert manifest["selection"]["active_groups"] == [
         "core",
         "elevation-source",
+        "network-selection",
         "osm-source",
     ]
     assert manifest["selection"]["component_paths"] == sorted(selected)
     assert "satn/routing.py" in selected
     assert "satn/ea_elevation.py" in selected
     assert "runtime-distribution/openai" in inactive
-    assert "satn/psa_evidence_loaders.py" in inactive
-    assert "satn/network_selection.py" in inactive
+    assert "satn/psa_evidence_loaders.py" in selected
+    assert "satn/network_selection.py" in selected
+    assert "satn/section_population.py" in selected
 
 
 def test_manifest_self_validation_binds_the_resolved_selection_and_digest() -> None:
@@ -119,22 +122,22 @@ def test_manifest_self_validation_binds_the_resolved_selection_and_digest() -> N
         dependencies.validate_compilation_dependency_manifest(tampered)
 
 
-def test_unused_validator_change_does_not_invalidate_banes_but_core_change_does(
+def test_active_network_selection_change_invalidates_banes(
     tmp_path: Path,
 ) -> None:
     root = copied_compiler_tree(tmp_path)
     config = AreaDefinition.from_yaml(PROJECT / "deployments" / "banes" / "area.yaml")
     original = dependencies.compilation_dependency_manifest(config, package_root=root)
-    unused_validator = root / "psa_evidence_loaders.py"
-    validator_bytes = unused_validator.read_bytes()
-    unused_validator.write_bytes(
+    active_validator = root / "psa_evidence_loaders.py"
+    validator_bytes = active_validator.read_bytes()
+    active_validator.write_bytes(
         validator_bytes + b"\n# inactive dependency regression probe\n"
     )
 
-    unchanged = dependencies.compilation_dependency_manifest(config, package_root=root)
-    assert unchanged["sha256"] == original["sha256"]
+    changed = dependencies.compilation_dependency_manifest(config, package_root=root)
+    assert changed["sha256"] != original["sha256"]
 
-    unused_validator.write_bytes(validator_bytes)
+    active_validator.write_bytes(validator_bytes)
     routing = root / "routing.py"
     routing.write_bytes(routing.read_bytes() + b"\n# core dependency regression probe\n")
     changed = dependencies.compilation_dependency_manifest(config, package_root=root)
@@ -212,6 +215,7 @@ def test_ea_recovery_code_is_active_only_for_recovery_candidate_identity(
         "core",
         "ea-recovery",
         "elevation-source",
+        "network-selection",
         "osm-source",
     ]
     assert recovery_path in recovery["selection"]["component_paths"]

@@ -137,6 +137,29 @@ class CompiledNetwork:
     area_definition_sha256: str = ""
     compilation_dependency_manifest: dict[str, object] = field(default_factory=dict)
     decision_contract: str = "agent-decision-menu/v1"
+    population_display_sections: gpd.GeoDataFrame = field(
+        default_factory=lambda: gpd.GeoDataFrame(
+            columns=[
+                "section_id",
+                "candidate_group_id",
+                "alignment_id",
+                "section_order",
+                "start_distance_m",
+                "end_distance_m",
+                "length_m",
+                "alignment_length_m",
+                "network_scope",
+                "capture_radius_m",
+                "total_residents",
+                "inside_area_residents",
+                "outside_area_residents",
+                "captured_oa_ids",
+                "geometry",
+            ],
+            geometry="geometry",
+            crs=27700,
+        )
+    )
     # This is the caller-supplied replay ledger, not the decisions produced by
     # direct runtime during this compilation.  Keeping the two separate makes
     # the input fingerprint independently reproducible.
@@ -538,6 +561,11 @@ def _compile_network(
             context=strategic_corridor_context,
             source_config=config.source,
             config_directory=config.config_path.parent,
+            area_definition=source["boundary"],
+            urban_extent=_population_urban_extent(
+                urban_communities,
+                urban_scope_buffer_km=config.source.urban_scope_buffer_km,
+            ),
         )
         network_selection_preparation = NetworkSelectionPreparationResult(
             spine_access_preparation=spine_access_candidate_preparation,
@@ -798,6 +826,27 @@ def _compile_network(
         spine_access_candidate_preparation=spine_access_candidate_preparation,
         strategic_corridor_preparation=strategic_corridor_preparation,
         network_selection_preparation=network_selection_preparation,
+        population_display_sections=(
+            strategic_corridor_preparation.section_population.to_geodataframe()
+            if strategic_corridor_preparation is not None
+            and strategic_corridor_preparation.section_population is not None
+            else gpd.GeoDataFrame(
+                columns=[
+                    "section_id",
+                    "candidate_group_id",
+                    "alignment_id",
+                    "section_order",
+                    "network_scope",
+                    "capture_radius_m",
+                    "total_residents",
+                    "inside_area_residents",
+                    "outside_area_residents",
+                    "geometry",
+                ],
+                geometry="geometry",
+                crs=27700,
+            )
+        ),
         strategic_interurban_connections=(
             strategic_replay.interurban_connections
             if strategic_replay is not None
@@ -1257,6 +1306,31 @@ def _urban_communities(
 ) -> gpd.GeoDataFrame:
     """Return every Community admitted to an Urban Circulation Plan."""
     return communities[communities["urban_circulation_eligible"].astype(bool)].copy()
+
+
+def _population_urban_extent(
+    urban_communities: gpd.GeoDataFrame,
+    *,
+    urban_scope_buffer_km: float,
+) -> gpd.GeoDataFrame:
+    """Re-expose the governed urban extent for scope-sensitive population evidence."""
+
+    if urban_communities.empty:
+        return gpd.GeoDataFrame(
+            {"geometry": []},
+            geometry="geometry",
+            crs=27700,
+        )
+    geometry = (
+        urban_communities.to_crs(27700)
+        .geometry.buffer(urban_scope_buffer_km * 1000)
+        .union_all()
+    )
+    return gpd.GeoDataFrame(
+        {"geometry": [geometry]},
+        geometry="geometry",
+        crs=27700,
+    )
 
 
 def _community_coverage(

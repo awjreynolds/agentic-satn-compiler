@@ -83,6 +83,32 @@ class PopulationReachProfileConfig(BaseModel):
         return 0.0 if value == 0 else value
 
 
+class SectionPopulationCaptureProfileConfig(BaseModel):
+    """Declared local population evidence for short strategic-route sections."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    profile: Literal["satn-section-population-capture/v1"] = (
+        "satn-section-population-capture/v1"
+    )
+    display_section_length_m: int = Field(default=100, gt=0, le=1_000, strict=True)
+    maximum_display_section_length_m: Literal[1000] = 1_000
+    urban_capture_radius_m: int = Field(default=250, gt=0, strict=True)
+    rural_capture_radius_m: int = Field(default=750, gt=0, strict=True)
+    material_absolute_difference_residents: int = Field(
+        default=500,
+        ge=0,
+        strict=True,
+    )
+    material_relative_difference_pct: float = Field(
+        default=50.0,
+        ge=0,
+        strict=True,
+        allow_inf_nan=False,
+    )
+    material_persistence_m: int = Field(default=500, gt=0, strict=True)
+
+
 class EducationAccessProfileConfig(BaseModel):
     """Declared education evidence boundary; not a safety or demand model."""
 
@@ -189,6 +215,9 @@ class NetworkSelectionProfile(BaseModel):
     candidate_source_precedence: tuple[CandidateSourceClass, ...]
     primary_objective: AlignmentSelectionObjective = AlignmentSelectionObjective.POPULATION_REACH
     population: PopulationReachProfileConfig = Field(default_factory=PopulationReachProfileConfig)
+    section_population: SectionPopulationCaptureProfileConfig = Field(
+        default_factory=SectionPopulationCaptureProfileConfig
+    )
     education: EducationAccessProfileConfig = Field(default_factory=EducationAccessProfileConfig)
     existing_alignment: ExistingAlignmentProfileConfig = Field(
         default_factory=ExistingAlignmentProfileConfig

@@ -152,6 +152,24 @@ def test_bath_prepares_separate_interurban_and_destination_units(tmp_path: Path)
         item.geometry.fingerprint == item.geometry_fingerprint
         for item in prepared.physical_alignments
     )
+    section_population = prepared.section_population
+    assert section_population is not None
+    assert section_population.profile.display_section_length_m == 100
+    assert section_population.profile.urban_capture_radius_m == 250
+    assert section_population.profile.rural_capture_radius_m == 750
+    assert section_population.sections
+    assert len(compiled.population_display_sections) == len(
+        section_population.sections
+    )
+    assert set(compiled.population_display_sections["network_scope"]) <= {
+        "urban",
+        "rural",
+    }
+    assert (
+        compiled.population_display_sections["total_residents"]
+        == compiled.population_display_sections["inside_area_residents"]
+        + compiled.population_display_sections["outside_area_residents"]
+    ).all()
 
     # Population evidence remains a corridor measure.  Candidate geometry is
     # passed straight to the governed calculator; this asserts both declared
@@ -260,6 +278,12 @@ def test_strategic_preparation_is_deterministic_and_makes_no_delivery_claims(
         context=source["context"],
         source_config=config.source,
         config_directory=config.config_path.parent,
+        area_definition=source["boundary"],
+        urban_extent=gpd.GeoDataFrame(
+            {"geometry": []},
+            geometry="geometry",
+            crs=27700,
+        ),
     )
 
     assert repeated.preparation_fingerprint == first.preparation_fingerprint

@@ -552,6 +552,64 @@
     return value === null || value === undefined || value === "" ? fallback : value;
   }
 
+  // The scale is deliberately calculated once from the complete published
+  // collection. It must not respond to map movement or visibility filtering:
+  // a section retains its meaning while reviewers compare different locations.
+  function populationDisplayScale(features) {
+    const values = features
+      .filter((feature) => feature.properties?.feature_type === "population-display-section")
+      .map((feature) => Number(feature.properties.total_residents))
+      .filter((count) => Number.isFinite(count) && count >= 0);
+    const maximum = values.length ? Math.max(...values) : 0;
+    if (!maximum) return { maximum: 0, classes: [{ minimum: 0, maximum: 0, color: "#6b7280" }] };
+    const colors = ["#c6dbef", "#6baed6", "#2171b5"];
+    const boundaries = [Math.ceil(maximum / 3), Math.ceil(maximum * 2 / 3), maximum];
+    let minimum = 0;
+    return {
+      maximum,
+      classes: boundaries.map((maximumForClass, index) => {
+        const item = { minimum, maximum: maximumForClass, color: colors[index] };
+        minimum = maximumForClass + 1;
+        return item;
+      }).filter((item, index) => index === 0 || item.maximum >= item.minimum)
+    };
+  }
+
+  function populationDisplayPaint(scale) {
+    const expression = ["step", ["to-number", ["get", "total_residents"], 0], scale.classes[0].color];
+    scale.classes.slice(1).forEach((item) => expression.push(item.minimum, item.color));
+    return expression;
+  }
+
+  function formatResidents(count) {
+    return Number(count).toLocaleString("en-GB");
+  }
+
+  function renderPopulationDisplayLegend(scale) {
+    const legend = document.querySelector("#population-display-legend");
+    if (!legend) return;
+    legend.replaceChildren();
+    const title = document.createElement("span");
+    title.className = "population-scale-title";
+    title.textContent = "Local population capture (whole scenario)";
+    const items = document.createElement("span");
+    items.className = "population-scale-items";
+    scale.classes.forEach((item) => {
+      const row = document.createElement("span");
+      row.className = "population-scale-item";
+      const swatch = document.createElement("span");
+      swatch.className = "population-scale-swatch";
+      swatch.style.backgroundColor = item.color;
+      const label = document.createElement("span");
+      label.textContent = item.minimum === item.maximum
+        ? `${formatResidents(item.maximum)} residents`
+        : `${formatResidents(item.minimum)}–${formatResidents(item.maximum)} residents`;
+      row.append(swatch, label);
+      items.append(row);
+    });
+    legend.append(title, items);
+  }
+
   function parseList(raw) {
     try { return Array.isArray(raw) ? raw : JSON.parse(raw || "[]"); }
     catch (_) { return []; }
@@ -1151,6 +1209,20 @@
     addDefinition(list, "Stable ID", id);
     addDefinition(list, "Layer", properties.feature_type.replaceAll("-", " "));
     if (!isConnection) {
+      if (properties.feature_type === "population-display-section") {
+        addDefinition(list, "Network scope", value(properties.network_scope));
+        addDefinition(list, "Capture radius", `${value(properties.capture_radius_m)} m`);
+        addDefinition(list, "Total residents", value(properties.total_residents));
+        addDefinition(list, "Inside area residents", value(properties.inside_area_residents));
+        addDefinition(list, "Outside area residents", value(properties.outside_area_residents));
+        addDefinition(list, "Candidate group", value(properties.candidate_group_id));
+        addDefinition(list, "Alignment", value(properties.alignment_id));
+        addDefinition(list, "Section order", value(properties.section_order));
+        addDefinition(list, "Section distance", `${value(properties.start_distance_m)}–${value(properties.end_distance_m)} m`);
+        panel.append(heading, list);
+        setHighlight(id);
+        return;
+      }
       if (properties.feature_type === "gradient-section") {
         addDefinition(list, "Gradient band", value(properties.gradient_band));
         addDefinition(list, "Length", `${value(properties.length_m)} m`);
@@ -1407,6 +1479,7 @@
       "layer-schools": ["schools", "school-access-obligations", "school-access-connections", "school-access-topography-warnings", "school-access-gaps"],
       "layer-school-streets": ["school-street-assessments"],
       "layer-gradient-sections": ["gradient-overview", "gradient-sections", "topography-unavailable"],
+      "layer-population-display-sections": ["population-display-sections"],
       "layer-retail-centres": ["retail-centres"],
       "layer-healthcare": ["healthcare"],
       "layer-gaps-warnings": warningLayers,
@@ -1462,6 +1535,11 @@
         });
         const legend = document.getElementById(`legend-${controlId.replace("layer-", "")}`);
         if (legend) legend.hidden = !control.checked;
+        if (controlId === "layer-population-display-sections") {
+          const populationLegend = document.getElementById("population-display-legend");
+          if (populationLegend) populationLegend.hidden = !control.checked;
+          if (control.checked) document.getElementById("map-legend").open = true;
+        }
       });
     });
     const referenceControl = document.getElementById("layer-reference-options");
@@ -1658,6 +1736,9 @@
     map.addLayer({ id: "school-access-gaps", type: "circle", source: "network", filter: ["==", ["get", "feature_type"], "school-access-gap"], layout: { visibility: "none" }, paint: { "circle-color": ["match", ["get", "access_point_status"], "unresolved", "#7f8c8d", "inferred", "#f39c12", "#c0392b"], "circle-radius": 11, "circle-stroke-color": "#641e16", "circle-stroke-width": 2 } });
     map.addLayer({ id: "school-street-assessments", type: "circle", source: "network", filter: ["==", ["get", "feature_type"], "school-street-assessment"], layout: { visibility: "none" }, paint: { "circle-color": ["match", ["get", "assessment_status"], "green", "#1e8449", "amber", "#f39c12", "red", "#c0392b", "#7f8c8d"], "circle-radius": 12, "circle-stroke-color": "white", "circle-stroke-width": 3 } });
     map.addLayer({ id: "gradient-sections", type: "line", source: "topography", filter: ["==", ["get", "feature_type"], "gradient-section"], layout: { visibility: "none" }, paint: { "line-color": ["match", ["get", "gradient_band"], "gentle", "#eff3ff", "noticeable", "#bdd7e7", "steep", "#6baed6", "very-steep", "#3182bd", "severe", "#08519c", "#7f8c8d"], "line-width": 9, "line-opacity": .92 } });
+    const populationScale = populationDisplayScale(network.features);
+    renderPopulationDisplayLegend(populationScale);
+    map.addLayer({ id: "population-display-sections", type: "line", source: "network", filter: ["==", ["get", "feature_type"], "population-display-section"], layout: { visibility: "none" }, paint: { "line-color": populationDisplayPaint(populationScale), "line-width": ["interpolate", ["linear"], ["zoom"], 8, 6, 13, 10], "line-opacity": .94 } });
     map.addLayer({ id: "gradient-overview", type: "line", source: "topography", filter: ["all", ["==", ["get", "feature_type"], "topography-profile"], ["!=", ["get", "evidence_status"], "evidence-unavailable"]], layout: { visibility: "none" }, paint: { "line-color": ["match", ["get", "gradient_band"], "gentle", "#d6eaf8", "noticeable", "#85c1e9", "steep", "#3498db", "very-steep", "#2874a6", "severe", "#1b4f72", "#7f8c8d"], "line-width": ["interpolate", ["linear"], ["zoom"], 7, 2, 10, 5], "line-opacity": .72 } });
     map.addLayer({ id: "gradient-section-highlight", type: "line", source: "topography", filter: ["==", ["id"], ""], paint: { "line-color": "#f4d03f", "line-width": 13, "line-opacity": .95 } });
     map.addLayer({ id: "topography-unavailable", type: "line", source: "topography", filter: ["all", ["==", ["get", "feature_type"], "topography-profile"], ["==", ["get", "evidence_status"], "evidence-unavailable"]], layout: { visibility: "none" }, paint: { "line-color": "#7f8c8d", "line-width": 8, "line-dasharray": [1, 1], "line-opacity": .9 } });
@@ -1811,5 +1892,5 @@
     `${counts.strategic_spines || 0} Strategic Spines · ${counts.spine_access_connections || 0} access connections · ` +
     `${counts.cross_spine_connectors || 0} Cross-Spine Connectors · ${counts.urban_spines || 0} Urban Main-Road Spines · ${counts.candidate_low_traffic_areas || 0} Candidate Low-Traffic Areas · ${counts.low_traffic_area_portals || 0} area portals · ` +
     `${counts.school_access_obligations || 0} School Access Obligations · ${counts.school_street_assessments || 0} School Street Candidate Assessments · ${counts.topography_profiles || 0} Topography Profiles · ${counts.gradient_sections || 0} Gradient Sections · ${counts.schools || 0} education sites · ${counts.retail_centres || 0} retail centres · ` +
-    `${counts.healthcare || 0} healthcare sites`;
+    `${counts.healthcare || 0} healthcare sites · ${counts.population_display_sections || 0} Local Population Capture sections`;
 })();

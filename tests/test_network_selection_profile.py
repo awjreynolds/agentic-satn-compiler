@@ -18,6 +18,7 @@ from satn.network_selection import (
     NetworkSelectionProfile,
     PopulationReachEvidenceConfig,
     PopulationReachProfileConfig,
+    SectionPopulationCaptureProfileConfig,
 )
 
 
@@ -118,6 +119,25 @@ def test_population_zero_tolerance_has_one_canonical_identity_and_rejects_scalar
     with pytest.raises(ValidationError):
         NetworkSelectionProfile.model_validate(
             profile_payload() | {"population": {"near_equivalent_tolerance_pct": "5"}}
+        )
+
+
+def test_section_population_profile_freezes_local_scope_radii_and_materiality() -> None:
+    profile = NetworkSelectionProfile.model_validate(profile_payload())
+
+    assert profile.section_population == SectionPopulationCaptureProfileConfig()
+    assert profile.section_population.display_section_length_m == 100
+    assert profile.section_population.maximum_display_section_length_m == 1000
+    assert profile.section_population.urban_capture_radius_m == 250
+    assert profile.section_population.rural_capture_radius_m == 750
+    assert profile.section_population.material_absolute_difference_residents == 500
+    assert profile.section_population.material_relative_difference_pct == 50
+    assert profile.section_population.material_persistence_m == 500
+
+    with pytest.raises(ValidationError):
+        NetworkSelectionProfile.model_validate(
+            profile_payload()
+            | {"section_population": {"display_section_length_m": 1001}}
         )
 
 

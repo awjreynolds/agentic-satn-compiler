@@ -86,6 +86,10 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
     ),
     "satn/pipeline.py": ("module", "compilation orchestration and reuse binding"),
     "satn/population_reach.py": ("module", "governed Population Reach evidence assessment"),
+    "satn/section_population.py": (
+        "module",
+        "governed local Section Population Capture evidence assessment",
+    ),
     "satn/publisher.py": (
         "module",
         "EA recovery candidate fixed-point validation and immutable retention",
@@ -147,6 +151,7 @@ OPTIONAL_COMPONENT_GROUPS: Final[dict[str, frozenset[str]]] = {
             "satn/existing_alignment.py",
             "satn/network_selection.py",
             "satn/population_reach.py",
+            "satn/section_population.py",
             "satn/psa_evidence_loaders.py",
             "satn/spine_access_candidate_preparation.py",
             "satn/strategic_corridors.py",

@@ -43,6 +43,12 @@ from satn.psa_evidence_loaders import (
     load_population_reach_evidence,
 )
 from satn.routing import RoadGraph, RouteOption, choose_alignment
+from satn.section_population import (
+    SectionPopulationAssessment,
+    SectionPopulationProfile,
+    compile_section_population_capture,
+    derive_material_population_differences,
+)
 
 STRATEGIC_CORRIDOR_PREPARATION_CONTRACT = "satn-strategic-corridor-preparation/v1"
 STRATEGIC_DESTINATION_GRAPH_BINDING_CONTRACT = (
@@ -300,6 +306,7 @@ class StrategicCorridorPreparationResult:
     missing_inputs: tuple[str, ...]
     evidence_fingerprints: tuple[str, ...]
     evidence_lineage: dict[str, object]
+    section_population: SectionPopulationAssessment | None
     preparation_fingerprint: str
 
     @property
@@ -307,7 +314,7 @@ class StrategicCorridorPreparationResult:
         return self.status == "prepared"
 
     def canonical_payload(self) -> dict[str, object]:
-        return {
+        payload = {
             "contract": self.contract,
             "profile_fingerprint": self.profile_fingerprint,
             "status": self.status,
@@ -318,6 +325,15 @@ class StrategicCorridorPreparationResult:
             "evidence_fingerprints": list(self.evidence_fingerprints),
             "evidence_lineage": self.evidence_lineage,
         }
+        if self.section_population is not None:
+            payload["section_population"] = self.section_population.canonical()
+            payload["material_population_differences"] = [
+                item.canonical()
+                for item in derive_material_population_differences(
+                    self.section_population
+                )
+            ]
+        return payload
 
     def metadata(self) -> dict[str, object]:
         return {
@@ -325,6 +341,11 @@ class StrategicCorridorPreparationResult:
             "preparation_fingerprint": self.preparation_fingerprint,
             "unit_count": len(self.units),
             "candidate_count": sum(len(item.candidate_set.candidates) for item in self.units),
+            "population_display_section_count": (
+                len(self.section_population.sections)
+                if self.section_population is not None
+                else 0
+            ),
             "selection_performed": False,
             "network_geometry_mutated": False,
             "publication_performed": False,
@@ -378,6 +399,8 @@ def prepare_strategic_corridors(
     context: gpd.GeoDataFrame,
     source_config: SourceConfig,
     config_directory: Path,
+    area_definition: gpd.GeoDataFrame | None = None,
+    urban_extent: gpd.GeoDataFrame | None = None,
 ) -> StrategicCorridorPreparationResult:
     """Generate only finite, current, evidence-bound strategic units.
 
@@ -430,6 +453,28 @@ def prepare_strategic_corridors(
     )
     units = tuple(sorted((*units, *destination_units), key=lambda item: item.unit_id))
     issues = tuple(sorted((*issues, *destination_issues), key=_issue_key))
+    section_population = None
+    if (
+        population_load is not None
+        and area_definition is not None
+        and urban_extent is not None
+        and units
+    ):
+        population_alignments = _population_alignment_frame(units)
+        if not population_alignments.empty:
+            section_population = compile_section_population_capture(
+                population_alignments,
+                population_load.output_areas,
+                area_definition,
+                urban_extent=urban_extent,
+                source_content_sha256=population_load.frame_content_sha256,
+                profile=SectionPopulationProfile(
+                    **profile.section_population.model_dump(
+                        mode="python",
+                        exclude={"profile"},
+                    )
+                ),
+            )
     lineage = _evidence_lineage(population_load, education)
     fingerprints = tuple(sorted(_lineage_fingerprints(lineage)))
     # A missing/mismatched admitted destination is a hard preparation blocker:
@@ -456,6 +501,11 @@ def prepare_strategic_corridors(
         "missing_inputs": sorted(set(missing)),
         "evidence_fingerprints": list(fingerprints),
         "evidence_lineage": lineage,
+        **(
+            {"section_population": section_population.canonical()}
+            if section_population is not None
+            else {}
+        ),
     }
     return StrategicCorridorPreparationResult(
         contract=STRATEGIC_CORRIDOR_PREPARATION_CONTRACT,
@@ -467,8 +517,28 @@ def prepare_strategic_corridors(
         missing_inputs=tuple(sorted(set(missing))),
         evidence_fingerprints=fingerprints,
         evidence_lineage=lineage,
+        section_population=section_population,
         preparation_fingerprint=_fingerprint(provisional),
     )
+
+
+def _population_alignment_frame(
+    units: tuple[PreparedStrategicCorridorUnit, ...],
+) -> gpd.GeoDataFrame:
+    """Expose every finite candidate once through the section-capture seam."""
+
+    rows = [
+        {
+            "candidate_group_id": unit.unit_id,
+            "alignment_id": candidate.candidate_id,
+            "geometry": candidate.geometry.as_shapely(),
+        }
+        for unit in units
+        for candidate in unit.candidate_set.candidates
+    ]
+    # AlignmentCandidateInput canonical geometry is always EPSG:27700,
+    # independently of the source RoadGraph CRS.
+    return gpd.GeoDataFrame(rows, geometry="geometry", crs=27700)
 
 
 def _interurban_units(
