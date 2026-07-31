@@ -493,8 +493,8 @@
       "size_bytes": 265358
     },
     "service-worker.js": {
-      "sha256": "05b9a608b89ec8e4a04a25532cf0364bf97ca3919d535b51150872912a972eea",
-      "size_bytes": 1639
+      "sha256": "485c50562da02314a422b8920a573998cf054f1ec9996a56704e6f5b763c6ded",
+      "size_bytes": 1703
     },
     "topography-manifest.json": {
       "sha256": "8944ed55b713022e975fc55ad75bf3c63efa5c7b1ac735b085fc508ff1932cad",

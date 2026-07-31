@@ -194,9 +194,10 @@ self.addEventListener("fetch", event => {{
     const cached = await caches.match(event.request);
     if (cached) return cached;
     const response = await fetch(event.request);
-    if (response.ok) {{
+    const cacheResponse = response.ok ? response.clone() : null;
+    if (cacheResponse) {{
       event.waitUntil(caches.open(CACHE).then(cache =>
-        cache.put(event.request, response.clone())
+        cache.put(event.request, cacheResponse)
       ));
     }}
     return response;

@@ -135,7 +135,8 @@ def test_area_deployment_is_progressive_portable_and_not_git_path_bound(
     service_worker = (deployment / "service-worker.js").read_text(encoding="utf-8")
     assert "caches.match" in service_worker
     assert "event.waitUntil" in service_worker
-    assert "cache.put(event.request, response.clone())" in service_worker
+    assert "const cacheResponse = response.ok ? response.clone() : null" in service_worker
+    assert "cache.put(event.request, cacheResponse)" in service_worker
     assert '"assets/maplibre-gl.js"' in service_worker
     assert '"assets/review-map.' in service_worker
     assert "network.geojson" not in service_worker
@@ -202,20 +203,30 @@ def test_area_deployment_is_progressive_portable_and_not_git_path_bound(
 import fs from 'node:fs';
 const listeners = {};
 const calls = [];
+let delayCacheOpen = false;
+let releaseCacheOpen;
+const cacheOpenGate = new Promise(resolve => { releaseCacheOpen = resolve; });
+let cachedBody;
 global.location = { origin: 'https://example.test' };
 global.self = {
   addEventListener: (name, listener) => { listeners[name] = listener; },
   skipWaiting: () => {},
   clients: { claim: async () => {} }
 };
-const cache = { addAll: async urls => calls.push(urls), put: async () => {} };
+const cache = {
+  addAll: async urls => calls.push(urls),
+  put: async (_request, response) => { cachedBody = await response.text(); }
+};
 global.caches = {
-  open: async () => cache,
+  open: async () => {
+    if (delayCacheOpen) await cacheOpenGate;
+    return cache;
+  },
   keys: async () => [],
   delete: async () => true,
   match: async () => null
 };
-global.fetch = async () => ({ ok: true, clone() { return this; } });
+global.fetch = async () => new Response('payload', { status: 200 });
 eval(fs.readFileSync(0, 'utf8'));
 let install;
 listeners.install({ waitUntil: promise => { install = promise; } });
@@ -228,7 +239,18 @@ listeners.message({
   waitUntil: promise => { cacheCore = promise; }
 });
 await cacheCore;
-console.log(JSON.stringify({ calls, replies }));
+delayCacheOpen = true;
+let fetchResponse;
+let cacheWrite;
+listeners.fetch({
+  request: new Request('https://example.test/network.geojson'),
+  respondWith: promise => { fetchResponse = promise; },
+  waitUntil: promise => { cacheWrite = promise; }
+});
+const clientBody = await (await fetchResponse).text();
+releaseCacheOpen();
+await cacheWrite;
+console.log(JSON.stringify({ calls, replies, clientBody, cachedBody }));
 """
     completed = subprocess.run(
         [node, "--input-type=module", "-e", worker_probe],
@@ -255,6 +277,8 @@ console.log(JSON.stringify({ calls, replies }));
             ["network.geojson"],
         ],
         "replies": [{"ok": True}],
+        "clientBody": "payload",
+        "cachedBody": "payload",
     }
 
 
