@@ -44,6 +44,7 @@ from satn.psa_evidence_loaders import (
 )
 from satn.routing import RoadGraph, RouteOption, choose_alignment
 from satn.section_population import (
+    MaterialPopulationDifference,
     SectionPopulationAssessment,
     SectionPopulationProfile,
     compile_section_population_capture,
@@ -307,6 +308,7 @@ class StrategicCorridorPreparationResult:
     evidence_fingerprints: tuple[str, ...]
     evidence_lineage: dict[str, object]
     section_population: SectionPopulationAssessment | None
+    material_population_differences: tuple[MaterialPopulationDifference, ...]
     preparation_fingerprint: str
 
     @property
@@ -329,9 +331,7 @@ class StrategicCorridorPreparationResult:
             payload["section_population"] = self.section_population.canonical()
             payload["material_population_differences"] = [
                 item.canonical()
-                for item in derive_material_population_differences(
-                    self.section_population
-                )
+                for item in self.material_population_differences
             ]
         return payload
 
@@ -475,6 +475,11 @@ def prepare_strategic_corridors(
                     )
                 ),
             )
+    material_population_differences = (
+        derive_material_population_differences(section_population)
+        if section_population is not None
+        else ()
+    )
     lineage = _evidence_lineage(population_load, education)
     fingerprints = tuple(sorted(_lineage_fingerprints(lineage)))
     # A missing/mismatched admitted destination is a hard preparation blocker:
@@ -502,7 +507,12 @@ def prepare_strategic_corridors(
         "evidence_fingerprints": list(fingerprints),
         "evidence_lineage": lineage,
         **(
-            {"section_population": section_population.canonical()}
+            {
+                "section_population": section_population.canonical(),
+                "material_population_differences": [
+                    item.canonical() for item in material_population_differences
+                ],
+            }
             if section_population is not None
             else {}
         ),
@@ -518,6 +528,7 @@ def prepare_strategic_corridors(
         evidence_fingerprints=fingerprints,
         evidence_lineage=lineage,
         section_population=section_population,
+        material_population_differences=material_population_differences,
         preparation_fingerprint=_fingerprint(provisional),
     )
 

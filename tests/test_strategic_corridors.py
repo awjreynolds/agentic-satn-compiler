@@ -17,6 +17,7 @@ from satn.routing import RoadGraph
 from satn.sources import load_snapshot, snapshot
 from satn.strategic_corridors import (
     StrategicCorridorUnitRole,
+    _fingerprint,
     _provenance_id,
     prepare_strategic_corridors,
 )
@@ -170,6 +171,11 @@ def test_bath_prepares_separate_interurban_and_destination_units(tmp_path: Path)
         == compiled.population_display_sections["inside_area_residents"]
         + compiled.population_display_sections["outside_area_residents"]
     ).all()
+    payload = prepared.canonical_payload()
+    assert payload["material_population_differences"] == [
+        item.canonical() for item in prepared.material_population_differences
+    ]
+    assert prepared.preparation_fingerprint == _fingerprint(payload)
 
     # Population evidence remains a corridor measure.  Candidate geometry is
     # passed straight to the governed calculator; this asserts both declared

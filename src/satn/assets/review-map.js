@@ -556,11 +556,12 @@
   // collection. It must not respond to map movement or visibility filtering:
   // a section retains its meaning while reviewers compare different locations.
   function populationDisplayScale(features) {
-    const values = features
-      .filter((feature) => feature.properties?.feature_type === "population-display-section")
-      .map((feature) => Number(feature.properties.total_residents))
-      .filter((count) => Number.isFinite(count) && count >= 0);
-    const maximum = values.length ? Math.max(...values) : 0;
+    let maximum = 0;
+    for (const feature of features) {
+      if (feature.properties?.feature_type !== "population-display-section") continue;
+      const count = Number(feature.properties.total_residents);
+      if (Number.isFinite(count) && count >= 0 && count > maximum) maximum = count;
+    }
     if (!maximum) return { maximum: 0, classes: [{ minimum: 0, maximum: 0, color: "#6b7280" }] };
     const colors = ["#c6dbef", "#6baed6", "#2171b5"];
     const boundaries = [Math.ceil(maximum / 3), Math.ceil(maximum * 2 / 3), maximum];

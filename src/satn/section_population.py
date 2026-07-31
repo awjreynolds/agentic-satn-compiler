@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from dataclasses import dataclass
 from itertools import combinations, pairwise
@@ -172,6 +173,25 @@ class MaterialPopulationDifference:
 
 
 @dataclass(frozen=True)
+class _OutputAreaCentroid:
+    """One validated, measured OA centroid held behind the capture seam."""
+
+    oa_id: str
+    residents: int
+    centroid: Point
+    is_inside_area: bool
+
+
+@dataclass(frozen=True)
+class _OutputAreaIndex:
+    """Private canonical OA records and their one reusable spatial index."""
+
+    rows: tuple[_OutputAreaCentroid, ...]
+    centroids: gpd.GeoSeries
+    spatial_index: object
+
+
+@dataclass(frozen=True)
 class SectionPopulationAssessment:
     """Canonical ordered local population evidence for finite candidates."""
 
@@ -279,9 +299,10 @@ def compile_section_population_capture(
     if measured_boundary.is_empty:
         raise SectionPopulationValidationError("area definition must not be empty")
 
-    oa_rows = _oa_rows(
+    oa_index = _output_area_index(
         measured_areas,
         measured_centroids,
+        measured_boundary,
         oa_id_column=oa_id_column,
         residents_column=residents_column,
     )
@@ -313,8 +334,7 @@ def compile_section_population_capture(
                 alignment_id,
                 line,
                 measured_urban,
-                oa_rows,
-                measured_boundary,
+                oa_index,
                 profile,
             )
         )
@@ -396,8 +416,7 @@ def _alignment_sections(
     alignment_id: str,
     line: LineString,
     urban_extent: BaseGeometry | None,
-    oa_rows: tuple[tuple[str, int, Point], ...],
-    area_geometry: BaseGeometry,
+    oa_index: _OutputAreaIndex,
     profile: SectionPopulationProfile,
 ) -> list[PopulationDisplaySection]:
     length = float(line.length)
@@ -421,20 +440,24 @@ def _alignment_sections(
                 else profile.rural_capture_radius_m
             )
             captured = tuple(
-                (oa_id, residents, centroid)
-                for oa_id, residents, centroid in oa_rows
-                if float(centroid.distance(geometry)) <= radius
+                sorted(
+                    (
+                        oa_index.rows[int(index)]
+                        for index in oa_index.spatial_index.query(
+                            geometry.buffer(radius), sort=True
+                        )
+                        if float(oa_index.rows[int(index)].centroid.distance(geometry))
+                        <= radius
+                    ),
+                    key=lambda item: item.oa_id,
+                )
             )
-            captured_ids = tuple(item[0] for item in captured)
+            captured_ids = tuple(item.oa_id for item in captured)
             inside = sum(
-                residents
-                for _, residents, centroid in captured
-                if area_geometry.covers(centroid)
+                item.residents for item in captured if item.is_inside_area
             )
             outside = sum(
-                residents
-                for _, residents, centroid in captured
-                if not area_geometry.covers(centroid)
+                item.residents for item in captured if not item.is_inside_area
             )
             start_m = _distance(start)
             end_m = _distance(end)
@@ -515,14 +538,15 @@ def _intersection_points(geometry: BaseGeometry) -> tuple[Point, ...]:
     return ()
 
 
-def _oa_rows(
+def _output_area_index(
     frame: gpd.GeoDataFrame,
     centroids: gpd.GeoSeries,
+    area_geometry: BaseGeometry,
     *,
     oa_id_column: str,
     residents_column: str,
-) -> tuple[tuple[str, int, Point], ...]:
-    rows: list[tuple[str, int, Point]] = []
+) -> _OutputAreaIndex:
+    rows: list[_OutputAreaCentroid] = []
     seen: set[str] = set()
     for (_, row), centroid in zip(frame.iterrows(), centroids, strict=True):
         oa_id = _identifier(row[oa_id_column], "OA")
@@ -538,8 +562,23 @@ def _oa_rows(
             raise SectionPopulationValidationError(
                 "population-weighted centroids must be valid non-empty Points"
             )
-        rows.append((oa_id, int(residents), centroid))
-    return tuple(sorted(rows, key=lambda item: item[0]))
+        rows.append(
+            _OutputAreaCentroid(
+                oa_id=oa_id,
+                residents=int(residents),
+                centroid=centroid,
+                is_inside_area=bool(area_geometry.covers(centroid)),
+            )
+        )
+    canonical_rows = tuple(sorted(rows, key=lambda item: item.oa_id))
+    canonical_centroids = gpd.GeoSeries(
+        [item.centroid for item in canonical_rows], crs=_BNG
+    )
+    return _OutputAreaIndex(
+        rows=canonical_rows,
+        centroids=canonical_centroids,
+        spatial_index=canonical_centroids.sindex,
+    )
 
 
 def _directed_material_runs(
@@ -551,13 +590,12 @@ def _directed_material_runs(
     qualifying: list[
         tuple[PopulationDisplaySection, int, float]
     ] = []
+    compared_fractions = [item.midpoint_fraction for item in compared]
     for section in advantaged:
-        other = min(
+        other = _nearest_section_by_midpoint(
+            section.midpoint_fraction,
             compared,
-            key=lambda item: (
-                abs(item.midpoint_fraction - section.midpoint_fraction),
-                item.section_order,
-            ),
+            compared_fractions,
         )
         absolute = section.total_residents - other.total_residents
         relative = (
@@ -624,6 +662,36 @@ def _directed_material_runs(
             )
         )
     return results
+
+
+def _nearest_section_by_midpoint(
+    target_fraction: float,
+    compared: list[PopulationDisplaySection],
+    compared_fractions: list[float],
+) -> PopulationDisplaySection:
+    """Return the current nearest section with the historic order tie-break."""
+
+    insertion = bisect_left(compared_fractions, target_fraction)
+    exact_end = bisect_right(compared_fractions, target_fraction)
+    if insertion != exact_end:
+        candidates = compared[insertion:exact_end]
+    else:
+        candidates = []
+        if insertion:
+            left_fraction = compared_fractions[insertion - 1]
+            left_start = bisect_left(compared_fractions, left_fraction)
+            candidates.extend(compared[left_start:insertion])
+        if insertion < len(compared):
+            right_fraction = compared_fractions[insertion]
+            right_end = bisect_right(compared_fractions, right_fraction)
+            candidates.extend(compared[insertion:right_end])
+    return min(
+        candidates,
+        key=lambda item: (
+            abs(item.midpoint_fraction - target_fraction),
+            item.section_order,
+        ),
+    )
 
 
 def _validate_frame(

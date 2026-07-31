@@ -5,8 +5,10 @@ import pytest
 from shapely.geometry import LineString, Point, box
 
 from satn.section_population import (
+    PopulationDisplaySection,
     SectionPopulationProfile,
     SectionPopulationValidationError,
+    _nearest_section_by_midpoint,
     compile_section_population_capture,
     derive_material_population_differences,
 )
@@ -140,6 +142,103 @@ def test_section_identity_is_order_independent_and_profile_is_explicit() -> None
     assert original.canonical() == shuffled.canonical()
     assert original.profile.canonical()["urban_capture_radius_m"] == 250.0
     assert original.profile.canonical()["rural_capture_radius_m"] == 750.0
+
+
+def test_spatial_capture_keeps_exact_radius_boundary_membership_and_canonical_order() -> None:
+    alignments = gpd.GeoDataFrame(
+        {
+            "candidate_group_id": ["choice-1"],
+            "alignment_id": ["candidate-a"],
+            "geometry": [LineString([(0, 0), (100, 0)])],
+        },
+        geometry="geometry",
+        crs="EPSG:27700",
+    )
+    output_areas = gpd.GeoDataFrame(
+        {
+            # Deliberately shuffled: the output must retain canonical OA-ID order.
+            "OA21CD": ["E00000003", "E00000001", "E00000004", "E00000002"],
+            "usual_residents": [200, 100, 400, 300],
+            "population_weighted_centroid": [
+                Point(50, 250),  # exactly at the 250 m urban radius
+                Point(0, 0),  # exactly on the authority boundary
+                Point(150, 0),  # captured but outside the authority
+                Point(50, 250.001),  # just beyond the exact radius
+            ],
+            "geometry": [
+                box(45, 245, 55, 255),
+                box(-5, -5, 5, 5),
+                box(145, -5, 155, 5),
+                box(45, 245.001, 55, 255.001),
+            ],
+        },
+        geometry="geometry",
+        crs="EPSG:27700",
+    )
+    area = gpd.GeoDataFrame(
+        {"geometry": [box(0, 0, 100, 500)]}, geometry="geometry", crs="EPSG:27700"
+    )
+    urban = gpd.GeoDataFrame(
+        {"geometry": [box(-10, -10, 200, 500)]},
+        geometry="geometry",
+        crs="EPSG:27700",
+    )
+
+    original = compile_section_population_capture(
+        alignments,
+        output_areas,
+        area,
+        urban_extent=urban,
+        source_content_sha256="f" * 64,
+    )
+    shuffled = compile_section_population_capture(
+        alignments,
+        output_areas.iloc[::-1],
+        area,
+        urban_extent=urban,
+        source_content_sha256="f" * 64,
+    )
+
+    section = original.sections[0]
+    assert section.captured_oa_ids == ("E00000001", "E00000003", "E00000004")
+    assert section.inside_area_residents == 300
+    assert section.outside_area_residents == 400
+    assert original.canonical() == shuffled.canonical()
+
+
+def test_nearest_midpoint_matching_preserves_order_tie_break_for_unequal_sections() -> None:
+    def section(section_id: str, section_order: int, start: float, end: float):
+        return PopulationDisplaySection(
+            section_id=section_id,
+            candidate_group_id="choice-1",
+            alignment_id="candidate-b",
+            section_order=section_order,
+            start_distance_m=start,
+            end_distance_m=end,
+            length_m=end - start,
+            alignment_length_m=1_000,
+            network_scope="rural",
+            capture_radius_m=750,
+            total_residents=0,
+            inside_area_residents=0,
+            outside_area_residents=0,
+            captured_oa_ids=(),
+            geometry=LineString([(start, 0), (end, 0)]),
+        )
+
+    compared = [
+        section("left", 5, 200, 300),
+        section("left-duplicate", 9, 200, 300),
+        section("right", 10, 700, 800),
+        section("tail", 20, 900, 1_000),
+    ]
+    fractions = [item.midpoint_fraction for item in compared]
+
+    # 0.5 is exactly equidistant from left/right; historic semantics select
+    # the lower section order, not the first insertion candidate.
+    assert _nearest_section_by_midpoint(0.5, compared, fractions).section_id == "left"
+    assert _nearest_section_by_midpoint(0.25, compared, fractions).section_id == "left"
+    assert _nearest_section_by_midpoint(0.91, compared, fractions).section_id == "tail"
 
 
 def test_material_population_difference_requires_absolute_relative_and_persistence() -> None:
