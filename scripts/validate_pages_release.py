@@ -322,6 +322,7 @@ def _load_expected_catalogue(catalogue_path: str | Path) -> dict[str, object]:
         artifacts = {
             name: f"{deployment_path}{_relative_path(raw_artifacts[name], f'artifacts.{name}')}"
             for name in _ARTIFACTS
+            if name != "review_map_zip"
         }
         expected.append(
             {
@@ -969,7 +970,6 @@ def _validate_pages_directory(
         _validate_progressive_manifests(deployment, publication)
         if artifacts_lock != _runtime_artifacts(deployment):
             raise ValueError("tracked provenance lock artifacts are invalid")
-        _validate_review_map_zip(deployment)
         artifacts = entry["artifacts"]
         assert isinstance(artifacts, dict)
         for name, artifact in artifacts.items():
@@ -1009,7 +1009,6 @@ def _validate_pages_directory(
         expected_files.update(
             {
                 f"deployments/{deployment_id}/{LOCK_NAME}",
-                f"deployments/{deployment_id}/review-map.zip",
             }
         )
     actual_files = {item.relative_to(pages).as_posix() for item in _files(pages)}

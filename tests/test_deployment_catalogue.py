@@ -24,8 +24,8 @@ def test_catalogue_builds_a_small_root_selector_with_stable_area_links(tmp_path:
     weca_snapshot_id = AreaDefinition.from_yaml(weca_definition).source.snapshot_id
     assert publication["schema_version"] == "satn-deployment-catalogue/v1"
     assert publication["title"] == "Agentic SATN Compiler deployments"
-    assert publication["deployments"] == [
-        {
+    published = {entry["deployment_id"]: entry for entry in publication["deployments"]}
+    assert published["banes"] == {
             "deployment_id": "banes",
             "area_id": "bath-and-north-east-somerset",
             "area_name": "Bath and North East Somerset",
@@ -35,7 +35,6 @@ def test_catalogue_builds_a_small_root_selector_with_stable_area_links(tmp_path:
             "artifacts": {
                 "review_map": "deployments/banes/index.html",
                 "network_map_pdf": "deployments/banes/network-map.pdf",
-                "review_map_zip": "deployments/banes/review-map.zip",
             },
             "title": "B&NES Strategic Active Travel Network Review",
             "scope": {
@@ -57,8 +56,8 @@ def test_catalogue_builds_a_small_root_selector_with_stable_area_links(tmp_path:
                     "model": None,
                 },
             },
-        },
-        {
+        }
+    assert published["weca"] == {
             "deployment_id": "weca",
             "area_id": "west-of-england",
             "area_name": "West of England Combined Authority area",
@@ -68,7 +67,6 @@ def test_catalogue_builds_a_small_root_selector_with_stable_area_links(tmp_path:
             "artifacts": {
                 "review_map": "deployments/weca/index.html",
                 "network_map_pdf": "deployments/weca/network-map.pdf",
-                "review_map_zip": "deployments/weca/review-map.zip",
             },
             "title": "West of England Strategic Active Travel Network Review",
             "scope": {
@@ -95,12 +93,12 @@ def test_catalogue_builds_a_small_root_selector_with_stable_area_links(tmp_path:
                     "model": None,
                 },
             },
-        },
-    ]
+        }
     page = (destination / "index.html").read_text(encoding="utf-8")
     assert "Bath and North East Somerset" in page
     assert 'href="deployments/banes/index.html"' in page
     assert 'href="deployments/weca/network-map.pdf"' in page
+    assert ".zip" not in page
     assert set(path.name for path in destination.iterdir()) == {"catalogue.json", "index.html"}
 
 

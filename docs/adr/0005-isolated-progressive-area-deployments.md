@@ -93,10 +93,10 @@ of concept. The legacy review option remains accepted for workflow compatibility
   --allow-non-production
 ```
 
-The only excluded cyclic files are `provenance-lock.json` itself and the nested
-`review-map.zip`; the latter is separately required to be a safe, byte-for-byte
-mirror of every other standalone deployment file, including the copied lock.
+The only cyclic deployment files are `provenance-lock.json` itself and the local
+`review-map.zip`. The Pages adapter publishes neither the nested ZIP nor a link to it;
+the release transport archive is deleted from GitHub after a successful deployment.
 
-Portable PDFs and Review Map ZIPs remain first-class Area Deployment artifacts.
+Portable PDFs and local Review Map ZIPs remain first-class Area Deployment artifacts.
 GitHub Pages is an initial hosting adapter, not part of the Area Deployment identity;
 publication must fail its configured size budget before a hosting limit is exceeded.

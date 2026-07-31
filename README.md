@@ -1237,7 +1237,8 @@ artifacts validate against each other:
   `human-intervention-requests.json`, `divergence-records.json` and
   `backbone-comparison.json` expose the same governed run;
 - `review-map/` is a backend-free static site with a vendored, pinned MapLibre build;
-- `review-map.zip` contains that complete directory unchanged; and
+- `review-map.zip` contains that complete directory unchanged as a local build
+  artifact, but is not published by the Pages catalogue; and
 - `network-map.pdf` is A3 landscape by default, with configurable A2/A3/A4 size,
   title, date, legend, scale and disclaimer.
 
@@ -1286,9 +1287,10 @@ uv run python scripts/publish_site.py deployments/weca/area.yaml
 uv run python scripts/package_pages.py
 ```
 
-`build/satn-pages.zip` is attached to a GitHub release and deployed by the Pages
-workflow. Generated snapshots, compiled outputs, deployment directories, PDFs, ZIPs
-and Pages trees are reproducible process artifacts and are not committed to Git. The
+`build/satn-pages.zip` is used as temporary release transport by the Pages workflow
+and deleted from the public release after a successful deployment. Generated
+snapshots, compiled outputs, deployment directories, PDFs, ZIPs and Pages trees are
+reproducible process artifacts and are not committed to Git. The
 packager fails before publication if the configured Pages size budget would be
 exceeded. Runtime-governance and urban-road evidence remain published and
 provenance-bound for inspection, but their review status does not block publication

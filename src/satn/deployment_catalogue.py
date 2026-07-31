@@ -65,7 +65,11 @@ class DeploymentCatalogue:
                     "area_definition": entry.area_definition,
                     "area_definition_sha256": entry.area_definition_sha256,
                     "deployment_path": entry.deployment_path,
-                    "artifacts": entry.publication_links(),
+                    "artifacts": {
+                        name: link
+                        for name, link in entry.publication_links().items()
+                        if name != "review_map_zip"
+                    },
                     "title": entry.title,
                     "scope": entry.scope,
                     "evidence_provenance": entry.evidence_provenance,
@@ -215,12 +219,10 @@ def _html(catalogue: DeploymentCatalogue) -> str:
         <h2>{name}</h2>
         <p><a href=\"{map}\">Open interactive review map</a></p>
         <p><a href=\"{pdf}\" download>Download strategic overview PDF</a></p>
-        <p><a href=\"{zip}\" download>Download review-map ZIP</a></p>
       </li>""".format(
             name=html.escape(entry.area_name),
             map=html.escape(entry.publication_links()["review_map"], quote=True),
             pdf=html.escape(entry.publication_links()["network_map_pdf"], quote=True),
-            zip=html.escape(entry.publication_links()["review_map_zip"], quote=True),
         )
         for entry in catalogue.deployments
     )

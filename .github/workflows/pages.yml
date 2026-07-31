@@ -105,3 +105,18 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
+
+  cleanup-release-archive:
+    needs: [verify-release, deploy]
+    if: ${{ always() && needs.deploy.result == 'success' }}
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Remove temporary release archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.verify-release.outputs.release_tag }}
+        run: >-
+          gh release delete-asset "$RELEASE_TAG" satn-pages.zip
+          --repo "$GITHUB_REPOSITORY" --yes

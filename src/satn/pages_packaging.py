@@ -887,7 +887,7 @@ def _copy_deployments(
         if not source.is_dir():
             raise ValueError(f"missing generated deployment for {entry.deployment_id}: {source}")
         _files(source)
-        shutil.copytree(source, target)
+        shutil.copytree(source, target, ignore=shutil.ignore_patterns("review-map.zip"))
         lock = _provenance_lock(
             catalogue_root / Path(entry.area_definition).parent / LOCK_NAME,
             entry.deployment_id,
@@ -918,14 +918,6 @@ def _copy_deployments(
                     f"generated deployment {entry.deployment_id} is missing {name}: {artifact}"
                 )
 
-        zip_path = target / entry.artifacts["review_map_zip"]
-        _write_zip(
-            zip_path,
-            target,
-            prefix=PurePosixPath("review-map"),
-            excluded={Path(entry.artifacts["review_map_zip"])},
-        )
-        _validate_review_map_zip(target)
 
 
 def _catalogue_root_lock(
@@ -988,7 +980,6 @@ def _validate_exact_pages_file_set(
         expected_files.update(
             {
                 f"deployments/{entry.deployment_id}/{LOCK_NAME}",
-                f"deployments/{entry.deployment_id}/review-map.zip",
             }
         )
     actual_files = {item.relative_to(pages).as_posix() for item in _files(pages)}
@@ -1079,12 +1070,10 @@ def _validate_pages_directory(
             expected_evidence_provenance=evidence_provenance,
             expected_lock=_provenance_lock(deployment / LOCK_NAME, deployment_id),
         )
-        _validate_review_map_zip(deployment)
-
         artifacts = entry.get("artifacts")
         if not isinstance(artifacts, dict):
             raise ValueError("catalogue deployment artifacts must be an object")
-        for name in ("review_map", "network_map_pdf", "review_map_zip"):
+        for name in ("review_map", "network_map_pdf"):
             artifact_path = _relative_file_path(artifacts.get(name), f"catalogue artifacts.{name}")
             try:
                 artifact_path.relative_to(expected_directory)

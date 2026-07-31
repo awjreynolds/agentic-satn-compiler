@@ -521,6 +521,11 @@ def test_published_pages_workflow_requires_independent_release_validation() -> N
     assert "validator_args+=(--allow-non-production)" in validation_script
     validation_command = 'python scripts/validate_pages_release.py "${validator_args[@]}"'
     assert validation_command in validation_script
+    cleanup = workflow["jobs"]["cleanup-release-archive"]
+    assert cleanup["needs"] == ["verify-release", "deploy"]
+    cleanup_script = cleanup["steps"][0]["run"]
+    assert "gh release delete-asset" in cleanup_script
+    assert "satn-pages.zip" in cleanup_script
 
 
 def write_layer_shard(
@@ -755,12 +760,12 @@ deployments:
         isolated_catalogue,
         allow_non_production=True,
     )
-    assert (
+    assert not (
         validated.pages_directory / f"deployments/{definition.deployment_slug}/review-map.zip"
-    ).is_file()
+    ).exists()
 
 
-def test_package_pages_generates_stable_links_deployment_zip_and_release_archive(
+def test_package_pages_generates_stable_links_without_published_deployment_zips(
     tmp_path: Path,
 ) -> None:
     catalogue = tmp_path / "catalogue.yaml"
@@ -779,7 +784,6 @@ def test_package_pages_generates_stable_links_deployment_zip_and_release_archive
     assert publication["deployments"][0]["artifacts"] == {
         "review_map": "deployments/test-area/index.html",
         "network_map_pdf": "deployments/test-area/network-map.pdf",
-        "review_map_zip": "deployments/test-area/review-map.zip",
     }
     assert publication["deployments"][0]["area_id"] == "test-geography"
     assert publication["deployments"][0]["title"] == "Test area deployment"
@@ -804,24 +808,11 @@ def test_package_pages_generates_stable_links_deployment_zip_and_release_archive
         == area_definition_sha256
     )
     assert (destination / "deployments" / "test-area" / "network-map.pdf").exists()
-    with zipfile.ZipFile(destination / "deployments" / "test-area" / "review-map.zip") as archive:
-        assert set(archive.namelist()) == {
-            "review-map/assets/map.js",
-            "review-map/compiler-run.json",
-            "review-map/data.js",
-            "review-map/index.html",
-            "review-map/layer-manifest.json",
-            "review-map/network-map.pdf",
-            "review-map/network.geojson",
-            "review-map/publication.json",
-            "review-map/provenance-lock.json",
-            "review-map/topography-manifest.json",
-            "review-map/topography-profile-evidence.json",
-        }
+    assert not (destination / "deployments" / "test-area" / "review-map.zip").exists()
     with zipfile.ZipFile(release) as archive:
         assert "index.html" in archive.namelist()
         assert "catalogue.json" in archive.namelist()
-        assert "deployments/test-area/review-map.zip" in archive.namelist()
+        assert "deployments/test-area/review-map.zip" not in archive.namelist()
 
 
 @pytest.mark.parametrize(
