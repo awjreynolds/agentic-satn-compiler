@@ -28,6 +28,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=False,
         help="run tests that retrieve configured national Elevation Evidence",
     )
+    parser.addoption(
+        "--parallel-reduction-deep",
+        action="store_true",
+        default=False,
+        help="run the deep Parallel-Reduction proving-corpus boundary suite",
+    )
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:

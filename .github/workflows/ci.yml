@@ -22,6 +22,9 @@ jobs:
       - run: uv export --frozen --group dev --no-emit-project --output-file .audit-requirements.txt
       - run: uv run pip-audit -r .audit-requirements.txt --strict
       - run: uv run ruff check .
+      # One complete synthetic Scenario Compilation is the routine
+      # Parallel-Reduction proving gate. Expected results are read-only here.
+      - run: uv run pytest tests/test_parallel_reduction_corpus.py
       # Routine regression is fixture-only; the explicit WECA compiler benchmark
       # is a manual governed release gate and must never run in CI.
       - run: uv run pytest

@@ -1,0 +1,17 @@
+{
+  "contract": "satn-parallel-reduction-scenario-manifest/v1",
+  "scenario_id": "parallel-reduction-acceptance-composite",
+  "expected_result": "expected/acceptance-composite.json",
+  "profile_id": "parallel-reduction-corpus-v1",
+  "area_id": "synthetic-parallel-reduction",
+  "config": {"urban_proximity_m": 500, "rural_proximity_m": 1500, "minimum_symmetric_coverage_pct": 80, "material_population_difference": 100, "material_score_difference": 10},
+  "scripted_runtime": {"contract": "satn-scripted-corpus-runtime/v1", "responses": [{"request_id": "agent-choice", "outcome": "select", "route_id": "agent-east"}, {"request_id": "runtime-fallback", "outcome": "provider-failure", "failure_code": "scripted-provider-failure"}]},
+  "zones": [
+    {"zone_id": "convergence-and-divergence", "origin_m": [0, 0]}, {"zone_id": "scope-brackets", "origin_m": [4000, 0]}, {"zone_id": "continuous-hybrid", "origin_m": [8000, 0]}, {"zone_id": "material-dominance", "origin_m": [12000, 0]}, {"zone_id": "deterministic-hierarchy", "origin_m": [16000, 0]}, {"zone_id": "scripted-agent-choice", "origin_m": [20000, 0]}, {"zone_id": "scripted-runtime-fallback", "origin_m": [24000, 0]}, {"zone_id": "access-only-quiet-lane", "origin_m": [28000, 0]}, {"zone_id": "crossing-warning-and-bridge-gap", "origin_m": [32000, 0]}, {"zone_id": "officer-divergence", "origin_m": [36000, 0]}
+  ],
+  "routes": [
+    {"route_id": "convergence-west", "endpoints": ["a", "b"], "coordinates": [[0, 0], [2000, 0]], "network_scope": "rural", "population": 100, "gradient_pct": 2, "access_score": 5, "existing_infrastructure_score": 5},
+    {"route_id": "convergence-east", "endpoints": ["a", "b"], "coordinates": [[0, 800], [200, 800], [1800, 800], [2000, 0]], "network_scope": "rural", "population": 100, "gradient_pct": 2, "access_score": 5, "existing_infrastructure_score": 5},
+    {"route_id": "agent-east", "endpoints": ["c", "d"], "coordinates": [[20000, 0], [22000, 0]], "network_scope": "rural", "population": 200, "gradient_pct": 2, "access_score": 8, "existing_infrastructure_score": 8}
+  ]
+}
