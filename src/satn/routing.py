@@ -39,6 +39,7 @@ MAIN_ROADS = {"motorway", "trunk", "primary", "secondary", "tertiary"}
 
 LOGGER = logging.getLogger(__name__)
 ATTACHMENT_TIE_BREAK_EPSILON = 1e-9
+_REVERSE_PATH_UNSET = object()
 
 
 @dataclass
@@ -1100,37 +1101,117 @@ class RoadGraph:
 
         unique_pairs = tuple(sorted(set(pairs)))
         ordered_roles = tuple(dict.fromkeys(roles))
-        options = {
-            pair: {role: None for role in ordered_roles}
-            for pair in unique_pairs
-        }
+        options = {pair: {role: None for role in ordered_roles} for pair in unique_pairs}
         grouped: dict[tuple[str, str, bool], set[str]] = {}
         for start, end in unique_pairs:
             for role in ordered_roles:
                 grouped.setdefault((role, start, strategic_use), set()).add(end)
         searches = 0
+        primary_paths: dict[tuple[tuple[str, str], str], list[str] | None] = {}
         for (role, start, role_strategic_use), ends in sorted(grouped.items()):
             route_graph = self._graph_for_role(
                 role,
                 strategic_use=role_strategic_use,
             )
             try:
-                _lengths, paths = nx.single_source_dijkstra(
+                lengths, paths = nx.single_source_dijkstra(
                     route_graph,
                     start,
                     weight=_weight_for(role),
                 )
             except nx.NodeNotFound:
+                lengths = {}
                 paths = {}
             searches += 1
             for end in sorted(ends):
                 nodes = paths.get(end)
-                if nodes is not None:
-                    options[(start, end)][role] = self._option_from_nodes(
-                        nodes,
-                        role,
-                        strategic_use=role_strategic_use,
+                if nodes is not None and _has_equal_cost_route_tie(
+                    route_graph,
+                    start,
+                    end,
+                    lengths,
+                    _weight_for(role),
+                ):
+                    # NetworkX's target-specific bidirectional Dijkstra has a
+                    # distinct deterministic tie choice from its single-source
+                    # implementation.  Retain the legacy path only for the
+                    # bounded targets where equal-cost alternatives exist.
+                    nodes = nx.shortest_path(
+                        route_graph,
+                        start,
+                        end,
+                        weight=_weight_for(role),
                     )
+                    searches += 1
+                primary_paths[((start, end), role)] = nodes
+
+        reverse_paths: dict[tuple[tuple[str, str], str], list[str] | None] = {}
+        reverse_groups: dict[
+            tuple[str, str, bool],
+            list[tuple[tuple[tuple[str, str], str], str]],
+        ] = {}
+        for request_key, nodes in primary_paths.items():
+            pair, role = request_key
+            if nodes is None:
+                continue
+            route_graph = self._graph_for_role(role, strategic_use=strategic_use)
+            reciprocal = list(reversed(nodes))
+            if all(
+                route_graph.has_edge(left, right)
+                for left, right in pairwise(reciprocal)
+            ):
+                reverse_paths[request_key] = reciprocal
+                continue
+            reverse_groups.setdefault((role, pair[1], strategic_use), []).append(
+                (request_key, pair[0])
+            )
+
+        for (role, reverse_start, role_strategic_use), requests in sorted(
+            reverse_groups.items()
+        ):
+            route_graph = self._graph_for_role(
+                role,
+                strategic_use=role_strategic_use,
+            )
+            weight = _weight_for(role)
+            try:
+                lengths, paths = nx.single_source_dijkstra(
+                    route_graph,
+                    reverse_start,
+                    weight=weight,
+                )
+            except nx.NodeNotFound:
+                lengths = {}
+                paths = {}
+            searches += 1
+            for request_key, reverse_end in sorted(requests):
+                nodes = paths.get(reverse_end)
+                if nodes is not None and _has_equal_cost_route_tie(
+                    route_graph,
+                    reverse_start,
+                    reverse_end,
+                    lengths,
+                    weight,
+                ):
+                    nodes = nx.shortest_path(
+                        route_graph,
+                        reverse_start,
+                        reverse_end,
+                        weight=weight,
+                    )
+                    searches += 1
+                reverse_paths[request_key] = nodes
+
+        for request_key, nodes in primary_paths.items():
+            if nodes is None:
+                continue
+            pair, role = request_key
+            options[pair][role] = self._option_from_nodes(
+                nodes,
+                role,
+                strategic_use=strategic_use,
+                reverse_nodes=reverse_paths.get(request_key),
+            )
         return options, searches
 
     def _option_from_nodes(
@@ -1139,6 +1220,7 @@ class RoadGraph:
         role: str,
         *,
         strategic_use: bool = False,
+        reverse_nodes: list[str] | object | None = _REVERSE_PATH_UNSET,
     ) -> RouteOption | None:
         weight = _weight_for(role)
         route_graph = self._graph_for_role(role, strategic_use=strategic_use)
@@ -1152,21 +1234,29 @@ class RoadGraph:
         a_length = sum(float(edge["length_m"]) for edge in edge_data if _is_a_road(edge["ref"]))
         ncn_length = sum(float(edge["length_m"]) for edge in edge_data if edge["ncn"])
         try:
-            reverse_nodes = list(reversed(nodes))
-            if not all(
-                route_graph.has_edge(left, right)
-                for left, right in pairwise(reverse_nodes)
-            ):
-                reverse_nodes = nx.shortest_path(
-                    route_graph,
-                    nodes[-1],
-                    nodes[0],
-                    weight=weight,
-                )
+            if reverse_nodes is _REVERSE_PATH_UNSET:
+                resolved_reverse_nodes = list(reversed(nodes))
+                if not all(
+                    route_graph.has_edge(left, right)
+                    for left, right in pairwise(resolved_reverse_nodes)
+                ):
+                    resolved_reverse_nodes = nx.shortest_path(
+                        route_graph,
+                        nodes[-1],
+                        nodes[0],
+                        weight=weight,
+                    )
+            elif reverse_nodes is None:
+                raise nx.NetworkXNoPath
+            else:
+                resolved_reverse_nodes = reverse_nodes
             reverse_edges = [
-                route_graph[left][right] for left, right in pairwise(reverse_nodes)
+                route_graph[left][right]
+                for left, right in pairwise(resolved_reverse_nodes)
             ]
-            reverse_geometry = _merge_route([edge["geometry"] for edge in reverse_edges])
+            reverse_geometry = _merge_route(
+                [edge["geometry"] for edge in reverse_edges]
+            )
         except (nx.NetworkXNoPath, nx.NodeNotFound):
             reverse_edges = []
             reverse_geometry = None
@@ -1327,6 +1417,42 @@ def _weight_for(role: str) -> Callable[[str, str, dict[str, object]], float]:
         return length
 
     return weight
+
+
+def _has_equal_cost_route_tie(
+    graph: nx.DiGraph,
+    start: str,
+    end: str,
+    distances: Mapping[str, float],
+    weight: Callable[[str, str, dict[str, object]], float],
+) -> bool:
+    """Return whether the shortest-route ancestry contains a real cost tie."""
+
+    if end not in distances:
+        return False
+    pending = [end]
+    visited: set[str] = set()
+    while pending:
+        node = pending.pop()
+        if node == start or node in visited:
+            continue
+        visited.add(node)
+        predecessors = [
+            predecessor
+            for predecessor in graph.predecessors(node)
+            if predecessor in distances
+            and math.isclose(
+                float(distances[predecessor])
+                + weight(predecessor, node, graph[predecessor][node]),
+                float(distances[node]),
+                rel_tol=1e-12,
+                abs_tol=1e-9,
+            )
+        ]
+        if len(predecessors) > 1:
+            return True
+        pending.extend(predecessors)
+    return False
 
 
 def _is_b_road(refs: object) -> bool:

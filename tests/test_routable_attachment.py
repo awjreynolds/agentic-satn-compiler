@@ -76,39 +76,39 @@ def test_batched_routes_preserve_asymmetric_one_way_and_equal_cost_options() -> 
         gpd.GeoDataFrame(
             [
                 {
-                    "osmid": "a-b",
-                    "u": "a",
-                    "v": "b",
-                    "length": 10,
-                    "geometry": LineString([(0, 0), (10, 0)]),
-                },
-                {
-                    "osmid": "b-d",
-                    "u": "b",
-                    "v": "d",
-                    "length": 10,
-                    "geometry": LineString([(10, 0), (20, 0)]),
-                },
-                {
-                    "osmid": "a-c",
-                    "u": "a",
-                    "v": "c",
-                    "length": 10,
-                    "geometry": LineString([(0, 0), (10, 10)]),
-                },
-                {
-                    "osmid": "c-d",
+                    "osmid": "c-t",
                     "u": "c",
-                    "v": "d",
-                    "length": 10,
-                    "geometry": LineString([(10, 10), (20, 0)]),
+                    "v": "t",
+                    "length": 1,
+                    "geometry": LineString([(2, 0), (3, 0)]),
                 },
                 {
-                    "osmid": "d-a-one-way",
+                    "osmid": "d-t",
                     "u": "d",
-                    "v": "a",
-                    "length": 35,
-                    "geometry": LineString([(20, 0), (0, 0)]),
+                    "v": "t",
+                    "length": 2,
+                    "geometry": LineString([(1, 1), (3, 0)]),
+                },
+                {
+                    "osmid": "s-c",
+                    "u": "s",
+                    "v": "c",
+                    "length": 2,
+                    "geometry": LineString([(0, 0), (2, 0)]),
+                },
+                {
+                    "osmid": "s-d",
+                    "u": "s",
+                    "v": "d",
+                    "length": 1,
+                    "geometry": LineString([(0, 0), (1, 1)]),
+                },
+                {
+                    "osmid": "t-s-one-way",
+                    "u": "t",
+                    "v": "s",
+                    "length": 7,
+                    "geometry": LineString([(3, 0), (0, 0)]),
                 },
             ],
             geometry="geometry",
@@ -117,19 +117,23 @@ def test_batched_routes_preserve_asymmetric_one_way_and_equal_cost_options() -> 
     )
     roles = ("direct", "strategic-spine")
     expected = {
-        role: graph.option("a", "d", role, strategic_use=True)
+        role: graph.option("s", "t", role, strategic_use=True)
         for role in roles
     }
 
+    assert expected["direct"] is not None
+    assert expected["direct"].edge_ids == ["s-c", "c-t"]
+    assert expected["direct"].reverse_edge_ids == ["t-s-one-way"]
+
     routed, search_count = graph.route_options_for_pairs(
-        (("a", "d"),),
+        (("s", "t"),),
         roles=roles,
         strategic_use=True,
     )
 
-    assert search_count == 2
+    assert search_count == 6
     for role, option in expected.items():
-        actual = routed[("a", "d")][role]
+        actual = routed[("s", "t")][role]
         assert actual is not None and option is not None
         assert actual.edge_ids == option.edge_ids
         assert actual.reverse_edge_ids == option.reverse_edge_ids
