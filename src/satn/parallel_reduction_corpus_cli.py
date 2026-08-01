@@ -11,6 +11,7 @@ from satn.parallel_reduction_corpus import (
     canonical_expected_result,
     load_manifest,
     write_expected_result,
+    write_expected_visual,
 )
 
 corpus_app = typer.Typer(no_args_is_help=True, help="Manage governed synthetic corpora.")
@@ -36,8 +37,8 @@ def regenerate_parallel_reduction_expected_result(manifest_path: Path) -> None:
         raise typer.BadParameter(
             "corpus compilation did not produce a complete Scenario Compilation"
         )
-    write_expected_result(
-        manifest.expected_result_path,
-        canonical_expected_result(manifest, result),
-    )
+    expected = canonical_expected_result(manifest, result)
+    write_expected_result(manifest.expected_result_path, expected)
+    write_expected_visual(manifest.expected_visual_path, expected)
     typer.echo(manifest.expected_result_path)
+    typer.echo(manifest.expected_visual_path)

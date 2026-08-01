@@ -1195,18 +1195,24 @@
     return panel;
   }
 
+  function finiteMetric(raw, scale = 1) {
+    if (raw === null || raw === undefined || raw === "") return null;
+    const metric = Number(raw) * scale;
+    return Number.isFinite(metric) ? metric : null;
+  }
+
   function alignmentMetrics(feature) {
     const properties = feature.properties || {};
     const population = properties.population?.["500m"]?.resident_count;
     const existing = properties.existing_alignment?.reusable_asset_share;
     const opportunity = properties.education?.independent_travel_opportunity_count;
     return [
-      ["Population (500 m)", Number(population)],
-      ["Existing alignment", Number(existing) * 100],
-      ["Independent travel", Number(opportunity)],
-      ["Directness", Number(properties.directness_m)],
-      ["Gradient", Number(properties.maximum_gradient_pct)]
-    ].filter(([, metric]) => Number.isFinite(metric));
+      ["Population (500 m)", finiteMetric(population)],
+      ["Existing alignment", finiteMetric(existing, 100)],
+      ["Independent travel", finiteMetric(opportunity)],
+      ["Directness", finiteMetric(properties.directness_m)],
+      ["Gradient", finiteMetric(properties.maximum_gradient_pct)]
+    ].filter(([, metric]) => metric !== null);
   }
 
   function commonAlignmentAxes(members) {
@@ -1262,7 +1268,7 @@
         const metrics = new Map(alignmentMetrics(member));
         const points = axes.map((axis, index) => {
           const maximum = maxima[axis];
-          const fraction = maximum > 0 ? metrics.get(axis) / maximum : 1;
+          const fraction = maximum > 0 ? metrics.get(axis) / maximum : 0;
           return radarPoint(index, axes.length, fraction).join(",");
         }).join(" ");
         svg.append(svgElement("polygon", {

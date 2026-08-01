@@ -16,6 +16,7 @@ from satn.parallel_reduction_corpus import (
     canonical_expected_result,
     load_expected_result,
     load_manifest,
+    render_expected_visual,
 )
 
 PROJECT = Path(__file__).parents[1]
@@ -42,6 +43,9 @@ def test_composite_manifest_declares_every_light_acceptance_zone() -> None:
     }
     assert manifest.expected_result_path == (
         ACCEPTANCE_MANIFEST.parent / "expected/acceptance-composite.json"
+    )
+    assert manifest.expected_visual_path == (
+        ACCEPTANCE_MANIFEST.parent / "expected/acceptance-composite.svg"
     )
     assert (
         load_expected_result(manifest.expected_result_path)["contract"] == EXPECTED_RESULT_CONTRACT
@@ -509,3 +513,6 @@ def test_composite_acceptance_compiles_through_the_supported_production_seam() -
     assert "quiet-lane" in result.selected_route_ids
     actual = canonical_expected_result(manifest, result)
     assert_matches_expected(actual, load_expected_result(manifest.expected_result_path))
+    assert render_expected_visual(actual) == manifest.expected_visual_path.read_text(
+        encoding="ascii"
+    )

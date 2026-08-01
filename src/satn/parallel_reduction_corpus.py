@@ -12,6 +12,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, is_dataclass
 from decimal import Decimal
+from html import escape
 from pathlib import Path
 
 from satn.evidence_contracts import canonical_evidence_json
@@ -31,6 +32,12 @@ class ParallelReductionCorpusManifest:
     request: Mapping[str, object]
     zones: tuple[Mapping[str, object], ...]
     runtime_responses: tuple[Mapping[str, object], ...]
+
+    @property
+    def expected_visual_path(self) -> Path:
+        """Checked-in visual companion to the canonical JSON expectation."""
+
+        return self.expected_result_path.with_suffix(".svg")
 
 
 class ScriptedCorpusRuntime:
@@ -260,6 +267,102 @@ def write_expected_result(path: Path, result: Mapping[str, object]) -> None:
 
     canonical = canonical_evidence_json(result)
     path.write_text(canonical + "\n", encoding="ascii")
+
+
+def render_expected_visual(result: Mapping[str, object]) -> str:
+    """Render a compact deterministic overview for human acceptance review."""
+
+    decisions = _mapping_list(result.get("decisions", []), "decisions")
+    divergences = {
+        str(item.get("target_id"))
+        for item in _mapping_list(
+            result.get("material_officer_compiler_divergences", []),
+            "material_officer_compiler_divergences",
+        )
+    }
+    height = 150 + max(1, len(decisions)) * 72
+    lines = [
+        '<svg xmlns="http://www.w3.org/2000/svg" width="1200" '
+        f'height="{height}" viewBox="0 0 1200 {height}" role="img" '
+        'aria-labelledby="title description">',
+        '<title id="title">Parallel reduction acceptance expectation</title>',
+        (
+            '<desc id="description">Selected routes are coloured; retained alternatives '
+            'are grey; officer and compiler divergences are yellow.</desc>'
+        ),
+        '<rect width="1200" height="100%" fill="#f7f5ef"/>',
+        (
+            '<text x="32" y="42" font-family="sans-serif" font-size="24" '
+            'font-weight="700">Parallel reduction acceptance expectation</text>'
+        ),
+        (
+            '<text x="32" y="70" font-family="sans-serif" font-size="14" '
+            'fill="#444">One synthetic compile | coloured selection | grey alternatives '
+            '| yellow divergence</text>'
+        ),
+        (
+            '<text x="32" y="96" font-family="sans-serif" font-size="13" fill="#444">'
+            f'{len(result.get("candidate_sets", []))} groups | '
+            f'{len(result.get("alignment_sections", []))} logical sections | '
+            f'{len(result.get("alignment_options", []))} options | '
+            f'{len(result.get("network_gaps", []))} gaps | '
+            f'{len(result.get("crossing_warnings", []))} crossing warnings</text>'
+        ),
+    ]
+    mode_colours = {
+        "agent": "#2563a6",
+        "deterministic": "#167d59",
+        "fallback": "#c87500",
+        "officer": "#7754a3",
+    }
+    ordered_decisions = sorted(decisions, key=lambda item: str(item.get("target_id")))
+    for index, decision in enumerate(ordered_decisions):
+        y = 132 + index * 72
+        target = str(decision.get("target_id", "unknown target"))
+        selected = str(decision.get("selected_route_id", "unselected"))
+        mode = str(decision.get("mode", "unknown"))
+        colour = "#e1ad01" if target in divergences else mode_colours.get(mode, "#167d59")
+        route_findings = _mapping_list(decision.get("route_findings", []), "route_findings")
+        alternatives = sorted(
+            str(item.get("route_id"))
+            for item in route_findings
+            if str(item.get("route_id")) != selected
+        )
+        alternative_label = ", ".join(alternatives) if alternatives else "none"
+        lines.extend(
+            [
+                (
+                    f'<rect x="32" y="{y}" width="1136" height="56" rx="6" '
+                    'fill="#fff" stroke="#d0cdc4"/>'
+                ),
+                (
+                    f'<line x1="52" y1="{y + 38}" x2="210" y2="{y + 38}" '
+                    'stroke="#a7a7a7" stroke-width="8"/>'
+                ),
+                (
+                    f'<line x1="52" y1="{y + 22}" x2="210" y2="{y + 22}" '
+                    f'stroke="{colour}" stroke-width="8"/>'
+                ),
+                (
+                    f'<text x="230" y="{y + 22}" font-family="sans-serif" '
+                    f'font-size="14" font-weight="700">{escape(target)}</text>'
+                ),
+                (
+                    f'<text x="230" y="{y + 43}" font-family="sans-serif" '
+                    f'font-size="13" fill="#333">selected: {escape(selected)} | '
+                    f'mode: {escape(mode)} | alternatives: '
+                    f'{escape(alternative_label)}</text>'
+                ),
+            ]
+        )
+    lines.append("</svg>")
+    return "\n".join(lines) + "\n"
+
+
+def write_expected_visual(path: Path, result: Mapping[str, object]) -> None:
+    """Write the visual expectation only during explicit regeneration."""
+
+    path.write_text(render_expected_visual(result), encoding="ascii")
 
 
 def _canonical_decisions(record: Mapping[str, object]) -> list[dict[str, object]]:

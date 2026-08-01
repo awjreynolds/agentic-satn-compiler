@@ -27,6 +27,15 @@ def test_review_map_has_grouped_alignment_evidence_panel_contract() -> None:
     assert "captured_output_areas" in script
 
 
+def test_spider_chart_omits_unavailable_values_and_never_inflates_zero_axes() -> None:
+    script = (PROJECT / "src/satn/assets/review-map.js").read_text()
+
+    assert 'if (raw === null || raw === undefined || raw === "") return null;' in script
+    assert "].filter(([, metric]) => metric !== null);" in script
+    assert "maximum > 0 ? metrics.get(axis) / maximum : 0" in script
+    assert "maximum > 0 ? metrics.get(axis) / maximum : 1" not in script
+
+
 def test_selected_population_sections_deduplicate_shared_output_areas() -> None:
     shared = CapturedOutputAreaPopulation("oa-shared", 100, True)
 

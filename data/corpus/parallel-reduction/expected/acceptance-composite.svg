@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="942" viewBox="0 0 1200 942" role="img" aria-labelledby="title description">
+<title id="title">Parallel reduction acceptance expectation</title>
+<desc id="description">Selected routes are coloured; retained alternatives are grey; officer and compiler divergences are yellow.</desc>
+<rect width="1200" height="100%" fill="#f7f5ef"/>
+<text x="32" y="42" font-family="sans-serif" font-size="24" font-weight="700">Parallel reduction acceptance expectation</text>
+<text x="32" y="70" font-family="sans-serif" font-size="14" fill="#444">One synthetic compile | coloured selection | grey alternatives | yellow divergence</text>
+<text x="32" y="96" font-family="sans-serif" font-size="13" fill="#444">11 groups | 22 logical sections | 21 options | 1 gaps | 1 crossing warnings</text>
+<rect x="32" y="132" width="1136" height="56" rx="6" fill="#fff" stroke="#d0cdc4"/>
+<line x1="52" y1="170" x2="210" y2="170" stroke="#a7a7a7" stroke-width="8"/>
+<line x1="52" y1="154" x2="210" y2="154" stroke="#2563a6" stroke-width="8"/>
+<text x="230" y="154" font-family="sans-serif" font-size="14" font-weight="700">parallel:agent-a:agent-b</text>
+<text x="230" y="175" font-family="sans-serif" font-size="13" fill="#333">selected: agent-east | mode: agent | alternatives: agent-west</text>
+<rect x="32" y="204" width="1136" height="56" rx="6" fill="#fff" stroke="#d0cdc4"/>
+<line x1="52" y1="242" x2="210" y2="242" stroke="#a7a7a7" stroke-width="8"/>
+<line x1="52" y1="226" x2="210" y2="226" stroke="#167d59" stroke-width="8"/>
+<text x="230" y="226" font-family="sans-serif" font-size="14" font-weight="700">parallel:conv-a:conv-b</text>
+<text x="230" y="247" font-family="sans-serif" font-size="13" fill="#333">selected: convergence-base | mode: deterministic | alternatives: convergence-short</text>
+<rect x="32" y="276" width="1136" height="56" rx="6" fill="#fff" stroke="#d0cdc4"/>
+<line x1="52" y1="314" x2="210" y2="314" stroke="#a7a7a7" stroke-width="8"/>
+<line x1="52" y1="298" x2="210" y2="298" stroke="#167d59" stroke-width="8"/>
+<text x="230" y="298" font-family="sans-serif" font-size="14" font-weight="700">parallel:cross-a:cross-b</text>
+<text x="230" y="319" font-family="sans-serif" font-size="13" fill="#333">selected: cross-north | mode: deterministic | alternatives: none</text>
+<rect x="32" y="348" width="1136" height="56" rx="6" fill="#fff" stroke="#d0cdc4"/>
+<line x1="52" y1="386" x2="210" y2="386" stroke="#a7a7a7" stroke-width="8"/>
+<line x1="52" y1="370" x2="210" y2="370" stroke="#167d59" stroke-width="8"/>
+<text x="230" y="370" font-family="sans-serif" font-size="14" font-weight="700">parallel:cross-c:cross-d</text>
+<text x="230" y="391" font-family="sans-serif" font-size="13" fill="#333">selected: cross-east | mode: deterministic | alternatives: none</text>
+<rect x="32" y="420" width="1136" height="56" rx="6" fill="#fff" stroke="#d0cdc4"/>
+<line x1="52" y1="458" x2="210" y2="458" stroke="#a7a7a7" stroke-width="8"/>
+<line x1="52" y1="442" x2="210" y2="442" stroke="#167d59" stroke-width="8"/>
+<text x="230" y="442" font-family="sans-serif" font-size="14" font-weight="700">parallel:dom-a:dom-b</text>
+<text x="230" y="463" font-family="sans-serif" font-size="13" fill="#333">selected: dominant | mode: deterministic | alternatives: dominated</text>
+<rect x="32" y="492" width="1136" height="56" rx="6" fill="#fff" stroke="#d0cdc4"/>
+<line x1="52" y1="530" x2="210" y2="530" stroke="#a7a7a7" stroke-width="8"/>
+<line x1="52" y1="514" x2="210" y2="514" stroke="#c87500" stroke-width="8"/>
+<text x="230" y="514" font-family="sans-serif" font-size="14" font-weight="700">parallel:fallback-a:fallback-b</text>
+<text x="230" y="535" font-family="sans-serif" font-size="13" fill="#333">selected: fallback-east | mode: fallback | alternatives: fallback-west</text>
+<rect x="32" y="564" width="1136" height="56" rx="6" fill="#fff" stroke="#d0cdc4"/>
+<line x1="52" y1="602" x2="210" y2="602" stroke="#a7a7a7" stroke-width="8"/>
+<line x1="52" y1="586" x2="210" y2="586" stroke="#167d59" stroke-width="8"/>
+<text x="230" y="586" font-family="sans-serif" font-size="14" font-weight="700">parallel:hier-a:hier-b</text>
+<text x="230" y="607" font-family="sans-serif" font-size="13" fill="#333">selected: hierarchy-a | mode: deterministic | alternatives: hierarchy-b</text>
+<rect x="32" y="636" width="1136" height="56" rx="6" fill="#fff" stroke="#d0cdc4"/>
+<line x1="52" y1="674" x2="210" y2="674" stroke="#a7a7a7" stroke-width="8"/>
+<line x1="52" y1="658" x2="210" y2="658" stroke="#167d59" stroke-width="8"/>
+<text x="230" y="658" font-family="sans-serif" font-size="14" font-weight="700">parallel:hybrid-a:hybrid-b</text>
+<text x="230" y="679" font-family="sans-serif" font-size="13" fill="#333">selected: hybrid-west | mode: deterministic | alternatives: hybrid-east, hybrid:hybrid-west:hybrid-east:hybrid-switch</text>
+<rect x="32" y="708" width="1136" height="56" rx="6" fill="#fff" stroke="#d0cdc4"/>
+<line x1="52" y1="746" x2="210" y2="746" stroke="#a7a7a7" stroke-width="8"/>
+<line x1="52" y1="730" x2="210" y2="730" stroke="#e1ad01" stroke-width="8"/>
+<text x="230" y="730" font-family="sans-serif" font-size="14" font-weight="700">parallel:officer-a:officer-b</text>
+<text x="230" y="751" font-family="sans-serif" font-size="13" fill="#333">selected: officer-lane | mode: officer | alternatives: officer-main</text>
+<rect x="32" y="780" width="1136" height="56" rx="6" fill="#fff" stroke="#d0cdc4"/>
+<line x1="52" y1="818" x2="210" y2="818" stroke="#a7a7a7" stroke-width="8"/>
+<line x1="52" y1="802" x2="210" y2="802" stroke="#167d59" stroke-width="8"/>
+<text x="230" y="802" font-family="sans-serif" font-size="14" font-weight="700">parallel:quiet-a:quiet-b</text>
+<text x="230" y="823" font-family="sans-serif" font-size="13" fill="#333">selected: quiet-lane | mode: deterministic | alternatives: quiet-through</text>
+<rect x="32" y="852" width="1136" height="56" rx="6" fill="#fff" stroke="#d0cdc4"/>
+<line x1="52" y1="890" x2="210" y2="890" stroke="#a7a7a7" stroke-width="8"/>
+<line x1="52" y1="874" x2="210" y2="874" stroke="#167d59" stroke-width="8"/>
+<text x="230" y="874" font-family="sans-serif" font-size="14" font-weight="700">parallel:scope-a:scope-b</text>
+<text x="230" y="895" font-family="sans-serif" font-size="13" fill="#333">selected: scope-rural | mode: deterministic | alternatives: scope-urban</text>
+</svg>
