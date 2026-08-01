@@ -10,7 +10,9 @@ from itertools import combinations
 
 import geopandas as gpd
 from shapely.geometry import LineString, Point
+from shapely.ops import substring
 
+from satn.parallel_reduction_scope import effective_route_scope_ranges
 from satn.section_population import (
     SectionPopulationProfile,
     compile_section_population_capture,
@@ -65,9 +67,12 @@ def build_parallel_evidence(
     urban = gpd.GeoDataFrame(
         {
             "geometry": [
-                line.buffer(1)
+                substring(line, scope_range.start_distance_m, scope_range.end_distance_m).buffer(1)
                 for line, route in zip(lines, routes, strict=True)
-                if route.network_scope == "urban"
+                for scope_range in effective_route_scope_ranges(
+                    line.length, route.network_scope, route.network_scope_spans
+                )
+                if scope_range.network_scope == "urban"
             ]
         },
         geometry="geometry",

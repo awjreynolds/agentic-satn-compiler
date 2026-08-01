@@ -355,6 +355,55 @@ def test_rural_capture_profile_is_used_for_a_rural_raw_route() -> None:
     assert result.artifact.section_population_profile["rural_capture_radius_m"] == 750.0
 
 
+def test_local_scope_spans_control_population_capture_without_splitting_route_topology() -> None:
+    result = compile_parallel_reduction_scenario(
+        ParallelReductionRequest(
+            profile_id="parallel-mixed-local-population-capture",
+            routes=(
+                ParallelRoute(
+                    route_id="mixed",
+                    endpoints=("a", "b"),
+                    coordinates=((0, 0), (3_000, 0)),
+                    network_scope="rural",
+                    network_scope_spans=(
+                        {
+                            "start_distance_m": 0,
+                            "end_distance_m": 2_000,
+                            "network_scope": "urban",
+                        },
+                    ),
+                ),
+            ),
+            output_area_centroids=(
+                {
+                    "oa_id": "E00000003",
+                    "residents": 500,
+                    "coordinates": (1_000, 400),
+                    "inside_area": True,
+                },
+                {
+                    "oa_id": "E00000004",
+                    "residents": 100,
+                    "coordinates": (2_500, 400),
+                    "inside_area": True,
+                },
+            ),
+            output_area_source_fingerprint="d" * 64,
+        )
+    )
+
+    sections = result.artifact.section_population_sections
+    urban_sections = [item for item in sections if item["network_scope"] == "urban"]
+    rural_sections = [item for item in sections if item["network_scope"] == "rural"]
+    assert urban_sections
+    assert rural_sections
+    assert {item["capture_radius_m"] for item in urban_sections} == {250.0}
+    assert {item["capture_radius_m"] for item in rural_sections} == {750.0}
+    assert all("E00000003" not in item["captured_oa_ids"] for item in sections)
+    assert any("E00000004" in item["captured_oa_ids"] for item in rural_sections)
+    assert all("E00000004" not in item["captured_oa_ids"] for item in urban_sections)
+
+
 def test_shared_governed_oa_is_deduplicated_per_section_and_outside_is_retained() -> None:
     result = compile_parallel_reduction_scenario(
         ParallelReductionRequest(
@@ -1273,6 +1322,56 @@ def test_mixed_local_scope_uses_urban_and_rural_buffers_without_new_sections() -
     )
     assert discover_parallel_relations(routes, ParallelReductionConfig()) == ()
     assert routes[0].section_ids == ("existing-section",)
+
+
+def test_local_scope_span_leaves_uncovered_route_at_declared_default_for_discovery() -> None:
+    routes = (
+        ParallelRoute(
+            route_id="mixed",
+            endpoints=("a", "b"),
+            coordinates=((0, 0), (1_000, 0)),
+            network_scope="rural",
+            network_scope_spans=(
+                {"start_distance_m": 0, "end_distance_m": 100, "network_scope": "urban"},
+            ),
+        ),
+        ParallelRoute(
+            route_id="parallel",
+            endpoints=("a", "b"),
+            coordinates=((0, 800), (1_000, 800)),
+            network_scope="rural",
+        ),
+    )
+
+    relations = discover_parallel_relations(routes, ParallelReductionConfig())
+
+    assert len(relations) == 1
+    assert relations[0].route_ids == ("mixed", "parallel")
+
+
+def test_complete_local_scope_spans_do_not_inherit_unused_unresolved_default() -> None:
+    routes = (
+        ParallelRoute(
+            route_id="locally-rural",
+            endpoints=("a", "b"),
+            coordinates=((0, 0), (1_000, 0)),
+            network_scope="unresolved",
+            network_scope_spans=(
+                {"start_distance_m": 0, "end_distance_m": 1_000, "network_scope": "rural"},
+            ),
+        ),
+        ParallelRoute(
+            route_id="parallel",
+            endpoints=("a", "b"),
+            coordinates=((0, 800), (1_000, 800)),
+            network_scope="rural",
+        ),
+    )
+
+    relations = discover_parallel_relations(routes, ParallelReductionConfig())
+
+    assert len(relations) == 1
+    assert not relations[0].scope_sensitive
 
 
 def test_local_scope_span_equality_and_order_are_canonical() -> None:

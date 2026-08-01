@@ -58,6 +58,7 @@ from satn.education_access import (
 from satn.identifiers import stable_id
 from satn.network_selection import NetworkSelectionProfile
 from satn.parallel_reduction_evidence import ParallelEvidenceSummary, build_parallel_evidence
+from satn.parallel_reduction_scope import effective_route_scope_ranges
 from satn.population_reach import (
     CURRENT_DEVELOPMENT_EVIDENCE_AVAILABLE,
     CURRENT_DEVELOPMENT_NO_MATERIAL_OMISSION,
@@ -835,17 +836,16 @@ def _scope_coverage(
     unresolved_distance: float | None = None,
 ) -> float:
     line = LineString(left.coordinates)
-    spans = left.network_scope_spans or (
-        ParallelNetworkScopeSpan(
-            start_distance_m=0, end_distance_m=line.length, network_scope=left.network_scope
-        ),
-    )
     covered = 0.0
-    for span in spans:
-        segment = substring(line, span.start_distance_m, min(span.end_distance_m, line.length))
-        if span.network_scope == "urban":
+    for scope_range in effective_route_scope_ranges(
+        line.length, left.network_scope, left.network_scope_spans
+    ):
+        segment = substring(
+            line, scope_range.start_distance_m, scope_range.end_distance_m
+        )
+        if scope_range.network_scope == "urban":
             distance = config.urban_proximity_m
-        elif span.network_scope == "rural":
+        elif scope_range.network_scope == "rural":
             distance = config.rural_proximity_m
         else:
             distance = unresolved_distance or config.rural_proximity_m
@@ -863,11 +863,19 @@ def discover_parallel_relations(
         for right in sorted(routes, key=lambda item: item.route_id)[index + 1 :]:
             if left.endpoints != right.endpoints:
                 continue
-            spans = (*left.network_scope_spans, *right.network_scope_spans)
-            scopes = {
+            left_ranges = effective_route_scope_ranges(
+                LineString(left.coordinates).length,
                 left.network_scope,
+                left.network_scope_spans,
+            )
+            right_ranges = effective_route_scope_ranges(
+                LineString(right.coordinates).length,
                 right.network_scope,
-                *(item.network_scope for item in spans),
+                right.network_scope_spans,
+            )
+            scopes = {
+                *(item.network_scope for item in left_ranges),
+                *(item.network_scope for item in right_ranges),
             }
             if "unresolved" in scopes:
                 urban = min(

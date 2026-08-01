@@ -2,11 +2,34 @@ name: Parallel-Reduction deep corpus
 
 on:
   workflow_dispatch:
-  push:
+  pull_request:
     paths:
+      - ".github/workflows/parallel-reduction-deep.yml"
       - "src/satn/parallel_reduction.py"
       - "src/satn/parallel_reduction_corpus.py"
+      - "src/satn/parallel_reduction_evidence.py"
+      - "src/satn/parallel_reduction_scope.py"
+      - "src/satn/section_population.py"
+      - "src/satn/topography.py"
+      - "tests/test_parallel_reduction_engine.py"
+      - "tests/test_parallel_reduction_corpus.py"
       - "data/corpus/parallel-reduction/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/parallel-reduction-deep.yml"
+      - "src/satn/parallel_reduction.py"
+      - "src/satn/parallel_reduction_corpus.py"
+      - "src/satn/parallel_reduction_evidence.py"
+      - "src/satn/parallel_reduction_scope.py"
+      - "src/satn/section_population.py"
+      - "src/satn/topography.py"
+      - "tests/test_parallel_reduction_engine.py"
+      - "tests/test_parallel_reduction_corpus.py"
+      - "data/corpus/parallel-reduction/**"
+  release:
+    types: [published]
 
 permissions:
   contents: read
