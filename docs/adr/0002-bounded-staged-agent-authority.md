@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-24
+- Last amended: 2026-08-01
 - Issue: #96
 
 ## Context
@@ -42,6 +43,15 @@ has no fields through which an agent action can alter source content, policy wei
 lifecycle state, representations, conformance waivers or adoption. No-Agent Mode uses
 the same envelope and declared fallback action without constructing a runtime.
 
+Parallel-alignment reduction is a narrower completion-guaranteed decision seam. Once
+its governed inputs validate, a failed, unavailable or invalid Agent Runtime response
+applies the declared Deterministic Alignment Fallback rather than creating a Human
+Intervention Request or stopping generation. Pre-loaded Officer Decisions are initial
+governed inputs and control only their stable logical targets. The compiler still
+evaluates its evidence-preferred alignment; when that differs from the applied Officer
+Decision it publishes a Material Officer–Compiler Divergence instead of overriding the
+decision or muting the alternative as an ordinary rejection.
+
 ## Consequences
 
 - Agent providers are replaceable adapters and are not part of the domain contract.
@@ -52,3 +62,5 @@ the same envelope and declared fallback action without constructing a runtime.
 - A valid primary response is insufficient at stages configured for independent
   critique.
 - Deterministic builds remain complete when agents are unavailable or disabled.
+- Parallel-alignment generation completes with a selected alignment or explicit
+  Network Gap; its agent, fallback and officer provenance remain separately visible.

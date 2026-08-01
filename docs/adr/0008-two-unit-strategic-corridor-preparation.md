@@ -2,7 +2,7 @@
 
 - Status: accepted — publication implemented
 - Date: 2026-07-27
-- Last amended: 2026-07-27
+- Last amended: 2026-08-01
 - Decision owners: SATN product
 - Related: ADR 0001, ADR 0002, ADR 0006 and GitHub issue #137
 
@@ -73,17 +73,20 @@ creates a Network Gap; unknown, duplicate, foreign or stale scope/source
 identities fail closed.  Ordinary PSA callers which do not declare a narrower
 scope continue to assess the complete verified education source.
 
-This criteria-and-Scenario layer remains inspect-only.  Its bounded review
-ledger may request agent analysis, but an agent cannot adopt the result.  With
-the exact scoped governed evidence, the unmodified Bath fixture path now
-produces two provisional-review selections and finite
-`select-eligible-option` actions.  The production Scenario can be resolved
-through its exact accepted decision ledger, then a human can adopt it through
-the existing governed Reference decision contract.  A separate strategic
-Reference application plan binds each adopted candidate back to its exact
-unit, Candidate Set, resolution, typed endpoints and obligations, forward and
-reverse graph edges, canonical geometry, physical-alignment registry
-membership, evidence, profile and preparation lineage.  The plan is
+This criteria-and-Scenario layer remains inspect-only and cannot grant officer or
+adoption authority. With exact scoped governed evidence, each unit must nevertheless
+finish generation: a material conflict may use a bounded Agent Runtime choice, and an
+unavailable, failed or invalid runtime uses the declared Deterministic Alignment
+Fallback. Pre-loaded Officer Decisions are applied as initial input to their stable
+logical targets rather than requested interactively. When the current compiler
+preference differs, both routes remain visible and the alternative is highlighted as
+a Material Officer–Compiler Divergence rather than muted as an ordinary rejection.
+
+The existing governed Reference decision contract remains a separate downstream
+authority seam. A separate strategic Reference application plan binds each adopted
+candidate back to its exact unit, Candidate Set, resolution, typed endpoints and
+obligations, forward and reverse graph edges, canonical geometry, physical-alignment
+registry membership, evidence, profile and preparation lineage. The plan is
 deterministic, validates a fresh preparation by exact equality and grants no
 network-mutation or publication authority.
 

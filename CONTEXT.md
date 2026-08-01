@@ -37,7 +37,7 @@ Qualitative present, absent or unknown facts about everyday services in a Commun
 _Avoid_: destination list, demand score, required access
 
 **School**:
-A primary, secondary, all-through or special education site admitted as a School Access Obligation. A college or university remains contextual evidence unless separately admitted as a Strategic Destination.
+A primary, secondary, all-through or special education site admitted as a School Access Obligation. A college or university remains contextual evidence unless its physical campus is admitted by the active Strategic Destination Profile.
 _Avoid_: education site, college, university
 
 **School Access Point**:
@@ -85,7 +85,7 @@ The iterative formation of a Backbone-and-Access Network from all Strategic Spin
 _Avoid_: one-spine-at-a-time build, global pairwise routing, order-dependent catchment
 
 **Access Obligation**:
-A Community or School that must be served by the backbone without requiring a connection to another Community or School. A degree-one Access Obligation is valid once its applicable backbone-access rule is satisfied.
+A Community, School or Strategic Destination Site that must be served by a bounded connection into the strategic network without requiring a peer-to-peer route. A degree-one Access Obligation is valid once its applicable access rule is satisfied.
 _Avoid_: peer network node, redundancy requirement, direct journey pair
 
 **Network Place**:
@@ -133,12 +133,20 @@ The finite, order-independent group of every same-role, boundary-equivalent Para
 _Avoid_: two-route-only comparison, sequential elimination, overlapping decision sets, hidden discarded candidate
 
 **Parallel Candidate Proximity Profile**:
-A frozen, versioned discovery rule declaring the scope-sensitive distance and minimum symmetric coverage needed for two continuous chains to become parallel candidates. The initial thresholds are 500 metres in governed urban `network_scope` and 1,500 metres in governed rural `network_scope`, with at least 80% symmetric coverage; their mixed-scope application remains an explicit decision rather than an inferred boundary rule. The values remain configurable and sensitivity-visible. Passing the profile finds a comparison candidate but does not establish that the chains are substitutes.
+A frozen, versioned discovery rule declaring the scope-sensitive distance and minimum symmetric coverage needed for two continuous chains to become parallel candidates. Each span uses its governed `network_scope`; distances, each-way coverage and unresolved-scope brackets are configurable and fingerprinted, while two-way symmetry, scope boundaries remaining non-topological, and proximity never establishing substitution are fixed method safeguards.
 _Avoid_: nearest-point match, one-sided overlap, Dutch standard, automatic substitution
 
+**Symmetric Parallel Coverage**:
+The length percentage of each continuous chain lying within its locally configured projected distance of the other chain, calculated independently in both directions. A pair qualifies only when both percentages meet the active Parallel Candidate Proximity Profile's minimum; one short nearby overlap cannot qualify a much longer chain.
+_Avoid_: nearest-point distance, one-way buffer match, visual overlap estimate
+
+**Scope-Sensitive Parallel Candidate**:
+A parallel-candidate relation whose result depends on an unresolved `network_scope` span tested at both the urban and rural proximity thresholds. A wider-only match remains visible as scope-sensitive evidence so a plausible comparison is not lost; it neither resolves the missing scope nor establishes substitution.
+_Avoid_: assumed rural scope, hidden fallback, automatic substitute
+
 **Bounded Parallel Candidate Generation**:
-The deterministic formation of parallel-corridor choices solely from finite compiler-authored Alignment Options and separately governed pre-loaded alignments. Their sections may be recombined only at proven Alignment Choice Points under declared structural bounds; generation may calculate governed facts and threshold flags but does not qualitatively decide whether population, topography, access or existing-alignment evidence justifies a transition. The compiler does not enumerate arbitrary RoadGraph paths, and a corridor absent from the bounded inputs remains a visible candidate-generation gap.
-_Avoid_: all-path search, qualitative route choice, agent-invented corridor, hidden graph exploration
+The deterministic formation of a finite menu from every compiler-authored end-to-end base alignment plus only those continuous hybrids that switch at proven Alignment Choice Points to obtain a material evidenced population, topography, access or existing-infrastructure advantage. Equivalent and wholly dominated routes are removed under stable configurable bounds, while valid routes excluded from the action menu remain inspectable; arbitrary RoadGraph paths, every possible section combination and agent-invented corridors are never generated.
+_Avoid_: all-path search, Cartesian hybrid expansion, qualitative route invention, hidden discarded candidate
 
 **Singular Parallel Selection**:
 The Backbone-and-Access rule that a same-role, boundary-equivalent set of substitute Parallel Alignment Sections contributes exactly one selected section to the Strategic Spine direction. Rejected substitutes remain inspectable evidence, while local places and access obligations are served through bounded access branches or exposed as Network Gaps; multiple strategic sections remain only when distinct complementary roles are established.
@@ -159,6 +167,62 @@ _Avoid_: graph-edge boundary, road-class change, evidence-section boundary
 **Strategic Route Coherence**:
 The inspectable continuity of one end-to-end Alignment Option across its selected Parallel Alignment Sections and corridor transitions. When population, topography, access and existing-alignment evidence are materially equivalent, the option with fewer unnecessary corridor transitions is preferred; a transition remains valid when a material evidenced advantage justifies it.
 _Avoid_: no-hybrid rule, hidden transition penalty, shortest-edge-chain assumption
+
+**Material Alignment Ambiguity**:
+A choice between at least two eligible Alignment Options whose governed evidence gives them conflicting material advantages, so no option is materially no worse across national active-travel guidance, population, topography, access and existing infrastructure. Only this conflict warrants an Agent Runtime choice; a sole option, a materially dominant option, near-equivalence or merely missing evidence is resolved deterministically with limitations retained.
+_Avoid_: any multi-option choice, missing-evidence escalation, routine agent confirmation, hidden preference score
+
+**National Active Travel Guidance Evidence**:
+The versioned, citation-backed assessment of available Alignment Option facts against the applicable principles and considerations in Cycle Infrastructure Design (Local Transport Note 1/20) and Active Travel England's Rural Design Guide. It keeps each consideration separate as supported, contradicted or unassessed evidence for agent and fallback judgement; a material departure must be explained and retained as an intervention need or change condition, but guidance is neither a veto nor a minimum requirement and the assessment cannot certify detailed route compliance.
+_Avoid_: LTN, LTN score, national standard score, compliance certificate, assumed design quality, mandatory minimum, guidance veto
+
+**Deterministic Alignment Fallback**:
+The reproducible selection of one eligible Alignment Option by the active Network Selection Profile's declared hierarchy, with a stable identifier used only as the final tie-break. The same fallback resolves near-equivalence and every unavailable, failed or invalid Agent Runtime response without retrying or waiting for human input, while its triggering reason remains explicit in the Agent Decision Record.
+_Avoid_: emergency preference, runtime retry loop, interactive pause, silent default
+
+**Ordered Parallel Alignment Resolution**:
+The stable network-order resolution of one Parallel Alignment Candidate Set at a time, applying and validating each choice before regenerating any affected downstream set. Each set receives its own small request; reaching the configured agent-call bound or losing the provider applies the Deterministic Alignment Fallback to every remaining set so compilation still completes.
+_Avoid_: network-wide mega-request, cross-set Cartesian choice, stale downstream menu, compilation pause
+
+**Alignment Resolution Completion Guarantee**:
+The requirement that a compilation started from valid governed inputs resolves every Parallel Alignment Candidate Set to a selected alignment or explicit Network Gap, regardless of ambiguity, missing comparison evidence or Agent Runtime failure. An unreadable, malformed or unverifiable governed input instead produces a terminal failure record and leaves the previous valid publication untouched; the guarantee never permits invented geometry, evidence or authority.
+_Avoid_: best-effort compilation, agent-dependent completion, fabricated recovery, invalid-input publication
+
+**Parallel-Reduction Proving Corpus**:
+The smallest governed synthetic corpus whose exact inputs and expected artifacts demonstrate the required discovery, selection, fallback, gap and divergence behaviour of parallel-route reduction. It contains one composite acceptance scenario covering every representative example in a single compilation plus independent deep scenarios for exact boundary diagnosis; named real geography is not an acceptance authority for the feature.
+_Avoid_: live-area benchmark, Bath–Saltford acceptance anchor, production dataset, real-geography proof
+
+**Parallel-Reduction Corpus Gate**:
+The two-level CI contract for the Parallel-Reduction Proving Corpus: the single light acceptance compilation runs on every pull request, while the full deep suite runs when parallel-reduction compiler or configuration contracts change, before release and by explicit manual trigger. Both levels use the supported production compiler seam and checked-in expected results; review-map publication and helper-only tests are outside the gate.
+_Avoid_: full deep suite on every change, publication test, manual demonstration, unit-test-only proof, live-data smoke test
+
+**Parallel-Reduction Acceptance Suite**:
+One fast composite synthetic scenario that includes every representative parallel-reduction example in clearly named zones separated beyond the maximum configured rural candidate distance, demonstrating end-to-end discovery, resolution and result generation in a single routine CI compilation. It has one checked-in expected result, remains spatially legible for human inspection and favours broad contract coverage over exhaustive threshold combinations.
+_Avoid_: several routine compilations, smoke test without assertions, full boundary matrix, helper-only suite
+
+**Parallel-Reduction Deep Suite**:
+The complete decision-boundary suite used to validate parallel-route reduction at governed key checkpoints, covering values immediately below, at and above each threshold plus only those multi-factor interactions capable of changing an outcome. It also covers source-order invariance, missing evidence, Agent Runtime response classes and deterministic reruns without enumerating every possible combination of unrelated settings.
+_Avoid_: every-possible-combination matrix, routine fast suite, live-area benchmark, optional ungoverned test collection
+
+**Parallel-Reduction Expected Result**:
+A checked-in canonical result artifact declaring the exact closed roster of Scenario Compilation candidate, selection, retained-alternative, decision, gap and divergence records expected from one governed synthetic corpus scenario; any unexpected addition, omission or change fails comparison even when the selected route is unchanged. It excludes environment-dependent paths, timings, timestamps, usage, live-model identity and generated prose, and contains no review-map or other publication contract.
+_Avoid_: HTML snapshot, live-model output snapshot, public-facing assertion, hand-inspected result, helper return value
+
+**Parallel-Reduction Scenario Manifest**:
+A checked-in data-only declaration of one synthetic scenario or named acceptance zone, binding its metric geometry, governed evidence, every active configurable value, resulting profile fingerprint, scripted runtime behaviour and stable expected-result identity. A shared deterministic builder may assemble zone manifests into the single composite acceptance compilation without hiding their individual boundaries.
+_Avoid_: bespoke Python fixture, live source download, inline test geometry, mutable scenario builder
+
+**Scripted Corpus Runtime**:
+A deterministic Agent Runtime test adapter that returns a configured valid choice, timeout, provider failure or invalid response for each synthetic corpus request. It proves request validation, responder provenance and fallback behaviour without calling or binding expected results to a changing live AI model.
+_Avoid_: live-model acceptance test, fake planning evidence, model-specific golden answer, generated rationale snapshot
+
+**Parallel-Reduction Reference Regeneration**:
+The explicit developer action that recompiles governed corpus fixtures and proposes new checked-in Parallel-Reduction Expected Results for semantic review. CI treats existing expected results as read-only and never accepts or regenerates changed answers automatically.
+_Avoid_: automatic golden update, CI self-approval, unreviewed snapshot refresh, live-result recording
+
+**Parallel-Reduction Visual Reference**:
+A non-authoritative checked-in overview of the composite acceptance scenario's named synthetic zones and expected selected, retained and gap geometry, used only to make the fixture understandable to a human. CI does not use screenshot comparison or review-map publication as its result oracle.
+_Avoid_: golden screenshot, publication assertion, visual-only acceptance, map regression gate
 
 **Preferred Strategic Alignment**:
 The one selected Alignment Option for a substitute Alignment Candidate Set under a declared Network Selection Profile, with rejected alternatives and change conditions retained for inspection. It is not final design, a safety finding, feasibility evidence or a funding decision.
@@ -212,9 +276,25 @@ _Avoid_: existing-route preference, assumed cheapness, feasibility finding
 A frozen, versioned declaration of the governed physical-site classes that automatically become Strategic Destination Access Obligations, together with their evidence and usable-access-point requirements. Its initial mandatory classes are further- and higher-education campuses and acute, general and major community hospitals; lower-order amenities remain contextual unless another declared class admits them.
 _Avoid_: undifferentiated amenity layer, hidden destination list, individual building promotion
 
+**Strategic Destination Site**:
+One governed physical campus or hospital site that qualifies under the active Strategic Destination Profile, independent of the organisation that owns or operates it. Each site creates one obligation and may have several usable access points; separate sites remain separate obligations, while individual buildings within one site do not multiply them.
+_Avoid_: provider organisation, institution-wide obligation, individual destination building
+
+**Provisional Strategic Destination Site**:
+A physical campus or hospital site admitted from pinned OSM evidence matching a qualifying profile class when official site-register coverage is unavailable. It creates the same access obligation while keeping its provisional classification and source visible; later official evidence takes precedence without rewriting the earlier Scenario Compilation.
+_Avoid_: verified official site, hidden OSM fallback, provider-routed place classification
+
+**Provider-Routed Site Access**:
+A dated evidence observation that a named pedestrian-routing provider returned a route into a Strategic Destination Site using the site's stable provider identity. It supports provisional strategic access without claiming that the entrance is surveyed, legally public, cycle-permitted, accessible or permanently open.
+_Avoid_: inferred entrance, verified entrance, legal access, route survey
+
 **Strategic Destination Access Obligation**:
-A requirement for each governed physical site admitted by the Strategic Destination Profile to have a real topological connection from a usable site access point into the selected strategic network. An unresolved connection is published as a prominent Network Gap for investigation rather than stopping compilation.
-_Avoid_: proximity-only service claim, mandatory backbone waypoint, alignment veto
+A requirement for each Strategic Destination Site admitted by the active profile to have at least one topological connection from a usable site access point into any continuously connected part of the selected strategic network. One connection serves the whole physical site regardless of its size or other entrances; missing access evidence never removes the obligation, and unresolved access is published as a prominent Network Gap rather than stopping compilation.
+_Avoid_: proximity-only service claim, direct-spine requirement, mandatory backbone waypoint, alignment veto
+
+**Strategic Destination Access Connection**:
+A bounded physical connector from a mapped or provider-routed entrance on the boundary of one Strategic Destination Site into the selected strategic network. Reaching that entrance serves the strategic obligation without routing through the site; a continuous pedestrian route, footway, shared path or public right of way may make it provisionally served while unknown or restricted cycling access remains an explicit intervention need.
+_Avoid_: internal campus route, mandatory backbone waypoint, proximity link, surveyed cycle route, detailed access design
 
 **Strategic Education Destination**:
 A governed physical further- or higher-education campus admitted automatically as a Strategic Destination Access Obligation by the active Strategic Destination Profile. An institution with several campuses creates separate site obligations; its individual academic buildings do not.
@@ -227,6 +307,10 @@ _Avoid_: undifferentiated healthcare amenity, every clinical service, proximity-
 **Scenario Compilation**:
 One immutable compilation defined by an Area Definition, evidence snapshot, Criteria Set, Network Selection Profile and accepted decisions. It may be compared with other scenarios but does not itself create authority for a Reference SATN.
 _Avoid_: mutable scenario, adopted network, live policy view
+
+**Generated Scenario Compilation**:
+A publishable Scenario Compilation whose alignment choices were resolved by deterministic compiler rules, a validated Agent Runtime response or the Deterministic Alignment Fallback, without an Officer Decision or formal Adoption. Its public provenance identifies how each choice was resolved, but grants no human planning authority.
+_Avoid_: generated clean baseline, agent-approved network, Officer-Informed Scenario Compilation, Reference SATN
 
 **Baseline Scenario Compilation**:
 A Scenario Compilation using governed evidence and declared general rules with an empty accepted-decision ledger and no feature-specific discretionary directives. It is retained as the clean comparison point for every officer-informed alternative.
@@ -257,23 +341,31 @@ The Scenario Compilation selected through the applicable governed human process 
 _Avoid_: automatically adopted network, only possible network, final scheme
 
 **Officer-Informed Scenario Compilation**:
-A new immutable Scenario Compilation containing attributable accepted human decisions, including responsible officer or role, organisation, date, rationale and evidence, and compared with rather than silently substituted for its Baseline Scenario Compilation. Public metadata need not expose personal details beyond the accountable role.
+A new immutable Scenario Compilation containing at least one attributable accepted human decision applied only to its exact target, while other choices may retain deterministic, agent or fallback provenance. It is compared with rather than silently substituted for its Baseline Scenario Compilation, and its deployment-level label does not imply that an officer reviewed every choice; public metadata need not expose personal details beyond the accountable role.
 _Avoid_: mutable override layer, hidden exception, rewritten baseline
 
 **Officer Decision**:
-A frozen, versioned and attributable human planning decision bound to one explicit compiler target and the exact Baseline Scenario Compilation, evidence snapshot and Network Selection Profile against which it was made. It records the responsible officer and role, date, rationale, governed evidence, source, effective period and status without embedding geometry in free text.
-_Avoid_: agent decision, Area Definition exception, hidden override, edited evidence
+A frozen, versioned and attributable human planning decision bound to one stable logical compiler target rather than an exact geometry fingerprint. It records the responsible officer and role, date, rationale, governed evidence, source and status without embedding geometry in free text; it remains in force until explicitly superseded or withdrawn, while ordinary geometry corrections, changed evidence or a changed Network Selection Profile may create a Material Officer–Compiler Divergence but never make the decision expire or silently cease to apply.
+_Avoid_: agent decision, expiring decision, stale decision, Area Definition exception, hidden override, edited evidence
+
+**Material Officer–Compiler Divergence**:
+An explicit finding that a current valid Officer Decision selects a different eligible alignment from the compiler's current evidence-preferred option. The officer-selected route remains the primary route in that Officer-Informed Scenario Compilation, while the compiler-preferred alternative is highlighted distinctly rather than muted as an ordinary rejected option; the finding does not declare either route objectively correct.
+_Avoid_: officer error, correct route, grey rejected alternative, silent override
+
+**Officer Decision Target Unavailable**:
+An explicit governance finding that the stable logical target of a continuing Officer Decision no longer exists among the current materially equivalent compiler targets. Generation still completes, but the decision is neither expired nor silently transferred to a different route and remains visible until an authorised human supersedes or withdraws it; when no other Officer Decision applies, the new output is a Generated Scenario Compilation with an unresolved-decision warning rather than an Officer-Informed Scenario Compilation.
+_Avoid_: stale decision, automatic remapping, nearest-route substitution, silent expiry
 
 **Officer Decision Ledger**:
-The immutable canonical set of Officer Decisions applied as a governed overlay to one clean baseline. An empty ledger preserves the clean baseline network byte-for-byte; a non-empty valid ledger creates a separately identified Officer-Informed Scenario Compilation while stale, unknown, duplicate or conflicting active decisions fail closed.
-_Avoid_: mutable configuration, second network source, agent ledger, output patch
+The immutable canonical set of Officer Decisions supplied as initial governed input to generation. Every applicable decision controls its stable logical target, all other targets resolve normally, and a non-empty applied ledger creates an Officer-Informed Scenario Compilation; changed evidence or profile does not expire a decision and instead may produce a highlighted Material Officer–Compiler Divergence.
+_Avoid_: interactive approval gate, mutable configuration, expiring decision ledger, second network source, agent ledger, output patch
 
 **Human Intervention Response**:
 A frozen, versioned human answer to one exact current Human Intervention Request, selecting one compiler-offered action and retaining its request, baseline, evidence and profile lineage. An accepted response is translated into the Officer Decision Ledger rather than creating another mutation path.
 _Avoid_: free-form instruction, invented action, agent response, suspended compilation
 
 **Deployment Authority State**:
-The explicit public status of one deployment output as a generated clean baseline, an Officer-Informed Scenario Compilation or a formally adopted Reference SATN. Compiler output, Agent Runtime activity, Officer Decisions and formal adoption remain separately labelled authority records; a development or fake runtime cannot substantiate an officer-review or adoption claim.
+The explicit public status of one deployment output as a Baseline Scenario Compilation, Generated Scenario Compilation, Officer-Informed Scenario Compilation or formally adopted Reference SATN. Compiler rules, Agent Runtime activity, Officer Decisions and formal Adoption remain separately labelled authority records; an agent-selected or fallback-selected output has generated authority only, and a development or fake runtime cannot substantiate an officer-review or adoption claim.
 _Avoid_: generic published network, implied officer approval, agent adoption
 
 **Network Gap**:
@@ -285,16 +377,16 @@ A recorded defect in an Alignment Option, such as a discontinuity, invalid join,
 _Avoid_: automatic snap, hidden error
 
 **Crossing Warning**:
-A non-blocking indication that selected route geometries cross without a shared Junction Node. It invites agentic inspection for a useful missing junction but does not imply that the crossing must connect.
-_Avoid_: topology failure, automatic junction, prohibited crossing
+A non-blocking indication that route geometries intersect visually without a shared Junction Node. It creates no Alignment Choice Point, connection or hybrid transition and invites inspection without implying that the crossing must connect.
+_Avoid_: topology failure, automatic junction, inferred hybrid, prohibited crossing
 
 **Quiet Lane**:
 A rural lane whose low motor-traffic conditions and treatment make it a plausible active-travel alignment; the term does not imply that through motor traffic is prohibited.
 _Avoid_: traffic-free lane, access-only lane
 
 **Access-Only Quiet Lane**:
-A rural lane where through motor traffic is physically or legally filtered while authorised access, including landowner, property and emergency access, remains.
-_Avoid_: Quiet Lane, traffic-free path
+A rural lane where through motor traffic is physically or legally filtered while authorised access, including landowner, property and emergency access, remains. Governed filter evidence keeps it eligible as positive alignment evidence and prefers it to an otherwise comparable unfiltered through-traffic village street without making it an automatic winner over materially different options.
+_Avoid_: Quiet Lane, traffic-free path, route excluded by its filter, unconditional preferred route
 
 **Strategic Spine**:
 A continuous rural backbone corridor defined by an A road, an established National Cycle Network route, a Declassified NCN Route or a Greenway Cycleway. An A-road spine is selected for strategic continuity and is presumed to require substantial engineering for high-quality provision alongside the road rather than carriageway cycling; neither a route-quality gap nor an Elevation Challenge removes the corridor from the backbone.
@@ -383,6 +475,14 @@ _Avoid_: automatic alternative trigger, gradient prohibition, invisible routing 
 **Topography Profile**:
 The distance and per-direction cumulative-ascent, cumulative-descent, Gradient Sections and steepest-sustained-gradient evidence displayed for an Alignment Option to support human and agent judgement. It is derived from elevation throughout the alignment rather than endpoint difference, and the measures are not collapsed into a composite effort score.
 _Avoid_: net elevation change, cycling effort score, hidden weighting
+
+**Cumulative Elevation Variation**:
+The direction-independent sum of cumulative ascent and cumulative descent along a governed elevation profile, expressed as one positive measure for comparing Parallel Alignment Sections and their composed Alignment Options. A composed option adds its ordered sections only when every section has complete, compatible evidence; the raw total is not normalised by route length, while distance and directional Gradient Sections remain separately inspectable.
+_Avoid_: total elevation change, net elevation change, elevation per kilometre, elevation score, cycling effort
+
+**Material Cumulative Elevation Difference**:
+A symmetric evidence flag showing that two complete Cumulative Elevation Variation measures differ by at least 20 metres and by at least 25% of the larger value. Its frozen configurable thresholds identify a potentially meaningful contrast for judgement without selecting an alignment or hiding the underlying measures.
+_Avoid_: topography winner, elevation score, automatic route choice, directional effort
 
 **Micro-Gradient Interval**:
 A distance-aligned 20 metre detail or 50 metre overview measurement derived from governed elevation samples no more than 12.5 metres apart. It records direction, severity, supporting evidence and uncertainty; unavailable evidence remains explicit rather than being interpreted as level ground.
@@ -481,12 +581,12 @@ The mandatory validation boundary that reconstructs and verifies a snapshot's ma
 _Avoid_: automatic approval, agent override, optional report view
 
 **Agent Decision Record**:
-A schema-valid audit record for a compilation decision, stating its governing Criterion Status, effective Agent Review Policy, whether review was required, and either the complete fingerprinted menu and accepted caller choice, the typed direct-runtime result, or the deterministic outcome. A caller-mediated record includes the mapped compiler action, responder mode, validation result and affected feature identifiers. It never directly changes compiled state.
+A schema-valid audit record for a compilation decision, stating its governing Criterion Status, effective Agent Review Policy, whether review was required, the complete fingerprinted menu, selected compiler action, small bounded set of decisive considerations, governed citations, responder mode, validation result, fallback trigger where applicable and affected feature identifiers. Agent-selected and fallback-selected parallel alignments use the same inspectable record shape, and the record never directly changes compiled state.
 _Avoid_: free-form answer, silent edit, unrecorded deterministic skip
 
-**Agent Decision Explanation**:
-A deterministic, replaceable presentation derived from one validated Agent Decision Record, its selected compiler-authored choice, decisive criterion findings and governed citations. It may explain why one Alignment Option was selected and another retained as rejected evidence, but it cannot add reasons, authority or evidence absent from the underlying record.
-_Avoid_: agent-authored public rationale, approval note, hidden prompt summary
+**Alignment Decision Explanation**:
+A deterministic, replaceable presentation derived from one validated Agent Decision Record, its selected compiler-authored choice, decisive consideration findings and governed citations. It identifies whether selection was agent-made, deterministic near-equivalence or deterministic runtime fallback and may explain why alternatives remain rejected evidence, but it cannot add reasons, authority or evidence absent from the record.
+_Avoid_: Agent Decision Explanation, agent-authored public rationale, approval note, hidden prompt summary
 
 **Agent Review Policy**:
 The exact set of Green, Amber, Red and Grey Criterion Statuses in Council Configuration that require an Agent Decision Request. It applies to the status governing an individual decision, never a Criteria Section aggregate; an empty set means no Agent Runtime is constructed or called.
@@ -496,9 +596,17 @@ _Avoid_: always-on agent, worst-section rollup, open-ended escalation
 A stable, dependency-fingerprinted and schema-valid decision menu that names one exact criterion and question, its governed evidence and deterministic findings, and a finite ordered set of compiler-actionable choices. Returning it ends the current compilation invocation without publishing or retaining continuation state.
 _Avoid_: blocked message, open-ended prompt, live continuation, heartbeat
 
+**Parallel Alignment Agent Decision Request**:
+A complete Agent Decision Request for one Parallel Alignment Candidate Set whose only actions select an eligible compiler-authored end-to-end alignment and whose high-level aggregated multi-dimensional findings, material flags, limitations, fallback hierarchy and citation pointers are all available within the current compilation. Raw area-wide datasets are excluded, missing facts remain explicit evidence gaps rather than agent retrieval tasks, and terminate, defer or investigate actions are never offered; a validated Agent Runtime choice or the Deterministic Alignment Fallback resolves the request in that invocation without an interactive pause.
+_Avoid_: open-ended decision, officer prompt, suspended compilation, raw dataset dump, agent fact-finding, partial decision evidence, agent-authored route
+
 **Agent Decision Choice**:
 One compiler-authored item in an Agent Decision Request, identified by a simple stable identifier and declaring its concise meaning, predefined compiler action, expected consequence and mandatory constraints. `terminate` has the reserved meaning of stopping the run, preserving the previous valid publication and requiring a fresh compilation.
 _Avoid_: free-form answer, agent-supplied parameter, validation waiver
+
+**Decisive Alignment Consideration**:
+One compiler-authored identifier for a governed evidence consideration already offered in a parallel-alignment decision request and selected by the responder as materially bearing on its choice. A small bounded set demonstrates which dimensions drove the choice without adding evidence, weights, geometry or free-form rationale; every identifier and its relationship to the selected option must validate together or the whole response is rejected in favour of the Deterministic Alignment Fallback.
+_Avoid_: agent essay, invented evidence, unsupported reason, partial response acceptance, hidden weight
 
 **Agent Decision Ledger**:
 A versioned, data-only set of responses supplied to a fresh compilation. Each response contains one request identifier, the request dependency fingerprint and one offered choice identifier. The compiler accepts a response only at the freshly regenerated matching request, consumes every supplied response before publication and rejects executable or free-form fields.
@@ -521,7 +629,7 @@ A provider-neutral definition of one agent role's instructions, Evidence Packet,
 _Avoid_: Codex prompt, model-specific workflow
 
 **Agent Runtime**:
-The optional provider-neutral seam through which compilation submits one complete fingerprinted Agent Decision Request and accepts only its request identifier plus one offered choice identifier. Calls are lazy, single-attempt, request- and token-limited, and protected by a configurable hard wall-clock deadline. Timeout, provider failure, schema failure or an unoffered choice ends the invocation with the same non-waiting decision-required result. A concrete model provider is an Adapter at this seam; Codex is not required.
+The optional provider-neutral seam through which compilation submits one complete fingerprinted Agent Decision Request and accepts its request identifier plus one offered choice identifier; a parallel-alignment response also returns a small bounded set of offered Decisive Alignment Considerations and can never introduce evidence. Calls are lazy, single-attempt, request- and token-limited, and protected by a configurable hard wall-clock deadline; a failed, unsupported or partially invalid parallel-alignment response is rejected as a whole and invokes the Deterministic Alignment Fallback rather than pausing compilation. A concrete model provider is an Adapter at this seam; Codex is not required.
 _Avoid_: embedded chatbot, Codex dependency, free-form agent call
 
 **LCWIP Stage Decision Envelope**:
