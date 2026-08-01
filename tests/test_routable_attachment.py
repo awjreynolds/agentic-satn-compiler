@@ -8,6 +8,7 @@ import networkx as nx
 import pytest
 from shapely.geometry import LineString, Point
 
+import satn.routing as routing
 from satn.routing import RoadGraph
 
 
@@ -131,7 +132,9 @@ def test_batched_routes_preserve_asymmetric_one_way_and_equal_cost_options() -> 
         strategic_use=True,
     )
 
-    assert search_count == 4
+    # Two role/start traversals, two target-rooted tie traces, and two
+    # one-way reverse-route traversals are all reported.
+    assert search_count == 6
     for role, option in expected.items():
         actual = routed[("s", "t")][role]
         assert actual is not None and option is not None
@@ -141,7 +144,9 @@ def test_batched_routes_preserve_asymmetric_one_way_and_equal_cost_options() -> 
         assert actual.bidirectional is option.bidirectional
 
 
-def test_equal_cost_ties_for_one_start_replay_legacy_paths_as_one_grouped_search() -> None:
+def test_equal_cost_ties_count_each_unique_legacy_trace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     rows: list[dict[str, object]] = []
     expected_geometries: dict[str, LineString] = {}
     pairs: list[tuple[str, str]] = []
@@ -215,6 +220,25 @@ def test_equal_cost_ties_for_one_start_replay_legacy_paths_as_one_grouped_search
             )
         )
     graph = RoadGraph(gpd.GeoDataFrame(rows, geometry="geometry", crs=27700))
+    trace_roots: list[tuple[str, bool]] = []
+    original_trace = routing._dijkstra_trace
+
+    def counting_trace(
+        route_graph: nx.DiGraph,
+        root: str,
+        weight: object,
+        *,
+        reverse: bool,
+    ) -> tuple[routing._DijkstraTraceEvent, ...]:
+        trace_roots.append((root, reverse))
+        return original_trace(route_graph, root, weight, reverse=reverse)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(routing, "_dijkstra_trace", counting_trace)
+
+    def unexpected_single_source(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("grouped routing must not hide an uncounted NetworkX traversal")
+
+    monkeypatch.setattr(nx, "single_source_dijkstra", unexpected_single_source)
 
     routed, search_count = graph.route_options_for_pairs(
         pairs,
@@ -222,7 +246,11 @@ def test_equal_cost_ties_for_one_start_replay_legacy_paths_as_one_grouped_search
         strategic_use=True,
     )
 
-    assert search_count == 1
+    assert search_count == len(trace_roots) == 9
+    assert trace_roots == [
+        ("s", False),
+        *((f"t-{index:02d}", True) for index in range(8)),
+    ]
     for _start, target in pairs:
         option = routed[("s", target)]["direct"]
         assert option is not None
@@ -232,6 +260,72 @@ def test_equal_cost_ties_for_one_start_replay_legacy_paths_as_one_grouped_search
             f"c-{target[-2:]}-s",
         ]
         assert option.geometry.equals_exact(expected_geometries[target], tolerance=0)
+
+
+def test_dense_tied_pairs_cache_traversals_by_unique_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    anchor_count = 8
+    rows: list[dict[str, object]] = []
+    for index in range(anchor_count):
+        anchor = f"a-{index:02d}"
+        anchor_point = (index * 10, 0)
+        for hub, hub_point in (("c", (0, 10)), ("d", (0, -10))):
+            rows.extend(
+                (
+                    {
+                        "osmid": f"{anchor}-{hub}",
+                        "u": anchor,
+                        "v": hub,
+                        "length": 1,
+                        "geometry": LineString([anchor_point, hub_point]),
+                    },
+                    {
+                        "osmid": f"{hub}-{anchor}",
+                        "u": hub,
+                        "v": anchor,
+                        "length": 1,
+                        "geometry": LineString([hub_point, anchor_point]),
+                    },
+                )
+            )
+    graph = RoadGraph(gpd.GeoDataFrame(rows, geometry="geometry", crs=27700))
+    anchors = tuple(f"a-{index:02d}" for index in range(anchor_count))
+    pairs = tuple(combinations(anchors, 2))
+    expected = {
+        pair: graph.option(*pair, "direct", strategic_use=True)
+        for pair in pairs
+    }
+    trace_roots: list[tuple[str, bool]] = []
+    original_trace = routing._dijkstra_trace
+
+    def counting_trace(
+        route_graph: nx.DiGraph,
+        root: str,
+        weight: object,
+        *,
+        reverse: bool,
+    ) -> tuple[routing._DijkstraTraceEvent, ...]:
+        trace_roots.append((root, reverse))
+        return original_trace(route_graph, root, weight, reverse=reverse)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(routing, "_dijkstra_trace", counting_trace)
+
+    routed, search_count = graph.route_options_for_pairs(
+        pairs,
+        roles=("direct",),
+        strategic_use=True,
+    )
+
+    assert len(pairs) == anchor_count * (anchor_count - 1) // 2
+    assert search_count == len(trace_roots) == 2 * (anchor_count - 1)
+    assert len(set(trace_roots)) == len(trace_roots)
+    for pair, legacy in expected.items():
+        actual = routed[pair]["direct"]
+        assert actual is not None and legacy is not None
+        assert actual.edge_ids == legacy.edge_ids
+        assert actual.reverse_edge_ids == legacy.reverse_edge_ids
+        assert actual.geometry.wkb_hex == legacy.geometry.wkb_hex
 
 
 @pytest.mark.parametrize("anchor_count", (10, 25, 50))

@@ -1106,12 +1106,13 @@ class RoadGraph:
         roles: Iterable[str],
         strategic_use: bool = False,
     ) -> tuple[dict[tuple[str, str], dict[str, RouteOption | None]], int]:
-        """Route finite pairs through one Dijkstra search per role and start node.
+        """Route finite pairs through cached, explicitly counted Dijkstra traces.
 
         The returned mapping retains one entry per supplied, distinct directed
         pair and the original role order.  It is intentionally a RoadGraph
         seam: corridor preparation supplies governed pairs, while graph
-        traversal and its deterministic accounting stay here.
+        traversal and its deterministic accounting stay here.  Traces are
+        shared by role, governed graph, root, and traversal orientation.
         """
 
         unique_pairs = tuple(sorted(set(pairs)))
@@ -1122,22 +1123,46 @@ class RoadGraph:
             for role in ordered_roles:
                 grouped.setdefault((role, start, strategic_use), set()).add(end)
         searches = 0
+        trace_cache: dict[
+            tuple[str, str, bool, bool],
+            tuple[_DijkstraTraceEvent, ...],
+        ] = {}
+
+        def trace_for(
+            role: str,
+            root: str,
+            role_strategic_use: bool,
+            *,
+            reverse: bool,
+        ) -> tuple[_DijkstraTraceEvent, ...]:
+            nonlocal searches
+            key = (role, root, role_strategic_use, reverse)
+            if key not in trace_cache:
+                trace_cache[key] = _dijkstra_trace(
+                    self._graph_for_role(
+                        role,
+                        strategic_use=role_strategic_use,
+                    ),
+                    root,
+                    _weight_for(role),
+                    reverse=reverse,
+                )
+                searches += 1
+            return trace_cache[key]
+
         primary_paths: dict[tuple[tuple[str, str], str], list[str] | None] = {}
         for (role, start, role_strategic_use), ends in sorted(grouped.items()):
             route_graph = self._graph_for_role(
                 role,
                 strategic_use=role_strategic_use,
             )
-            try:
-                lengths, paths = nx.single_source_dijkstra(
-                    route_graph,
-                    start,
-                    weight=_weight_for(role),
-                )
-            except nx.NodeNotFound:
-                lengths = {}
-                paths = {}
-            searches += 1
+            forward_trace = trace_for(
+                role,
+                start,
+                role_strategic_use,
+                reverse=False,
+            )
+            lengths, paths = _dijkstra_result(start, forward_trace)
             tied_ends: list[str] = []
             for end in sorted(ends):
                 nodes = paths.get(end)
@@ -1152,10 +1177,18 @@ class RoadGraph:
                 primary_paths[((start, end), role)] = nodes
             if tied_ends:
                 legacy_tied_paths = _legacy_paths_from_grouped_dijkstra_traces(
-                    route_graph,
                     start,
                     tied_ends,
-                    _weight_for(role),
+                    forward_trace,
+                    {
+                        target: trace_for(
+                            role,
+                            target,
+                            role_strategic_use,
+                            reverse=True,
+                        )
+                        for target in tied_ends
+                    },
                 )
                 for end, nodes in legacy_tied_paths.items():
                     primary_paths[((start, end), role)] = nodes
@@ -1189,16 +1222,13 @@ class RoadGraph:
                 strategic_use=role_strategic_use,
             )
             weight = _weight_for(role)
-            try:
-                lengths, paths = nx.single_source_dijkstra(
-                    route_graph,
-                    reverse_start,
-                    weight=weight,
-                )
-            except nx.NodeNotFound:
-                lengths = {}
-                paths = {}
-            searches += 1
+            forward_trace = trace_for(
+                role,
+                reverse_start,
+                role_strategic_use,
+                reverse=False,
+            )
+            lengths, paths = _dijkstra_result(reverse_start, forward_trace)
             tied_requests: dict[str, list[tuple[tuple[str, str], str]]] = {}
             for request_key, reverse_end in sorted(requests):
                 nodes = paths.get(reverse_end)
@@ -1213,10 +1243,18 @@ class RoadGraph:
                 reverse_paths[request_key] = nodes
             if tied_requests:
                 legacy_tied_paths = _legacy_paths_from_grouped_dijkstra_traces(
-                    route_graph,
                     reverse_start,
                     tied_requests,
-                    weight,
+                    forward_trace,
+                    {
+                        target: trace_for(
+                            role,
+                            target,
+                            role_strategic_use,
+                            reverse=True,
+                        )
+                        for target in tied_requests
+                    },
                 )
                 for reverse_end, nodes in legacy_tied_paths.items():
                     for request_key in tied_requests[reverse_end]:
@@ -1440,26 +1478,22 @@ def _weight_for(role: str) -> Callable[[str, str, dict[str, object]], float]:
 
 
 def _legacy_paths_from_grouped_dijkstra_traces(
-    graph: nx.DiGraph,
     start: str,
     targets: Iterable[str],
-    weight: Callable[[str, str, dict[str, object]], float],
+    forward_trace: tuple[_DijkstraTraceEvent, ...],
+    reverse_traces: Mapping[str, tuple[_DijkstraTraceEvent, ...]],
 ) -> dict[str, list[str]]:
-    """Replay legacy bidirectional tie choices from grouped deterministic traces.
+    """Replay legacy bidirectional tie choices from cached deterministic traces.
 
     NetworkX's target-specific bidirectional Dijkstra can choose a different
-    equal-cost path from its single-source Dijkstra.  The forward event trace
-    is computed once for the grouped start.  Reverse traces are prepared in one
-    grouped operation for the finite tied targets, then the original alternating
-    meet/stop rules are replayed without starting another graph search per pair.
+    equal-cost path from its single-source Dijkstra.  The caller caches both
+    orientations by role, governed graph, and root, so each actual traversal is
+    shared wherever possible and included in the reported search count.  Exact
+    replay needs the reverse trace: off-shortest-path queue entries affect the
+    alternating meet order, so a source predecessor DAG is not sufficient.
     """
 
     ordered_targets = tuple(sorted(set(targets)))
-    forward_trace = _dijkstra_trace(graph, start, weight, reverse=False)
-    reverse_traces = {
-        target: _dijkstra_trace(graph, target, weight, reverse=True)
-        for target in ordered_targets
-    }
     paths: dict[str, list[str]] = {}
     for target in ordered_targets:
         path = _replay_bidirectional_trace(
@@ -1471,6 +1505,25 @@ def _legacy_paths_from_grouped_dijkstra_traces(
         if path is not None:
             paths[target] = path
     return paths
+
+
+def _dijkstra_result(
+    root: str,
+    trace: tuple[_DijkstraTraceEvent, ...],
+) -> tuple[dict[str, float], dict[str, list[str]]]:
+    """Recover the single-source distances and strict-relaxation paths."""
+
+    lengths: dict[str, float] = {}
+    paths: dict[str, list[str]] = {root: [root]} if trace else {}
+    for event in trace:
+        if event.settled:
+            lengths[event.node] = event.distance
+        for relaxation in event.relaxations:
+            paths[relaxation.node] = [
+                *paths[relaxation.predecessor],
+                relaxation.node,
+            ]
+    return lengths, paths
 
 
 def _dijkstra_trace(
