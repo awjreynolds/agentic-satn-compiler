@@ -581,12 +581,11 @@ def compile_parallel_reduction_scenario(
     snapshot = GovernedEvidenceSnapshot(
         snapshot_id="parallel-reduction-scenario",
         assessments=tuple(
-            {
-                (
-                    item.criteria.evidence_snapshot.snapshot_fingerprint,
-                    binding.kind,
-                    binding.assessment_id,
-                ): binding
+                {
+                    (
+                        binding.kind,
+                        binding.assessment_id,
+                    ): binding
                 for item in selections
                 for binding in item.criteria.evidence_snapshot.assessments
             }.values()
