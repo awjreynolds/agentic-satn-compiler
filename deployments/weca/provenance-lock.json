@@ -1,5 +1,5 @@
 {
-  "accepted_decisions_sha256": "59ba8a2d93c87204778da6dd4df0c9acb767f843003b0b8e288e35b9ae467fc0",
+  "accepted_decisions_sha256": "282df558858a9a2790efd9efae7acefab92c4cada34df105f3b103b1d9a57216",
   "area_definition_sha256": "988c2410403ac524e357f900548b00e7fb0802dfac645886d244aa8ed6a4f81a",
   "area_id": "west-of-england",
   "area_name": "West of England Combined Authority area",
@@ -8,12 +8,16 @@
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "size_bytes": 0
     },
+    ".satn-publication-owner.json": {
+      "sha256": "5b535c8d5a50052e94cf719933bd2770e7e04de268916c77be8ba559950cadf0",
+      "size_bytes": 102
+    },
     "README.txt": {
       "sha256": "2de8118a6213aad575bbbbf9c692654b3ddcdf568fa44b753731d2108c4fdd03",
       "size_bytes": 184
     },
     "agent-records.json": {
-      "sha256": "a43f70543882f9d54ccf27b4d6e284e28f9a39031fae25d36cd84ac2ecefe413",
+      "sha256": "d8a89c75e7650e6e193514ca2dbd5ab70c8ae6171ee97e79f224d7315207253a",
       "size_bytes": 1551645
     },
     "assets/MAPLIBRE-LICENSE.txt": {
@@ -49,11 +53,11 @@
       "size_bytes": 1599
     },
     "compiler-run.json": {
-      "sha256": "3c3820be1ca2b9c824df908f94e26091c6f43fcbc8e5b75f88ce9dfebb763976",
-      "size_bytes": 28597282
+      "sha256": "f0e0ff1739b6206514fe56aea476642d543bbda97b9f3600667bdcda26b63f3d",
+      "size_bytes": 28597499
     },
     "data.js": {
-      "sha256": "51f988a6f62dc2c5b9ad1a5c4b82158ceef5bef227f6fd4dfe6b669ea3101c86",
+      "sha256": "1bb2c8c596ad8e296c1803dba7d4e8abeb0b38da1ededccac25122d3fde87913",
       "size_bytes": 487525
     },
     "divergence-records.json": {
@@ -925,7 +929,7 @@
       "size_bytes": 1707007
     },
     "network-map.pdf": {
-      "sha256": "96874db6aa8ec558e1647e362f1d2c33f05abe9368422d539d095961140bc4aa",
+      "sha256": "9829a986c5c3c10c08e244de2955093cdf5df261512ebb2eaef36e6d34fd2ce9",
       "size_bytes": 5922738
     },
     "network.geojson": {
@@ -933,11 +937,11 @@
       "size_bytes": 44635355
     },
     "publication.json": {
-      "sha256": "47641f69ebf8820ef91497f6279145b810bab50d59cfc2a7f7efd35c5c3fd77d",
-      "size_bytes": 28443421
+      "sha256": "720e07c46601d4b42954a764a82d745e73d40e732c255d10b61478c19e1fa07e",
+      "size_bytes": 28443638
     },
     "service-worker.js": {
-      "sha256": "c88d90c318cf0faab2489fe7e3c7d55e727cee45c686043073e225f53ef919ba",
+      "sha256": "f796045c95bad3eaa54ed185e2b0fb61f67dd8529a418bbd67fb4e8414a871e4",
       "size_bytes": 1675
     },
     "topography-manifest.json": {
@@ -1665,7 +1669,7 @@
       "size_bytes": 17909
     }
   },
-  "compilation_input_fingerprint": "c869e5baf071dbb89405735c8604389de2764ac460c6df983e6d5e480292aec5",
+  "compilation_input_fingerprint": "4e8e4ea56bc1774982e678e6ff9c3d7eabf319c021a702545600165b22bff039",
   "connection_count": 200,
   "criteria": {
     "atm_comparison": {
@@ -1725,7 +1729,7 @@
   "decision_ledger_input_sha256": "67779ed4c174e52fe6267892a335d34d6acb63c7fcbca50b7a61d1c48596c9c9",
   "deployment_id": "weca",
   "gap_count": 451,
-  "governed_input_fingerprint": "80e3beb8021a276e9e3ef5abd363007f00098d15b06f6c895c227d106c7afd0d",
+  "governed_input_fingerprint": "060c79a7ae9ffefec99e949f7be73b81b58c2d8c82329e815265acf20458d346",
   "layer_counts": {
     "a_road_spines": 4183,
     "access_obligations": 922,
@@ -1750,8 +1754,8 @@
     "urban_classification_unknowns": 13111,
     "urban_spines": 7517
   },
-  "run_id": "run-a5a4ddae040d",
-  "runtime_governance_sha256": "a0dd6bd843e16bf17e92f1dc272bc397c060a19d2d7dd5756db1f4619553915a",
+  "run_id": "run-267c0a32113c",
+  "runtime_governance_sha256": "d34aeedf29c60f535a83bb353feb6d5fa8fe77dfd24da894d1e2493c93d36fc2",
   "schema_version": "satn-deployment-provenance-lock/v2",
   "scope": {
     "area_id": "west-of-england",
