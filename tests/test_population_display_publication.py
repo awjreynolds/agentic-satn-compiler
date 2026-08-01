@@ -10,6 +10,7 @@ from bath_saltford_fixture import configured_bath_saltford
 
 from satn.agents import FakeAgentRuntime
 from satn.compiler import compile_network
+from satn.filesystem_safety import publication_destination_authority
 from satn.publisher import publish
 from satn.sources import load_snapshot, snapshot
 
@@ -19,7 +20,12 @@ def test_population_display_sections_are_published_for_map_review(tmp_path: Path
     snapshot(config)
     compiled = compile_network(config, load_snapshot(config), FakeAgentRuntime())
 
-    artifacts = publish(config, compiled, "population-display-publication")
+    artifacts = publish(
+        config,
+        compiled,
+        "population-display-publication",
+        publication_authority=publication_destination_authority(workspace_root=tmp_path),
+    )
 
     sections = gpd.read_file(artifacts["geopackage"], layer="population_display_sections")
     geojson = json.loads(artifacts["geojson"].read_text(encoding="utf-8"))

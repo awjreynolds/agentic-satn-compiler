@@ -19,6 +19,7 @@ import satn.backbone as backbone_module
 import satn.compiler as compiler_module
 from satn.agents import AgentRole, FakeAgentRuntime
 from satn.compiler import CompiledNetwork, compile_network
+from satn.filesystem_safety import publication_destination_authority
 from satn.heartbeat import StageHeartbeat
 from satn.models import CouncilConfig, TrafficLight
 from satn.publisher import _write_json_records, publish
@@ -1200,7 +1201,12 @@ def test_cross_spine_roles_publish_consistently_to_spatial_and_review_artifacts(
     )
     compiled = compile_network(council, source, FakeAgentRuntime())
 
-    artifacts = publish(council, compiled, "run-cross-spine")
+    artifacts = publish(
+        council,
+        compiled,
+        "run-cross-spine",
+        publication_authority=publication_destination_authority(workspace_root=tmp_path),
+    )
 
     layer_names = set(gpd.list_layers(artifacts["geopackage"])["name"])
     assert {"branch_meeting_connections", "cross_spine_connectors"} <= layer_names
@@ -1258,7 +1264,12 @@ def test_direct_compile_publish_persists_the_canonical_empty_decision_contract(
         "responses": [],
     }
     assert compiled.accepted_decisions == []
-    artifacts = publish(council, compiled, "run-direct-empty-ledger")
+    artifacts = publish(
+        council,
+        compiled,
+        "run-direct-empty-ledger",
+        publication_authority=publication_destination_authority(workspace_root=tmp_path),
+    )
     run = json.loads(artifacts["run"].read_text())
     assert run["decision_ledger_input"] == compiled.decision_ledger_input
     assert run["accepted_decisions"] == []
@@ -1283,7 +1294,12 @@ def test_direct_compile_publish_persists_its_bounded_runtime_audit(tmp_path: Pat
     assert [response["request_id"] for response in compiled.accepted_decisions] == sorted(
         response["request_id"] for response in compiled.accepted_decisions
     )
-    artifacts = publish(council, compiled, "run-direct-runtime-audit")
+    artifacts = publish(
+        council,
+        compiled,
+        "run-direct-runtime-audit",
+        publication_authority=publication_destination_authority(workspace_root=tmp_path),
+    )
     run = json.loads(artifacts["run"].read_text())
     assert run["decision_ledger_input"] == {
         "decision_contract": "agent-decision-menu/v1",

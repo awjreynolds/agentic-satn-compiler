@@ -18,6 +18,7 @@ from satn import compile
 from satn import compile_strategic_reference as public_compile_strategic_reference
 from satn.agents import FakeAgentRuntime
 from satn.compilation_dependencies import compilation_dependency_manifest
+from satn.filesystem_safety import publication_destination_authority
 from satn.pipeline import compile_strategic_reference, compile_strategic_reference_network
 from satn.publisher import (
     _strategic_candidate_evidence_html,
@@ -236,6 +237,7 @@ def test_bath_strategic_reference_publishes_typed_sibling_and_semantic_map(tmp_p
     result = compile_strategic_reference(
         config,
         build_strategic_reference_application_plan(reference, preparation),
+        publication_authority=publication_destination_authority(workspace_root=tmp_path),
     )
 
     run = json.loads((result.output_dir / "run.json").read_text())
@@ -305,7 +307,9 @@ def test_strategic_data_composite_tamper_is_rejected(tmp_path) -> None:
     _, _, reference, preparation = _resolved_reference_inputs(tmp_path)
     config = configured_bath_saltford(tmp_path)
     result = compile_strategic_reference(
-        config, build_strategic_reference_application_plan(reference, preparation)
+        config,
+        build_strategic_reference_application_plan(reference, preparation),
+        publication_authority=publication_destination_authority(workspace_root=tmp_path),
     )
     data_path = result.output_dir / "review-map" / "data.js"
     data_path.write_text(data_path.read_text().replace('"interurban-spine"', '"foreign-role"', 1))
@@ -317,7 +321,9 @@ def test_strategic_run_and_data_lineage_tamper_is_rejected(tmp_path) -> None:
     _, _, reference, preparation = _resolved_reference_inputs(tmp_path)
     config = configured_bath_saltford(tmp_path)
     result = compile_strategic_reference(
-        config, build_strategic_reference_application_plan(reference, preparation)
+        config,
+        build_strategic_reference_application_plan(reference, preparation),
+        publication_authority=publication_destination_authority(workspace_root=tmp_path),
     )
     run_path = result.output_dir / "run.json"
     run = json.loads(run_path.read_text())
@@ -341,7 +347,9 @@ def test_strategic_run_and_top_level_geojson_tampering_are_rejected(tmp_path) ->
     _, _, reference, preparation = _resolved_reference_inputs(tmp_path)
     config = configured_bath_saltford(tmp_path)
     result = compile_strategic_reference(
-        config, build_strategic_reference_application_plan(reference, preparation)
+        config,
+        build_strategic_reference_application_plan(reference, preparation),
+        publication_authority=publication_destination_authority(workspace_root=tmp_path),
     )
     pristine = result.output_dir
     for name, mutate in (
@@ -424,7 +432,8 @@ def test_atomic_failure_preserves_prior_strategic_publication(tmp_path, monkeypa
     _, _, reference, preparation = _resolved_reference_inputs(tmp_path)
     config = configured_bath_saltford(tmp_path)
     plan = build_strategic_reference_application_plan(reference, preparation)
-    result = compile_strategic_reference(config, plan)
+    authority = publication_destination_authority(workspace_root=tmp_path)
+    result = compile_strategic_reference(config, plan, publication_authority=authority)
     before = {
         path.relative_to(result.output_dir): path.read_bytes()
         for path in result.output_dir.rglob("*")
@@ -435,7 +444,7 @@ def test_atomic_failure_preserves_prior_strategic_publication(tmp_path, monkeypa
         lambda *_: (_ for _ in ()).throw(ValueError("forced validation failure")),
     )
     with pytest.raises(ValueError, match="forced validation failure"):
-        compile_strategic_reference(config, plan)
+        compile_strategic_reference(config, plan, publication_authority=authority)
     after = {
         path.relative_to(result.output_dir): path.read_bytes()
         for path in result.output_dir.rglob("*")
@@ -453,5 +462,6 @@ def test_strategic_publication_never_enters_agent_runtime(tmp_path, monkeypatch)
     result = compile_strategic_reference(
         configured_bath_saltford(tmp_path),
         build_strategic_reference_application_plan(reference, preparation),
+        publication_authority=publication_destination_authority(workspace_root=tmp_path),
     )
     assert result.artifacts["run"].is_file()
