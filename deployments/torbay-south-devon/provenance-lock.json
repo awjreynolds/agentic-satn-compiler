@@ -1,5 +1,5 @@
 {
-  "accepted_decisions_sha256": "276bdbef559b5db3a253a0043eb1f9d9bf0fc010cf036431593b99f682372751",
+  "accepted_decisions_sha256": "bf9c5f737ee60fd9af025e1ff6500abf050e63acc56cccad65674744e3c42699",
   "area_definition_sha256": "f8d6e8b231e25345b21ebf32219ca7cec26f6ce9de6e8a41dda663a9d1ebebcd",
   "area_id": "torbay-south-devon",
   "area_name": "Torbay and South Devon (Torbay, Teignbridge and South Hams)",
@@ -17,7 +17,7 @@
       "size_bytes": 184
     },
     "agent-records.json": {
-      "sha256": "380c73626ee9df94e9e6b997663fb3e602573a2804a28d6e8c97bf28cacb737a",
+      "sha256": "2fd21911f74e8ec26ace713c9352e64fd8e7c3a6354c04485eb8d32fc5453428",
       "size_bytes": 519257
     },
     "assets/MAPLIBRE-LICENSE.txt": {
@@ -49,15 +49,15 @@
       "size_bytes": 105798
     },
     "backbone-comparison.json": {
-      "sha256": "27edb4eb75aab84e0d330416bfd2d418c6238e4c1708fee93d99164b8fb10b49",
-      "size_bytes": 1597
+      "sha256": "10f11c340853b2aa7ae27b13b564b8579a231252c665c160a7c0c97aa4ffbfcc",
+      "size_bytes": 1741
     },
     "compiler-run.json": {
-      "sha256": "bc74696504c98f3a0e68ed057d8a869994d8be0b39d4b0ddc8a2e8c7f0759048",
+      "sha256": "8db845e3586b5ac7a457f0af02ae589569e9832fbe0be0b3e6a3ce355c266fce",
       "size_bytes": 359859
     },
     "data.js": {
-      "sha256": "3c5529db89ff6a0a4c7af2f4dab173a9170c8b5be5dc1b665ae62239122937ec",
+      "sha256": "b407d621ea2e895f672e93b9b4e640e58a0d4bcdb658a838bf6bc5f7b9491801",
       "size_bytes": 267443
     },
     "divergence-records.json": {
@@ -485,7 +485,7 @@
       "size_bytes": 4638
     },
     "network-map.pdf": {
-      "sha256": "e4ea8cf1171351d9d778fadb0ba145108f0ace9631ef3044112bee2cda578afb",
+      "sha256": "97060cb058439a741d9415aaf86cb954d0c046869a57bccc56393434a2c1dcff",
       "size_bytes": 4055766
     },
     "network.geojson": {
@@ -493,11 +493,11 @@
       "size_bytes": 10746349
     },
     "publication.json": {
-      "sha256": "f435f4cacfb988479da4d6f2390bb9585df652e719fe2a52d5efb018d6ac1374",
+      "sha256": "17885770f71c47c1490ff2ec359253b231276812270543244b5ab7d264ce5749",
       "size_bytes": 265358
     },
     "service-worker.js": {
-      "sha256": "edec1b8322e2fdb6f64a428e71b09e151c97baf591b7ea55cd9109a0419f472a",
+      "sha256": "7c290bbde513bbe4095b46ed2a10bb86c28f7b7082ebdfb41373c20cd15fb7ba",
       "size_bytes": 1703
     },
     "topography-manifest.json": {
@@ -781,7 +781,7 @@
       "size_bytes": 11999
     }
   },
-  "compilation_input_fingerprint": "3b840b30c9d8543a192105449f5d59a8a319f27548517c1a2b8ebf4f533c2a20",
+  "compilation_input_fingerprint": "91a4fa66305e676b39c0331fdcb602f79956d29c29b1657b94e27be6c2beb1fa",
   "connection_count": 150,
   "criteria": {
     "atm_comparison": {
@@ -841,7 +841,7 @@
   "decision_ledger_input_sha256": "67779ed4c174e52fe6267892a335d34d6acb63c7fcbca50b7a61d1c48596c9c9",
   "deployment_id": "torbay-south-devon",
   "gap_count": 250,
-  "governed_input_fingerprint": "8177eb4b675019e43f18ed34a9895b71ac471f7c5a96b494c18af6bb5ef965b9",
+  "governed_input_fingerprint": "7f3446b2a05ea4e1592d04dbe57447f2e4bc04bb0436f0947a225d93b2afbe89",
   "layer_counts": {
     "a_road_spines": 4136,
     "access_obligations": 392,
@@ -866,8 +866,8 @@
     "urban_classification_unknowns": 0,
     "urban_spines": 0
   },
-  "run_id": "run-00ebfbdc80e1",
-  "runtime_governance_sha256": "d7d2c59c439a48a651543ceb62748f3ae42bba5e864b79a14af99d7719559395",
+  "run_id": "run-3a7c70518567",
+  "runtime_governance_sha256": "0004de51924e6bbcddfb4cdea53a4b5897f789cf9954e619079cbd4c70f92577",
   "schema_version": "satn-deployment-provenance-lock/v2",
   "scope": {
     "area_id": "torbay-south-devon",
