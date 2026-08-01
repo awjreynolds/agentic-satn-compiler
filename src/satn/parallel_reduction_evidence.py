@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from itertools import combinations
 
 import geopandas as gpd
-from shapely.geometry import LineString, box
+from shapely.geometry import LineString, Point
 
 from satn.section_population import (
     SectionPopulationProfile,
@@ -30,9 +30,15 @@ class ParallelEvidenceSummary:
     material_population_differences: tuple[dict[str, object], ...]
     cumulative_elevation_variation: tuple[dict[str, object], ...]
     missing_evidence: tuple[str, ...]
+    section_population_sections: tuple[dict[str, object], ...]
 
 
-def build_parallel_evidence(routes: Sequence[object], config: object) -> ParallelEvidenceSummary:
+def build_parallel_evidence(
+    routes: Sequence[object],
+    config: object,
+    output_areas: Sequence[object],
+    source_fingerprint: str | None,
+) -> ParallelEvidenceSummary:
     """Reuse governed section and elevation algorithms; never select a route."""
     profile = SectionPopulationProfile(
         display_section_length_m=config.section_length_m,
@@ -53,23 +59,9 @@ def build_parallel_evidence(routes: Sequence[object], config: object) -> Paralle
         geometry="geometry",
         crs="EPSG:27700",
     )
-    points = [line.interpolate(0.5, normalized=True) for line in lines]
-    oas = gpd.GeoDataFrame(
-        {
-            "OA21CD": [f"E{i:08d}" for i, _ in enumerate(routes)],
-            "usual_residents": [route.population for route in routes],
-            "population_weighted_centroid": points,
-            "geometry": [point.buffer(1) for point in points],
-        },
-        geometry="geometry",
-        crs="EPSG:27700",
-    )
-    minx, miny, maxx, maxy = alignments.total_bounds
-    boundary = gpd.GeoDataFrame(
-        {"geometry": [box(minx - 1, miny - 1, maxx + 1, maxy + 1)]},
-        geometry="geometry",
-        crs="EPSG:27700",
-    )
+    sections: tuple[dict[str, object], ...] = ()
+    differences: tuple[dict[str, object], ...] = ()
+    missing = []
     urban = gpd.GeoDataFrame(
         {
             "geometry": [
@@ -81,19 +73,42 @@ def build_parallel_evidence(routes: Sequence[object], config: object) -> Paralle
         geometry="geometry",
         crs="EPSG:27700",
     )
-    assessment = compile_section_population_capture(
-        alignments,
-        oas,
-        boundary,
-        urban_extent=urban,
-        source_content_sha256=_digest([route.route_id for route in routes]),
-        profile=profile,
-    )
-    differences = tuple(
-        item.canonical() for item in derive_material_population_differences(assessment)
-    )
     elevations = []
-    missing = []
+    if not output_areas or source_fingerprint is None:
+        missing.append("section-population:governed-output-area-centroids")
+    else:
+        points = [Point(item.coordinates) for item in output_areas]
+        oas = gpd.GeoDataFrame(
+            {
+                "OA21CD": [item.oa_id for item in output_areas],
+                "usual_residents": [item.residents for item in output_areas],
+                "population_weighted_centroid": points,
+                "geometry": [point.buffer(0.01) for point in points],
+            },
+            geometry="geometry",
+            crs="EPSG:27700",
+        )
+        inside = [
+            point.buffer(0.1)
+            for point, item in zip(points, output_areas, strict=True)
+            if item.inside_area
+        ]
+        if inside:
+            boundary = gpd.GeoDataFrame({"geometry": inside}, geometry="geometry", crs="EPSG:27700")
+            assessment = compile_section_population_capture(
+                alignments,
+                oas,
+                boundary,
+                urban_extent=urban,
+                source_content_sha256=source_fingerprint,
+                profile=profile,
+            )
+            sections = tuple(item.canonical() for item in assessment.sections)
+            differences = tuple(
+                item.canonical() for item in derive_material_population_differences(assessment)
+            )
+        else:
+            missing.append("section-population:inside-area-definition")
     for line, route in zip(lines, routes, strict=True):
         if not route.elevation_samples:
             missing.append(f"elevation:{route.route_id}")
@@ -142,4 +157,5 @@ def build_parallel_evidence(routes: Sequence[object], config: object) -> Paralle
         differences,
         tuple(variation),
         tuple(sorted(set(missing))),
+        sections,
     )

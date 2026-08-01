@@ -132,6 +132,17 @@ class ParallelReductionConfig(BaseModel):
     material_elevation_variation_pct: float = Field(default=25.0, ge=0)
 
 
+class ParallelOutputAreaCentroid(BaseModel):
+    """One governed OA centroid; membership is declared, never inferred."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    oa_id: str = Field(pattern=r"^[A-Z][0-9]{8}$")
+    residents: int = Field(ge=0)
+    coordinates: tuple[float, float]
+    inside_area: bool
+
+
 class ParallelReductionRequest(BaseModel):
     """Data-only compiler input; all route candidates are discovered here."""
 
@@ -145,6 +156,8 @@ class ParallelReductionRequest(BaseModel):
     junction_node_ids: tuple[str, ...] = ()
     required_transitions: tuple[tuple[str, str], ...] = ()
     officer_decisions: tuple[PreloadedOfficerDecision, ...] = ()
+    output_area_centroids: tuple[ParallelOutputAreaCentroid, ...] = ()
+    output_area_source_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class ParallelCandidateRelation(BaseModel):
@@ -212,6 +225,7 @@ class ParallelReductionArtifact(BaseModel):
     material_population_differences: tuple[dict[str, object], ...] = ()
     cumulative_elevation_variation: tuple[dict[str, object], ...] = ()
     missing_evidence: tuple[str, ...] = ()
+    section_population_sections: tuple[dict[str, object], ...] = ()
     fingerprint: str = ""
 
 
@@ -854,7 +868,12 @@ def compile_parallel_reduction_scenario(
             mandatory_network_place_ids=scenario.mandatory_network_place_ids,
             lineage_fingerprints=scenario.lineage_fingerprints,
         )
-    evidence = build_parallel_evidence(request.routes, request.config)
+    evidence = build_parallel_evidence(
+        request.routes,
+        request.config,
+        request.output_area_centroids,
+        request.output_area_source_fingerprint,
+    )
     artifact = ParallelReductionArtifact(
         relations=relations,
         selected_route_ids=selected,
@@ -869,6 +888,7 @@ def compile_parallel_reduction_scenario(
         material_population_differences=evidence.material_population_differences,
         cumulative_elevation_variation=evidence.cumulative_elevation_variation,
         missing_evidence=evidence.missing_evidence,
+        section_population_sections=evidence.section_population_sections,
     )
     return ParallelReductionCompilation(scenario=scenario, artifact=artifact)
 

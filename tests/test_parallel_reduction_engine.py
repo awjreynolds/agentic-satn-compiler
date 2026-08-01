@@ -243,6 +243,15 @@ def test_section_population_evidence_uses_exact_defaults_and_sustained_boundary(
                     population=0,
                 ),
             ),
+            output_area_centroids=(
+                {
+                    "oa_id": "E00000001",
+                    "residents": 500,
+                    "coordinates": (250, 0),
+                    "inside_area": True,
+                },
+            ),
+            output_area_source_fingerprint="a" * 64,
         )
     )
     profile = result.artifact.section_population_profile
@@ -274,7 +283,9 @@ def test_missing_elevation_is_explicit_and_never_changes_selection() -> None:
             ),
         )
     )
-    assert result.artifact.missing_evidence == ("elevation:east", "elevation:west")
+    assert {"elevation:east", "elevation:west"}.issubset(
+        result.artifact.missing_evidence
+    )
     assert result.selected_route_ids == ("east",)
 
 
@@ -335,3 +346,72 @@ def test_rural_capture_profile_is_used_for_a_rural_raw_route() -> None:
         )
     )
     assert result.artifact.section_population_profile["rural_capture_radius_m"] == 750.0
+
+
+def test_shared_governed_oa_is_deduplicated_per_section_and_outside_is_retained() -> None:
+    result = compile_parallel_reduction_scenario(
+        ParallelReductionRequest(
+            profile_id="parallel-shared-oa",
+            routes=(
+                ParallelRoute(
+                    route_id="left",
+                    endpoints=("a", "b"),
+                    coordinates=((0, 0), (200, 0)),
+                    network_scope="urban",
+                ),
+                ParallelRoute(
+                    route_id="right",
+                    endpoints=("a", "b"),
+                    coordinates=((0, 400), (200, 400)),
+                    network_scope="urban",
+                ),
+            ),
+            output_area_centroids=(
+                {
+                    "oa_id": "E00000001",
+                    "residents": 100,
+                    "coordinates": (100, 200),
+                    "inside_area": True,
+                },
+                {
+                    "oa_id": "E00000002",
+                    "residents": 50,
+                    "coordinates": (100, 0),
+                    "inside_area": False,
+                },
+            ),
+            output_area_source_fingerprint="b" * 64,
+        )
+    )
+    section = next(
+        item
+        for item in result.artifact.section_population_sections
+        if item["alignment_id"] == "left"
+    )
+    assert section["captured_oa_ids"] == ["E00000001", "E00000002"]
+    assert section["inside_area_residents"] == 100
+    assert section["outside_area_residents"] == 50
+
+
+def test_missing_governed_oa_evidence_is_explicit_not_fabricated() -> None:
+    result = compile_parallel_reduction_scenario(
+        ParallelReductionRequest(
+            profile_id="parallel-missing-oa",
+            routes=(
+                ParallelRoute(
+                    route_id="left",
+                    endpoints=("a", "b"),
+                    coordinates=((0, 0), (200, 0)),
+                    network_scope="urban",
+                ),
+                ParallelRoute(
+                    route_id="right",
+                    endpoints=("a", "b"),
+                    coordinates=((0, 400), (200, 400)),
+                    network_scope="urban",
+                ),
+            ),
+        )
+    )
+    assert result.artifact.section_population_sections == ()
+    assert "section-population:governed-output-area-centroids" in result.artifact.missing_evidence
