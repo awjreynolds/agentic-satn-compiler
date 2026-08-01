@@ -6,6 +6,7 @@ import hashlib
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
+from itertools import combinations
 
 import geopandas as gpd
 from shapely.geometry import LineString, box
@@ -44,6 +45,7 @@ def build_parallel_evidence(routes: Sequence[object], config: object) -> Paralle
     lines = [LineString(route.coordinates) for route in routes]
     alignments = gpd.GeoDataFrame(
         {
+            "route_id": [route.route_id for route in routes],
             "alignment_id": [route.route_id for route in routes],
             "candidate_group_id": [":".join(route.endpoints) for route in routes],
             "geometry": lines,
@@ -104,7 +106,7 @@ def build_parallel_evidence(routes: Sequence[object], config: object) -> Paralle
                     "geometry": line.interpolate(distance_m),
                 }
             )
-    variation = []
+    cev_by_route: dict[str, float] = {}
     if elevations:
         evidence = gpd.GeoDataFrame(elevations, geometry="geometry", crs="EPSG:27700")
         profiles, _ = build_topography_profiles(
@@ -114,16 +116,26 @@ def build_parallel_evidence(routes: Sequence[object], config: object) -> Paralle
             if row.forward_ascent_m is None or row.forward_descent_m is None:
                 missing.append(f"elevation:{row.edge_id}")
                 continue
-            cev = float(row.forward_ascent_m + row.forward_descent_m)
-            baseline = max(float(row.distance_m), 1.0)
-            variation.append(
-                {
-                    "route_id": row.edge_id,
-                    "cumulative_elevation_variation_m": cev,
-                    "material": cev >= config.material_elevation_variation_m
-                    and cev / baseline * 100 >= config.material_elevation_variation_pct,
-                }
-            )
+            cev_by_route[str(row.edge_id)] = float(row.forward_ascent_m + row.forward_descent_m)
+    variation = []
+    for left, right in combinations(sorted(cev_by_route), 2):
+        left_cev, right_cev = cev_by_route[left], cev_by_route[right]
+        larger = max(left_cev, right_cev)
+        difference = abs(left_cev - right_cev)
+        relative = 0.0 if larger == 0 else difference / larger * 100
+        variation.append(
+            {
+                "route_ids": (left, right),
+                "left_cumulative_elevation_variation_m": left_cev,
+                "right_cumulative_elevation_variation_m": right_cev,
+                "absolute_difference_m": difference,
+                "relative_difference_pct_of_larger_cev": relative,
+                "material": (
+                    difference >= config.material_elevation_variation_m
+                    and relative >= config.material_elevation_variation_pct
+                ),
+            }
+        )
     return ParallelEvidenceSummary(
         profile.canonical(),
         _digest(profile.canonical()),

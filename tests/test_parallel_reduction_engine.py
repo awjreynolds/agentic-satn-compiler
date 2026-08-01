@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from satn.parallel_reduction import (
     ParallelReductionConfig,
     ParallelReductionRequest,
@@ -274,3 +276,62 @@ def test_missing_elevation_is_explicit_and_never_changes_selection() -> None:
     )
     assert result.artifact.missing_evidence == ("elevation:east", "elevation:west")
     assert result.selected_route_ids == ("east",)
+
+
+@pytest.mark.parametrize(
+    ("left_peak", "right_peak", "material"),
+    [(39, 30, False), (50, 40, False), (40, 30, True), (50, 30, True)],
+    ids=("absolute-below", "relative-below", "both-at", "both-above"),
+)
+def test_pairwise_cev_uses_absolute_and_larger_relative_boundaries(
+    left_peak: float, right_peak: float, material: bool
+) -> None:
+    result = compile_parallel_reduction_scenario(
+        ParallelReductionRequest(
+            profile_id="parallel-cev-boundaries",
+            routes=(
+                ParallelRoute(
+                    route_id="left",
+                    endpoints=("a", "b"),
+                    coordinates=((0, 0), (100, 0), (200, 0)),
+                    network_scope="urban",
+                    elevation_samples=((0, 0), (100, left_peak), (200, 0)),
+                ),
+                ParallelRoute(
+                    route_id="right",
+                    endpoints=("a", "b"),
+                    coordinates=((0, 400), (100, 400), (200, 400)),
+                    network_scope="urban",
+                    elevation_samples=((0, 0), (100, right_peak), (200, 0)),
+                ),
+            ),
+        )
+    )
+    comparison = result.artifact.cumulative_elevation_variation[0]
+    assert comparison["material"] is material
+    assert comparison["left_cumulative_elevation_variation_m"] == left_peak * 2
+    assert comparison["right_cumulative_elevation_variation_m"] == right_peak * 2
+    assert comparison["absolute_difference_m"] == abs(left_peak - right_peak) * 2
+
+
+def test_rural_capture_profile_is_used_for_a_rural_raw_route() -> None:
+    result = compile_parallel_reduction_scenario(
+        ParallelReductionRequest(
+            profile_id="parallel-rural-capture",
+            routes=(
+                ParallelRoute(
+                    route_id="left",
+                    endpoints=("a", "b"),
+                    coordinates=((0, 0), (600, 0)),
+                    network_scope="rural",
+                ),
+                ParallelRoute(
+                    route_id="right",
+                    endpoints=("a", "b"),
+                    coordinates=((0, 700), (600, 700)),
+                    network_scope="rural",
+                ),
+            ),
+        )
+    )
+    assert result.artifact.section_population_profile["rural_capture_radius_m"] == 750.0
