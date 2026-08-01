@@ -271,6 +271,7 @@ def test_competing_target_during_install_surfaces_retained_previous_publication(
     destination = root / "published"
     destination.mkdir()
     write_ownership_marker(destination, owner_kind="compiled-network:area-a")
+    (destination / "generation").write_text("previous", encoding="utf-8")
     staging = stage_replacement(
         destination,
         authority=authority,
@@ -292,7 +293,7 @@ def test_competing_target_during_install_surfaces_retained_previous_publication(
 
     monkeypatch.setattr(filesystem_safety.os, "rename", occupy_destination)
     try:
-        with pytest.raises(RuntimeError, match="previous publication retained"):
+        with pytest.raises(RuntimeError, match="competing destination retained") as raised:
             commit_replacement(
                 staging,
                 authority=authority,
@@ -300,9 +301,9 @@ def test_competing_target_during_install_surfaces_retained_previous_publication(
                 prior_record_name="run.json",
             )
 
-        assert (destination / "sentinel").read_text(encoding="utf-8") == "competitor"
-        retained = list(root.glob(".published-previous-*"))
-        assert len(retained) == 1
-        assert (retained[0] / OWNER_MARKER_NAME).is_file()
+        assert (destination / "generation").read_text(encoding="utf-8") == "previous"
+        retained = root / raised.value.retained_competitor_name
+        assert (retained / "sentinel").read_text(encoding="utf-8") == "competitor"
+        assert not list(root.glob(".published-previous-*"))
     finally:
         staging.cleanup()

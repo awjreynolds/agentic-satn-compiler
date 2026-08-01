@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -26,14 +27,43 @@ class PublicationRollbackError(RuntimeError):
         retained_previous_name: str,
         install_error: Exception,
         rollback_error: OSError,
+        retained_competitor_name: str | None = None,
     ) -> None:
         self.destination_name = destination_name
         self.retained_previous_name = retained_previous_name
         self.install_error = install_error
         self.rollback_error = rollback_error
+        self.retained_competitor_name = retained_competitor_name
+        competitor = (
+            f"; competing destination retained as sibling {retained_competitor_name!r}"
+            if retained_competitor_name is not None
+            else ""
+        )
         super().__init__(
             "publication install and rollback failed; previous publication retained "
             f"as sibling {retained_previous_name!r} instead of {destination_name!r}"
+            f"{competitor}"
+        )
+
+
+class PublicationConflictError(RuntimeError):
+    """The previous publication was restored and a competing destination retained."""
+
+    def __init__(
+        self,
+        *,
+        destination_name: str,
+        retained_competitor_name: str,
+        install_error: Exception,
+        rollback_error: OSError,
+    ) -> None:
+        self.destination_name = destination_name
+        self.retained_competitor_name = retained_competitor_name
+        self.install_error = install_error
+        self.rollback_error = rollback_error
+        super().__init__(
+            "publication install failed; previous publication restored and competing "
+            f"destination retained as sibling {retained_competitor_name!r}"
         )
 
 
@@ -369,6 +399,16 @@ def _destination_state(
         os.close(descriptor)
 
 
+def _unique_absent_sibling_name(parent_fd: int, *, prefix: str) -> str:
+    """Choose a process-unique sibling name without resolving the parent pathname."""
+    while True:
+        candidate = f".{prefix}-{uuid.uuid4().hex}"
+        try:
+            os.stat(candidate, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return candidate
+
+
 def _json_record_at(directory_fd: int, name: str) -> dict[str, object] | None:
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
@@ -465,6 +505,43 @@ def commit_replacement(
                     dst_dir_fd=staging.parent_fd,
                 )
             except OSError as rollback_error:
+                if rollback_error.errno in {errno.EEXIST, errno.ENOTEMPTY}:
+                    conflict_name = _unique_absent_sibling_name(
+                        staging.parent_fd,
+                        prefix=f"{staging.destination_name}-conflict",
+                    )
+                    competitor_retained = False
+                    try:
+                        os.rename(
+                            staging.destination_name,
+                            conflict_name,
+                            src_dir_fd=staging.parent_fd,
+                            dst_dir_fd=staging.parent_fd,
+                        )
+                        competitor_retained = True
+                        os.rename(
+                            backup_name,
+                            staging.destination_name,
+                            src_dir_fd=staging.parent_fd,
+                            dst_dir_fd=staging.parent_fd,
+                        )
+                    except OSError as recovery_error:
+                        raise PublicationRollbackError(
+                            destination_name=staging.destination_name,
+                            retained_previous_name=backup_name,
+                            install_error=install_error,
+                            rollback_error=recovery_error,
+                            retained_competitor_name=(
+                                conflict_name if competitor_retained else None
+                            ),
+                        ) from recovery_error
+                    had_previous = False
+                    raise PublicationConflictError(
+                        destination_name=staging.destination_name,
+                        retained_competitor_name=conflict_name,
+                        install_error=install_error,
+                        rollback_error=rollback_error,
+                    ) from install_error
                 raise PublicationRollbackError(
                     destination_name=staging.destination_name,
                     retained_previous_name=backup_name,

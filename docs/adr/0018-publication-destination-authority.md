@@ -36,9 +36,11 @@ directory descriptor.  Immediately before the two renames they revalidate the
 staging inode and current destination authorisation through that descriptor,
 then retain the previous directory until the new install succeeds.  A failed
 install restores the previous output; a failed validation leaves it untouched.
-If a competing process prevents restoration, the error names the retained
-previous-publication sibling instead of suppressing the rollback failure or
-deleting either output.
+If a competing destination prevents restoration, it is atomically moved to a
+unique retained conflict sibling before the exact previous publication is
+restored to the canonical destination; the raised error names that conflict.
+If either recovery rename also fails, the error names every retained sibling
+instead of suppressing the rollback failure or deleting an output.
 
 ## Consequences
 
