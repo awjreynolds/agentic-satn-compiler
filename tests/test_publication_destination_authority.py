@@ -259,3 +259,50 @@ def test_owned_target_removed_during_commit_does_not_install_stale_staging(
         assert (removed / OWNER_MARKER_NAME).is_file()
     finally:
         staging.cleanup()
+
+
+def test_competing_target_during_install_surfaces_retained_previous_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import satn.filesystem_safety as filesystem_safety
+
+    root = tmp_path / "workspace"
+    authority = _authority(root)
+    destination = root / "published"
+    destination.mkdir()
+    write_ownership_marker(destination, owner_kind="compiled-network:area-a")
+    staging = stage_replacement(
+        destination,
+        authority=authority,
+        owner_kind="compiled-network:area-a",
+        prior_record_name="run.json",
+    )
+    original_rename = filesystem_safety.os.rename
+    inserted = False
+
+    def occupy_destination(
+        source: str, target: str, *args: object, **kwargs: object
+    ) -> None:
+        nonlocal inserted
+        if source == staging.temporary.name and not inserted:
+            inserted = True
+            destination.mkdir()
+            (destination / "sentinel").write_text("competitor", encoding="utf-8")
+        original_rename(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(filesystem_safety.os, "rename", occupy_destination)
+    try:
+        with pytest.raises(RuntimeError, match="previous publication retained"):
+            commit_replacement(
+                staging,
+                authority=authority,
+                owner_kind="compiled-network:area-a",
+                prior_record_name="run.json",
+            )
+
+        assert (destination / "sentinel").read_text(encoding="utf-8") == "competitor"
+        retained = list(root.glob(".published-previous-*"))
+        assert len(retained) == 1
+        assert (retained[0] / OWNER_MARKER_NAME).is_file()
+    finally:
+        staging.cleanup()

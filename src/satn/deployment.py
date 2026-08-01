@@ -15,6 +15,7 @@ from satn.deployment_provenance import LOCK_NAME, SCHEMA_VERSION, verify_lock
 from satn.filesystem_safety import (
     PublicationDestinationAuthority,
     commit_replacement,
+    default_publication_destination_authority,
     publication_destination_authority,
     stage_replacement,
     write_ownership_marker,
@@ -301,9 +302,8 @@ def build_area_deployment(
 ) -> Path:
     destination = Path(destination)
     if publication_authority is None:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        publication_authority = publication_destination_authority(
-            workspace_root=destination.parent,
+        publication_authority = default_publication_destination_authority(
+            definition.config_path,
         )
     output = definition.publication.output_dir
     run_path = output / "run.json"
@@ -659,15 +659,17 @@ def main() -> None:
     destination = args.destination or (
         PROJECT / "build" / "deployments" / definition.deployment_slug
     )
-    destination.parent.mkdir(parents=True, exist_ok=True)
     authority = None
     if (
         args.publication_workspace_root is not None
         or args.approved_external_publication_destination is not None
         or args.expected_prior_run_fingerprint is not None
     ):
+        default_authority = default_publication_destination_authority(
+            definition.config_path,
+        )
         authority = publication_destination_authority(
-            workspace_root=args.publication_workspace_root or destination.parent,
+            workspace_root=args.publication_workspace_root or default_authority.workspace_root,
             approved_external_destination=args.approved_external_publication_destination,
             expected_prior_run_fingerprint=args.expected_prior_run_fingerprint,
         )

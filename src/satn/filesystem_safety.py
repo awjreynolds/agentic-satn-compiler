@@ -9,12 +9,32 @@ import shutil
 import stat
 import tempfile
 import uuid
-from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
 OWNER_MARKER_NAME = ".satn-publication-owner.json"
 OWNER_MARKER_SCHEMA = "satn-publication-destination-authority/v1"
+
+
+class PublicationRollbackError(RuntimeError):
+    """An install and its rollback failed, but the previous publication is retained."""
+
+    def __init__(
+        self,
+        *,
+        destination_name: str,
+        retained_previous_name: str,
+        install_error: Exception,
+        rollback_error: OSError,
+    ) -> None:
+        self.destination_name = destination_name
+        self.retained_previous_name = retained_previous_name
+        self.install_error = install_error
+        self.rollback_error = rollback_error
+        super().__init__(
+            "publication install and rollback failed; previous publication retained "
+            f"as sibling {retained_previous_name!r} instead of {destination_name!r}"
+        )
 
 
 @dataclass(frozen=True)
@@ -435,15 +455,22 @@ def commit_replacement(
             src_dir_fd=staging.parent_fd,
             dst_dir_fd=staging.parent_fd,
         )
-    except Exception:
+    except Exception as install_error:
         if had_previous:
-            with suppress(OSError):
+            try:
                 os.rename(
                     backup_name,
                     staging.destination_name,
                     src_dir_fd=staging.parent_fd,
                     dst_dir_fd=staging.parent_fd,
                 )
+            except OSError as rollback_error:
+                raise PublicationRollbackError(
+                    destination_name=staging.destination_name,
+                    retained_previous_name=backup_name,
+                    install_error=install_error,
+                    rollback_error=rollback_error,
+                ) from rollback_error
         raise
     if had_previous:
         shutil.rmtree(backup_name, dir_fd=staging.parent_fd)

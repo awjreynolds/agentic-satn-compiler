@@ -18,6 +18,7 @@ from satn.constants import DISCLAIMER
 from satn.deployment import DEFERRED_GROUPS, build_area_deployment
 from satn.deployment_catalogue import generate_catalogue_lock
 from satn.deployment_provenance import generate_lock
+from satn.filesystem_safety import publication_destination_authority
 from satn.models import AgentDecisionLedger, AreaDefinition
 from satn.pages_packaging import (
     DEFAULT_MAXIMUM_BYTES,
@@ -719,9 +720,19 @@ def test_real_fixture_bootstrap_lock_rebuild_package_and_isolated_validation(
 
     bundles = tmp_path / "bundles"
     deployment = bundles / definition.deployment_slug
-    build_area_deployment(definition, deployment, bootstrap=True)
+    deployment_authority = publication_destination_authority(workspace_root=tmp_path)
+    build_area_deployment(
+        definition,
+        deployment,
+        bootstrap=True,
+        publication_authority=deployment_authority,
+    )
     generate_lock(definition, deployment=deployment)
-    build_area_deployment(definition, deployment)
+    build_area_deployment(
+        definition,
+        deployment,
+        publication_authority=deployment_authority,
+    )
 
     catalogue = fixture / "catalogue.yaml"
     catalogue.write_text(

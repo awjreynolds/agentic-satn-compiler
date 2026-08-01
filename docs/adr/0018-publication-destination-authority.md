@@ -18,6 +18,9 @@ publication commit.
 The compiler derives a publication workspace from the caller-owned definition
 location, rather than reading an output root from the Area Definition.  A
 relative Area Definition destination is usable only beneath that workspace.
+The Area Deployment builder uses the same definition-derived default; it never
+turns a requested destination's parent into authority.  The normal repository
+`build/deployments/` location remains within the repository workspace.
 An external destination requires an explicit, non-interactive caller capability
 that names that exact destination; it is neither serialised in nor inferred
 from governed input.
@@ -33,6 +36,9 @@ directory descriptor.  Immediately before the two renames they revalidate the
 staging inode and current destination authorisation through that descriptor,
 then retain the previous directory until the new install succeeds.  A failed
 install restores the previous output; a failed validation leaves it untouched.
+If a competing process prevents restoration, the error names the retained
+previous-publication sibling instead of suppressing the rollback failure or
+deleting either output.
 
 ## Consequences
 
