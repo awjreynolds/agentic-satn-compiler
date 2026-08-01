@@ -252,6 +252,21 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
         "post-compile human decision ledger and scenario translation"
     ),
     "satn/pages_packaging.py": "Pages release packaging",
+    "satn/parallel_reduction.py": (
+        "post-compile parallel-alignment Scenario seam without CompiledNetwork mutation"
+    ),
+    "satn/parallel_reduction_corpus.py": (
+        "governed synthetic acceptance fixture; not a CompiledNetwork input"
+    ),
+    "satn/parallel_reduction_corpus_cli.py": (
+        "explicit synthetic acceptance-reference command adapter"
+    ),
+    "satn/parallel_reduction_evidence.py": (
+        "post-compile governed parallel evidence adapter without CompiledNetwork mutation"
+    ),
+    "satn/parallel_reduction_scope.py": (
+        "post-compile parallel scope-range helper without CompiledNetwork mutation"
+    ),
     "satn/psa_criteria_assembly.py": (
         "post-compile governed criteria assembly without CompiledNetwork mutation"
     ),
@@ -271,6 +286,9 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     ),
     "satn/strategic_criteria_scenario.py": (
         "post-compile strategic criteria and Scenario bridge without CompiledNetwork mutation"
+    ),
+    "satn/strategic_destination_access.py": (
+        "post-compile strategic physical-site access assessment without CompiledNetwork mutation"
     ),
     "satn/strategic_reference_application.py": (
         "post-adoption strategic Reference binding without CompiledNetwork mutation"

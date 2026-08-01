@@ -1408,12 +1408,19 @@ def test_discarded_unmaterializable_cross_spine_path_does_not_change_governed_di
         graph: RoadGraph,
         nodes: list[str],
         role: str,
+        *,
+        strategic_use: bool = False,
     ) -> RouteOption | None:
         longitudes = [round(graph.node_points[node].x, 3) for node in nodes]
         if role == "direct" and min(longitudes) <= 0.04 and max(longitudes) >= 0.18:
             forced_attempts["count"] += 1
             return None
-        return original_option_from_nodes(graph, nodes, role)
+        return original_option_from_nodes(
+            graph,
+            nodes,
+            role,
+            strategic_use=strategic_use,
+        )
 
     monkeypatch.setattr(RoadGraph, "_option_from_nodes", reject_redundant_a1_a3_path)
     source = three_spine_source()
@@ -1447,11 +1454,18 @@ def test_finally_disconnected_unmaterializable_cross_spine_path_remains_visible(
         graph: RoadGraph,
         nodes: list[str],
         role: str,
+        *,
+        strategic_use: bool = False,
     ) -> RouteOption | None:
         longitudes = [round(graph.node_points[node].x, 3) for node in nodes]
         if role == "direct" and min(longitudes) <= 0.04 and max(longitudes) >= 0.08:
             return None
-        return original_option_from_nodes(graph, nodes, role)
+        return original_option_from_nodes(
+            graph,
+            nodes,
+            role,
+            strategic_use=strategic_use,
+        )
 
     monkeypatch.setattr(RoadGraph, "_option_from_nodes", reject_only_a1_a2_path)
     source = parallel_spine_source()

@@ -57,6 +57,12 @@ def test_manifest_is_explicit_complete_and_records_component_digests() -> None:
     assert {
         "satn/assets/osm-network-osmconf.ini",
         "satn/osm_network_adapter.py",
+        "satn/parallel_reduction.py",
+        "satn/parallel_reduction_corpus.py",
+        "satn/parallel_reduction_corpus_cli.py",
+        "satn/parallel_reduction_evidence.py",
+        "satn/parallel_reduction_scope.py",
+        "satn/strategic_destination_access.py",
     } <= excluded
     population_component = next(
         component

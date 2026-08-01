@@ -20,13 +20,13 @@ from satn.sources import ELEVATION_EVIDENCE_FILENAME, snapshot
 PROJECT = Path(__file__).parents[1]
 WECA_BENCHMARK_SHA256 = "24a03e50ccfe541ff637b9c75f15caa41ac452cc20667f31df5ad274ffbeae6a"
 WECA_CONFIGURED_SNAPSHOT_ID = (
-    "weca-classification-elevation-2026-07-28-v11-fp-20260729T104205170167Z-02"
+    "weca-classification-elevation-2026-07-31-v14-fp-20260731T092920522968Z-02"
 )
 WECA_CONFIGURED_PARENT = RetainedCoreSourceConfig(
     snapshot_id=(
-        "weca-classification-elevation-2026-07-28-v11-fp-20260729T104205170167Z-01"
+        "weca-classification-elevation-2026-07-31-v14-fp-20260731T092920522968Z-01"
     ),
-    manifest_sha256="adc24f10a297e75772b978aff496c3e4ae70c4252d750d381555b743659bc8dd",
+    manifest_sha256="ae3bdee90d03ceb2c3be309847c65d7ca29fe82d92767d115903b593d081ebb9",
 )
 
 

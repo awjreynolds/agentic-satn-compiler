@@ -480,11 +480,11 @@ def test_weca_bootstrap_and_final_definitions_are_separate_parseable_workflow_st
     assert bootstrap.source.snapshot_id != final.source.snapshot_id
     assert final.source.retained_core_source == RetainedCoreSourceConfig(
         snapshot_id=(
-            "weca-classification-elevation-2026-07-28-v11-"
-            "fp-20260729T104205170167Z-01"
+            "weca-classification-elevation-2026-07-31-v14-"
+            "fp-20260731T092920522968Z-01"
         ),
         manifest_sha256=(
-            "adc24f10a297e75772b978aff496c3e4ae70c4252d750d381555b743659bc8dd"
+            "ae3bdee90d03ceb2c3be309847c65d7ca29fe82d92767d115903b593d081ebb9"
         ),
     )
     assert bootstrap.publication.output_dir != final.publication.output_dir
