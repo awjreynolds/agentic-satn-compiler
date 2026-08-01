@@ -285,9 +285,7 @@ def test_missing_elevation_is_explicit_and_never_changes_selection() -> None:
             ),
         )
     )
-    assert {"elevation:east", "elevation:west"}.issubset(
-        result.artifact.missing_evidence
-    )
+    assert {"elevation:east", "elevation:west"}.issubset(result.artifact.missing_evidence)
     assert result.selected_route_ids == ("east",)
 
 
@@ -417,6 +415,71 @@ def test_missing_governed_oa_evidence_is_explicit_not_fabricated() -> None:
     )
     assert result.artifact.section_population_sections == ()
     assert "section-population:governed-output-area-centroids" in result.artifact.missing_evidence
+
+
+def test_guidance_findings_are_separate_cited_and_never_a_score_or_veto() -> None:
+    request = ParallelReductionRequest(
+        profile_id="parallel-guidance",
+        routes=(
+            ParallelRoute(
+                route_id="left",
+                endpoints=("a", "b"),
+                coordinates=((0, 0), (200, 0)),
+                network_scope="urban",
+                guidance_considerations=(
+                    {
+                        "principle_id": "coherence",
+                        "state": "contradicted",
+                        "citation_ids": ("ltn120-1.4",),
+                    },
+                ),
+            ),
+            ParallelRoute(
+                route_id="right",
+                endpoints=("a", "b"),
+                coordinates=((0, 400), (200, 400)),
+                network_scope="urban",
+            ),
+        ),
+    )
+    result = compile_parallel_reduction_scenario(request)
+    assert result.selected_route_ids
+    assert result.artifact.guidance_findings[0]["citation_ids"] == ("ltn120-1.4",)
+    assert (
+        result.artifact.guidance_findings[0]["material_departure_needs"]
+        == "evidence-or-intervention"
+    )
+    assert not hasattr(result.artifact, "guidance_score")
+
+
+def test_guidance_profile_change_changes_fingerprint_and_missing_is_unassessed() -> None:
+    base = ParallelReductionRequest(
+        profile_id="parallel-guidance-fingerprint",
+        routes=(
+            ParallelRoute(
+                route_id="left",
+                endpoints=("a", "b"),
+                coordinates=((0, 0), (200, 0)),
+                network_scope="urban",
+            ),
+            ParallelRoute(
+                route_id="right",
+                endpoints=("a", "b"),
+                coordinates=((0, 400), (200, 400)),
+                network_scope="urban",
+            ),
+        ),
+    )
+    changed = ParallelReductionRequest.model_validate(
+        {
+            **base.model_dump(),
+            "guidance_profile": {"profile_id": "national-cycle-and-rural-guidance-2027-01"},
+        }
+    )
+    assert base.guidance_profile.profile_fingerprint != changed.guidance_profile.profile_fingerprint
+    assert compile_parallel_reduction_scenario(base).artifact.guidance_findings == ()
+
+
 def test_runtime_receives_only_finite_menu_and_accepts_relevant_evidence() -> None:
     class CapturingRuntime:
         calls: list[dict[str, object]]

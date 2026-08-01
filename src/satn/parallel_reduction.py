@@ -18,7 +18,7 @@ from datetime import date
 from typing import Literal, Protocol
 
 import geopandas as gpd
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from shapely.geometry import LineString, Point, box
 
 from satn.alignment_selection import (
@@ -65,6 +65,7 @@ from satn.population_reach import (
 )
 
 _SCOPE = Literal["urban", "rural", "unresolved"]
+_GUIDANCE_STATE = Literal["supported", "contradicted", "unassessed"]
 
 
 def _digest(value: object) -> str:
@@ -95,6 +96,7 @@ class ParallelRoute(BaseModel):
     access_only_quiet_lane: bool = False
     node_ids: tuple[str, ...] = ()
     elevation_samples: tuple[tuple[float, float], ...] = ()
+    guidance_considerations: tuple[GuidanceConsideration, ...] = ()
 
     @field_validator("endpoints")
     @classmethod
@@ -111,6 +113,39 @@ class ParallelRoute(BaseModel):
         if len(value) < 2 or len(set(value)) < 2:
             raise ValueError("route requires a continuous metric line")
         return value
+
+
+class GuidanceConsideration(BaseModel):
+    """One separately governed guidance consideration, never a compliance score."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    principle_id: str
+    state: _GUIDANCE_STATE = "unassessed"
+    citation_ids: tuple[str, ...] = ()
+
+
+class GuidanceProfile(BaseModel):
+    """Frozen national guidance sources used only as separate considerations."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    profile_id: str = "national-cycle-and-rural-guidance-2026-01"
+    cycle_infrastructure_design: str = "Cycle Infrastructure Design (LTN 1/20)"
+    cycle_infrastructure_design_citation: str = (
+        "DfT, Cycle Infrastructure Design (LTN 1/20), July 2020"
+    )
+    ate_rural_design_guide: str = "Active Travel England Rural Design Guide"
+    ate_rural_design_guide_citation: str = "Active Travel England, Rural Design Guide, 2025"
+    profile_fingerprint: str = ""
+
+    @model_validator(mode="after")
+    def _fingerprint(self):
+        value = _digest(self.model_dump(exclude={"profile_fingerprint"}))
+        if self.profile_fingerprint and self.profile_fingerprint != value:
+            raise ValueError("guidance profile fingerprint is stale")
+        object.__setattr__(self, "profile_fingerprint", value)
+        return self
 
 
 class ParallelReductionConfig(BaseModel):
@@ -158,6 +193,7 @@ class ParallelOutputAreaCentroid(BaseModel):
     coordinates: tuple[float, float]
     inside_area: bool
 
+
 class ParallelReductionRequest(BaseModel):
     """Data-only compiler input; all route candidates are discovered here."""
 
@@ -173,6 +209,7 @@ class ParallelReductionRequest(BaseModel):
     officer_decisions: tuple[PreloadedOfficerDecision, ...] = ()
     output_area_centroids: tuple[ParallelOutputAreaCentroid, ...] = ()
     output_area_source_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    guidance_profile: GuidanceProfile = Field(default_factory=GuidanceProfile)
 
 
 class ParallelCandidateRelation(BaseModel):
@@ -254,6 +291,8 @@ class ParallelReductionArtifact(BaseModel):
     cumulative_elevation_variation: tuple[dict[str, object], ...] = ()
     missing_evidence: tuple[str, ...] = ()
     section_population_sections: tuple[dict[str, object], ...] = ()
+    guidance_profile_fingerprint: str = ""
+    guidance_findings: tuple[dict[str, object], ...] = ()
     fingerprint: str = ""
 
 
@@ -298,6 +337,10 @@ def _runtime_request(
                 f"topography:{route.route_id}",
                 f"access:{route.route_id}",
                 f"existing-infrastructure:{route.route_id}",
+                *(
+                    f"guidance:{route.route_id}:{item.principle_id}"
+                    for item in route.guidance_considerations
+                ),
             ),
         }
         for route in sorted(routes, key=lambda item: item.route_id)
@@ -395,9 +438,7 @@ def _configured_fallback_route(
             matches = tuple(item for item in contenders if item.population == highest)
         elif criterion == "quality":
             highest = max(_route_quality(item, config) for item in contenders)
-            matches = tuple(
-                item for item in contenders if _route_quality(item, config) == highest
-            )
+            matches = tuple(item for item in contenders if _route_quality(item, config) == highest)
         else:
             return min(item.route_id for item in contenders)
         if len(matches) == 1:
@@ -773,11 +814,11 @@ def compile_parallel_reduction_scenario(
     snapshot = GovernedEvidenceSnapshot(
         snapshot_id="parallel-reduction-scenario",
         assessments=tuple(
-                {
-                    (
-                        binding.kind,
-                        binding.assessment_id,
-                    ): binding
+            {
+                (
+                    binding.kind,
+                    binding.assessment_id,
+                ): binding
                 for item in selections
                 for binding in item.criteria.evidence_snapshot.assessments
             }.values()
@@ -872,10 +913,7 @@ def compile_parallel_reduction_scenario(
                 selected, mode = officer, "officer"
         elif by_population != by_quality:
             route_population = {item.route_id: item.population for item in routes}
-            route_quality = {
-                item.route_id: _route_quality(item, request.config)
-                for item in routes
-            }
+            route_quality = {item.route_id: _route_quality(item, request.config) for item in routes}
             material = (
                 abs(route_population[by_population] - route_population[by_quality])
                 >= request.config.material_population_difference
@@ -1085,6 +1123,20 @@ def compile_parallel_reduction_scenario(
         cumulative_elevation_variation=evidence.cumulative_elevation_variation,
         missing_evidence=evidence.missing_evidence,
         section_population_sections=evidence.section_population_sections,
+        guidance_profile_fingerprint=request.guidance_profile.profile_fingerprint,
+        guidance_findings=tuple(
+            {
+                "route_id": route.route_id,
+                "principle_id": item.principle_id,
+                "state": item.state,
+                "citation_ids": item.citation_ids,
+                "material_departure_needs": (
+                    "evidence-or-intervention" if item.state == "contradicted" else None
+                ),
+            }
+            for route in request.routes
+            for item in route.guidance_considerations
+        ),
     )
     return ParallelReductionCompilation(scenario=scenario, artifact=artifact)
 
