@@ -119,6 +119,7 @@ class ParallelReductionConfig(BaseModel):
     material_population_difference: int = Field(default=1, ge=0)
     material_score_difference: float = Field(default=1.0, ge=0)
     runtime_eligible: bool = False
+    maximum_hybrids_per_group: int = Field(default=1, ge=0, le=5)
 
 
 class ParallelReductionRequest(BaseModel):
@@ -178,6 +179,13 @@ class NetworkGapArtifact(BaseModel):
     intervention_archetype: Literal["bridge"] = "bridge"
 
 
+class OfficerTargetUnavailable(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    target_id: str
+    route_id: str
+
+
 class ParallelReductionArtifact(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -188,6 +196,7 @@ class ParallelReductionArtifact(BaseModel):
     crossing_warnings: tuple[CrossingWarning, ...] = ()
     network_gaps: tuple[NetworkGapArtifact, ...] = ()
     officer_compiler_divergences: tuple[ParallelDecisionArtifact, ...] = ()
+    officer_target_unavailable: tuple[OfficerTargetUnavailable, ...] = ()
     fingerprint: str = ""
 
 
@@ -281,6 +290,56 @@ def _profile(request: ParallelReductionRequest) -> NetworkSelectionProfile:
                 else {"review_when": []}
             ),
         }
+    )
+
+
+def _bounded_hybrids(
+    routes: tuple[ParallelRoute, ...], config: ParallelReductionConfig
+) -> tuple[ParallelRoute, ...]:
+    """Create only materially better, continuous switches at exact shared nodes."""
+    hybrids: list[ParallelRoute] = []
+    for index, left in enumerate(routes):
+        for right in routes[index + 1 :]:
+            shared = tuple(
+                coordinate
+                for coordinate in left.coordinates[1:-1]
+                if coordinate in right.coordinates[1:-1]
+            )
+            if not shared:
+                continue
+            # The summed section observations are the caller's evidence that a
+            # switch gains a material advantage; geometry must still meet exactly.
+            hybrid_score = left.access_score + right.existing_infrastructure_score
+            if (
+                hybrid_score
+                < max(
+                    left.access_score + left.existing_infrastructure_score,
+                    right.access_score + right.existing_infrastructure_score,
+                )
+                + config.material_score_difference
+            ):
+                continue
+            point = shared[0]
+            left_index, right_index = left.coordinates.index(point), right.coordinates.index(point)
+            coordinates = left.coordinates[: left_index + 1] + right.coordinates[right_index + 1 :]
+            hybrids.append(
+                ParallelRoute(
+                    route_id=f"hybrid:{left.route_id}:{right.route_id}:{left_index}:{right_index}",
+                    endpoints=left.endpoints,
+                    coordinates=coordinates,
+                    network_scope=left.network_scope,
+                    source_class="other-routable",
+                    evidence_ids=tuple(sorted({*left.evidence_ids, *right.evidence_ids})),
+                    provenance_ids=(left.route_id, right.route_id),
+                    population=max(left.population, right.population),
+                    gradient_pct=max(left.gradient_pct, right.gradient_pct),
+                    access_score=hybrid_score,
+                    existing_infrastructure_score=hybrid_score,
+                    node_ids=tuple(sorted({*left.node_ids, *right.node_ids})),
+                )
+            )
+    return tuple(
+        sorted(hybrids, key=lambda item: item.route_id)[: config.maximum_hybrids_per_group]
     )
 
 
@@ -486,6 +545,7 @@ def compile_parallel_reduction_scenario(
     selections = []
     routes_by_group: dict[tuple[str, str], tuple[ParallelRoute, ...]] = {}
     for endpoints, routes in sorted(groups.items()):
+        routes = [*routes, *_bounded_hybrids(tuple(routes), request.config)]
         routes_by_group[endpoints] = tuple(sorted(routes, key=lambda item: item.route_id))
         inputs = tuple(
             AlignmentCandidateInput(
@@ -509,13 +569,12 @@ def compile_parallel_reduction_scenario(
             candidates=inputs,
             mandatory_network_place_ids=endpoints,
         )
+        by_input_identity = {
+            _digest((route.route_id, route.evidence_ids)): route for route in routes
+        }
         by_candidate = {
-            candidate.candidate_id: route
-            for candidate, route in zip(
-                sorted(candidate_set.candidates, key=lambda item: item.provenance_ids[0]),
-                sorted(routes, key=lambda item: item.route_id),
-                strict=True,
-            )
+            candidate.candidate_id: by_input_identity[candidate.evidence_fingerprints[0]]
+            for candidate in candidate_set.candidates
         }
         criteria = _criteria(candidate_set, by_candidate)
         candidate_sets.append(candidate_set)
@@ -564,18 +623,27 @@ def compile_parallel_reduction_scenario(
                 }
             )
         ),
-        lineage_fingerprints=(_digest(request.model_dump(mode="json")),),
+        lineage_fingerprints=(
+            _digest(
+                {
+                    **request.model_dump(mode="json", exclude={"routes"}),
+                    "routes": [
+                        route.model_dump(mode="json")
+                        for route in sorted(request.routes, key=lambda item: item.route_id)
+                    ],
+                }
+            ),
+        ),
     )
     route_by_candidate = {
         candidate.candidate_id: route.route_id
         for candidate_set, routes in zip(candidate_sets, routes_by_group.values(), strict=True)
-        for candidate, route in zip(
-            sorted(candidate_set.candidates, key=lambda item: item.provenance_ids[0]),
-            routes,
-            strict=True,
-        )
+        for candidate in candidate_set.candidates
+        for route in routes
+        if candidate.evidence_fingerprints[0] == _digest((route.route_id, route.evidence_ids))
     }
     decisions: list[ParallelDecisionArtifact] = []
+    unavailable: list[OfficerTargetUnavailable] = []
     selected_by_group: dict[tuple[str, str], str] = {}
     officers = {item.target_id: item.route_id for item in request.officer_decisions}
     for endpoints, routes in routes_by_group.items():
@@ -640,8 +708,9 @@ def compile_parallel_reduction_scenario(
         officer = officers.get(target_id)
         if officer is not None:
             if officer not in {item.route_id for item in routes}:
-                raise ValueError("officer decision target is unavailable")
-            selected, mode = officer, "officer"
+                unavailable.append(OfficerTargetUnavailable(target_id=target_id, route_id=officer))
+            else:
+                selected, mode = officer, "officer"
         selected_by_group[endpoints] = selected
         decisions.append(
             ParallelDecisionArtifact(
@@ -667,10 +736,13 @@ def compile_parallel_reduction_scenario(
                 warnings.append(
                     CrossingWarning(route_ids=tuple(sorted((left.route_id, right.route_id))))
                 )
+    route_lookup = {route.route_id: route for route in request.routes}
     gaps = tuple(
         NetworkGapArtifact(route_ids=tuple(sorted(pair)))
         for pair in request.required_transitions
-        if not (set(pair[0:1]) & set(pair[1:2]))
+        if pair[0] not in route_lookup
+        or pair[1] not in route_lookup
+        or not (set(route_lookup[pair[0]].node_ids) & set(route_lookup[pair[1]].node_ids))
     )
     divergences = tuple(
         item
@@ -775,6 +847,7 @@ def compile_parallel_reduction_scenario(
         crossing_warnings=tuple(warnings),
         network_gaps=gaps,
         officer_compiler_divergences=divergences,
+        officer_target_unavailable=tuple(unavailable),
     )
     return ParallelReductionCompilation(scenario=scenario, artifact=artifact)
 

@@ -73,3 +73,51 @@ def test_unresolved_scope_retains_wider_only_relation_and_runtime_failure_falls_
     assert result.artifact.decisions[0].fallback_trigger == "invalid-runtime-response"
     assert result.scenario.decision_record.mode == "accepted-agent-decision-ledger"
     assert result.scenario.publishable
+
+
+def test_transitive_parallel_group_is_order_independent_and_preserves_all_members() -> None:
+    routes = tuple(
+        ParallelRoute(
+            route_id=route_id,
+            endpoints=("alpha", "beta"),
+            coordinates=((0.0, y), (1_000.0, y)),
+            network_scope="urban",
+        )
+        for route_id, y in (("outer-a", 0.0), ("middle", 400.0), ("outer-b", 800.0))
+    )
+    first = compile_parallel_reduction_scenario(
+        ParallelReductionRequest(profile_id="parallel-transitive", routes=routes)
+    )
+    second = compile_parallel_reduction_scenario(
+        ParallelReductionRequest(profile_id="parallel-transitive", routes=tuple(reversed(routes)))
+    )
+
+    assert len(first.scenario.candidate_sets[0].candidates) == 3
+    assert first.scenario.scenario_fingerprint == second.scenario.scenario_fingerprint
+
+
+def test_unavailable_officer_target_and_required_missing_bridge_are_retained() -> None:
+    result = compile_parallel_reduction_scenario(
+        ParallelReductionRequest(
+            profile_id="parallel-gap",
+            routes=(
+                ParallelRoute(
+                    route_id="left",
+                    endpoints=("alpha", "beta"),
+                    coordinates=((0.0, 0.0), (1_000.0, 0.0)),
+                    network_scope="urban",
+                ),
+                ParallelRoute(
+                    route_id="right",
+                    endpoints=("alpha", "beta"),
+                    coordinates=((0.0, 300.0), (1_000.0, 300.0)),
+                    network_scope="urban",
+                ),
+            ),
+            required_transitions=(("left", "right"),),
+            officer_decisions=(({"target_id": "parallel:alpha:beta", "route_id": "gone"}),),
+        )
+    )
+
+    assert result.artifact.network_gaps[0].intervention_archetype == "bridge"
+    assert result.artifact.officer_target_unavailable[0].route_id == "gone"
