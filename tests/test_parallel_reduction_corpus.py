@@ -348,10 +348,20 @@ def test_manifest_rejects_zones_within_rural_candidate_distance(tmp_path: Path) 
 
 def test_scripted_runtime_returns_only_configured_choice_or_failure() -> None:
     runtime = ScriptedCorpusRuntime(
-        ({"request_id": "choose", "outcome": "select", "route_id": "east"},)
+        (
+            {
+                "request_id": "choose",
+                "outcome": "select",
+                "route_id": "east",
+                "decisive_consideration_ids": ["access:east"],
+            },
+        )
     )
 
-    assert runtime.choose({"request_id": "choose"}) == {"route_id": "east"}
+    assert runtime.choose({"request_id": "choose"}) == {
+        "route_id": "east",
+        "decisive_consideration_ids": ("access:east",),
+    }
     with pytest.raises(RuntimeError, match="response-missing"):
         runtime.choose({"request_id": "other"})
 
@@ -403,5 +413,17 @@ def test_composite_acceptance_compiles_through_the_supported_production_seam() -
     )
 
     assert result.scenario.publishable is True
+    decisions = {item.target_id: item for item in result.artifact.decisions}
+    assert decisions["parallel:agent-a:agent-b"].mode == "agent"
+    assert decisions["parallel:agent-a:agent-b"].decisive_consideration_ids == (
+        "access:agent-east",
+    )
+    assert decisions["parallel:fallback-a:fallback-b"].mode == "fallback"
+    assert decisions["parallel:officer-a:officer-b"].mode == "officer"
+    assert result.artifact.officer_compiler_divergences
+    assert any(item.scope_sensitive for item in result.artifact.relations)
+    assert result.artifact.crossing_warnings and result.artifact.network_gaps
+    assert any(item.route_id.startswith("hybrid:") for item in result.artifact.options)
+    assert "quiet-lane" in result.selected_route_ids
     actual = canonical_expected_result(manifest, result)
     assert_matches_expected(actual, load_expected_result(manifest.expected_result_path))

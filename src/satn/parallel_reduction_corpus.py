@@ -53,7 +53,10 @@ class ScriptedCorpusRuntime:
             raise RuntimeError(str(response["failure_code"]))
         if response["outcome"] != "select":
             return {"invalid": response["outcome"]}
-        return {"route_id": response["route_id"]}
+        return {
+            "route_id": response["route_id"],
+            "decisive_consideration_ids": tuple(response["decisive_consideration_ids"]),
+        }
 
 
 def load_manifest(path: Path) -> ParallelReductionCorpusManifest:
@@ -73,6 +76,7 @@ def load_manifest(path: Path) -> ParallelReductionCorpusManifest:
             "zones",
             "scripted_runtime",
             "junction_node_ids",
+            "choice_points",
             "required_transitions",
             "officer_decisions",
         },
@@ -132,6 +136,7 @@ def load_manifest(path: Path) -> ParallelReductionCorpusManifest:
         "config": dict(config),
         "routes": [dict(item) for item in routes],
         "junction_node_ids": value["junction_node_ids"],
+        "choice_points": value["choice_points"],
         "required_transitions": value["required_transitions"],
         "officer_decisions": value["officer_decisions"],
     }
@@ -159,6 +164,10 @@ def load_expected_result(path: Path) -> dict[str, object]:
             "parallel_candidate_relations",
             "network_gaps",
             "material_officer_compiler_divergences",
+            "alignment_sections",
+            "alignment_options",
+            "crossing_warnings",
+            "officer_target_unavailable",
         },
         "expected result",
     )
@@ -223,6 +232,12 @@ def canonical_expected_result(
         "network_gaps": _canonical_records(artifact.get("network_gaps", [])),
         "material_officer_compiler_divergences": _canonical_records(
             artifact.get("officer_compiler_divergences", [])
+        ),
+        "alignment_sections": _canonical_records(artifact.get("sections", [])),
+        "alignment_options": _canonical_records(artifact.get("options", [])),
+        "crossing_warnings": _canonical_records(artifact.get("crossing_warnings", [])),
+        "officer_target_unavailable": _canonical_records(
+            artifact.get("officer_target_unavailable", [])
         ),
     }
 
