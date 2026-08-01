@@ -223,6 +223,7 @@ def test_nearest_midpoint_matching_preserves_order_tie_break_for_unequal_section
             inside_area_residents=0,
             outside_area_residents=0,
             captured_oa_ids=(),
+            captured_output_areas=(),
             geometry=LineString([(start, 0), (end, 0)]),
         )
 

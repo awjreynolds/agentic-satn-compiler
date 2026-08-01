@@ -13,6 +13,7 @@ import json
 import math
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass
 from itertools import combinations, pairwise
 from numbers import Integral, Real
@@ -94,6 +95,22 @@ class SectionPopulationProfile:
 
 
 @dataclass(frozen=True)
+class CapturedOutputAreaPopulation:
+    """Population record retained so exploratory section unions can deduplicate OAs."""
+
+    oa_id: str
+    residents: int
+    is_inside_area: bool
+
+    def canonical(self) -> dict[str, object]:
+        return {
+            "oa_id": self.oa_id,
+            "residents": self.residents,
+            "is_inside_area": self.is_inside_area,
+        }
+
+
+@dataclass(frozen=True)
 class PopulationDisplaySection:
     """One ordered local population observation on a candidate alignment."""
 
@@ -111,6 +128,7 @@ class PopulationDisplaySection:
     inside_area_residents: int
     outside_area_residents: int
     captured_oa_ids: tuple[str, ...]
+    captured_output_areas: tuple[CapturedOutputAreaPopulation, ...]
     geometry: LineString
 
     @property
@@ -138,8 +156,43 @@ class PopulationDisplaySection:
             "inside_area_residents": self.inside_area_residents,
             "outside_area_residents": self.outside_area_residents,
             "captured_oa_ids": list(self.captured_oa_ids),
+            "captured_output_areas": [item.canonical() for item in self.captured_output_areas],
             "geometry_sha256": hashlib.sha256(self.geometry.wkb).hexdigest(),
         }
+
+
+@dataclass(frozen=True)
+class SectionPopulationSelectionSummary:
+    """Exploratory union of selected display sections, deduplicated by OA ID."""
+
+    section_ids: tuple[str, ...]
+    captured_oa_ids: tuple[str, ...]
+    total_residents: int
+    inside_area_residents: int
+    outside_area_residents: int
+
+
+def aggregate_section_population_selection(
+    sections: Sequence[PopulationDisplaySection],
+) -> SectionPopulationSelectionSummary:
+    """Deduplicate whole-OA population across an explicit section selection."""
+
+    records: dict[str, CapturedOutputAreaPopulation] = {}
+    for section in sections:
+        for record in section.captured_output_areas:
+            previous = records.setdefault(record.oa_id, record)
+            if previous != record:
+                raise SectionPopulationValidationError(
+                    f"Output Area {record.oa_id} has conflicting population evidence"
+                )
+    values = tuple(records[key] for key in sorted(records))
+    return SectionPopulationSelectionSummary(
+        section_ids=tuple(sorted({item.section_id for item in sections})),
+        captured_oa_ids=tuple(item.oa_id for item in values),
+        total_residents=sum(item.residents for item in values),
+        inside_area_residents=sum(item.residents for item in values if item.is_inside_area),
+        outside_area_residents=sum(item.residents for item in values if not item.is_inside_area),
+    )
 
 
 @dataclass(frozen=True)
@@ -220,9 +273,16 @@ class SectionPopulationAssessment:
                 **{
                     key: value
                     for key, value in item.canonical().items()
-                    if key not in {"geometry_sha256", "captured_oa_ids"}
+                    if key not in {
+                        "geometry_sha256",
+                        "captured_oa_ids",
+                        "captured_output_areas",
+                    }
                 },
                 "captured_oa_ids": list(item.captured_oa_ids),
+                "captured_output_areas": [
+                    record.canonical() for record in item.captured_output_areas
+                ],
                 "geometry": item.geometry,
             }
             for item in self.sections
@@ -490,6 +550,14 @@ def _alignment_sections(
                     inside_area_residents=inside,
                     outside_area_residents=outside,
                     captured_oa_ids=captured_ids,
+                    captured_output_areas=tuple(
+                        CapturedOutputAreaPopulation(
+                            oa_id=item.oa_id,
+                            residents=item.residents,
+                            is_inside_area=item.is_inside_area,
+                        )
+                        for item in captured
+                    ),
                     geometry=geometry,
                 )
             )

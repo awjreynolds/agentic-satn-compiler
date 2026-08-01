@@ -1241,8 +1241,10 @@ def _geopackage_safe(frame: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
 def _population_display_geopackage(frame: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     """Store captured OA IDs as canonical JSON, not a driver-specific list repr."""
     safe = _geopackage_safe(frame).copy()
-    if "captured_oa_ids" in safe:
-        safe["captured_oa_ids"] = safe["captured_oa_ids"].map(
+    for field in ("captured_oa_ids", "captured_output_areas"):
+        if field not in safe:
+            continue
+        safe[field] = safe[field].map(
             lambda value: json.dumps(_json_value(value), separators=(",", ":"))
         )
     return safe

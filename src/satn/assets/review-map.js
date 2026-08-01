@@ -24,7 +24,8 @@
     pinnedArtifact: null,
     active: null,
     inspectionPath: [],
-    inspectionVersion: 0
+    inspectionVersion: 0,
+    populationSectionIds: new Set()
   };
   const gradientPathTypes = new Set([
     "strategic-spine",
@@ -37,7 +38,8 @@
   const nonArtifactSources = new Set(["osm", "mapterhorn-dem"]);
   const presentationOnlyLayers = new Set([
     "connections-highlight",
-    "gradient-section-highlight"
+    "gradient-section-highlight",
+    "population-section-selection"
   ]);
 
   const map = new maplibregl.Map({
@@ -620,6 +622,55 @@
     catch (_) { return []; }
   }
 
+  function selectedPopulationSections() {
+    return network.features.filter((feature) =>
+      feature.properties?.feature_type === "population-display-section" &&
+      state.populationSectionIds.has(String(feature.properties.section_id || feature.id))
+    );
+  }
+
+  function updatePopulationSelectionLayer() {
+    const source = map.getSource("population-section-selection");
+    if (!source) return;
+    source.setData({ type: "FeatureCollection", features: selectedPopulationSections() });
+  }
+
+  function togglePopulationSectionSelection(feature) {
+    const identifier = String(feature.properties?.section_id || feature.id);
+    if (state.populationSectionIds.has(identifier)) state.populationSectionIds.delete(identifier);
+    else state.populationSectionIds.add(identifier);
+    updatePopulationSelectionLayer();
+  }
+
+  function renderPopulationSelectionSummary(panel) {
+    const sections = selectedPopulationSections();
+    if (!sections.length) return;
+    const outputAreas = new Map();
+    sections.forEach((section) => {
+      parseList(section.properties?.captured_output_areas).forEach((record) => {
+        if (record?.oa_id && !outputAreas.has(record.oa_id)) outputAreas.set(record.oa_id, record);
+      });
+    });
+    const records = [...outputAreas.values()];
+    const total = records.reduce((sum, record) => sum + Number(record.residents || 0), 0);
+    const inside = records.filter((record) => record.is_inside_area)
+      .reduce((sum, record) => sum + Number(record.residents || 0), 0);
+    const outside = total - inside;
+    const summary = document.createElement("section");
+    summary.className = "population-selection-summary";
+    const heading = document.createElement("h4");
+    heading.textContent = `Selected population sections (${sections.length})`;
+    const result = document.createElement("p");
+    result.textContent = records.length
+      ? `${formatResidents(total)} residents across ${records.length} deduplicated Output Areas · ${formatResidents(inside)} inside · ${formatResidents(outside)} outside`
+      : "Detailed Output Area population records are unavailable for this deployment.";
+    const caveat = document.createElement("p");
+    caveat.className = "comparison-note";
+    caveat.textContent = "Exploratory geometry union only; this does not create a governed corridor or ridership claim. Click a selected section to remove it.";
+    summary.append(heading, result, caveat);
+    panel.append(summary);
+  }
+
   function profileFor(feature) {
     const profileId = feature?.properties?.topography_profile_id;
     return network.features.find((candidate) =>
@@ -1098,6 +1149,7 @@
     guidance.textContent =
       "Hover over any visible map artifact to inspect its context. Click to pin its evidence.";
     panel.append(heading, guidance);
+    renderPopulationSelectionSummary(panel);
   }
 
   function appendArtifactContext(panel, artifact) {
@@ -1143,7 +1195,7 @@
     return panel;
   }
 
-  function alignmentMetric(feature) {
+  function alignmentMetrics(feature) {
     const properties = feature.properties || {};
     const population = properties.population?.["500m"]?.resident_count;
     const existing = properties.existing_alignment?.reusable_asset_share;
@@ -1155,6 +1207,87 @@
       ["Directness", Number(properties.directness_m)],
       ["Gradient", Number(properties.maximum_gradient_pct)]
     ].filter(([, metric]) => Number.isFinite(metric));
+  }
+
+  function commonAlignmentAxes(members) {
+    if (!members.length) return [];
+    const metrics = members.map((member) => new Map(alignmentMetrics(member)));
+    return [...metrics[0].keys()].filter((label) =>
+      metrics.every((route) => route.has(label))
+    );
+  }
+
+  function svgElement(name, attributes = {}) {
+    const element = document.createElementNS("http://www.w3.org/2000/svg", name);
+    Object.entries(attributes).forEach(([key, raw]) => element.setAttribute(key, String(raw)));
+    return element;
+  }
+
+  function radarPoint(index, count, fraction, radius = 72, centreX = 130, centreY = 96) {
+    const angle = -Math.PI / 2 + index * Math.PI * 2 / count;
+    return [centreX + Math.cos(angle) * radius * fraction, centreY + Math.sin(angle) * radius * fraction];
+  }
+
+  function renderAlignmentRadar(members, axes) {
+    const chart = document.createElement("div");
+    chart.className = "alignment-radar";
+    if (axes.length < 3) {
+      const note = document.createElement("p");
+      note.textContent = "A spider chart needs three shared evidence dimensions; available values are listed below.";
+      chart.append(note);
+    } else {
+      const svg = svgElement("svg", {
+        viewBox: "0 0 260 220",
+        role: "img",
+        "aria-label": `Spider comparison using shared dimensions: ${axes.join(", ")}`
+      });
+      const maxima = Object.fromEntries(axes.map((axis) => [
+        axis,
+        Math.max(...members.map((member) => new Map(alignmentMetrics(member)).get(axis)))
+      ]));
+      [0.25, 0.5, 0.75, 1].forEach((fraction) => {
+        const points = axes.map((_, index) => radarPoint(index, axes.length, fraction).join(",")).join(" ");
+        svg.append(svgElement("polygon", { points, class: "radar-grid" }));
+      });
+      axes.forEach((axis, index) => {
+        const [x, y] = radarPoint(index, axes.length, 1);
+        svg.append(svgElement("line", { x1: 130, y1: 96, x2: x, y2: y, class: "radar-axis" }));
+        const [labelX, labelY] = radarPoint(index, axes.length, 1.25);
+        const label = svgElement("text", { x: labelX, y: labelY, class: "radar-label" });
+        label.textContent = axis;
+        svg.append(label);
+      });
+      const colours = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd", "#ff7f0e"];
+      members.forEach((member, memberIndex) => {
+        const metrics = new Map(alignmentMetrics(member));
+        const points = axes.map((axis, index) => {
+          const maximum = maxima[axis];
+          const fraction = maximum > 0 ? metrics.get(axis) / maximum : 1;
+          return radarPoint(index, axes.length, fraction).join(",");
+        }).join(" ");
+        svg.append(svgElement("polygon", {
+          points,
+          class: "radar-route",
+          fill: colours[memberIndex % colours.length],
+          stroke: colours[memberIndex % colours.length]
+        }));
+      });
+      chart.append(svg);
+    }
+    const legend = document.createElement("div");
+    legend.className = "alignment-radar-values";
+    members.forEach((member) => {
+      const row = document.createElement("p");
+      const properties = member.properties || {};
+      const values = alignmentMetrics(member)
+        .filter(([label]) => axes.includes(label))
+        .map(([label, metric]) => `${label}: ${Math.round(metric * 10) / 10}`)
+        .join(" · ");
+      row.textContent = `${properties.disposition || "alternative"}: ${properties.candidate_id || member.id} · ${values}`;
+      legend.append(row);
+    });
+    chart.append(legend);
+    return chart;
   }
 
   function renderAlignmentComparison(panel, artifact) {
@@ -1174,25 +1307,8 @@
     const note = document.createElement("p");
     note.className = "comparison-note";
     note.textContent = "All candidate routes remain inspectable. Unavailable evidence is omitted, not treated as zero.";
-    const chart = document.createElement("div");
-    chart.className = "alignment-radar";
-    chart.setAttribute("role", "img");
-    chart.setAttribute("aria-label", "Compact radar comparison across available alignment evidence");
-    members.forEach((member) => {
-      const row = document.createElement("div");
-      row.className = "alignment-radar-row";
-      const name = document.createElement("strong");
-      const memberProperties = member.properties || {};
-      name.textContent = `${memberProperties.disposition || "alternative"}: ${memberProperties.candidate_id || member.id}`;
-      row.append(name);
-      const metrics = alignmentMetric(member);
-      metrics.forEach(([label, metric]) => {
-        const datum = document.createElement("span");
-        datum.textContent = `${label}: ${Math.round(metric * 10) / 10}`;
-        row.append(datum);
-      });
-      chart.append(row);
-    });
+    const axes = commonAlignmentAxes(members);
+    const chart = renderAlignmentRadar(members, axes);
     section.append(heading, note, chart);
     panel.append(section);
   }
@@ -1212,6 +1328,7 @@
     }
     appendArtifactContext(document.querySelector("#feature-details"), artifact);
     renderAlignmentComparison(document.querySelector("#feature-details"), artifact);
+    renderPopulationSelectionSummary(document.querySelector("#feature-details"));
   }
 
   function setHighlight(id) {
@@ -1754,6 +1871,10 @@
       lineMetrics: true,
       data: { type: "FeatureCollection", features: [] }
     });
+    map.addSource("population-section-selection", {
+      type: "geojson",
+      data: { type: "FeatureCollection", features: [] }
+    });
     if (referenceRecord && referenceOptions.features.length) {
       map.addSource("reference-satn-options", { type: "geojson", data: referenceOptions });
       map.addLayer({
@@ -1806,6 +1927,7 @@
     const populationScale = populationDisplayScale(network.features);
     renderPopulationDisplayLegend(populationScale);
     map.addLayer({ id: "population-display-sections", type: "line", source: "network", filter: ["==", ["get", "feature_type"], "population-display-section"], layout: { visibility: "none" }, paint: { "line-color": populationDisplayPaint(populationScale), "line-width": ["interpolate", ["linear"], ["zoom"], 8, 6, 13, 10], "line-opacity": .94 } });
+    map.addLayer({ id: "population-section-selection", type: "line", source: "population-section-selection", paint: { "line-color": "#f4d03f", "line-width": ["interpolate", ["linear"], ["zoom"], 8, 9, 13, 14], "line-opacity": .82 } });
     map.addLayer({ id: "gradient-overview", type: "line", source: "topography", filter: ["all", ["==", ["get", "feature_type"], "topography-profile"], ["!=", ["get", "evidence_status"], "evidence-unavailable"]], layout: { visibility: "none" }, paint: { "line-color": ["match", ["get", "gradient_band"], "gentle", "#d6eaf8", "noticeable", "#85c1e9", "steep", "#3498db", "very-steep", "#2874a6", "severe", "#1b4f72", "#7f8c8d"], "line-width": ["interpolate", ["linear"], ["zoom"], 7, 2, 10, 5], "line-opacity": .72 } });
     map.addLayer({ id: "gradient-section-highlight", type: "line", source: "topography", filter: ["==", ["id"], ""], paint: { "line-color": "#f4d03f", "line-width": 13, "line-opacity": .95 } });
     map.addLayer({ id: "topography-unavailable", type: "line", source: "topography", filter: ["all", ["==", ["get", "feature_type"], "topography-profile"], ["==", ["get", "evidence_status"], "evidence-unavailable"]], layout: { visibility: "none" }, paint: { "line-color": "#7f8c8d", "line-width": 8, "line-dasharray": [1, 1], "line-opacity": .9 } });
@@ -1882,6 +2004,9 @@
     map.on("click", (event) => {
       const artifact = artifactAt(event.point);
       if (artifact) {
+        if (artifact.feature.properties?.feature_type === "population-display-section") {
+          togglePopulationSectionSelection(artifact.feature);
+        }
         toggleArtifactPin(artifact);
       } else if (state.pinnedArtifact) {
         state.pinnedArtifact = null;

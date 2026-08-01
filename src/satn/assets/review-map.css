@@ -94,9 +94,14 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .alignment-comparison h4 { margin: 0; font-size: .86rem; }
 .comparison-note { margin: .25rem 0 .45rem; color: var(--muted); font-size: .74rem; }
 .alignment-radar { display: grid; gap: .35rem; overflow-x: auto; }
-.alignment-radar-row { display: flex; flex-wrap: wrap; gap: .25rem .4rem; min-width: 18rem; padding: .4rem; border: 1px solid #ccd1d1; border-left: 4px solid #7f8c8d; font-size: .72rem; }
-.alignment-radar-row:has(strong:first-child) strong { width: 100%; }
-.alignment-radar-row span { padding: .1rem .25rem; border-radius: .2rem; background: #eef1f2; }
+.alignment-radar svg { display: block; width: min(100%, 22rem); min-width: 18rem; margin: auto; }
+.radar-grid { fill: none; stroke: #ccd1d1; stroke-width: 1; }
+.radar-axis { stroke: #85929e; stroke-width: 1; }
+.radar-route { fill-opacity: .14; stroke-width: 2.5; }
+.radar-label { fill: #17202a; font-size: 8px; text-anchor: middle; dominant-baseline: middle; }
+.alignment-radar-values p { margin: .2rem 0; font-size: .7rem; }
+.population-selection-summary { margin-top: .75rem; padding: .55rem; border: 2px solid #f4d03f; background: #fffbea; }
+.population-selection-summary h4, .population-selection-summary p { margin: .2rem 0; }
 dt { font-weight: 700; }
 dd { margin: 0 0 .45rem; overflow-wrap: anywhere; }
 #feature-index { margin: .65rem 0; }
