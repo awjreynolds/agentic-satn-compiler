@@ -17,6 +17,7 @@ from satn.strategic_destination_access import (
 def test_one_evidenced_entrance_to_any_strategic_edge_serves_a_physical_fe_site() -> None:
     result = compile_strategic_destination_access(
         StrategicDestinationAccessRequest(
+            strategic_network_edge_ids=("spine-a-17",),
             sites=(
                 DestinationSite(
                     physical_site_id="city-college-campus",
@@ -50,6 +51,7 @@ def test_one_evidenced_entrance_to_any_strategic_edge_serves_a_physical_fe_site(
 def test_official_physical_site_record_takes_precedence_over_osm_fallback() -> None:
     result = compile_strategic_destination_access(
         StrategicDestinationAccessRequest(
+            strategic_network_edge_ids=("spine-west",),
             sites=(
                 DestinationSite(
                     physical_site_id="ruh",
@@ -88,6 +90,7 @@ def test_official_physical_site_record_takes_precedence_over_osm_fallback() -> N
 def test_missing_access_point_evidence_keeps_site_as_nonblocking_explicit_gap() -> None:
     result = compile_strategic_destination_access(
         StrategicDestinationAccessRequest(
+            strategic_network_edge_ids=("east-spine",),
             sites=(
                 DestinationSite(
                     physical_site_id="university-east-campus",
@@ -110,6 +113,7 @@ def test_missing_access_point_evidence_keeps_site_as_nonblocking_explicit_gap() 
 def test_provider_identity_never_collapses_distinct_physical_sites() -> None:
     result = compile_strategic_destination_access(
         StrategicDestinationAccessRequest(
+            strategic_network_edge_ids=("east-spine",),
             sites=(
                 DestinationSite(
                     physical_site_id="trust-hospital-east",
@@ -178,7 +182,12 @@ def test_configurable_entrance_threshold_counts_unique_entrances_not_paths() -> 
     config = StrategicDestinationAccessConfig(required_evidenced_entrances=2)
 
     result = compile_strategic_destination_access(
-        StrategicDestinationAccessRequest(sites=(site,), access_evidence=evidence, config=config)
+        StrategicDestinationAccessRequest(
+            sites=(site,),
+            strategic_network_edge_ids=("north-spine",),
+            access_evidence=evidence,
+            config=config,
+        )
     )
 
     assert result.obligations[0].service_status == "network-gap"
@@ -223,6 +232,30 @@ def test_access_evidence_for_an_unknown_physical_site_is_rejected() -> None:
                     strategic_network_edge_id="edge-a",
                     kind=AccessEvidenceKind.ROUTED_WALKING_PATH,
                     evidence_id="invented-evidence",
+                ),
+            ),
+        )
+
+
+def test_access_evidence_must_terminate_at_a_current_strategic_network_edge() -> None:
+    site = DestinationSite(
+        physical_site_id="college-campus",
+        name="College Campus",
+        kind=DestinationSiteKind.FURTHER_EDUCATION,
+        source=EvidenceSource.OFFICIAL,
+        source_record_id="college-register",
+    )
+    with pytest.raises(ValueError, match="current strategic network edge"):
+        StrategicDestinationAccessRequest(
+            sites=(site,),
+            strategic_network_edge_ids=("selected-edge",),
+            access_evidence=(
+                AccessEvidence(
+                    physical_site_id=site.physical_site_id,
+                    entrance_id="gate",
+                    strategic_network_edge_id="invented-edge",
+                    kind=AccessEvidenceKind.ROUTED_WALKING_PATH,
+                    evidence_id="route-evidence",
                 ),
             ),
         )

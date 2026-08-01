@@ -137,6 +137,7 @@ class StrategicDestinationAccessConfig(_FrozenModel):
 
 class StrategicDestinationAccessRequest(_FrozenModel):
     sites: tuple[DestinationSite, ...]
+    strategic_network_edge_ids: tuple[str, ...] = ()
     access_evidence: tuple[AccessEvidence, ...] = ()
     config: StrategicDestinationAccessConfig = Field(
         default_factory=StrategicDestinationAccessConfig
@@ -170,6 +171,11 @@ class StrategicDestinationAccessRequest(_FrozenModel):
             raise ValueError("access evidence must not duplicate evidence IDs")
         return records
 
+    @field_validator("strategic_network_edge_ids")
+    @classmethod
+    def _network_edges(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        return _canonical_identifiers(values)
+
     @model_validator(mode="after")
     def _known_evidence_sites(self) -> Self:
         known_site_ids = {item.physical_site_id for item in self.sites}
@@ -178,6 +184,15 @@ class StrategicDestinationAccessRequest(_FrozenModel):
         )
         if unknown_site_ids:
             raise ValueError("access evidence must refer to a known physical site")
+        known_edge_ids = set(self.strategic_network_edge_ids)
+        unknown_edge_ids = sorted(
+            {item.strategic_network_edge_id for item in self.access_evidence}
+            - known_edge_ids
+        )
+        if unknown_edge_ids:
+            raise ValueError(
+                "access evidence must terminate at a current strategic network edge"
+            )
         return self
 
 
@@ -248,6 +263,7 @@ def compile_strategic_destination_access(
     source_fingerprint = canonical_sha256(
         {
             "sites": [site.model_dump(mode="json") for site in request.sites],
+            "strategic_network_edge_ids": list(request.strategic_network_edge_ids),
             "access_evidence": [item.model_dump(mode="json") for item in request.access_evidence],
         }
     )
