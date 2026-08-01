@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from dataclasses import dataclass
 from datetime import date
 from typing import Literal, Protocol
@@ -121,6 +122,11 @@ class ParallelReductionConfig(BaseModel):
     material_population_difference: int = Field(default=1, ge=0)
     material_score_difference: float = Field(default=1.0, ge=0)
     runtime_eligible: bool = False
+    runtime_deadline_seconds: float = Field(default=10.0, gt=0)
+    runtime_maximum_decisive_considerations: int = Field(default=3, ge=1, le=8)
+    runtime_fallback_hierarchy: tuple[
+        Literal["compiler-preferred", "population", "quality", "route-id"], ...
+    ] = ("compiler-preferred", "population", "quality", "route-id")
     maximum_hybrids_per_group: int = Field(default=1, ge=0, le=5)
     section_length_m: float = Field(default=100.0, gt=0, le=1_000)
     urban_capture_radius_m: float = Field(default=250.0, gt=0)
@@ -130,6 +136,16 @@ class ParallelReductionConfig(BaseModel):
     material_population_persistence_m: float = Field(default=500.0, gt=0)
     material_elevation_variation_m: float = Field(default=20.0, ge=0)
     material_elevation_variation_pct: float = Field(default=25.0, ge=0)
+
+    @field_validator("runtime_fallback_hierarchy")
+    @classmethod
+    def _fallback_hierarchy(
+        cls,
+        value: tuple[Literal["compiler-preferred", "population", "quality", "route-id"], ...],
+    ) -> tuple[Literal["compiler-preferred", "population", "quality", "route-id"], ...]:
+        if not value or len(value) != len(set(value)) or value[-1] != "route-id":
+            raise ValueError("runtime fallback hierarchy must be unique and end in route-id")
+        return value
 
 
 class ParallelOutputAreaCentroid(BaseModel):
@@ -141,7 +157,6 @@ class ParallelOutputAreaCentroid(BaseModel):
     residents: int = Field(ge=0)
     coordinates: tuple[float, float]
     inside_area: bool
-
 
 class ParallelReductionRequest(BaseModel):
     """Data-only compiler input; all route candidates are discovered here."""
@@ -186,6 +201,19 @@ class ParallelDecisionArtifact(BaseModel):
     selected_route_id: str
     mode: Literal["deterministic", "agent", "fallback", "officer"]
     fallback_trigger: str | None = None
+    runtime_request_id: str | None = None
+    offered_route_ids: tuple[str, ...] = ()
+    offered_evidence_ids: tuple[str, ...] = ()
+    offered_consideration_ids: tuple[str, ...] = ()
+    decisive_consideration_ids: tuple[str, ...] = ()
+    validation_status: Literal[
+        "not-invoked",
+        "accepted",
+        "runtime-unavailable",
+        "runtime-error",
+        "runtime-timeout",
+        "invalid-runtime-response",
+    ] = "not-invoked"
 
 
 class CrossingWarning(BaseModel):
@@ -243,6 +271,139 @@ class ParallelReductionCompilation:
 
 class ParallelReductionRuntime(Protocol):
     def choose(self, request: Mapping[str, object]) -> str | Mapping[str, object]: ...
+
+
+def _route_quality(route: ParallelRoute, config: ParallelReductionConfig) -> float:
+    return (
+        route.access_score
+        + route.existing_infrastructure_score
+        + (config.material_score_difference if route.access_only_quiet_lane else 0)
+    )
+
+
+def _runtime_request(
+    *,
+    target_id: str,
+    compiler_preferred_route_id: str,
+    routes: tuple[ParallelRoute, ...],
+) -> dict[str, object]:
+    """Build the sole bounded runtime packet; never expose raw route datasets."""
+
+    menu = tuple(
+        {
+            "route_id": route.route_id,
+            "evidence_ids": tuple(sorted(route.evidence_ids or (f"route:{route.route_id}",))),
+            "consideration_ids": (
+                f"population:{route.route_id}",
+                f"topography:{route.route_id}",
+                f"access:{route.route_id}",
+                f"existing-infrastructure:{route.route_id}",
+            ),
+        }
+        for route in sorted(routes, key=lambda item: item.route_id)
+    )
+    evidence_ids = tuple(sorted({item for route in menu for item in route["evidence_ids"]}))
+    consideration_ids = tuple(
+        sorted({item for route in menu for item in route["consideration_ids"]})
+    )
+    request_id = f"parallel-runtime-{_digest((target_id, menu))[:16]}"
+    return {
+        "request_id": request_id,
+        "target_id": target_id,
+        "compiler_preferred_route_id": compiler_preferred_route_id,
+        "route_menu": menu,
+        "offered_evidence_ids": evidence_ids,
+        "offered_consideration_ids": consideration_ids,
+    }
+
+
+def _validate_runtime_response(
+    raw: object,
+    runtime_request: Mapping[str, object],
+    config: ParallelReductionConfig,
+) -> tuple[str | None, tuple[str, ...]]:
+    """Accept only one offered route with bounded, route-relevant considerations."""
+
+    if not isinstance(raw, Mapping) or set(raw) != {"route_id", "decisive_consideration_ids"}:
+        return None, ()
+    route_id = raw.get("route_id")
+    decisive = raw.get("decisive_consideration_ids")
+    if not isinstance(route_id, str) or not isinstance(decisive, (list, tuple)):
+        return None, ()
+    if not all(isinstance(item, str) for item in decisive):
+        return None, ()
+    decisive_ids = tuple(sorted(set(decisive)))
+    if not decisive_ids or len(decisive_ids) != len(decisive):
+        return None, ()
+    if len(decisive_ids) > config.runtime_maximum_decisive_considerations:
+        return None, ()
+    menu = runtime_request["route_menu"]
+    if not isinstance(menu, tuple):
+        return None, ()
+    selected = next(
+        (item for item in menu if item.get("route_id") == route_id),
+        None,
+    )
+    if selected is None:
+        return None, ()
+    offered = runtime_request["offered_consideration_ids"]
+    if not isinstance(offered, tuple) or not set(decisive_ids).issubset(offered):
+        return None, ()
+    relevant = selected.get("consideration_ids")
+    if not isinstance(relevant, tuple) or not set(decisive_ids).issubset(relevant):
+        return None, ()
+    return route_id, decisive_ids
+
+
+def _call_runtime_once(
+    runtime: ParallelReductionRuntime,
+    request: Mapping[str, object],
+    deadline_seconds: float,
+) -> tuple[object | None, Literal["accepted", "runtime-error", "runtime-timeout"]]:
+    """Call a synchronous provider once without allowing it to block compilation."""
+
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="parallel-runtime")
+    future = executor.submit(runtime.choose, request)
+    try:
+        return future.result(timeout=deadline_seconds), "accepted"
+    except TimeoutError:
+        future.cancel()
+        return None, "runtime-timeout"
+    except Exception:
+        return None, "runtime-error"
+    finally:
+        # A timed-out provider cannot be reliably killed by Python.  Do not
+        # wait for it, retry it, or pause the compilation for human input.
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _configured_fallback_route(
+    routes: tuple[ParallelRoute, ...],
+    compiler_preferred_route_id: str,
+    config: ParallelReductionConfig,
+) -> str:
+    """Select reproducibly from the declared hierarchy for every failure mode."""
+
+    contenders = tuple(routes)
+    for criterion in config.runtime_fallback_hierarchy:
+        if criterion == "compiler-preferred":
+            matches = tuple(
+                item for item in contenders if item.route_id == compiler_preferred_route_id
+            )
+        elif criterion == "population":
+            highest = max(item.population for item in contenders)
+            matches = tuple(item for item in contenders if item.population == highest)
+        elif criterion == "quality":
+            highest = max(_route_quality(item, config) for item in contenders)
+            matches = tuple(
+                item for item in contenders if _route_quality(item, config) == highest
+            )
+        else:
+            return min(item.route_id for item in contenders)
+        if len(matches) == 1:
+            return matches[0].route_id
+        contenders = matches
+    return min(item.route_id for item in contenders)
 
 
 def _coverage(left: LineString, right: LineString, distance_m: float) -> float:
@@ -685,14 +846,12 @@ def compile_parallel_reduction_scenario(
         by_population = max(routes, key=lambda item: (item.population, item.route_id)).route_id
         by_quality = max(
             routes,
-            key=lambda item: (
-                item.access_score
-                + item.existing_infrastructure_score
-                + (request.config.material_score_difference if item.access_only_quiet_lane else 0),
-                item.route_id,
-            ),
+            key=lambda item: (_route_quality(item, request.config), item.route_id),
         ).route_id
         selected, mode, trigger = compiler_preferred, "deterministic", None
+        runtime_request: Mapping[str, object] | None = None
+        decisive_consideration_ids: tuple[str, ...] = ()
+        validation_status = "not-invoked"
         # Access-only quiet lanes are not filtered out.  Where the governed
         # population result is otherwise comparable, the declared quiet-lane
         # access advantage is the deterministic tie-break before route ID.
@@ -712,9 +871,7 @@ def compile_parallel_reduction_scenario(
         elif by_population != by_quality:
             route_population = {item.route_id: item.population for item in routes}
             route_quality = {
-                item.route_id: item.access_score
-                + item.existing_infrastructure_score
-                + (request.config.material_score_difference if item.access_only_quiet_lane else 0)
+                item.route_id: _route_quality(item, request.config)
                 for item in routes
             }
             material = (
@@ -723,25 +880,46 @@ def compile_parallel_reduction_scenario(
                 and abs(route_quality[by_population] - route_quality[by_quality])
                 >= request.config.material_score_difference
             )
-            if material and runtime is not None:
-                try:
-                    raw = runtime.choose(
-                        {
-                            "target_id": target_id,
-                            "route_ids": tuple(item.route_id for item in routes),
-                            "compiler_preferred_route_id": compiler_preferred,
-                        }
+            if material and request.config.runtime_eligible and runtime is not None:
+                runtime_request = _runtime_request(
+                    target_id=target_id,
+                    compiler_preferred_route_id=compiler_preferred,
+                    routes=routes,
+                )
+                raw, call_status = _call_runtime_once(
+                    runtime,
+                    runtime_request,
+                    request.config.runtime_deadline_seconds,
+                )
+                if call_status != "accepted":
+                    mode, trigger, validation_status = "fallback", call_status, call_status
+                    selected = _configured_fallback_route(
+                        routes, compiler_preferred, request.config
                     )
-                except Exception:
-                    mode, trigger = "fallback", "runtime-error"
                 else:
-                    chosen = raw if isinstance(raw, str) else raw.get("route_id")
-                    if chosen in {item.route_id for item in routes}:
-                        selected, mode = chosen, "agent"
+                    chosen, decisive_consideration_ids = _validate_runtime_response(
+                        raw,
+                        runtime_request,
+                        request.config,
+                    )
+                    if chosen is None:
+                        mode, trigger, validation_status = (
+                            "fallback",
+                            "invalid-runtime-response",
+                            "invalid-runtime-response",
+                        )
+                        selected = _configured_fallback_route(
+                            routes, compiler_preferred, request.config
+                        )
                     else:
-                        mode, trigger = "fallback", "invalid-runtime-response"
+                        selected, mode, validation_status = chosen, "agent", "accepted"
             elif material:
-                mode, trigger = "fallback", "runtime-unavailable"
+                mode, trigger, validation_status = (
+                    "fallback",
+                    "runtime-unavailable",
+                    "runtime-unavailable",
+                )
+                selected = _configured_fallback_route(routes, compiler_preferred, request.config)
         selected_by_group[endpoints] = selected
         decisions.append(
             ParallelDecisionArtifact(
@@ -750,6 +928,22 @@ def compile_parallel_reduction_scenario(
                 selected_route_id=selected,
                 mode=mode,
                 fallback_trigger=trigger,
+                runtime_request_id=(
+                    runtime_request["request_id"] if runtime_request is not None else None
+                ),
+                offered_route_ids=(
+                    tuple(item.route_id for item in routes) if runtime_request is not None else ()
+                ),
+                offered_evidence_ids=(
+                    runtime_request["offered_evidence_ids"] if runtime_request is not None else ()
+                ),
+                offered_consideration_ids=(
+                    runtime_request["offered_consideration_ids"]
+                    if runtime_request is not None
+                    else ()
+                ),
+                decisive_consideration_ids=decisive_consideration_ids,
+                validation_status=validation_status,
             )
         )
     selected = tuple(sorted(selected_by_group.values()))

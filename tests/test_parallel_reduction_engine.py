@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from satn.parallel_reduction import (
@@ -415,3 +417,181 @@ def test_missing_governed_oa_evidence_is_explicit_not_fabricated() -> None:
     )
     assert result.artifact.section_population_sections == ()
     assert "section-population:governed-output-area-centroids" in result.artifact.missing_evidence
+def test_runtime_receives_only_finite_menu_and_accepts_relevant_evidence() -> None:
+    class CapturingRuntime:
+        calls: list[dict[str, object]]
+
+        def __init__(self) -> None:
+            self.calls = []
+
+        def choose(self, request: object) -> dict[str, object]:
+            assert isinstance(request, dict)
+            self.calls.append(request)
+            menu = request["route_menu"]
+            assert isinstance(menu, tuple)
+            selected = next(item for item in menu if item["route_id"] == "access-route")
+            return {
+                "route_id": "access-route",
+                "decisive_consideration_ids": (selected["consideration_ids"][0],),
+            }
+
+    runtime = CapturingRuntime()
+    result = compile_parallel_reduction_scenario(
+        ParallelReductionRequest(
+            profile_id="parallel-runtime-menu",
+            config=ParallelReductionConfig(runtime_eligible=True),
+            routes=(
+                ParallelRoute(
+                    route_id="population-route",
+                    endpoints=("alpha", "beta"),
+                    coordinates=((0.0, 0.0), (1_000.0, 0.0)),
+                    network_scope="urban",
+                    population=200,
+                ),
+                ParallelRoute(
+                    route_id="access-route",
+                    endpoints=("alpha", "beta"),
+                    coordinates=((0.0, 300.0), (1_000.0, 300.0)),
+                    network_scope="urban",
+                    population=100,
+                    access_score=2,
+                ),
+            ),
+        ),
+        runtime=runtime,
+    )
+
+    assert len(runtime.calls) == 1
+    runtime_request = runtime.calls[0]
+    assert set(runtime_request) == {
+        "request_id",
+        "target_id",
+        "compiler_preferred_route_id",
+        "route_menu",
+        "offered_evidence_ids",
+        "offered_consideration_ids",
+    }
+    assert "coordinates" not in str(runtime_request)
+    assert "gradient_pct" not in str(runtime_request)
+    assert "'population': 200" not in str(runtime_request)
+    decision = result.artifact.decisions[0]
+    assert decision.mode == "agent"
+    assert decision.validation_status == "accepted"
+    assert decision.decisive_consideration_ids
+
+
+def test_partial_runtime_response_and_timeout_use_the_same_configured_fallback() -> None:
+    class PartialRuntime:
+        def choose(self, request: object) -> dict[str, object]:
+            return {"route_id": "access-route"}
+
+    class SlowRuntime:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def choose(self, request: object) -> dict[str, object]:
+            self.calls += 1
+            time.sleep(0.05)
+            return {"route_id": "access-route", "decisive_consideration_ids": ("ignored",)}
+
+    request = ParallelReductionRequest(
+        profile_id="parallel-runtime-deadline",
+        config=ParallelReductionConfig(runtime_eligible=True, runtime_deadline_seconds=0.001),
+        routes=(
+            ParallelRoute(
+                route_id="population-route",
+                endpoints=("alpha", "beta"),
+                coordinates=((0.0, 0.0), (1_000.0, 0.0)),
+                network_scope="urban",
+                population=200,
+            ),
+            ParallelRoute(
+                route_id="access-route",
+                endpoints=("alpha", "beta"),
+                coordinates=((0.0, 300.0), (1_000.0, 300.0)),
+                network_scope="urban",
+                population=100,
+                access_score=2,
+            ),
+        ),
+    )
+
+    partial = compile_parallel_reduction_scenario(request, runtime=PartialRuntime())
+    slow_runtime = SlowRuntime()
+    timed_out = compile_parallel_reduction_scenario(request, runtime=slow_runtime)
+
+    assert partial.scenario.publishable and timed_out.scenario.publishable
+    assert partial.selected_route_ids == timed_out.selected_route_ids
+    assert partial.artifact.decisions[0].fallback_trigger == "invalid-runtime-response"
+    assert timed_out.artifact.decisions[0].fallback_trigger == "runtime-timeout"
+    assert slow_runtime.calls == 1
+
+
+def test_runtime_is_never_called_without_conflicting_material_advantages() -> None:
+    runtime = ExplodingRuntime()
+    result = compile_parallel_reduction_scenario(
+        ParallelReductionRequest(
+            profile_id="parallel-runtime-lazy",
+            config=ParallelReductionConfig(runtime_eligible=True),
+            routes=(
+                ParallelRoute(
+                    route_id="route-a",
+                    endpoints=("alpha", "beta"),
+                    coordinates=((0.0, 0.0), (1_000.0, 0.0)),
+                    network_scope="urban",
+                    population=100,
+                    access_score=1,
+                ),
+                ParallelRoute(
+                    route_id="route-b",
+                    endpoints=("alpha", "beta"),
+                    coordinates=((0.0, 300.0), (1_000.0, 300.0)),
+                    network_scope="urban",
+                    population=100,
+                    access_score=1,
+                ),
+            ),
+        ),
+        runtime=runtime,
+    )
+
+    assert runtime.calls == 0
+    assert result.artifact.decisions[0].validation_status == "not-invoked"
+
+
+def test_runtime_rejects_decisive_considerations_not_relevant_to_selected_route() -> None:
+    class IrrelevantEvidenceRuntime:
+        def choose(self, request: object) -> dict[str, object]:
+            return {
+                "route_id": "access-route",
+                "decisive_consideration_ids": ("population:population-route",),
+            }
+
+    result = compile_parallel_reduction_scenario(
+        ParallelReductionRequest(
+            profile_id="parallel-runtime-relevance",
+            config=ParallelReductionConfig(runtime_eligible=True),
+            routes=(
+                ParallelRoute(
+                    route_id="population-route",
+                    endpoints=("alpha", "beta"),
+                    coordinates=((0.0, 0.0), (1_000.0, 0.0)),
+                    network_scope="urban",
+                    population=200,
+                ),
+                ParallelRoute(
+                    route_id="access-route",
+                    endpoints=("alpha", "beta"),
+                    coordinates=((0.0, 300.0), (1_000.0, 300.0)),
+                    network_scope="urban",
+                    population=100,
+                    access_score=2,
+                ),
+            ),
+        ),
+        runtime=IrrelevantEvidenceRuntime(),
+    )
+
+    assert result.scenario.publishable
+    assert result.artifact.decisions[0].mode == "fallback"
+    assert result.artifact.decisions[0].validation_status == "invalid-runtime-response"
