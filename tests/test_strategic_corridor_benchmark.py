@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -58,3 +59,36 @@ def test_benchmark_emits_an_adr0016_bound_semantic_manifest() -> None:
     assert len(result["runs"][0]["semantic_fingerprint"]) == 64
     assert len(result["semantic_fingerprint"]) == 64
     assert "passed" not in result
+
+
+def test_committed_manifest_replays_the_bound_semantic_oracle() -> None:
+    module = _benchmark_module()
+    manifest = json.loads(
+        (
+            PROJECT
+            / "docs"
+            / "benchmarks"
+            / "strategic-corridor-routing-2026-08-01.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    replayed = module.benchmark(commit=manifest["commit"])
+
+    assert manifest["commit"] == "ea1fbfb5feab5cb03a1a2683f9e7bd3853c1ae1b"
+    assert replayed["input_binding"] == manifest["input_binding"]
+    assert replayed["semantic_fingerprint"] == manifest["semantic_fingerprint"]
+    assert [
+        {
+            key: value
+            for key, value in run.items()
+            if key != "elapsed_seconds"
+        }
+        for run in replayed["runs"]
+    ] == [
+        {
+            key: value
+            for key, value in run.items()
+            if key != "elapsed_seconds"
+        }
+        for run in manifest["runs"]
+    ]

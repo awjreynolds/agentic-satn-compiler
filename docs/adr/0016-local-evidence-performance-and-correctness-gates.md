@@ -49,6 +49,12 @@ fingerprint or semantic oracle.  The compact synthetic routing benchmark exercis
 is batched by role, strategic-use and start node.  It retains the exact geometry,
 edge identities, candidate ordering and tie behaviour of individual routing; it does
 not impose a semantic pair limit or introduce a server/runtime architecture.
+Each recorded run uses the same manifest discipline as the wider performance gates;
+the compact acceptance evidence is retained in
+`docs/benchmarks/strategic-corridor-routing-2026-08-01.json`.  Fields that do not
+exist for a synthetic in-memory RoadGraph (Area Definition, Source Export, snapshot,
+store, decision and DuckDB/Spatial bindings) are explicit Not Applicable values,
+never omitted or fabricated.
 
 ## Acceptance corpus
 
