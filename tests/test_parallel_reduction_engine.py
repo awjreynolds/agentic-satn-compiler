@@ -543,6 +543,71 @@ def test_runtime_receives_only_finite_menu_and_accepts_relevant_evidence() -> No
     assert decision.decisive_consideration_ids
 
 
+def test_runtime_guidance_ids_are_route_bound_and_unoffered_ids_fall_back() -> None:
+    class CaptureRuntime:
+        def __init__(self, consideration_id: str) -> None:
+            self.consideration_id = consideration_id
+            self.request: dict[str, object] | None = None
+
+        def choose(self, request: object) -> dict[str, object]:
+            assert isinstance(request, dict)
+            self.request = request
+            return {
+                "route_id": "left",
+                "decisive_consideration_ids": (self.consideration_id,),
+            }
+
+    request = ParallelReductionRequest(
+        profile_id="parallel-guidance-runtime",
+        config=ParallelReductionConfig(runtime_eligible=True),
+        routes=(
+            ParallelRoute(
+                route_id="left",
+                endpoints=("a", "b"),
+                coordinates=((0, 0), (200, 0)),
+                network_scope="urban",
+                population=200,
+                guidance_considerations=(
+                    {
+                        "principle_id": "coherence",
+                        "state": "supported",
+                        "citation_ids": ("ltn120-1.4",),
+                    },
+                ),
+            ),
+            ParallelRoute(
+                route_id="right",
+                endpoints=("a", "b"),
+                coordinates=((0, 400), (200, 400)),
+                network_scope="urban",
+                population=100,
+                access_score=2,
+                guidance_considerations=(
+                    {
+                        "principle_id": "directness",
+                        "state": "supported",
+                        "citation_ids": ("rural-guide-2",),
+                    },
+                ),
+            ),
+        ),
+    )
+    valid = CaptureRuntime("guidance:left:coherence")
+    accepted = compile_parallel_reduction_scenario(request, runtime=valid)
+    assert accepted.artifact.decisions[0].mode == "agent"
+    assert valid.request is not None
+    menu = valid.request["route_menu"]
+    assert menu[0]["consideration_ids"][-1] == "guidance:left:coherence"
+    assert menu[1]["consideration_ids"][-1] == "guidance:right:directness"
+    assert "Cycle Infrastructure Design" not in str(valid.request)
+    assert "citation_ids" not in str(valid.request)
+
+    invalid = CaptureRuntime("guidance:left:invented")
+    fallback = compile_parallel_reduction_scenario(request, runtime=invalid)
+    assert fallback.artifact.decisions[0].mode == "fallback"
+    assert fallback.artifact.decisions[0].validation_status == "invalid-runtime-response"
+
+
 def test_partial_runtime_response_and_timeout_use_the_same_configured_fallback() -> None:
     class PartialRuntime:
         def choose(self, request: object) -> dict[str, object]:
