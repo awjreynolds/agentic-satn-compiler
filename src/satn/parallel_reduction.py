@@ -21,7 +21,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from shapely.geometry import LineString, Point, box
 
 from satn.alignment_selection import (
+    AcceptedDecisionEnvelope,
+    AgentAuthorityRole,
+    AgentInvocation,
     AlignmentCandidateInput,
+    AlignmentCritiqueRecord,
+    AlignmentDecisionResponse,
     AssessmentKind,
     CandidateCriteria,
     CandidatePopulationOptionBinding,
@@ -38,6 +43,7 @@ from satn.alignment_selection import (
     ScenarioCriteriaBinding,
     ScenarioDecisionRecord,
     admit_candidate_set,
+    build_alignment_decision_request,
     education_option_id_for_candidate,
     select_preferred_alignment,
 )
@@ -112,6 +118,7 @@ class ParallelReductionConfig(BaseModel):
     minimum_symmetric_coverage_pct: float = Field(default=80.0, ge=0, le=100)
     material_population_difference: int = Field(default=1, ge=0)
     material_score_difference: float = Field(default=1.0, ge=0)
+    runtime_eligible: bool = False
 
 
 class ParallelReductionRequest(BaseModel):
@@ -263,8 +270,16 @@ def _profile(request: ParallelReductionRequest) -> NetworkSelectionProfile:
                 "b-road-corridor",
                 "other-routable",
             ],
-            # The raw compiler resolves near-equivalence with stable route IDs.
-            "ambiguity": {"review_when": []},
+            "population": (
+                {"near_equivalent_tolerance_pct": 100.0, "tolerance_status": "trial"}
+                if request.config.runtime_eligible
+                else {}
+            ),
+            "ambiguity": (
+                {"review_when": ["near-equivalent-options"]}
+                if request.config.runtime_eligible
+                else {"review_when": []}
+            ),
         }
     )
 
@@ -325,7 +340,15 @@ def _criteria(candidate_set, route_by_candidate: Mapping[str, ParallelRoute]) ->
         crs="EPSG:27700",
     )
     population_assessment = compile_population_reach(
-        routes, areas, area, source=_population_source(), profile=PopulationReachProfile()
+        routes,
+        areas,
+        area,
+        source=_population_source(),
+        profile=PopulationReachProfile(
+            comparison_tolerance_percent=(
+                candidate_set.profile.population.near_equivalent_tolerance_pct
+            )
+        ),
     )
     bindings = tuple(
         CandidatePopulationOptionBinding(
@@ -515,7 +538,13 @@ def compile_parallel_reduction_scenario(
         area_fingerprint=_digest(request.area_id),
         evidence_snapshot=snapshot,
         profile_fingerprint=profile.fingerprint,
-        decision_record=ScenarioDecisionRecord(mode="no-agent-not-invoked"),
+        decision_record=ScenarioDecisionRecord(
+            mode=(
+                "profile-fallback-awaiting-review"
+                if any(not item.publishable for item in selections)
+                else "no-agent-not-invoked"
+            )
+        ),
         candidate_sets=tuple(candidate_sets),
         selections=tuple(selections),
         criteria_bindings=tuple(
@@ -648,6 +677,96 @@ def compile_parallel_reduction_scenario(
         for item in decisions
         if item.mode == "officer" and item.selected_route_id != item.compiler_preferred_route_id
     )
+    # The existing Scenario model makes a runtime/officer action authoritative
+    # only through an exact compiler-authored accepted envelope.  Rebuild the
+    # scenario with those envelopes rather than exposing a competing wrapper
+    # winner list.
+    envelopes = []
+    for selection in selections:
+        decision = next(
+            item
+            for item in decisions
+            if item.target_id == "parallel:" + ":".join(selection.candidate_set.endpoints)
+        )
+        if selection.publishable:
+            continue
+        candidate_id = next(
+            item.candidate_id
+            for item in selection.candidate_set.admitted_candidates
+            if route_by_candidate[item.candidate_id] == decision.selected_route_id
+        )
+        request_record = build_alignment_decision_request(
+            selection,
+            scenario_context_fingerprint=scenario.scenario_context_fingerprint,
+        )
+        option_id = f"select-{candidate_id}"
+        if option_id not in {item.option_id for item in request_record.options}:
+            option_id = "accept-profile-fallback"
+        primary = AgentInvocation(
+            invocation_id=f"parallel-primary-{request_record.request_fingerprint[:16]}",
+            role=AgentAuthorityRole.PRIMARY_ALIGNMENT_DECISION,
+            role_contract_fingerprint=(
+                request_record.agent_review_contracts.primary_role_contract.contract_fingerprint
+            ),
+            prompt_contract_fingerprint=(
+                request_record.agent_review_contracts.primary_prompt_contract.contract_fingerprint
+            ),
+            request_fingerprint=request_record.request_fingerprint,
+            recorded_on=date(2026, 1, 1),
+        )
+        response = AlignmentDecisionResponse(
+            request_id=request_record.request_id,
+            request_fingerprint=request_record.request_fingerprint,
+            option_id=option_id,
+            evidence_ids=(request_record.immutable_evidence_ids[0],),
+            invocation=primary,
+        )
+        critic = AgentInvocation(
+            invocation_id=f"parallel-critic-{request_record.request_fingerprint[:16]}",
+            role=AgentAuthorityRole.INDEPENDENT_ALIGNMENT_CRITIC,
+            role_contract_fingerprint=(
+                request_record.agent_review_contracts.critic_role_contract.contract_fingerprint
+            ),
+            prompt_contract_fingerprint=(
+                request_record.agent_review_contracts.critic_prompt_contract.contract_fingerprint
+            ),
+            request_fingerprint=request_record.request_fingerprint,
+            recorded_on=date(2026, 1, 1),
+        )
+        envelopes.append(
+            AcceptedDecisionEnvelope(
+                request=request_record,
+                response=response,
+                critique=AlignmentCritiqueRecord(
+                    request_fingerprint=request_record.request_fingerprint,
+                    response_fingerprint=response.response_fingerprint,
+                    selection_fingerprint=selection.selection_fingerprint,
+                    scenario_context_fingerprint=scenario.scenario_context_fingerprint,
+                    evidence_snapshot_fingerprint=(request_record.evidence_snapshot_fingerprint),
+                    profile_fingerprint=request_record.profile_fingerprint,
+                    finding="accepted",
+                    resolved=True,
+                    evidence_ids=(request_record.immutable_evidence_ids[0],),
+                    invocation=critic,
+                ),
+            )
+        )
+    if envelopes:
+        scenario = ScenarioCompilation(
+            area_fingerprint=scenario.area_fingerprint,
+            evidence_snapshot=scenario.evidence_snapshot,
+            profile_fingerprint=scenario.profile_fingerprint,
+            decision_record=ScenarioDecisionRecord(
+                mode="accepted-agent-decision-ledger",
+                accepted_envelopes=tuple(envelopes),
+            ),
+            candidate_sets=scenario.candidate_sets,
+            selections=scenario.selections,
+            criteria_bindings=scenario.criteria_bindings,
+            required_network_role_ids=scenario.required_network_role_ids,
+            mandatory_network_place_ids=scenario.mandatory_network_place_ids,
+            lineage_fingerprints=scenario.lineage_fingerprints,
+        )
     artifact = ParallelReductionArtifact(
         relations=relations,
         selected_route_ids=selected,

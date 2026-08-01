@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from satn.parallel_reduction import (
+    ParallelReductionConfig,
     ParallelReductionRequest,
     ParallelRoute,
     compile_parallel_reduction_scenario,
@@ -45,6 +46,7 @@ def test_unresolved_scope_retains_wider_only_relation_and_runtime_failure_falls_
     result = compile_parallel_reduction_scenario(
         ParallelReductionRequest(
             profile_id="parallel-runtime",
+            config=ParallelReductionConfig(runtime_eligible=True),
             routes=(
                 ParallelRoute(
                     route_id="population-route",
@@ -69,3 +71,5 @@ def test_unresolved_scope_retains_wider_only_relation_and_runtime_failure_falls_
     assert result.artifact.relations[0].scope_sensitive
     assert result.artifact.decisions[0].mode == "fallback"
     assert result.artifact.decisions[0].fallback_trigger == "invalid-runtime-response"
+    assert result.scenario.decision_record.mode == "accepted-agent-decision-ledger"
+    assert result.scenario.publishable
