@@ -48,6 +48,7 @@ def test_composite_manifest_declares_every_light_acceptance_zone() -> None:
     )
 
 
+@pytest.mark.parallel_reduction_deep
 def test_deep_data_declares_exact_boundary_and_completion_cases() -> None:
     deep = json.loads(DEEP_THRESHOLDS.read_text(encoding="ascii"))
     cases = {item["id"]: item for item in deep["cases"]}
@@ -142,6 +143,7 @@ def _deep_request(*, distance_m: int, scope: str = "urban", runtime_eligible: bo
         ("rural-1501", 1501, "rural", False),
     ],
 )
+@pytest.mark.parallel_reduction_deep
 def test_deep_distance_cases_execute_the_public_compiler_seam(
     case_id: str, distance_m: int, scope: str, compiles: bool
 ) -> None:
@@ -160,6 +162,7 @@ def test_deep_distance_cases_execute_the_public_compiler_seam(
 
 
 @pytest.mark.parametrize("outcome", ["provider-failure", "invalid-response", "timeout"])
+@pytest.mark.parallel_reduction_deep
 def test_deep_runtime_failure_classes_complete_with_deterministic_fallback(outcome: str) -> None:
     from satn.parallel_reduction import compile_parallel_reduction_scenario
 
@@ -176,6 +179,7 @@ def test_deep_runtime_failure_classes_complete_with_deterministic_fallback(outco
     assert result.artifact.decisions[0].mode == "fallback"
 
 
+@pytest.mark.parallel_reduction_deep
 def test_deep_order_and_repeat_cases_have_identical_compiler_identity() -> None:
     from satn.parallel_reduction import (
         ParallelReductionRequest,
@@ -204,6 +208,7 @@ def _deep_cases() -> dict[str, dict[str, object]]:
     }
 
 
+@pytest.mark.parallel_reduction_deep
 def test_deep_coverage_cases_execute_calibrated_raw_divergence_geometry() -> None:
     """Keep coverage boundaries in the corpus as geometry, not mocked percentages."""
 
@@ -244,6 +249,7 @@ def test_deep_coverage_cases_execute_calibrated_raw_divergence_geometry() -> Non
 
 
 @pytest.mark.parametrize("field", ["material_population_difference", "material_score_difference"])
+@pytest.mark.parallel_reduction_deep
 def test_deep_material_threshold_cases_execute_raw_evidence_conflicts(field: str) -> None:
     """Materiality comes from actual competing route evidence and config thresholds."""
 
@@ -286,6 +292,7 @@ def test_deep_material_threshold_cases_execute_raw_evidence_conflicts(field: str
         )
 
 
+@pytest.mark.parallel_reduction_deep
 def test_deep_missing_evidence_case_completes_with_raw_absent_evidence() -> None:
     from satn.parallel_reduction import (
         ParallelReductionConfig,

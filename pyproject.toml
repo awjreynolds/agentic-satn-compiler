@@ -57,6 +57,7 @@ markers = [
   "live_osm: requires live Nominatim and Overpass access",
   "browser: uses the installed Playwright Chromium browser",
   "live_terrain: performs configured terrain retrieval and requires --live-terrain",
+  "parallel_reduction_deep: runs the explicit Parallel-Reduction decision-boundary corpus",
 ]
 
 [tool.ruff]

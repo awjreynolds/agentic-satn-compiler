@@ -56,6 +56,11 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         if config.getoption("--live-terrain")
         else pytest.mark.skip(reason="requires --live-terrain")
     )
+    parallel_deep_skip = (
+        None
+        if config.getoption("--parallel-reduction-deep")
+        else pytest.mark.skip(reason="requires --parallel-reduction-deep")
+    )
     for item in items:
         if "live_osm" in item.keywords and osm_skip:
             item.add_marker(osm_skip)
@@ -65,3 +70,5 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(browser_skip)
         if "live_terrain" in item.keywords and terrain_skip:
             item.add_marker(terrain_skip)
+        if "parallel_reduction_deep" in item.keywords and parallel_deep_skip:
+            item.add_marker(parallel_deep_skip)
