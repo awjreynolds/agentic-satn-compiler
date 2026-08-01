@@ -57,7 +57,7 @@ from satn.education_access import (
 )
 from satn.identifiers import stable_id
 from satn.network_selection import NetworkSelectionProfile
-from satn.parallel_reduction_evidence import build_parallel_evidence
+from satn.parallel_reduction_evidence import ParallelEvidenceSummary, build_parallel_evidence
 from satn.population_reach import (
     CURRENT_DEVELOPMENT_EVIDENCE_AVAILABLE,
     CURRENT_DEVELOPMENT_NO_MATERIAL_OMISSION,
@@ -193,6 +193,8 @@ class ParallelReductionConfig(BaseModel):
     material_score_difference: float = Field(default=1.0, ge=0)
     runtime_eligible: bool = False
     runtime_deadline_seconds: float = Field(default=10.0, gt=0)
+    runtime_maximum_calls: int = Field(default=3, ge=1, le=32)
+    runtime_maximum_request_bytes: int = Field(default=16_384, ge=1, le=1_000_000)
     runtime_maximum_decisive_considerations: int = Field(default=3, ge=1, le=8)
     runtime_fallback_hierarchy: tuple[
         Literal["compiler-preferred", "population", "quality", "route-id"], ...
@@ -350,6 +352,7 @@ class ParallelDecisionArtifact(BaseModel):
     offered_route_ids: tuple[str, ...] = ()
     offered_evidence_ids: tuple[str, ...] = ()
     offered_consideration_ids: tuple[str, ...] = ()
+    route_findings: tuple[dict[str, object], ...] = ()
     decisive_consideration_ids: tuple[str, ...] = ()
     validation_status: Literal[
         "not-invoked",
@@ -357,6 +360,8 @@ class ParallelDecisionArtifact(BaseModel):
         "runtime-unavailable",
         "runtime-error",
         "runtime-timeout",
+        "runtime-call-bound-reached",
+        "runtime-request-too-large",
         "invalid-runtime-response",
     ] = "not-invoked"
 
@@ -439,31 +444,272 @@ def _route_quality(route: ParallelRoute, config: ParallelReductionConfig) -> flo
     )
 
 
+def _qualitative_outcomes(
+    routes: tuple[ParallelRoute, ...],
+    *,
+    values: Mapping[str, float],
+    material_difference: float,
+    available: bool,
+) -> dict[str, str]:
+    if not available:
+        return {route.route_id: "unassessed" for route in routes}
+    highest = max(values.values())
+    lowest = min(values.values())
+    if highest - lowest < material_difference:
+        return {route.route_id: "equivalent" for route in routes}
+    return {
+        route.route_id: (
+            "material-advantage"
+            if values[route.route_id] == highest
+            else "material-disadvantage"
+            if values[route.route_id] == lowest
+            else "equivalent"
+        )
+        for route in routes
+    }
+
+
+def _unassessed_outcomes(routes: tuple[ParallelRoute, ...]) -> dict[str, str]:
+    return {route.route_id: "unassessed" for route in routes}
+
+
+def _population_outcomes(
+    routes: tuple[ParallelRoute, ...], evidence: ParallelEvidenceSummary
+) -> tuple[dict[str, str], dict[str, tuple[str, ...]]]:
+    outcomes = _unassessed_outcomes(routes)
+    evidence_ids = {route.route_id: () for route in routes}
+    route_ids = set(outcomes)
+    for difference in evidence.material_population_differences:
+        advantaged = difference["advantaged_alignment_id"]
+        compared = difference["compared_alignment_id"]
+        if advantaged not in route_ids or compared not in route_ids:
+            continue
+        supporting = tuple(sorted(str(item) for item in difference["supporting_section_ids"]))
+        outcomes[advantaged] = "material-advantage"
+        outcomes[compared] = "material-disadvantage"
+        evidence_ids[advantaged] = supporting
+        evidence_ids[compared] = supporting
+    return outcomes, evidence_ids
+
+
+def _topography_outcomes(
+    routes: tuple[ParallelRoute, ...],
+    config: ParallelReductionConfig,
+    evidence: ParallelEvidenceSummary,
+) -> tuple[dict[str, str], dict[str, tuple[str, ...]]]:
+    route_ids = {route.route_id for route in routes}
+    if any(f"elevation:{route_id}" in evidence.missing_evidence for route_id in route_ids):
+        return _unassessed_outcomes(routes), {route.route_id: () for route in routes}
+    values: dict[str, float] = {}
+    for comparison in evidence.cumulative_elevation_variation:
+        left, right = comparison["route_ids"]
+        if left in route_ids:
+            values[left] = float(comparison["left_cumulative_elevation_variation_m"])
+        if right in route_ids:
+            values[right] = float(comparison["right_cumulative_elevation_variation_m"])
+    if set(values) != route_ids:
+        return _unassessed_outcomes(routes), {route.route_id: () for route in routes}
+    highest, lowest = max(values.values()), min(values.values())
+    relative_difference = 0.0 if highest == 0 else (highest - lowest) / highest * 100
+    if (
+        highest - lowest < config.material_elevation_variation_m
+        or relative_difference < config.material_elevation_variation_pct
+    ):
+        outcomes = {route.route_id: "equivalent" for route in routes}
+    else:
+        outcomes = {
+            route.route_id: (
+                "material-advantage"
+                if values[route.route_id] == lowest
+                else "material-disadvantage"
+                if values[route.route_id] == highest
+                else "equivalent"
+            )
+            for route in routes
+        }
+    return (
+        outcomes,
+        {
+            route.route_id: tuple(
+                f"{route.route_id}:{distance_m}" for distance_m, _ in route.elevation_samples
+            )
+            for route in routes
+        },
+    )
+
+
+def _guidance_outcomes(
+    routes: tuple[ParallelRoute, ...],
+) -> dict[tuple[str, str], str]:
+    outcomes = {
+        (route.route_id, item.principle_id): "unassessed"
+        for route in routes
+        for item in route.guidance_considerations
+    }
+    principle_ids = {
+        item.principle_id for route in routes for item in route.guidance_considerations
+    }
+    for principle_id in principle_ids:
+        considerations = {
+            route.route_id: next(
+                (
+                    item
+                    for item in route.guidance_considerations
+                    if item.principle_id == principle_id
+                ),
+                None,
+            )
+            for route in routes
+        }
+        states = {
+            item.state
+            for item in considerations.values()
+            if item is not None and item.state != "unassessed"
+        }
+        for route_id, item in considerations.items():
+            if item is None or item.state == "unassessed":
+                continue
+            if {"supported", "contradicted"}.issubset(states):
+                outcomes[(route_id, principle_id)] = (
+                    "material-advantage" if item.state == "supported" else "material-disadvantage"
+                )
+            else:
+                outcomes[(route_id, principle_id)] = "equivalent"
+    return outcomes
+
+
+def _runtime_route_menu(
+    routes: tuple[ParallelRoute, ...],
+    config: ParallelReductionConfig,
+    evidence: ParallelEvidenceSummary,
+    output_area_source_fingerprint: str | None,
+) -> tuple[dict[str, object], ...]:
+    """Summarise governed comparisons without serialising their raw observations."""
+
+    population_outcomes, population_evidence_ids = _population_outcomes(routes, evidence)
+    topography_outcomes, topography_evidence_ids = _topography_outcomes(routes, config, evidence)
+    guidance_outcomes = _guidance_outcomes(routes)
+    dimensions = (
+        (
+            "access",
+            _qualitative_outcomes(
+                routes,
+                values={route.route_id: route.access_score for route in routes},
+                material_difference=config.material_score_difference,
+                available=all(route.evidence_ids for route in routes),
+            ),
+        ),
+        (
+            "existing-infrastructure",
+            _qualitative_outcomes(
+                routes,
+                values={route.route_id: route.existing_infrastructure_score for route in routes},
+                material_difference=config.material_score_difference,
+                available=all(route.evidence_ids for route in routes),
+            ),
+        ),
+    )
+    outcomes = {dimension: values for dimension, values in dimensions}
+    menu = []
+    for route in sorted(routes, key=lambda item: item.route_id):
+        findings = []
+        for dimension, outcome, evidence_ids, citation_ids in (
+            (
+                "population",
+                population_outcomes[route.route_id],
+                population_evidence_ids[route.route_id],
+                (output_area_source_fingerprint,)
+                if population_evidence_ids[route.route_id] and output_area_source_fingerprint
+                else (),
+            ),
+            (
+                "topography",
+                topography_outcomes[route.route_id],
+                topography_evidence_ids[route.route_id],
+                tuple(sorted(route.evidence_ids)),
+            ),
+            *(
+                (
+                    dimension,
+                    outcomes[dimension][route.route_id],
+                    tuple(sorted(route.evidence_ids)),
+                    tuple(sorted(route.evidence_ids)),
+                )
+                for dimension in outcomes
+            ),
+        ):
+            if outcome == "unassessed":
+                evidence_ids, citation_ids = (), ()
+            findings.append(
+                {
+                    "consideration_id": f"{dimension}:{route.route_id}",
+                    "dimension": dimension,
+                    "outcome": outcome,
+                    "evidence_ids": evidence_ids,
+                    "citation_ids": citation_ids,
+                }
+            )
+        for consideration in sorted(
+            route.guidance_considerations, key=lambda item: item.principle_id
+        ):
+            principle_id = consideration.principle_id
+            outcome = guidance_outcomes[(route.route_id, principle_id)]
+            evidence_ids = (
+                () if outcome == "unassessed" else (f"guidance:{route.route_id}:{principle_id}",)
+            )
+            citation_ids = consideration.citation_ids
+            findings.append(
+                {
+                    "consideration_id": f"guidance:{route.route_id}:{principle_id}",
+                    "dimension": f"guidance:{principle_id}",
+                    "outcome": outcome,
+                    "evidence_ids": evidence_ids,
+                    "citation_ids": citation_ids,
+                }
+            )
+        menu.append(
+            {
+                "route_id": route.route_id,
+                "findings": tuple(findings),
+                "evidence_ids": tuple(
+                    sorted({item for finding in findings for item in finding["evidence_ids"]})
+                ),
+                "consideration_ids": tuple(item["consideration_id"] for item in findings),
+            }
+        )
+    return tuple(menu)
+
+
+def _has_conflicting_material_advantages(menu: tuple[dict[str, object], ...]) -> bool:
+    advantages = {
+        str(route["route_id"]): {
+            str(finding["dimension"])
+            for finding in route["findings"]
+            if finding["outcome"] == "material-advantage"
+        }
+        for route in menu
+    }
+    return any(
+        left_route != right_route and left_dimension != right_dimension
+        for left_route, left_dimensions in advantages.items()
+        for right_route, right_dimensions in advantages.items()
+        for left_dimension in left_dimensions
+        for right_dimension in right_dimensions
+    )
+
+
 def _runtime_request(
     *,
     target_id: str,
     compiler_preferred_route_id: str,
     routes: tuple[ParallelRoute, ...],
+    config: ParallelReductionConfig,
+    evidence: ParallelEvidenceSummary,
+    output_area_source_fingerprint: str | None,
 ) -> dict[str, object]:
     """Build the sole bounded runtime packet; never expose raw route datasets."""
 
-    menu = tuple(
-        {
-            "route_id": route.route_id,
-            "evidence_ids": tuple(sorted(route.evidence_ids or (f"route:{route.route_id}",))),
-            "consideration_ids": (
-                f"population:{route.route_id}",
-                f"topography:{route.route_id}",
-                f"access:{route.route_id}",
-                f"existing-infrastructure:{route.route_id}",
-                *(
-                    f"guidance:{route.route_id}:{item.principle_id}"
-                    for item in route.guidance_considerations
-                ),
-            ),
-        }
-        for route in sorted(routes, key=lambda item: item.route_id)
-    )
+    menu = _runtime_route_menu(routes, config, evidence, output_area_source_fingerprint)
     evidence_ids = tuple(sorted({item for route in menu for item in route["evidence_ids"]}))
     consideration_ids = tuple(
         sorted({item for route in menu for item in route["consideration_ids"]})
@@ -477,6 +723,10 @@ def _runtime_request(
         "offered_evidence_ids": evidence_ids,
         "offered_consideration_ids": consideration_ids,
     }
+
+
+def _runtime_request_bytes(request: Mapping[str, object]) -> int:
+    return len(json.dumps(request, sort_keys=True, separators=(",", ":")).encode())
 
 
 def _validate_runtime_response(
@@ -511,8 +761,13 @@ def _validate_runtime_response(
     offered = runtime_request["offered_consideration_ids"]
     if not isinstance(offered, tuple) or not set(decisive_ids).issubset(offered):
         return None, ()
-    relevant = selected.get("consideration_ids")
-    if not isinstance(relevant, tuple) or not set(decisive_ids).issubset(relevant):
+    findings = selected.get("findings")
+    if not isinstance(findings, tuple):
+        return None, ()
+    relevant = {
+        item.get("consideration_id") for item in findings if item.get("outcome") != "unassessed"
+    }
+    if not set(decisive_ids).issubset(relevant):
         return None, ()
     return route_id, decisive_ids
 
@@ -1358,10 +1613,17 @@ def compile_parallel_reduction_scenario(
         for route in routes
         if candidate.evidence_fingerprints[0] == _digest((route.route_id, route.evidence_ids))
     }
+    evidence = build_parallel_evidence(
+        request.routes,
+        request.config,
+        request.output_area_centroids,
+        request.output_area_source_fingerprint,
+    )
     decisions: list[ParallelDecisionArtifact] = []
     unavailable: list[OfficerTargetUnavailable] = []
     selected_by_group: dict[str, str] = {}
     officers = {item.target_id: item.route_id for item in request.officer_decisions}
+    runtime_calls = 0
     endpoint_group_counts = {
         endpoints: sum(1 for item in group_endpoints.values() if item == endpoints)
         for endpoints in group_endpoints.values()
@@ -1373,13 +1635,14 @@ def compile_parallel_reduction_scenario(
             target_id = f"{target_id}:{group_id.rsplit(':', 1)[1]}"
         selection = selections[list(routes_by_group).index(group_id)]
         compiler_preferred = route_by_candidate[selection.selected_candidate_id]
-        by_population = max(routes, key=lambda item: (item.population, item.route_id)).route_id
-        by_quality = max(
-            routes,
-            key=lambda item: (_route_quality(item, request.config), item.route_id),
-        ).route_id
         selected, mode, trigger = compiler_preferred, "deterministic", None
         runtime_request: Mapping[str, object] | None = None
+        route_findings = _runtime_route_menu(
+            routes,
+            request.config,
+            evidence,
+            request.output_area_source_fingerprint,
+        )
         decisive_consideration_ids: tuple[str, ...] = ()
         validation_status = "not-invoked"
         # Access-only quiet lanes are not filtered out.  Where the governed
@@ -1398,49 +1661,68 @@ def compile_parallel_reduction_scenario(
                 unavailable.append(OfficerTargetUnavailable(target_id=target_id, route_id=officer))
             else:
                 selected, mode = officer, "officer"
-        elif by_population != by_quality:
-            route_population = {item.route_id: item.population for item in routes}
-            route_quality = {item.route_id: _route_quality(item, request.config) for item in routes}
-            material = (
-                abs(route_population[by_population] - route_population[by_quality])
-                >= request.config.material_population_difference
-                and abs(route_quality[by_population] - route_quality[by_quality])
-                >= request.config.material_score_difference
-            )
-            if material and request.config.runtime_eligible and runtime is not None:
-                runtime_request = _runtime_request(
-                    target_id=target_id,
-                    compiler_preferred_route_id=compiler_preferred,
-                    routes=routes,
-                )
-                raw, call_status = _call_runtime_once(
-                    runtime,
-                    runtime_request,
-                    request.config.runtime_deadline_seconds,
-                )
-                if call_status != "accepted":
-                    mode, trigger, validation_status = "fallback", call_status, call_status
+        elif _has_conflicting_material_advantages(route_findings):
+            if request.config.runtime_eligible and runtime is not None:
+                if runtime_calls >= request.config.runtime_maximum_calls:
+                    mode, trigger, validation_status = (
+                        "fallback",
+                        "runtime-call-bound-reached",
+                        "runtime-call-bound-reached",
+                    )
                     selected = _configured_fallback_route(
                         routes, compiler_preferred, request.config
                     )
                 else:
-                    chosen, decisive_consideration_ids = _validate_runtime_response(
-                        raw,
-                        runtime_request,
-                        request.config,
+                    runtime_request = _runtime_request(
+                        target_id=target_id,
+                        compiler_preferred_route_id=compiler_preferred,
+                        routes=routes,
+                        config=request.config,
+                        evidence=evidence,
+                        output_area_source_fingerprint=request.output_area_source_fingerprint,
                     )
-                    if chosen is None:
+                    if (
+                        _runtime_request_bytes(runtime_request)
+                        > request.config.runtime_maximum_request_bytes
+                    ):
                         mode, trigger, validation_status = (
                             "fallback",
-                            "invalid-runtime-response",
-                            "invalid-runtime-response",
+                            "runtime-request-too-large",
+                            "runtime-request-too-large",
                         )
                         selected = _configured_fallback_route(
                             routes, compiler_preferred, request.config
                         )
                     else:
-                        selected, mode, validation_status = chosen, "agent", "accepted"
-            elif material:
+                        runtime_calls += 1
+                        raw, call_status = _call_runtime_once(
+                            runtime,
+                            runtime_request,
+                            request.config.runtime_deadline_seconds,
+                        )
+                        if call_status != "accepted":
+                            mode, trigger, validation_status = "fallback", call_status, call_status
+                            selected = _configured_fallback_route(
+                                routes, compiler_preferred, request.config
+                            )
+                        else:
+                            chosen, decisive_consideration_ids = _validate_runtime_response(
+                                raw,
+                                runtime_request,
+                                request.config,
+                            )
+                            if chosen is None:
+                                mode, trigger, validation_status = (
+                                    "fallback",
+                                    "invalid-runtime-response",
+                                    "invalid-runtime-response",
+                                )
+                                selected = _configured_fallback_route(
+                                    routes, compiler_preferred, request.config
+                                )
+                            else:
+                                selected, mode, validation_status = chosen, "agent", "accepted"
+            else:
                 mode, trigger, validation_status = (
                     "fallback",
                     "runtime-unavailable",
@@ -1469,6 +1751,7 @@ def compile_parallel_reduction_scenario(
                     if runtime_request is not None
                     else ()
                 ),
+                route_findings=route_findings,
                 decisive_consideration_ids=decisive_consideration_ids,
                 validation_status=validation_status,
             )
@@ -1585,12 +1868,6 @@ def compile_parallel_reduction_scenario(
             mandatory_network_place_ids=scenario.mandatory_network_place_ids,
             lineage_fingerprints=scenario.lineage_fingerprints,
         )
-    evidence = build_parallel_evidence(
-        request.routes,
-        request.config,
-        request.output_area_centroids,
-        request.output_area_source_fingerprint,
-    )
     artifact = ParallelReductionArtifact(
         relations=relations,
         sections=sections,

@@ -63,12 +63,12 @@ def test_deep_data_declares_exact_boundary_and_completion_cases() -> None:
         "rural-1499",
         "rural-1500",
         "rural-1501",
-        "population-99",
-        "population-100",
-        "population-101",
-        "topography-9",
-        "topography-10",
-        "topography-11",
+        "population-499",
+        "population-500",
+        "population-501",
+        "topography-19",
+        "topography-20",
+        "topography-21",
         "reversed-input",
         "missing-evidence",
         "runtime-timeout",
@@ -118,13 +118,16 @@ def _deep_request(*, distance_m: int, scope: str = "urban", runtime_eligible: bo
                 endpoints=("deep-a", "deep-b"),
                 coordinates=((0.0, 0.0), (1_000.0, 0.0)),
                 network_scope=scope,
+                evidence_ids=("deep-west-governed-evidence",),
                 population=200,
+                existing_infrastructure_score=20,
             ),
             ParallelRoute(
                 route_id="deep-east",
                 endpoints=("deep-a", "deep-b"),
                 coordinates=((0.0, float(distance_m)), (1_000.0, float(distance_m))),
                 network_scope=scope,
+                evidence_ids=("deep-east-governed-evidence",),
                 population=100,
                 access_score=20,
             ),
@@ -164,19 +167,42 @@ def test_deep_distance_cases_execute_the_public_compiler_seam(
 @pytest.mark.parametrize("outcome", ["provider-failure", "invalid-response", "timeout"])
 @pytest.mark.parallel_reduction_deep
 def test_deep_runtime_failure_classes_complete_with_deterministic_fallback(outcome: str) -> None:
-    from satn.parallel_reduction import compile_parallel_reduction_scenario
+    import time
+
+    from satn.parallel_reduction import (
+        ParallelReductionConfig,
+        ParallelReductionRequest,
+        compile_parallel_reduction_scenario,
+    )
 
     class DeepRuntime:
         def choose(self, request: object):
             if outcome == "provider-failure":
                 raise RuntimeError("deep-provider-failure")
+            if outcome == "timeout":
+                time.sleep(0.02)
             return {"route_id": "not-offered"}
 
+    request = _deep_request(distance_m=400, scope="urban", runtime_eligible=True)
+    request = ParallelReductionRequest.model_validate(
+        {
+            **request.model_dump(mode="python"),
+            "config": ParallelReductionConfig(
+                runtime_eligible=True,
+                runtime_deadline_seconds=0.001,
+            ),
+        }
+    )
     result = compile_parallel_reduction_scenario(
-        _deep_request(distance_m=400, scope="urban", runtime_eligible=True), DeepRuntime()
+        request, DeepRuntime()
     )
     assert result.scenario.publishable
     assert result.artifact.decisions[0].mode == "fallback"
+    assert result.artifact.decisions[0].fallback_trigger == {
+        "provider-failure": "runtime-error",
+        "invalid-response": "invalid-runtime-response",
+        "timeout": "runtime-timeout",
+    }[outcome]
 
 
 @pytest.mark.parallel_reduction_deep
@@ -248,10 +274,61 @@ def test_deep_coverage_cases_execute_calibrated_raw_divergence_geometry() -> Non
         assert bool(result.artifact.relations) is (case["expected"] == "admit")
 
 
-@pytest.mark.parametrize("field", ["material_population_difference", "material_score_difference"])
 @pytest.mark.parallel_reduction_deep
-def test_deep_material_threshold_cases_execute_raw_evidence_conflicts(field: str) -> None:
-    """Materiality comes from actual competing route evidence and config thresholds."""
+def test_deep_population_threshold_cases_execute_governed_sustained_evidence() -> None:
+    """The 500-resident equality boundary is exercised through governed OA evidence."""
+
+    from satn.parallel_reduction import (
+        ParallelOutputAreaCentroid,
+        ParallelReductionConfig,
+        ParallelReductionRequest,
+        compile_parallel_reduction_scenario,
+    )
+
+    for residents in (499, 500, 501):
+        case = _deep_cases()[f"population-{residents}"]
+        config = ParallelReductionConfig(
+            runtime_eligible=True,
+        )
+        base_request = _deep_request(distance_m=400, scope="urban", runtime_eligible=True)
+        request_data = base_request.model_dump(mode="python")
+        request_data["routes"] = [
+            {
+                **route.model_dump(mode="python"),
+                "existing_infrastructure_score": 0,
+            }
+            for route in base_request.routes
+        ]
+        request = ParallelReductionRequest.model_validate(
+            {
+                **request_data,
+                "profile_id": f"parallel-population-{residents}",
+                "config": config,
+                "output_area_centroids": (
+                    ParallelOutputAreaCentroid(
+                        oa_id="E00000001",
+                        residents=residents,
+                        coordinates=(500.0, 0.0),
+                        inside_area=True,
+                    ),
+                ),
+                "output_area_source_fingerprint": "a" * 64,
+            }
+        )
+
+        result = compile_parallel_reduction_scenario(request)
+        assert result.scenario.publishable is True
+        decision = result.artifact.decisions[0]
+        expected_runtime_boundary = case["expected"] == "runtime-boundary"
+        assert decision.mode == ("fallback" if expected_runtime_boundary else "deterministic")
+        assert decision.fallback_trigger == (
+            "runtime-unavailable" if expected_runtime_boundary else None
+        )
+
+
+@pytest.mark.parallel_reduction_deep
+def test_deep_topography_threshold_cases_use_direction_independent_cev() -> None:
+    """The 20-metre equality boundary is exercised through raw elevation evidence."""
 
     from satn.parallel_reduction import (
         ParallelReductionConfig,
@@ -259,32 +336,37 @@ def test_deep_material_threshold_cases_execute_raw_evidence_conflicts(field: str
         compile_parallel_reduction_scenario,
     )
 
-    prefix = "population" if field == "material_population_difference" else "topography"
-    for threshold in (9, 10, 11) if prefix == "topography" else (99, 100, 101):
-        case = _deep_cases()[f"{prefix}-{threshold}"]
-        config = ParallelReductionConfig(
-            runtime_eligible=True,
-            material_population_difference=0 if prefix == "topography" else case[field],
-            material_score_difference=10 if prefix == "population" else case[field],
-        )
-        base_request = _deep_request(distance_m=400, scope="urban", runtime_eligible=True)
-        request_data = base_request.model_dump(mode="python")
-        if prefix == "topography":
-            request_data["routes"] = [
+    for cev_difference_m in (19, 20, 21):
+        case = _deep_cases()[f"topography-{cev_difference_m}"]
+        request = _deep_request(distance_m=400, scope="urban", runtime_eligible=True)
+        route_data = []
+        for route in request.routes:
+            elevation_samples = (
+                ((0.0, 0.0), (100.0, cev_difference_m / 2), (200.0, 0.0))
+                if route.route_id == "deep-east"
+                else ((0.0, 0.0), (100.0, 0.0), (200.0, 0.0))
+            )
+            route_data.append(
                 {
                     **route.model_dump(mode="python"),
-                    "population": 100,
-                    "access_score": 10 if route.route_id == "deep-east" else 0,
+                    "coordinates": (
+                        (0.0, route.coordinates[0][1]),
+                        (200.0, route.coordinates[0][1]),
+                    ),
+                    "existing_infrastructure_score": 0,
+                    "elevation_samples": elevation_samples,
                 }
-                for route in base_request.routes
-            ]
-        request = ParallelReductionRequest.model_validate(
-            {**request_data, "profile_id": f"parallel-{prefix}-{threshold}", "config": config}
+            )
+        governed_request = ParallelReductionRequest.model_validate(
+            {
+                **request.model_dump(mode="python"),
+                "profile_id": f"parallel-topography-{cev_difference_m}",
+                "config": ParallelReductionConfig(runtime_eligible=True),
+                "routes": route_data,
+            }
         )
 
-        result = compile_parallel_reduction_scenario(request)
-        assert result.scenario.publishable is True
-        decision = result.artifact.decisions[0]
+        decision = compile_parallel_reduction_scenario(governed_request).artifact.decisions[0]
         expected_runtime_boundary = case["expected"] == "runtime-boundary"
         assert decision.mode == ("fallback" if expected_runtime_boundary else "deterministic")
         assert decision.fallback_trigger == (
@@ -328,13 +410,13 @@ def test_deep_missing_evidence_case_completes_with_raw_absent_evidence() -> None
     )
 
     assert result.scenario.publishable is True
-    assert result.artifact.decisions[0].mode == "fallback"
-    assert result.artifact.decisions[0].fallback_trigger == "runtime-unavailable"
+    assert result.artifact.decisions[0].mode == "deterministic"
+    assert result.artifact.decisions[0].fallback_trigger is None
     assert (
         result.artifact.decisions[0].selected_route_id
         == result.artifact.decisions[0].compiler_preferred_route_id
     )
-    assert case["expected"] == "deterministic-fallback"
+    assert case["expected"] == "deterministic"
 
 
 def test_manifest_rejects_zones_within_rural_candidate_distance(tmp_path: Path) -> None:

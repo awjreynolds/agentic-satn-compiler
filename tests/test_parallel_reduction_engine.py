@@ -71,14 +71,15 @@ def test_unresolved_scope_retains_wider_only_relation_and_runtime_failure_falls_
                     endpoints=("alpha", "beta"),
                     coordinates=((0.0, 0.0), (1_000.0, 0.0)),
                     network_scope="unresolved",
-                    population=200,
+                    evidence_ids=("population-route-survey",),
+                    existing_infrastructure_score=2,
                 ),
                 ParallelRoute(
                     route_id="access-route",
                     endpoints=("alpha", "beta"),
                     coordinates=((0.0, 800.0), (1_000.0, 800.0)),
                     network_scope="rural",
-                    population=100,
+                    evidence_ids=("access-route-audit",),
                     access_score=2.0,
                 ),
             ),
@@ -175,14 +176,15 @@ def test_runtime_exception_falls_back_once_and_never_prevents_generation() -> No
                     coordinates=((0.0, 0.0), (1_000.0, 0.0)),
                     network_scope="urban",
                     source_class="verified-existing-asset",
-                    population=200,
+                    evidence_ids=("population-route-survey",),
+                    existing_infrastructure_score=2,
                 ),
                 ParallelRoute(
                     route_id="access-route",
                     endpoints=("alpha", "beta"),
                     coordinates=((0.0, 300.0), (1_000.0, 300.0)),
                     network_scope="urban",
-                    population=100,
+                    evidence_ids=("access-route-audit",),
                     access_score=2,
                 ),
             ),
@@ -526,9 +528,10 @@ def test_runtime_receives_only_finite_menu_and_accepts_relevant_evidence() -> No
             menu = request["route_menu"]
             assert isinstance(menu, tuple)
             selected = next(item for item in menu if item["route_id"] == "access-route")
+            access = next(item for item in selected["findings"] if item["dimension"] == "access")
             return {
                 "route_id": "access-route",
-                "decisive_consideration_ids": (selected["consideration_ids"][0],),
+                "decisive_consideration_ids": (access["consideration_id"],),
             }
 
     runtime = CapturingRuntime()
@@ -542,13 +545,16 @@ def test_runtime_receives_only_finite_menu_and_accepts_relevant_evidence() -> No
                     endpoints=("alpha", "beta"),
                     coordinates=((0.0, 0.0), (1_000.0, 0.0)),
                     network_scope="urban",
+                    evidence_ids=("population-route-survey",),
                     population=200,
+                    existing_infrastructure_score=2,
                 ),
                 ParallelRoute(
                     route_id="access-route",
                     endpoints=("alpha", "beta"),
                     coordinates=((0.0, 300.0), (1_000.0, 300.0)),
                     network_scope="urban",
+                    evidence_ids=("access-route-audit",),
                     population=100,
                     access_score=2,
                 ),
@@ -599,7 +605,8 @@ def test_runtime_guidance_ids_are_route_bound_and_unoffered_ids_fall_back() -> N
                 endpoints=("a", "b"),
                 coordinates=((0, 0), (200, 0)),
                 network_scope="urban",
-                population=200,
+                evidence_ids=("left-guidance-survey",),
+                existing_infrastructure_score=2,
                 guidance_considerations=(
                     {
                         "principle_id": "coherence",
@@ -613,13 +620,13 @@ def test_runtime_guidance_ids_are_route_bound_and_unoffered_ids_fall_back() -> N
                 endpoints=("a", "b"),
                 coordinates=((0, 400), (200, 400)),
                 network_scope="urban",
-                population=100,
+                evidence_ids=("right-guidance-survey",),
                 access_score=2,
                 guidance_considerations=(
                     {
-                        "principle_id": "directness",
-                        "state": "supported",
-                        "citation_ids": ("rural-guide-2",),
+                        "principle_id": "coherence",
+                        "state": "contradicted",
+                        "citation_ids": ("ltn120-1.4",),
                     },
                 ),
             ),
@@ -631,9 +638,14 @@ def test_runtime_guidance_ids_are_route_bound_and_unoffered_ids_fall_back() -> N
     assert valid.request is not None
     menu = valid.request["route_menu"]
     assert menu[0]["consideration_ids"][-1] == "guidance:left:coherence"
-    assert menu[1]["consideration_ids"][-1] == "guidance:right:directness"
+    assert menu[1]["consideration_ids"][-1] == "guidance:right:coherence"
     assert "Cycle Infrastructure Design" not in str(valid.request)
-    assert "citation_ids" not in str(valid.request)
+    left_guidance = next(
+        item
+        for item in menu[0]["findings"]
+        if item["consideration_id"] == "guidance:left:coherence"
+    )
+    assert left_guidance["citation_ids"] == ("ltn120-1.4",)
 
     invalid = CaptureRuntime("guidance:left:invented")
     fallback = compile_parallel_reduction_scenario(request, runtime=invalid)
@@ -664,13 +676,16 @@ def test_partial_runtime_response_and_timeout_use_the_same_configured_fallback()
                 endpoints=("alpha", "beta"),
                 coordinates=((0.0, 0.0), (1_000.0, 0.0)),
                 network_scope="urban",
+                evidence_ids=("population-route-survey",),
                 population=200,
+                existing_infrastructure_score=2,
             ),
             ParallelRoute(
                 route_id="access-route",
                 endpoints=("alpha", "beta"),
                 coordinates=((0.0, 300.0), (1_000.0, 300.0)),
                 network_scope="urban",
+                evidence_ids=("access-route-audit",),
                 population=100,
                 access_score=2,
             ),
@@ -738,13 +753,16 @@ def test_runtime_rejects_decisive_considerations_not_relevant_to_selected_route(
                     endpoints=("alpha", "beta"),
                     coordinates=((0.0, 0.0), (1_000.0, 0.0)),
                     network_scope="urban",
+                    evidence_ids=("population-route-survey",),
                     population=200,
+                    existing_infrastructure_score=2,
                 ),
                 ParallelRoute(
                     route_id="access-route",
                     endpoints=("alpha", "beta"),
                     coordinates=((0.0, 300.0), (1_000.0, 300.0)),
                     network_scope="urban",
+                    evidence_ids=("access-route-audit",),
                     population=100,
                     access_score=2,
                 ),
@@ -1269,3 +1287,463 @@ def test_local_scope_span_equality_and_order_are_canonical() -> None:
         ),
     )
     assert tuple(item.start_distance_m for item in route.network_scope_spans) == (0, 500)
+def test_runtime_packet_exposes_qualitative_route_findings_without_raw_facts() -> None:
+    class CapturingRuntime:
+        def __init__(self) -> None:
+            self.request: dict[str, object] | None = None
+
+        def choose(self, request: object) -> dict[str, object]:
+            assert isinstance(request, dict)
+            self.request = request
+            return {
+                "route_id": "access-route",
+                "decisive_consideration_ids": ("access:access-route",),
+            }
+
+    runtime = CapturingRuntime()
+    result = compile_parallel_reduction_scenario(
+        ParallelReductionRequest(
+            profile_id="parallel-runtime-qualitative-evidence",
+            config=ParallelReductionConfig(runtime_eligible=True),
+            routes=(
+                ParallelRoute(
+                    route_id="infrastructure-route",
+                    endpoints=("alpha", "beta"),
+                    coordinates=((0.0, 0.0), (1_000.0, 0.0)),
+                    network_scope="urban",
+                    evidence_ids=("infrastructure-survey",),
+                    population=9_999,
+                    access_score=1,
+                    existing_infrastructure_score=3,
+                ),
+                ParallelRoute(
+                    route_id="access-route",
+                    endpoints=("alpha", "beta"),
+                    coordinates=((0.0, 300.0), (1_000.0, 300.0)),
+                    network_scope="urban",
+                    evidence_ids=("access-audit",),
+                    population=1,
+                    access_score=3,
+                    existing_infrastructure_score=1,
+                ),
+            ),
+        ),
+        runtime=runtime,
+    )
+
+    assert runtime.request is not None
+    assert "coordinates" not in str(runtime.request)
+    assert "output_area" not in str(runtime.request)
+    assert "residents" not in str(runtime.request)
+    assert "access_score" not in str(runtime.request)
+    assert "existing_infrastructure_score" not in str(runtime.request)
+    assert "9999" not in str(runtime.request)
+    assert "evidence:access:" not in str(runtime.request)
+    assert "citation:access:" not in str(runtime.request)
+    menu = {item["route_id"]: item for item in runtime.request["route_menu"]}
+    access_findings = {item["dimension"]: item for item in menu["access-route"]["findings"]}
+    infrastructure_findings = {
+        item["dimension"]: item for item in menu["infrastructure-route"]["findings"]
+    }
+    assert access_findings["access"]["outcome"] == "material-advantage"
+    assert infrastructure_findings["access"]["outcome"] == "material-disadvantage"
+    assert access_findings["existing-infrastructure"]["outcome"] == "material-disadvantage"
+    assert infrastructure_findings["existing-infrastructure"]["outcome"] == "material-advantage"
+    assert access_findings["population"]["outcome"] == "unassessed"
+    assert access_findings["population"]["evidence_ids"] == ()
+    assert access_findings["population"]["citation_ids"] == ()
+    assert access_findings["access"]["evidence_ids"] == ("access-audit",)
+    assert access_findings["access"]["citation_ids"] == ("access-audit",)
+    decision = result.artifact.decisions[0]
+    assert decision.route_findings == tuple(runtime.request["route_menu"])
+    assert decision.decisive_consideration_ids == ("access:access-route",)
+    assert decision.mode == "agent"
+
+
+@pytest.mark.parametrize(
+    ("case_id", "routes", "dimension", "expected_outcome"),
+    [
+        (
+            "missing",
+            (
+                ParallelRoute(
+                    route_id="unknown-left",
+                    endpoints=("alpha", "beta"),
+                    coordinates=((0.0, 0.0), (1_000.0, 0.0)),
+                    network_scope="urban",
+                ),
+                ParallelRoute(
+                    route_id="unknown-right",
+                    endpoints=("alpha", "beta"),
+                    coordinates=((0.0, 300.0), (1_000.0, 300.0)),
+                    network_scope="urban",
+                ),
+            ),
+            "population",
+            "unassessed",
+        ),
+        (
+            "equivalent",
+            (
+                ParallelRoute(
+                    route_id="equal-left",
+                    endpoints=("alpha", "beta"),
+                    coordinates=((0.0, 0.0), (1_000.0, 0.0)),
+                    network_scope="urban",
+                    evidence_ids=("equal-left-survey",),
+                    access_score=1,
+                ),
+                ParallelRoute(
+                    route_id="equal-right",
+                    endpoints=("alpha", "beta"),
+                    coordinates=((0.0, 300.0), (1_000.0, 300.0)),
+                    network_scope="urban",
+                    evidence_ids=("equal-right-survey",),
+                    access_score=1,
+                ),
+            ),
+            "access",
+            "equivalent",
+        ),
+    ],
+)
+def test_deterministic_decisions_retain_unassessed_and_equivalent_route_findings(
+    case_id: str,
+    routes: tuple[ParallelRoute, ...],
+    dimension: str,
+    expected_outcome: str,
+) -> None:
+    class ExplodingRuntime:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def choose(self, request: object) -> dict[str, object]:
+            self.calls += 1
+            raise AssertionError("non-conflicting findings must not invoke the runtime")
+
+    runtime = ExplodingRuntime()
+    result = compile_parallel_reduction_scenario(
+        ParallelReductionRequest(
+            profile_id=f"parallel-runtime-{case_id}-findings",
+            config=ParallelReductionConfig(runtime_eligible=True),
+            routes=routes,
+        ),
+        runtime=runtime,
+    )
+
+    decision = result.artifact.decisions[0]
+    assert runtime.calls == 0
+    assert decision.mode == "deterministic"
+    assert {item["route_id"] for item in decision.route_findings} == {
+        route.route_id for route in routes
+    }
+    for route in decision.route_findings:
+        finding = next(item for item in route["findings"] if item["dimension"] == dimension)
+        assert finding["outcome"] == expected_outcome
+        if expected_outcome == "unassessed":
+            assert all(
+                item["outcome"] == "unassessed"
+                and item["evidence_ids"] == ()
+                and item["citation_ids"] == ()
+                for item in route["findings"]
+            )
+
+
+def test_runtime_packet_uses_lower_direction_independent_cev_as_topography_advantage() -> None:
+    class CapturingRuntime:
+        def __init__(self) -> None:
+            self.request: dict[str, object] | None = None
+
+        def choose(self, request: object) -> dict[str, object]:
+            assert isinstance(request, dict)
+            self.request = request
+            return {
+                "route_id": "low-cev",
+                "decisive_consideration_ids": ("topography:low-cev",),
+            }
+
+    runtime = CapturingRuntime()
+    result = compile_parallel_reduction_scenario(
+        ParallelReductionRequest(
+            profile_id="parallel-runtime-cev-evidence",
+            config=ParallelReductionConfig(runtime_eligible=True),
+            routes=(
+                ParallelRoute(
+                    route_id="low-cev",
+                    endpoints=("alpha", "beta"),
+                    coordinates=((0.0, 0.0), (100.0, 0.0), (200.0, 0.0)),
+                    network_scope="urban",
+                    evidence_ids=("elevation-low-survey",),
+                    elevation_samples=((0.0, 0.0), (100.0, 10.0), (200.0, 0.0)),
+                ),
+                ParallelRoute(
+                    route_id="access-high-cev",
+                    endpoints=("alpha", "beta"),
+                    coordinates=((0.0, 300.0), (100.0, 300.0), (200.0, 300.0)),
+                    network_scope="urban",
+                    evidence_ids=("elevation-high-survey",),
+                    elevation_samples=((0.0, 0.0), (100.0, 30.0), (200.0, 0.0)),
+                    access_score=2,
+                ),
+            ),
+        ),
+        runtime=runtime,
+    )
+
+    assert runtime.request is not None
+    assert "elevation_samples" not in str(runtime.request)
+    menu = {item["route_id"]: item for item in runtime.request["route_menu"]}
+    topography = {
+        route_id: next(item for item in route["findings"] if item["dimension"] == "topography")
+        for route_id, route in menu.items()
+    }
+    assert topography["low-cev"]["outcome"] == "material-advantage"
+    assert topography["access-high-cev"]["outcome"] == "material-disadvantage"
+    assert result.artifact.decisions[0].mode == "agent"
+
+
+def test_cited_guidance_participates_in_a_conflicting_material_advantage() -> None:
+    class CapturingRuntime:
+        def __init__(self) -> None:
+            self.request: dict[str, object] | None = None
+
+        def choose(self, request: object) -> dict[str, object]:
+            assert isinstance(request, dict)
+            self.request = request
+            return {
+                "route_id": "guidance-route",
+                "decisive_consideration_ids": ("guidance:guidance-route:coherence",),
+            }
+
+    runtime = CapturingRuntime()
+    result = compile_parallel_reduction_scenario(
+        ParallelReductionRequest(
+            profile_id="parallel-runtime-guidance-evidence",
+            config=ParallelReductionConfig(runtime_eligible=True),
+            routes=(
+                ParallelRoute(
+                    route_id="guidance-route",
+                    endpoints=("alpha", "beta"),
+                    coordinates=((0.0, 0.0), (1_000.0, 0.0)),
+                    network_scope="urban",
+                    evidence_ids=("guidance-route-survey",),
+                    guidance_considerations=(
+                        {
+                            "principle_id": "coherence",
+                            "state": "supported",
+                            "citation_ids": ("ltn120-1.4",),
+                        },
+                    ),
+                ),
+                ParallelRoute(
+                    route_id="access-route",
+                    endpoints=("alpha", "beta"),
+                    coordinates=((0.0, 300.0), (1_000.0, 300.0)),
+                    network_scope="urban",
+                    evidence_ids=("access-route-audit",),
+                    access_score=2,
+                    guidance_considerations=(
+                        {
+                            "principle_id": "coherence",
+                            "state": "contradicted",
+                            "citation_ids": ("ltn120-1.4",),
+                        },
+                    ),
+                ),
+            ),
+        ),
+        runtime=runtime,
+    )
+
+    assert runtime.request is not None
+    menu = {item["route_id"]: item for item in runtime.request["route_menu"]}
+    guidance = next(
+        item
+        for item in menu["guidance-route"]["findings"]
+        if item["consideration_id"] == "guidance:guidance-route:coherence"
+    )
+    assert guidance["outcome"] == "material-advantage"
+    assert guidance["citation_ids"] == ("ltn120-1.4",)
+    assert result.artifact.decisions[0].mode == "agent"
+
+
+def test_runtime_packet_uses_governed_sustained_population_evidence_not_route_totals() -> None:
+    class CapturingRuntime:
+        def __init__(self) -> None:
+            self.request: dict[str, object] | None = None
+
+        def choose(self, request: object) -> dict[str, object]:
+            assert isinstance(request, dict)
+            self.request = request
+            return {
+                "route_id": "population-route",
+                "decisive_consideration_ids": ("population:population-route",),
+            }
+
+    runtime = CapturingRuntime()
+    source_fingerprint = "a" * 64
+    result = compile_parallel_reduction_scenario(
+        ParallelReductionRequest(
+            profile_id="parallel-runtime-governed-population",
+            config=ParallelReductionConfig(runtime_eligible=True),
+            routes=(
+                ParallelRoute(
+                    route_id="population-route",
+                    endpoints=("alpha", "beta"),
+                    coordinates=((0.0, 0.0), (600.0, 0.0)),
+                    network_scope="urban",
+                    evidence_ids=("population-route-survey",),
+                    population=9_999,
+                ),
+                ParallelRoute(
+                    route_id="access-route",
+                    endpoints=("alpha", "beta"),
+                    coordinates=((0.0, 400.0), (600.0, 400.0)),
+                    network_scope="urban",
+                    evidence_ids=("access-route-audit",),
+                    access_score=2,
+                ),
+            ),
+            output_area_centroids=(
+                {
+                    "oa_id": "E00000001",
+                    "residents": 1_000,
+                    "coordinates": (300.0, 0.0),
+                    "inside_area": True,
+                },
+            ),
+            output_area_source_fingerprint=source_fingerprint,
+        ),
+        runtime=runtime,
+    )
+
+    assert runtime.request is not None
+    assert "9999" not in str(runtime.request)
+    assert "residents" not in str(runtime.request)
+    menu = {item["route_id"]: item for item in runtime.request["route_menu"]}
+    population = next(
+        item for item in menu["population-route"]["findings"] if item["dimension"] == "population"
+    )
+    assert population["outcome"] == "material-advantage"
+    assert population["evidence_ids"]
+    assert all(item.startswith("population-section-") for item in population["evidence_ids"])
+    assert population["citation_ids"] == (source_fingerprint,)
+    assert result.artifact.decisions[0].mode == "agent"
+
+
+def test_runtime_call_bound_falls_back_remaining_groups_in_stable_order() -> None:
+    class OneCallRuntime:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def choose(self, request: object) -> dict[str, object]:
+            assert isinstance(request, dict)
+            self.calls.append(request)
+            return {
+                "route_id": "a-access",
+                "decisive_consideration_ids": ("access:a-access",),
+            }
+
+    runtime = OneCallRuntime()
+    result = compile_parallel_reduction_scenario(
+        ParallelReductionRequest(
+            profile_id="parallel-runtime-call-bound",
+            config=ParallelReductionConfig(runtime_eligible=True, runtime_maximum_calls=1),
+            routes=(
+                ParallelRoute(
+                    route_id="a-infrastructure",
+                    endpoints=("a1", "a2"),
+                    coordinates=((0.0, 0.0), (1_000.0, 0.0)),
+                    network_scope="urban",
+                    evidence_ids=("a-infrastructure-survey",),
+                    access_score=1,
+                    existing_infrastructure_score=3,
+                ),
+                ParallelRoute(
+                    route_id="a-access",
+                    endpoints=("a1", "a2"),
+                    coordinates=((0.0, 300.0), (1_000.0, 300.0)),
+                    network_scope="urban",
+                    evidence_ids=("a-access-audit",),
+                    access_score=3,
+                    existing_infrastructure_score=1,
+                ),
+                ParallelRoute(
+                    route_id="b-infrastructure",
+                    endpoints=("b1", "b2"),
+                    coordinates=((0.0, 1_000.0), (1_000.0, 1_000.0)),
+                    network_scope="urban",
+                    evidence_ids=("b-infrastructure-survey",),
+                    access_score=1,
+                    existing_infrastructure_score=3,
+                ),
+                ParallelRoute(
+                    route_id="b-access",
+                    endpoints=("b1", "b2"),
+                    coordinates=((0.0, 1_300.0), (1_000.0, 1_300.0)),
+                    network_scope="urban",
+                    evidence_ids=("b-access-audit",),
+                    access_score=3,
+                    existing_infrastructure_score=1,
+                ),
+            ),
+        ),
+        runtime=runtime,
+    )
+
+    assert [call["target_id"] for call in runtime.calls] == ["parallel:a1:a2"]
+    decisions = {item.target_id: item for item in result.artifact.decisions}
+    assert decisions["parallel:a1:a2"].mode == "agent"
+    assert decisions["parallel:b1:b2"].mode == "fallback"
+    assert decisions["parallel:b1:b2"].fallback_trigger == "runtime-call-bound-reached"
+    assert decisions["parallel:b1:b2"].validation_status == "runtime-call-bound-reached"
+    assert decisions["parallel:b1:b2"].route_findings
+
+
+def test_oversize_runtime_packet_falls_back_without_provider_invocation() -> None:
+    class ExplodingRuntime:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def choose(self, request: object) -> dict[str, object]:
+            self.calls += 1
+            raise AssertionError("oversize packets must not be sent to the provider")
+
+    runtime = ExplodingRuntime()
+    result = compile_parallel_reduction_scenario(
+        ParallelReductionRequest(
+            profile_id="parallel-runtime-packet-limit",
+            config=ParallelReductionConfig(
+                runtime_eligible=True,
+                runtime_maximum_request_bytes=1,
+            ),
+            routes=(
+                ParallelRoute(
+                    route_id="infrastructure-route",
+                    endpoints=("alpha", "beta"),
+                    coordinates=((0.0, 0.0), (1_000.0, 0.0)),
+                    network_scope="urban",
+                    evidence_ids=("infrastructure-survey",),
+                    access_score=1,
+                    existing_infrastructure_score=3,
+                ),
+                ParallelRoute(
+                    route_id="access-route",
+                    endpoints=("alpha", "beta"),
+                    coordinates=((0.0, 300.0), (1_000.0, 300.0)),
+                    network_scope="urban",
+                    evidence_ids=("access-audit",),
+                    access_score=3,
+                    existing_infrastructure_score=1,
+                ),
+            ),
+        ),
+        runtime=runtime,
+    )
+
+    decision = result.artifact.decisions[0]
+    assert runtime.calls == 0
+    assert decision.mode == "fallback"
+    assert decision.fallback_trigger == "runtime-request-too-large"
+    assert decision.validation_status == "runtime-request-too-large"
+    assert decision.route_findings
