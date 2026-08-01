@@ -44,8 +44,7 @@ def test_composite_manifest_declares_every_light_acceptance_zone() -> None:
         ACCEPTANCE_MANIFEST.parent / "expected/acceptance-composite.json"
     )
     assert (
-        load_expected_result(manifest.expected_result_path)["contract"]
-        == EXPECTED_RESULT_CONTRACT
+        load_expected_result(manifest.expected_result_path)["contract"] == EXPECTED_RESULT_CONTRACT
     )
 
 
@@ -76,6 +75,102 @@ def test_deep_data_declares_exact_boundary_and_completion_cases() -> None:
         "runtime-invalid-response",
         "repeat-run",
     }.issubset(cases)
+
+
+def _deep_request(*, distance_m: int, scope: str = "urban", runtime_eligible: bool = False):
+    from satn.parallel_reduction import (
+        ParallelReductionConfig,
+        ParallelReductionRequest,
+        ParallelRoute,
+    )
+
+    return ParallelReductionRequest(
+        profile_id="parallel-deep",
+        config=ParallelReductionConfig(runtime_eligible=runtime_eligible),
+        routes=(
+            ParallelRoute(
+                route_id="deep-west",
+                endpoints=("deep-a", "deep-b"),
+                coordinates=((0.0, 0.0), (1_000.0, 0.0)),
+                network_scope=scope,
+                population=200,
+            ),
+            ParallelRoute(
+                route_id="deep-east",
+                endpoints=("deep-a", "deep-b"),
+                coordinates=((0.0, float(distance_m)), (1_000.0, float(distance_m))),
+                network_scope=scope,
+                population=100,
+                access_score=20,
+            ),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("case_id", "distance_m", "scope", "compiles"),
+    [
+        ("urban-499", 499, "urban", True),
+        ("urban-500", 500, "urban", True),
+        ("urban-501", 501, "urban", False),
+        ("rural-1499", 1499, "rural", True),
+        ("rural-1500", 1500, "rural", True),
+        ("rural-1501", 1501, "rural", False),
+    ],
+)
+def test_deep_distance_cases_execute_the_public_compiler_seam(
+    case_id: str, distance_m: int, scope: str, compiles: bool
+) -> None:
+    from satn.parallel_reduction import compile_parallel_reduction_scenario
+
+    if compiles:
+        assert compile_parallel_reduction_scenario(
+            _deep_request(distance_m=distance_m, scope=scope)
+        ).artifact.relations
+    else:
+        result = compile_parallel_reduction_scenario(
+            _deep_request(distance_m=distance_m, scope=scope)
+        )
+        assert result.scenario.publishable
+        assert result.artifact.relations == ()
+
+
+@pytest.mark.parametrize("outcome", ["provider-failure", "invalid-response", "timeout"])
+def test_deep_runtime_failure_classes_complete_with_deterministic_fallback(outcome: str) -> None:
+    from satn.parallel_reduction import compile_parallel_reduction_scenario
+
+    class DeepRuntime:
+        def choose(self, request: object):
+            if outcome == "provider-failure":
+                raise RuntimeError("deep-provider-failure")
+            return {"route_id": "not-offered"}
+
+    result = compile_parallel_reduction_scenario(
+        _deep_request(distance_m=400, scope="urban", runtime_eligible=True), DeepRuntime()
+    )
+    assert result.scenario.publishable
+    assert result.artifact.decisions[0].mode == "fallback"
+
+
+def test_deep_order_and_repeat_cases_have_identical_compiler_identity() -> None:
+    from satn.parallel_reduction import (
+        ParallelReductionRequest,
+        compile_parallel_reduction_scenario,
+    )
+
+    request = _deep_request(distance_m=400, scope="urban")
+    reversed_request = ParallelReductionRequest.model_validate(
+        {**request.model_dump(mode="python"), "routes": list(reversed(request.routes))}
+    )
+    first = compile_parallel_reduction_scenario(request)
+    assert (
+        first.scenario.scenario_fingerprint
+        == compile_parallel_reduction_scenario(request).scenario.scenario_fingerprint
+    )
+    assert (
+        first.scenario.scenario_fingerprint
+        == compile_parallel_reduction_scenario(reversed_request).scenario.scenario_fingerprint
+    )
 
 
 def test_manifest_rejects_zones_within_rural_candidate_distance(tmp_path: Path) -> None:
