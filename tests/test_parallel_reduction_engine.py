@@ -8,6 +8,15 @@ from satn.parallel_reduction import (
 )
 
 
+class ExplodingRuntime:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def choose(self, request: object) -> str:
+        self.calls += 1
+        raise RuntimeError("provider unavailable")
+
+
 def test_raw_parallel_routes_compile_to_one_complete_candidate_set() -> None:
     result = compile_parallel_reduction_scenario(
         ParallelReductionRequest(
@@ -121,3 +130,94 @@ def test_unavailable_officer_target_and_required_missing_bridge_are_retained() -
 
     assert result.artifact.network_gaps[0].intervention_archetype == "bridge"
     assert result.artifact.officer_target_unavailable[0].route_id == "gone"
+
+
+def test_single_non_parallel_route_still_completes_as_a_publishable_scenario() -> None:
+    result = compile_parallel_reduction_scenario(
+        ParallelReductionRequest(
+            profile_id="parallel-pass-through",
+            routes=(
+                ParallelRoute(
+                    route_id="only-route",
+                    endpoints=("alpha", "beta"),
+                    coordinates=((0.0, 0.0), (1_000.0, 0.0)),
+                    network_scope="urban",
+                ),
+            ),
+        )
+    )
+
+    assert result.scenario.publishable
+    assert result.selected_route_ids == ("only-route",)
+    assert result.artifact.retained_route_ids == ("only-route",)
+    assert result.artifact.relations == ()
+
+
+def test_runtime_exception_falls_back_once_and_never_prevents_generation() -> None:
+    runtime = ExplodingRuntime()
+    result = compile_parallel_reduction_scenario(
+        ParallelReductionRequest(
+            profile_id="parallel-runtime-error",
+            config=ParallelReductionConfig(runtime_eligible=True),
+            routes=(
+                ParallelRoute(
+                    route_id="population-route",
+                    endpoints=("alpha", "beta"),
+                    coordinates=((0.0, 0.0), (1_000.0, 0.0)),
+                    network_scope="urban",
+                    source_class="verified-existing-asset",
+                    population=200,
+                ),
+                ParallelRoute(
+                    route_id="access-route",
+                    endpoints=("alpha", "beta"),
+                    coordinates=((0.0, 300.0), (1_000.0, 300.0)),
+                    network_scope="urban",
+                    population=100,
+                    access_score=2,
+                ),
+            ),
+        ),
+        runtime=runtime,
+    )
+
+    assert runtime.calls == 1
+    assert result.scenario.publishable
+    assert result.artifact.decisions[0].mode == "fallback"
+    assert result.artifact.decisions[0].fallback_trigger == "runtime-error"
+
+
+def test_officer_input_is_applied_without_invoking_runtime() -> None:
+    runtime = ExplodingRuntime()
+    result = compile_parallel_reduction_scenario(
+        ParallelReductionRequest(
+            profile_id="parallel-officer-first",
+            config=ParallelReductionConfig(runtime_eligible=True),
+            routes=(
+                ParallelRoute(
+                    route_id="population-route",
+                    endpoints=("alpha", "beta"),
+                    coordinates=((0.0, 0.0), (1_000.0, 0.0)),
+                    network_scope="urban",
+                    source_class="verified-existing-asset",
+                    population=200,
+                ),
+                ParallelRoute(
+                    route_id="officer-route",
+                    endpoints=("alpha", "beta"),
+                    coordinates=((0.0, 300.0), (1_000.0, 300.0)),
+                    network_scope="urban",
+                    population=100,
+                    access_score=2,
+                ),
+            ),
+            officer_decisions=(
+                {"target_id": "parallel:alpha:beta", "route_id": "officer-route"},
+            ),
+        ),
+        runtime=runtime,
+    )
+
+    assert runtime.calls == 0
+    assert result.selected_route_ids == ("officer-route",)
+    assert result.artifact.officer_compiler_divergences

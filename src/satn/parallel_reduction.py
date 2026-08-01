@@ -534,13 +534,12 @@ def compile_parallel_reduction_scenario(
     request = ParallelReductionRequest.model_validate(request)
     profile = _profile(request)
     relations = discover_parallel_relations(request.routes, request.config)
-    relation_ids = {route_id for relation in relations for route_id in relation.route_ids}
     groups: dict[tuple[str, str], list[ParallelRoute]] = {}
     for route in request.routes:
-        if route.route_id in relation_ids:
-            groups.setdefault(route.endpoints, []).append(route)
-    if not groups:
-        raise ValueError("raw routes contain no qualifying symmetric parallel candidate")
+        # Parallel reduction is a whole-scenario compiler seam, not a filter.
+        # A route with no qualifying relation is a deterministic one-option
+        # group and must still survive generation.
+        groups.setdefault(route.endpoints, []).append(route)
     candidate_sets = []
     selections = []
     routes_by_group: dict[tuple[str, str], tuple[ParallelRoute, ...]] = {}
@@ -676,7 +675,13 @@ def compile_parallel_reduction_scenario(
             < request.config.material_population_difference
         ):
             selected = min(quiet, key=lambda item: item.route_id).route_id
-        if by_population != by_quality:
+        officer = officers.get(target_id)
+        if officer is not None:
+            if officer not in {item.route_id for item in routes}:
+                unavailable.append(OfficerTargetUnavailable(target_id=target_id, route_id=officer))
+            else:
+                selected, mode = officer, "officer"
+        elif by_population != by_quality:
             route_population = {item.route_id: item.population for item in routes}
             route_quality = {
                 item.route_id: item.access_score
@@ -691,26 +696,24 @@ def compile_parallel_reduction_scenario(
                 >= request.config.material_score_difference
             )
             if material and runtime is not None:
-                raw = runtime.choose(
-                    {
-                        "target_id": target_id,
-                        "route_ids": tuple(item.route_id for item in routes),
-                        "compiler_preferred_route_id": compiler_preferred,
-                    }
-                )
-                chosen = raw if isinstance(raw, str) else raw.get("route_id")
-                if chosen in {item.route_id for item in routes}:
-                    selected, mode = chosen, "agent"
+                try:
+                    raw = runtime.choose(
+                        {
+                            "target_id": target_id,
+                            "route_ids": tuple(item.route_id for item in routes),
+                            "compiler_preferred_route_id": compiler_preferred,
+                        }
+                    )
+                except Exception:
+                    mode, trigger = "fallback", "runtime-error"
                 else:
-                    mode, trigger = "fallback", "invalid-runtime-response"
+                    chosen = raw if isinstance(raw, str) else raw.get("route_id")
+                    if chosen in {item.route_id for item in routes}:
+                        selected, mode = chosen, "agent"
+                    else:
+                        mode, trigger = "fallback", "invalid-runtime-response"
             elif material:
                 mode, trigger = "fallback", "runtime-unavailable"
-        officer = officers.get(target_id)
-        if officer is not None:
-            if officer not in {item.route_id for item in routes}:
-                unavailable.append(OfficerTargetUnavailable(target_id=target_id, route_id=officer))
-            else:
-                selected, mode = officer, "officer"
         selected_by_group[endpoints] = selected
         decisions.append(
             ParallelDecisionArtifact(
@@ -722,9 +725,7 @@ def compile_parallel_reduction_scenario(
             )
         )
     selected = tuple(sorted(selected_by_group.values()))
-    retained = tuple(
-        sorted(route.route_id for route in request.routes if route.route_id in relation_ids)
-    )
+    retained = tuple(sorted(route.route_id for route in request.routes))
     warnings = []
     for index, left in enumerate(request.routes):
         for right in request.routes[index + 1 :]:
