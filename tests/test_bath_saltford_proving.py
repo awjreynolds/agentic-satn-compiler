@@ -22,6 +22,7 @@ from satn.education_access import (
     MeasuredDistance,
     SchoolAccessEvidence,
 )
+from satn.filesystem_safety import publication_destination_authority
 from satn.population_reach import compile_population_reach
 from satn.psa_evidence_loaders import (
     assess_education_access_from_evidence,
@@ -165,7 +166,14 @@ def test_bath_saltford_fixture_records_evidence_then_exposes_current_psa_boundar
     destination = units["strategic-destination-access"]
     assert not interurban.anchor_connection_ids
     assert set(interurban.anchor_obligation_ids) == set(associations["obligation_id"])
-    artifacts = publish(config, compiled, "backbone-access-association-proof")
+    artifacts = publish(
+        config,
+        compiled,
+        "backbone-access-association-proof",
+        publication_authority=publication_destination_authority(
+            workspace_root=tmp_path,
+        ),
+    )
     published = json.loads(artifacts["geojson"].read_text(encoding="utf-8"))
     published_associations = [
         feature
