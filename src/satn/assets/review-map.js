@@ -1143,6 +1143,60 @@
     return panel;
   }
 
+  function alignmentMetric(feature) {
+    const properties = feature.properties || {};
+    const population = properties.population?.["500m"]?.resident_count;
+    const existing = properties.existing_alignment?.reusable_asset_share;
+    const opportunity = properties.education?.independent_travel_opportunity_count;
+    return [
+      ["Population (500 m)", Number(population)],
+      ["Existing alignment", Number(existing) * 100],
+      ["Independent travel", Number(opportunity)],
+      ["Directness", Number(properties.directness_m)],
+      ["Gradient", Number(properties.maximum_gradient_pct)]
+    ].filter(([, metric]) => Number.isFinite(metric));
+  }
+
+  function renderAlignmentComparison(panel, artifact) {
+    if (artifact.sourceId !== "reference-satn-options") return;
+    const properties = artifact.feature.properties || {};
+    const candidateSetId = properties.candidate_set_id;
+    if (!candidateSetId) return;
+    const members = referenceOptions.features.filter(
+      (feature) => feature.properties?.candidate_set_id === candidateSetId
+    );
+    if (!members.length) return;
+    const section = document.createElement("section");
+    section.className = "alignment-comparison";
+    section.setAttribute("aria-label", "Alignment evidence comparison");
+    const heading = document.createElement("h4");
+    heading.textContent = `Alignment options (${members.length})`;
+    const note = document.createElement("p");
+    note.className = "comparison-note";
+    note.textContent = "All candidate routes remain inspectable. Unavailable evidence is omitted, not treated as zero.";
+    const chart = document.createElement("div");
+    chart.className = "alignment-radar";
+    chart.setAttribute("role", "img");
+    chart.setAttribute("aria-label", "Compact radar comparison across available alignment evidence");
+    members.forEach((member) => {
+      const row = document.createElement("div");
+      row.className = "alignment-radar-row";
+      const name = document.createElement("strong");
+      const memberProperties = member.properties || {};
+      name.textContent = `${memberProperties.disposition || "alternative"}: ${memberProperties.candidate_id || member.id}`;
+      row.append(name);
+      const metrics = alignmentMetric(member);
+      metrics.forEach(([label, metric]) => {
+        const datum = document.createElement("span");
+        datum.textContent = `${label}: ${Math.round(metric * 10) / 10}`;
+        row.append(datum);
+      });
+      chart.append(row);
+    });
+    section.append(heading, note, chart);
+    panel.append(section);
+  }
+
   function showArtifactDetails(artifact) {
     if (!artifact) return;
     const canonical = ["network", "topography"].includes(artifact.sourceId)
@@ -1157,6 +1211,7 @@
       setHighlight(null);
     }
     appendArtifactContext(document.querySelector("#feature-details"), artifact);
+    renderAlignmentComparison(document.querySelector("#feature-details"), artifact);
   }
 
   function setHighlight(id) {
@@ -1707,7 +1762,14 @@
         source: "reference-satn-options",
         layout: { visibility: "none" },
         paint: {
-          "line-color": ["match", ["get", "disposition"], "selected", "#c0392b", "complementary", "#7c4a93", "#7f8c8d"],
+          "line-color": [
+            "case",
+            ["==", ["get", "disposition"], "selected"],
+            ["interpolate", ["linear"], ["coalesce", ["get", "population_500m"], 0], 0, "#fdebd0", 1000, "#e67e22", 10000, "#922b21"],
+            ["==", ["get", "disposition"], "officer-compiler-divergence"], "#f4d03f",
+            ["==", ["get", "disposition"], "complementary"], "#7c4a93",
+            "#7f8c8d"
+          ],
           "line-width": ["interpolate", ["linear"], ["zoom"], 8, 2, 13, 4],
           "line-dasharray": [2, 1],
           "line-opacity": .78

@@ -893,9 +893,7 @@ def retain_ea_recovery_candidate(
     """Retain one fixed-point mismatch candidate without any publication path."""
 
     candidate = _ea_fixed_point_candidate_path(config)
-    temporary = Path(
-        tempfile.mkdtemp(prefix=f".{candidate.name}-recovery-", dir=candidate.parent)
-    )
+    temporary = Path(tempfile.mkdtemp(prefix=f".{candidate.name}-recovery-", dir=candidate.parent))
     try:
         network_path = temporary / EA_FIXED_POINT_CANDIDATE_NETWORK
         _write_geojson(network_path, compiled)
@@ -2082,6 +2080,10 @@ def _reference_option_collection(
                 .to_crs(4326)
                 .iloc[0]
             )
+            population = _reference_population_summary(
+                selection.criteria,
+                candidate.candidate_id,
+            )
             features.append(
                 {
                     "type": "Feature",
@@ -2103,9 +2105,11 @@ def _reference_option_collection(
                         "maximum_gradient_pct": candidate.maximum_gradient_pct,
                         "evidence_fingerprints": list(candidate.evidence_fingerprints),
                         "criteria": criteria,
-                        "population": _reference_population_summary(
-                            selection.criteria,
-                            candidate.candidate_id,
+                        "population": population,
+                        "population_500m": (
+                            population.get("500m", {}).get("resident_count")
+                            if isinstance(population.get("500m"), dict)
+                            else None
                         ),
                         "education": _reference_education_summary(
                             selection.criteria,
@@ -4281,9 +4285,7 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
                             f"Population Display Section {section_id} has invalid captured OA IDs"
                         ) from error
                 if not _artifact_values_equal(feature["properties"].get(field), published_value):
-                    raise ValueError(
-                        f"Population Display Section {section_id} differs for {field}"
-                    )
+                    raise ValueError(f"Population Display Section {section_id} differs for {field}")
     for filename in (
         "agent-records.json",
         "divergence-records.json",
@@ -4366,9 +4368,7 @@ def _validate_review_map_zip(archive_path: Path, review_directory: Path) -> None
                 ):
                     raise ValueError("review-map ZIP contains an unsafe member")
                 if info.file_size != expected_path.stat().st_size:
-                    raise ValueError(
-                        "review-map ZIP member size differs from static map"
-                    )
+                    raise ValueError("review-map ZIP member size differs from static map")
                 if info.file_size and (
                     info.compress_size == 0
                     or info.file_size / info.compress_size > REVIEW_MAP_ZIP_MAX_COMPRESSION_RATIO
