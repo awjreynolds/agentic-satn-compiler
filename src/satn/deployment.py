@@ -7,13 +7,18 @@ import hashlib
 import json
 import math
 import shutil
-import tempfile
 from collections import defaultdict
 from pathlib import Path
 
 from satn.constants import DISCLAIMER
 from satn.deployment_provenance import LOCK_NAME, SCHEMA_VERSION, verify_lock
-from satn.filesystem_safety import validate_replaceable_destination
+from satn.filesystem_safety import (
+    PublicationDestinationAuthority,
+    commit_replacement,
+    publication_destination_authority,
+    stage_replacement,
+    write_ownership_marker,
+)
 from satn.models import AreaConfig, AreaDefinition, canonical_decision_ledger_payload
 from satn.pipeline import (
     area_definition_sha256,
@@ -35,6 +40,9 @@ def _arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("area_definition", type=Path)
     parser.add_argument("--destination", type=Path)
+    parser.add_argument("--publication-workspace-root", type=Path)
+    parser.add_argument("--approved-external-publication-destination", type=Path)
+    parser.add_argument("--expected-prior-run-fingerprint")
     parser.add_argument("--bootstrap", action="store_true")
     return parser.parse_args()
 
@@ -289,10 +297,14 @@ def build_area_deployment(
     destination: Path,
     *,
     bootstrap: bool = False,
+    publication_authority: PublicationDestinationAuthority | None = None,
 ) -> Path:
-    validate_replaceable_destination(destination, repository_root=PROJECT)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    validate_replaceable_destination(destination, repository_root=PROJECT)
+    destination = Path(destination)
+    if publication_authority is None:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        publication_authority = publication_destination_authority(
+            workspace_root=destination.parent,
+        )
     output = definition.publication.output_dir
     run_path = output / "run.json"
     review_map = output / "review-map"
@@ -321,12 +333,17 @@ def build_area_deployment(
         (review_map / "human-intervention-requests.json").read_text(encoding="utf-8")
     )
     comparison = json.loads((review_map / "backbone-comparison.json").read_text(encoding="utf-8"))
-    temporary = Path(
-        tempfile.mkdtemp(prefix=f".{definition.deployment_slug}-", dir=destination.parent)
+    authority = publication_authority
+    staging = stage_replacement(
+        destination,
+        authority=authority,
+        owner_kind=f"area-deployment:{definition.deployment_slug}",
+        prior_record_name="publication.json",
     )
+    temporary = staging.temporary
     try:
-        shutil.copytree(review_map, temporary / "content", dirs_exist_ok=True)
-        content = temporary / "content"
+        shutil.copytree(review_map, temporary, dirs_exist_ok=True)
+        content = temporary
         shutil.copy2(run_path, content / "compiler-run.json")
         if lock is not None:
             shutil.copy2(definition.config_path.parent / LOCK_NAME, content / LOCK_NAME)
@@ -614,6 +631,10 @@ def build_area_deployment(
             f"{prefix}{json.dumps(data, separators=(',', ':')).replace('</', '<\\/')};\n",
             encoding="utf-8",
         )
+        write_ownership_marker(
+            content,
+            owner_kind=f"area-deployment:{definition.deployment_slug}",
+        )
         if lock is not None:
             try:
                 verify_lock(definition, deployment=content)
@@ -621,12 +642,14 @@ def build_area_deployment(
                 raise SystemExit(
                     f"Area Deployment does not match provenance lock: {error}"
                 ) from error
-        if destination.exists():
-            shutil.rmtree(destination)
-        content.replace(destination)
+        commit_replacement(
+            staging,
+            authority=authority,
+            owner_kind=f"area-deployment:{definition.deployment_slug}",
+            prior_record_name="publication.json",
+        )
     finally:
-        if temporary.exists():
-            shutil.rmtree(temporary)
+        staging.cleanup()
     return destination
 
 
@@ -637,7 +660,25 @@ def main() -> None:
         PROJECT / "build" / "deployments" / definition.deployment_slug
     )
     destination.parent.mkdir(parents=True, exist_ok=True)
-    print(build_area_deployment(definition, destination, bootstrap=args.bootstrap))
+    authority = None
+    if (
+        args.publication_workspace_root is not None
+        or args.approved_external_publication_destination is not None
+        or args.expected_prior_run_fingerprint is not None
+    ):
+        authority = publication_destination_authority(
+            workspace_root=args.publication_workspace_root or destination.parent,
+            approved_external_destination=args.approved_external_publication_destination,
+            expected_prior_run_fingerprint=args.expected_prior_run_fingerprint,
+        )
+    print(
+        build_area_deployment(
+            definition,
+            destination,
+            bootstrap=args.bootstrap,
+            publication_authority=authority,
+        )
+    )
 
 
 if __name__ == "__main__":

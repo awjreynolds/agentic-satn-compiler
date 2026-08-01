@@ -28,6 +28,7 @@ from satn import (
     published_feature_reference,
 )
 from satn.constants import DISCLAIMER
+from satn.filesystem_safety import publication_destination_authority
 from satn.models import (
     CouncilConfig,
     ObservedThroughTrafficConfig,
@@ -459,24 +460,61 @@ def test_failed_final_install_rolls_back_the_previous_complete_output(
     config = prepared_config(tmp_path)
     first = compile(config)
     before = {name: checksum(path) for name, path in first.artifacts.items() if path.is_file()}
-    original_replace = Path.replace
+    import satn.filesystem_safety as filesystem_safety
 
-    def fail_temporary_install(path: Path, target: Path) -> Path:
+    original_rename = filesystem_safety.os.rename
+
+    def fail_temporary_install(source: str, target: str, *args: object, **kwargs: object) -> None:
         if (
-            path.name.startswith(f".{config.publication.output_dir.name}-")
-            and target == (config.publication.output_dir)
-            and path.name != f".{config.publication.output_dir.name}-previous"
+            source.startswith(f".{config.publication.output_dir.name}-")
+            and not source.startswith(f".{config.publication.output_dir.name}-previous-")
+            and target == config.publication.output_dir.name
         ):
             raise OSError("simulated final install failure")
-        return original_replace(path, target)
+        original_rename(source, target, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "replace", fail_temporary_install)
+    monkeypatch.setattr(filesystem_safety.os, "rename", fail_temporary_install)
     config.compilation.full = True
     with pytest.raises(OSError, match="simulated final install failure"):
         compile(config)
 
     after = {name: checksum(path) for name, path in first.artifacts.items() if path.is_file()}
     assert after == before
+
+
+def test_compiler_refuses_an_untrusted_existing_destination_outside_its_workspace(
+    tmp_path: Path,
+) -> None:
+    """A definition cannot nominate an unrelated directory for replacement."""
+    config = prepared_config(tmp_path)
+    unrelated = tmp_path / "unrelated"
+    sentinel = unrelated / "do-not-replace.txt"
+    unrelated.mkdir()
+    sentinel.write_text("preserve", encoding="utf-8")
+    config.publication.output_dir = unrelated
+
+    with pytest.raises(ValueError, match="outside the declared publication workspace"):
+        compile(config)
+
+    assert sentinel.read_text(encoding="utf-8") == "preserve"
+
+
+def test_compiler_allows_an_explicit_capability_for_an_external_destination(
+    tmp_path: Path,
+) -> None:
+    """A caller can deliberately grant an exact non-interactive external destination."""
+    config = prepared_config(tmp_path)
+    destination = tmp_path / "approved-external-output"
+    config.publication.output_dir = destination
+    authority = publication_destination_authority(
+        workspace_root=config.config_path.parent,
+        approved_external_destination=destination,
+    )
+
+    result = compile(config, publication_authority=authority)
+
+    assert result.output_dir == destination
+    assert (destination / ".satn-publication-owner.json").is_file()
 
 
 def test_governed_urban_spines_and_ncn_evidence_publish_distinctly(tmp_path: Path) -> None:

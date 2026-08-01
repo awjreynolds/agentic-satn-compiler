@@ -11,6 +11,7 @@ import pytest
 from satn.constants import DISCLAIMER
 from satn.deployment import build_area_deployment
 from satn.deployment_provenance import generate_lock
+from satn.filesystem_safety import publication_destination_authority
 from satn.models import CouncilConfig
 from satn.pipeline import compile
 from satn.sources import snapshot
@@ -26,9 +27,13 @@ def test_area_deployment_is_progressive_portable_and_not_git_path_bound(
     definition = CouncilConfig.from_yaml(fixture / "council.yaml")
     definition.publication.output_dir = tmp_path / "compiled"
     definition.source.snapshot_dir = tmp_path / "snapshots"
+    authority = publication_destination_authority(
+        workspace_root=fixture,
+        approved_external_destination=definition.publication.output_dir,
+    )
 
     snapshot(definition)
-    result = compile(definition)
+    result = compile(definition, publication_authority=authority)
     deployment = tmp_path / "deployments" / "tiny"
     build_area_deployment(definition, deployment, bootstrap=True)
     generate_lock(definition, deployment=deployment)
@@ -290,8 +295,12 @@ def test_area_deployment_rejects_stale_snapshot_and_tampered_compiler_fingerprin
     definition = CouncilConfig.from_yaml(fixture / "council.yaml")
     definition.publication.output_dir = tmp_path / "compiled"
     definition.source.snapshot_dir = tmp_path / "snapshots"
+    authority = publication_destination_authority(
+        workspace_root=fixture,
+        approved_external_destination=definition.publication.output_dir,
+    )
     snapshot(definition)
-    compile(definition)
+    compile(definition, publication_authority=authority)
     bootstrap = tmp_path / "deployments" / "bootstrap"
     build_area_deployment(definition, bootstrap, bootstrap=True)
     generate_lock(definition, deployment=bootstrap)
@@ -302,7 +311,7 @@ def test_area_deployment_rejects_stale_snapshot_and_tampered_compiler_fingerprin
         build_area_deployment(definition, tmp_path / "deployments" / "tiny")
 
     snapshot(definition)
-    compile(definition)
+    compile(definition, publication_authority=authority)
     build_area_deployment(definition, bootstrap, bootstrap=True)
     generate_lock(definition, deployment=bootstrap)
     run_path = definition.publication.output_dir / "run.json"

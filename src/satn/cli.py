@@ -9,6 +9,10 @@ import typer
 from satn.deployment_scenario_cli import scenario_app
 from satn.ea_fixed_point_operations import run_ea_fixed_point_convergence
 from satn.evidence_cli import evidence_app
+from satn.filesystem_safety import (
+    default_publication_destination_authority,
+    publication_destination_authority,
+)
 from satn.models import AreaDefinition
 from satn.parallel_reduction_corpus_cli import corpus_app
 from satn.pipeline import compile as compile_satn
@@ -72,14 +76,57 @@ def compile_command(
         "--full",
         help="Force recompilation instead of reusing an input-identical validated publication.",
     ),
+    publication_workspace_root: Annotated[
+        Path | None,
+        typer.Option(
+            "--publication-workspace-root",
+            help="Caller-owned root beneath which publication is permitted.",
+        ),
+    ] = None,
+    approved_external_publication_destination: Annotated[
+        Path | None,
+        typer.Option(
+            "--approved-external-publication-destination",
+            help=(
+                "Explicitly permit this exact publication destination outside the "
+                "workspace root."
+            ),
+        ),
+    ] = None,
+    expected_prior_run_fingerprint: Annotated[
+        str | None,
+        typer.Option(
+            "--expected-prior-run-fingerprint",
+            help=(
+                "Authorize replacement of a pre-marker output with this exact prior "
+                "fingerprint."
+            ),
+        ),
+    ] = None,
     log_level: str = typer.Option("INFO", "--log-level"),
 ) -> None:
     """Compile and atomically publish the current network."""
     _configure_logging(log_level)
     council = AreaDefinition.from_yaml(config)
     council.compilation.full = full
+    authority = None
+    if (
+        publication_workspace_root is not None
+        or approved_external_publication_destination is not None
+        or expected_prior_run_fingerprint is not None
+    ):
+        default_authority = default_publication_destination_authority(config)
+        authority = publication_destination_authority(
+            workspace_root=publication_workspace_root or default_authority.workspace_root,
+            approved_external_destination=approved_external_publication_destination,
+            expected_prior_run_fingerprint=expected_prior_run_fingerprint,
+        )
     try:
-        result = compile_satn(council, decision_ledger=decision_ledger)
+        result = compile_satn(
+            council,
+            decision_ledger=decision_ledger,
+            publication_authority=authority,
+        )
     except Exception:
         LOGGER.exception("Compile command failed config=%s", config)
         raise

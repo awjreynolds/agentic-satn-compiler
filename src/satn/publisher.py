@@ -6,7 +6,6 @@ import hashlib
 import json
 import logging
 import math
-import os
 import shlex
 import shutil
 import stat
@@ -43,8 +42,12 @@ from satn.ea_elevation import (
     governed_survey_request_bbox,
 )
 from satn.filesystem_safety import (
-    unique_absent_backup_sibling,
-    validate_replaceable_destination,
+    OWNER_MARKER_NAME,
+    PublicationDestinationAuthority,
+    commit_replacement,
+    default_publication_destination_authority,
+    stage_replacement,
+    write_ownership_marker,
 )
 from satn.models import (
     AgentDecisionLedger,
@@ -310,6 +313,8 @@ def publish(
     config: AreaConfig,
     compiled: CompiledNetwork,
     run_id: str,
+    *,
+    publication_authority: PublicationDestinationAuthority | None = None,
 ) -> dict[str, Path]:
     reference_publication = _validated_reference_publication(
         compiled.reference_satn_publication,
@@ -320,11 +325,17 @@ def publish(
         compiled,
     )
     output = config.publication.output_dir
-    validate_replaceable_destination(output, repository_root=Path(__file__).parents[2])
+    authority = publication_authority or default_publication_destination_authority(
+        config.config_path
+    )
     LOGGER.info("Publication started temporary_parent=%s", output.parent)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    validate_replaceable_destination(output, repository_root=Path(__file__).parents[2])
-    temporary = Path(tempfile.mkdtemp(prefix=f".{output.name}-", dir=output.parent))
+    staging = stage_replacement(
+        output,
+        authority=authority,
+        owner_kind=f"compiled-network:{config.area_id}",
+        prior_record_name="run.json",
+    )
+    temporary = staging.temporary
     try:
         _write_geopackage(temporary / "network.gpkg", compiled)
         _write_geojson(temporary / "network.geojson", compiled)
@@ -366,25 +377,22 @@ def publish(
         _zip_review_map(temporary / "review-map.zip", review)
         _write_pdf(temporary / "network-map.pdf", config, compiled)
         _validate_artifacts(temporary, config)
+        write_ownership_marker(
+            temporary,
+            owner_kind=f"compiled-network:{config.area_id}",
+        )
         LOGGER.info("Publication artifacts validated temporary=%s", temporary)
-        backup = unique_absent_backup_sibling(output)
-        if output.exists():
-            output.replace(backup)
-        try:
-            temporary.replace(output)
-        except Exception:
-            if backup.exists() and not output.exists():
-                os.replace(backup, output)
-            raise
-        else:
-            if backup.exists():
-                shutil.rmtree(backup)
-            LOGGER.info("Publication atomically replaced output=%s", output)
-            if _uses_ea_lidar_weca_fixed_point(config):
-                _remove_ea_fixed_point_candidate(config)
+        commit_replacement(
+            staging,
+            authority=authority,
+            owner_kind=f"compiled-network:{config.area_id}",
+            prior_record_name="run.json",
+        )
+        LOGGER.info("Publication atomically replaced output=%s", output)
+        if _uses_ea_lidar_weca_fixed_point(config):
+            _remove_ea_fixed_point_candidate(config)
     finally:
-        if temporary.exists():
-            shutil.rmtree(temporary)
+        staging.cleanup()
     return publication_artifacts(output)
 
 
@@ -3856,7 +3864,7 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
     missing = [name for name in required if not (output / name).exists()]
     if missing:
         raise ValueError(f"publication incomplete: {', '.join(missing)}")
-    expected_top_level = {Path(name).parts[0] for name in required}
+    expected_top_level = {Path(name).parts[0] for name in required} | {OWNER_MARKER_NAME}
     unexpected = sorted(
         path.name for path in output.iterdir() if path.name not in expected_top_level
     )
