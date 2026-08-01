@@ -90,8 +90,9 @@ def test_unresolved_scope_retains_wider_only_relation_and_runtime_failure_falls_
     assert result.artifact.relations[0].scope_sensitive
     assert result.artifact.decisions[0].mode == "fallback"
     assert result.artifact.decisions[0].fallback_trigger == "invalid-runtime-response"
-    assert result.scenario.decision_record.mode == "accepted-agent-decision-ledger"
-    assert result.scenario.publishable
+    assert result.scenario.decision_record.mode == "profile-fallback-awaiting-review"
+    assert result.scenario.decision_record.accepted_envelopes == ()
+    assert not result.scenario.publishable
 
 
 def test_transitive_parallel_group_is_order_independent_and_preserves_all_members() -> None:
@@ -230,6 +231,8 @@ def test_officer_input_is_applied_without_invoking_runtime() -> None:
     assert runtime.calls == 0
     assert result.selected_route_ids == ("officer-route",)
     assert result.artifact.officer_compiler_divergences
+    assert result.scenario.decision_record.accepted_envelopes == ()
+    assert result.scenario.decision_record.mode != "accepted-agent-decision-ledger"
 
 
 def test_section_population_evidence_uses_exact_defaults_and_sustained_boundary() -> None:
@@ -745,7 +748,9 @@ def test_partial_runtime_response_and_timeout_use_the_same_configured_fallback()
     slow_runtime = SlowRuntime()
     timed_out = compile_parallel_reduction_scenario(request, runtime=slow_runtime)
 
-    assert partial.scenario.publishable and timed_out.scenario.publishable
+    assert not partial.scenario.publishable and not timed_out.scenario.publishable
+    assert partial.scenario.decision_record.accepted_envelopes == ()
+    assert timed_out.scenario.decision_record.accepted_envelopes == ()
     assert partial.selected_route_ids == timed_out.selected_route_ids
     assert partial.artifact.decisions[0].fallback_trigger == "invalid-runtime-response"
     assert timed_out.artifact.decisions[0].fallback_trigger == "runtime-timeout"
@@ -820,7 +825,8 @@ def test_runtime_rejects_decisive_considerations_not_relevant_to_selected_route(
         runtime=IrrelevantEvidenceRuntime(),
     )
 
-    assert result.scenario.publishable
+    assert not result.scenario.publishable
+    assert result.scenario.decision_record.accepted_envelopes == ()
     assert result.artifact.decisions[0].mode == "fallback"
     assert result.artifact.decisions[0].validation_status == "invalid-runtime-response"
 
@@ -1421,6 +1427,7 @@ def test_runtime_packet_exposes_qualitative_route_findings_without_raw_facts() -
                     coordinates=((0.0, 300.0), (1_000.0, 300.0)),
                     network_scope="urban",
                     evidence_ids=("access-audit",),
+                    citation_ids=("access-audit-report",),
                     population=1,
                     access_score=3,
                     existing_infrastructure_score=1,
@@ -1452,7 +1459,7 @@ def test_runtime_packet_exposes_qualitative_route_findings_without_raw_facts() -
     assert access_findings["population"]["evidence_ids"] == ()
     assert access_findings["population"]["citation_ids"] == ()
     assert access_findings["access"]["evidence_ids"] == ("access-audit",)
-    assert access_findings["access"]["citation_ids"] == ("access-audit",)
+    assert access_findings["access"]["citation_ids"] == ("access-audit-report",)
     decision = result.artifact.decisions[0]
     assert decision.route_findings == tuple(runtime.request["route_menu"])
     assert decision.decisive_consideration_ids == ("access:access-route",)
@@ -1598,6 +1605,8 @@ def test_runtime_packet_uses_lower_direction_independent_cev_as_topography_advan
     }
     assert topography["low-cev"]["outcome"] == "material-advantage"
     assert topography["access-high-cev"]["outcome"] == "material-disadvantage"
+    assert topography["low-cev"]["evidence_ids"] == ("elevation-low-survey",)
+    assert topography["low-cev"]["citation_ids"] == ()
     assert result.artifact.decisions[0].mode == "agent"
 
 
@@ -1628,9 +1637,10 @@ def test_cited_guidance_participates_in_a_conflicting_material_advantage() -> No
                     evidence_ids=("guidance-route-survey",),
                     guidance_considerations=(
                         {
-                            "principle_id": "coherence",
-                            "state": "supported",
-                            "citation_ids": ("ltn120-1.4",),
+                        "principle_id": "coherence",
+                        "state": "supported",
+                        "evidence_ids": ("guidance-route-survey",),
+                        "citation_ids": ("ltn120-1.4",),
                         },
                     ),
                 ),
@@ -1643,9 +1653,10 @@ def test_cited_guidance_participates_in_a_conflicting_material_advantage() -> No
                     access_score=2,
                     guidance_considerations=(
                         {
-                            "principle_id": "coherence",
-                            "state": "contradicted",
-                            "citation_ids": ("ltn120-1.4",),
+                        "principle_id": "coherence",
+                        "state": "contradicted",
+                        "evidence_ids": ("access-route-audit",),
+                        "citation_ids": ("ltn120-1.4",),
                         },
                     ),
                 ),
@@ -1662,6 +1673,7 @@ def test_cited_guidance_participates_in_a_conflicting_material_advantage() -> No
         if item["consideration_id"] == "guidance:guidance-route:coherence"
     )
     assert guidance["outcome"] == "material-advantage"
+    assert guidance["evidence_ids"] == ("guidance-route-survey",)
     assert guidance["citation_ids"] == ("ltn120-1.4",)
     assert result.artifact.decisions[0].mode == "agent"
 
@@ -1712,6 +1724,8 @@ def test_runtime_packet_uses_governed_sustained_population_evidence_not_route_to
                 },
             ),
             output_area_source_fingerprint=source_fingerprint,
+            output_area_evidence_ids=("ons-oa-centroids-2021",),
+            output_area_citation_ids=("ons-census-2021",),
         ),
         runtime=runtime,
     )
@@ -1724,9 +1738,8 @@ def test_runtime_packet_uses_governed_sustained_population_evidence_not_route_to
         item for item in menu["population-route"]["findings"] if item["dimension"] == "population"
     )
     assert population["outcome"] == "material-advantage"
-    assert population["evidence_ids"]
-    assert all(item.startswith("population-section-") for item in population["evidence_ids"])
-    assert population["citation_ids"] == (source_fingerprint,)
+    assert population["evidence_ids"] == ("ons-oa-centroids-2021",)
+    assert population["citation_ids"] == ("ons-census-2021",)
     assert result.artifact.decisions[0].mode == "agent"
 
 

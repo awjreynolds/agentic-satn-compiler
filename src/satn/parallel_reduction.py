@@ -24,12 +24,7 @@ from shapely.geometry import LineString, Point, box
 from shapely.ops import substring
 
 from satn.alignment_selection import (
-    AcceptedDecisionEnvelope,
-    AgentAuthorityRole,
-    AgentInvocation,
     AlignmentCandidateInput,
-    AlignmentCritiqueRecord,
-    AlignmentDecisionResponse,
     AssessmentKind,
     CandidateCriteria,
     CandidatePopulationOptionBinding,
@@ -46,7 +41,6 @@ from satn.alignment_selection import (
     ScenarioCriteriaBinding,
     ScenarioDecisionRecord,
     admit_candidate_set,
-    build_alignment_decision_request,
     education_option_id_for_candidate,
     select_preferred_alignment,
 )
@@ -107,6 +101,7 @@ class ParallelRoute(BaseModel):
         "verified-existing-asset", "a-road-corridor", "b-road-corridor", "other-routable"
     ] = "other-routable"
     evidence_ids: tuple[str, ...] = ()
+    citation_ids: tuple[str, ...] = ()
     provenance_ids: tuple[str, ...] = ()
     topology: Literal["satisfied", "unknown", "unsatisfied"] = "satisfied"
     population: int = Field(default=0, ge=0)
@@ -158,6 +153,7 @@ class GuidanceConsideration(BaseModel):
 
     principle_id: str
     state: _GUIDANCE_STATE = "unassessed"
+    evidence_ids: tuple[str, ...] = ()
     citation_ids: tuple[str, ...] = ()
 
 
@@ -309,6 +305,8 @@ class ParallelReductionRequest(BaseModel):
     officer_decisions: tuple[PreloadedOfficerDecision, ...] = ()
     output_area_centroids: tuple[ParallelOutputAreaCentroid, ...] = ()
     output_area_source_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    output_area_evidence_ids: tuple[str, ...] = ()
+    output_area_citation_ids: tuple[str, ...] = ()
     guidance_profile: GuidanceProfile = Field(default_factory=GuidanceProfile)
 
     @model_validator(mode="after")
@@ -475,21 +473,24 @@ def _unassessed_outcomes(routes: tuple[ParallelRoute, ...]) -> dict[str, str]:
 
 
 def _population_outcomes(
-    routes: tuple[ParallelRoute, ...], evidence: ParallelEvidenceSummary
+    routes: tuple[ParallelRoute, ...],
+    evidence: ParallelEvidenceSummary,
+    output_area_evidence_ids: tuple[str, ...],
 ) -> tuple[dict[str, str], dict[str, tuple[str, ...]]]:
     outcomes = _unassessed_outcomes(routes)
     evidence_ids = {route.route_id: () for route in routes}
+    if not output_area_evidence_ids:
+        return outcomes, evidence_ids
     route_ids = set(outcomes)
     for difference in evidence.material_population_differences:
         advantaged = difference["advantaged_alignment_id"]
         compared = difference["compared_alignment_id"]
         if advantaged not in route_ids or compared not in route_ids:
             continue
-        supporting = tuple(sorted(str(item) for item in difference["supporting_section_ids"]))
         outcomes[advantaged] = "material-advantage"
         outcomes[compared] = "material-disadvantage"
-        evidence_ids[advantaged] = supporting
-        evidence_ids[compared] = supporting
+        evidence_ids[advantaged] = tuple(sorted(output_area_evidence_ids))
+        evidence_ids[compared] = tuple(sorted(output_area_evidence_ids))
     return outcomes, evidence_ids
 
 
@@ -531,9 +532,7 @@ def _topography_outcomes(
     return (
         outcomes,
         {
-            route.route_id: tuple(
-                f"{route.route_id}:{distance_m}" for distance_m, _ in route.elevation_samples
-            )
+            route.route_id: tuple(sorted(route.evidence_ids))
             for route in routes
         },
     )
@@ -583,11 +582,14 @@ def _runtime_route_menu(
     routes: tuple[ParallelRoute, ...],
     config: ParallelReductionConfig,
     evidence: ParallelEvidenceSummary,
-    output_area_source_fingerprint: str | None,
+    output_area_evidence_ids: tuple[str, ...],
+    output_area_citation_ids: tuple[str, ...],
 ) -> tuple[dict[str, object], ...]:
     """Summarise governed comparisons without serialising their raw observations."""
 
-    population_outcomes, population_evidence_ids = _population_outcomes(routes, evidence)
+    population_outcomes, population_evidence_ids = _population_outcomes(
+        routes, evidence, output_area_evidence_ids
+    )
     topography_outcomes, topography_evidence_ids = _topography_outcomes(routes, config, evidence)
     guidance_outcomes = _guidance_outcomes(routes)
     dimensions = (
@@ -619,22 +621,22 @@ def _runtime_route_menu(
                 "population",
                 population_outcomes[route.route_id],
                 population_evidence_ids[route.route_id],
-                (output_area_source_fingerprint,)
-                if population_evidence_ids[route.route_id] and output_area_source_fingerprint
+                tuple(sorted(output_area_citation_ids))
+                if population_evidence_ids[route.route_id]
                 else (),
             ),
             (
                 "topography",
                 topography_outcomes[route.route_id],
                 topography_evidence_ids[route.route_id],
-                tuple(sorted(route.evidence_ids)),
+                tuple(sorted(route.citation_ids)),
             ),
             *(
                 (
                     dimension,
                     outcomes[dimension][route.route_id],
                     tuple(sorted(route.evidence_ids)),
-                    tuple(sorted(route.evidence_ids)),
+                    tuple(sorted(route.citation_ids)),
                 )
                 for dimension in outcomes
             ),
@@ -655,9 +657,7 @@ def _runtime_route_menu(
         ):
             principle_id = consideration.principle_id
             outcome = guidance_outcomes[(route.route_id, principle_id)]
-            evidence_ids = (
-                () if outcome == "unassessed" else (f"guidance:{route.route_id}:{principle_id}",)
-            )
+            evidence_ids = () if outcome == "unassessed" else consideration.evidence_ids
             citation_ids = consideration.citation_ids
             findings.append(
                 {
@@ -706,11 +706,18 @@ def _runtime_request(
     routes: tuple[ParallelRoute, ...],
     config: ParallelReductionConfig,
     evidence: ParallelEvidenceSummary,
-    output_area_source_fingerprint: str | None,
+    output_area_evidence_ids: tuple[str, ...],
+    output_area_citation_ids: tuple[str, ...],
 ) -> dict[str, object]:
     """Build the sole bounded runtime packet; never expose raw route datasets."""
 
-    menu = _runtime_route_menu(routes, config, evidence, output_area_source_fingerprint)
+    menu = _runtime_route_menu(
+        routes,
+        config,
+        evidence,
+        output_area_evidence_ids,
+        output_area_citation_ids,
+    )
     evidence_ids = tuple(sorted({item for route in menu for item in route["evidence_ids"]}))
     consideration_ids = tuple(
         sorted({item for route in menu for item in route["consideration_ids"]})
@@ -1649,7 +1656,8 @@ def compile_parallel_reduction_scenario(
             routes,
             request.config,
             evidence,
-            request.output_area_source_fingerprint,
+            request.output_area_evidence_ids,
+            request.output_area_citation_ids,
         )
         decisive_consideration_ids: tuple[str, ...] = ()
         validation_status = "not-invoked"
@@ -1687,7 +1695,8 @@ def compile_parallel_reduction_scenario(
                         routes=routes,
                         config=request.config,
                         evidence=evidence,
-                        output_area_source_fingerprint=request.output_area_source_fingerprint,
+                        output_area_evidence_ids=request.output_area_evidence_ids,
+                        output_area_citation_ids=request.output_area_citation_ids,
                     )
                     if (
                         _runtime_request_bytes(runtime_request)
@@ -1790,92 +1799,13 @@ def compile_parallel_reduction_scenario(
         for item in decisions
         if item.mode == "officer" and item.selected_route_id != item.compiler_preferred_route_id
     )
-    # The existing Scenario model makes a runtime/officer action authoritative
-    # only through an exact compiler-authored accepted envelope.  Rebuild the
-    # scenario with those envelopes rather than exposing a competing wrapper
-    # winner list.
-    envelopes = []
-    for group_id, selection in zip(selection_routes_by_group, selections, strict=True):
-        decision = decisions[list(selection_routes_by_group).index(group_id)]
-        if selection.publishable:
-            continue
-        candidate_id = next(
-            item.candidate_id
-            for item in selection.candidate_set.admitted_candidates
-            if route_by_candidate[item.candidate_id] == decision.selected_route_id
-        )
-        request_record = build_alignment_decision_request(
-            selection,
-            scenario_context_fingerprint=scenario.scenario_context_fingerprint,
-        )
-        option_id = f"select-{candidate_id}"
-        if option_id not in {item.option_id for item in request_record.options}:
-            option_id = "accept-profile-fallback"
-        primary = AgentInvocation(
-            invocation_id=f"parallel-primary-{request_record.request_fingerprint[:16]}",
-            role=AgentAuthorityRole.PRIMARY_ALIGNMENT_DECISION,
-            role_contract_fingerprint=(
-                request_record.agent_review_contracts.primary_role_contract.contract_fingerprint
-            ),
-            prompt_contract_fingerprint=(
-                request_record.agent_review_contracts.primary_prompt_contract.contract_fingerprint
-            ),
-            request_fingerprint=request_record.request_fingerprint,
-            recorded_on=date(2026, 1, 1),
-        )
-        response = AlignmentDecisionResponse(
-            request_id=request_record.request_id,
-            request_fingerprint=request_record.request_fingerprint,
-            option_id=option_id,
-            evidence_ids=(request_record.immutable_evidence_ids[0],),
-            invocation=primary,
-        )
-        critic = AgentInvocation(
-            invocation_id=f"parallel-critic-{request_record.request_fingerprint[:16]}",
-            role=AgentAuthorityRole.INDEPENDENT_ALIGNMENT_CRITIC,
-            role_contract_fingerprint=(
-                request_record.agent_review_contracts.critic_role_contract.contract_fingerprint
-            ),
-            prompt_contract_fingerprint=(
-                request_record.agent_review_contracts.critic_prompt_contract.contract_fingerprint
-            ),
-            request_fingerprint=request_record.request_fingerprint,
-            recorded_on=date(2026, 1, 1),
-        )
-        envelopes.append(
-            AcceptedDecisionEnvelope(
-                request=request_record,
-                response=response,
-                critique=AlignmentCritiqueRecord(
-                    request_fingerprint=request_record.request_fingerprint,
-                    response_fingerprint=response.response_fingerprint,
-                    selection_fingerprint=selection.selection_fingerprint,
-                    scenario_context_fingerprint=scenario.scenario_context_fingerprint,
-                    evidence_snapshot_fingerprint=(request_record.evidence_snapshot_fingerprint),
-                    profile_fingerprint=request_record.profile_fingerprint,
-                    finding="accepted",
-                    resolved=True,
-                    evidence_ids=(request_record.immutable_evidence_ids[0],),
-                    invocation=critic,
-                ),
-            )
-        )
-    if envelopes:
-        scenario = ScenarioCompilation(
-            area_fingerprint=scenario.area_fingerprint,
-            evidence_snapshot=scenario.evidence_snapshot,
-            profile_fingerprint=scenario.profile_fingerprint,
-            decision_record=ScenarioDecisionRecord(
-                mode="accepted-agent-decision-ledger",
-                accepted_envelopes=tuple(envelopes),
-            ),
-            candidate_sets=scenario.candidate_sets,
-            selections=scenario.selections,
-            criteria_bindings=scenario.criteria_bindings,
-            required_network_role_ids=scenario.required_network_role_ids,
-            mandatory_network_place_ids=scenario.mandatory_network_place_ids,
-            lineage_fingerprints=scenario.lineage_fingerprints,
-        )
+    # ``ScenarioCompilation`` only treats a recorded primary-agent response
+    # and independent critique as an accepted envelope.  This bounded runtime
+    # contract deliberately supplies neither, and officer/fallback choices are
+    # not agent invocations at all.  Keep those final per-group choices in the
+    # inspectable artifact, while retaining the Scenario's truthful compiler
+    # state (including an awaiting-review, unpublishable selection where one
+    # exists) rather than fabricating provenance to make it publishable.
     artifact = ParallelReductionArtifact(
         relations=relations,
         sections=sections,
