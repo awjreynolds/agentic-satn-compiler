@@ -211,9 +211,7 @@ def test_officer_input_is_applied_without_invoking_runtime() -> None:
                     access_score=2,
                 ),
             ),
-            officer_decisions=(
-                {"target_id": "parallel:alpha:beta", "route_id": "officer-route"},
-            ),
+            officer_decisions=({"target_id": "parallel:alpha:beta", "route_id": "officer-route"},),
         ),
         runtime=runtime,
     )
@@ -221,3 +219,58 @@ def test_officer_input_is_applied_without_invoking_runtime() -> None:
     assert runtime.calls == 0
     assert result.selected_route_ids == ("officer-route",)
     assert result.artifact.officer_compiler_divergences
+
+
+def test_section_population_evidence_uses_exact_defaults_and_sustained_boundary() -> None:
+    result = compile_parallel_reduction_scenario(
+        ParallelReductionRequest(
+            profile_id="parallel-evidence",
+            routes=(
+                ParallelRoute(
+                    route_id="west",
+                    endpoints=("a", "b"),
+                    coordinates=((0, 0), (500, 0)),
+                    network_scope="urban",
+                    population=500,
+                ),
+                ParallelRoute(
+                    route_id="east",
+                    endpoints=("a", "b"),
+                    coordinates=((0, 400), (500, 400)),
+                    network_scope="urban",
+                    population=0,
+                ),
+            ),
+        )
+    )
+    profile = result.artifact.section_population_profile
+    assert profile["display_section_length_m"] == 100.0
+    assert profile["urban_capture_radius_m"] == 250.0
+    assert profile["rural_capture_radius_m"] == 750.0
+    assert result.artifact.material_population_differences
+
+
+def test_missing_elevation_is_explicit_and_never_changes_selection() -> None:
+    result = compile_parallel_reduction_scenario(
+        ParallelReductionRequest(
+            profile_id="parallel-missing-elevation",
+            routes=(
+                ParallelRoute(
+                    route_id="west",
+                    endpoints=("a", "b"),
+                    coordinates=((0, 0), (600, 0)),
+                    network_scope="urban",
+                    population=1,
+                ),
+                ParallelRoute(
+                    route_id="east",
+                    endpoints=("a", "b"),
+                    coordinates=((0, 400), (600, 400)),
+                    network_scope="urban",
+                    population=2,
+                ),
+            ),
+        )
+    )
+    assert result.artifact.missing_evidence == ("elevation:east", "elevation:west")
+    assert result.selected_route_ids == ("east",)

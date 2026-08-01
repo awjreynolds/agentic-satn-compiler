@@ -53,6 +53,7 @@ from satn.education_access import (
     governed_education_assessment_fingerprint,
 )
 from satn.network_selection import NetworkSelectionProfile
+from satn.parallel_reduction_evidence import build_parallel_evidence
 from satn.population_reach import (
     CURRENT_DEVELOPMENT_EVIDENCE_AVAILABLE,
     CURRENT_DEVELOPMENT_NO_MATERIAL_OMISSION,
@@ -92,6 +93,7 @@ class ParallelRoute(BaseModel):
     existing_infrastructure_score: float = 0.0
     access_only_quiet_lane: bool = False
     node_ids: tuple[str, ...] = ()
+    elevation_samples: tuple[tuple[float, float], ...] = ()
 
     @field_validator("endpoints")
     @classmethod
@@ -120,6 +122,14 @@ class ParallelReductionConfig(BaseModel):
     material_score_difference: float = Field(default=1.0, ge=0)
     runtime_eligible: bool = False
     maximum_hybrids_per_group: int = Field(default=1, ge=0, le=5)
+    section_length_m: float = Field(default=100.0, gt=0, le=1_000)
+    urban_capture_radius_m: float = Field(default=250.0, gt=0)
+    rural_capture_radius_m: float = Field(default=750.0, gt=0)
+    material_population_absolute_residents: int = Field(default=500, ge=0)
+    material_population_relative_pct: float = Field(default=50.0, ge=0)
+    material_population_persistence_m: float = Field(default=500.0, gt=0)
+    material_elevation_variation_m: float = Field(default=20.0, ge=0)
+    material_elevation_variation_pct: float = Field(default=25.0, ge=0)
 
 
 class ParallelReductionRequest(BaseModel):
@@ -197,6 +207,11 @@ class ParallelReductionArtifact(BaseModel):
     network_gaps: tuple[NetworkGapArtifact, ...] = ()
     officer_compiler_divergences: tuple[ParallelDecisionArtifact, ...] = ()
     officer_target_unavailable: tuple[OfficerTargetUnavailable, ...] = ()
+    section_population_profile: dict[str, object] = Field(default_factory=dict)
+    section_population_profile_fingerprint: str = ""
+    material_population_differences: tuple[dict[str, object], ...] = ()
+    cumulative_elevation_variation: tuple[dict[str, object], ...] = ()
+    missing_evidence: tuple[str, ...] = ()
     fingerprint: str = ""
 
 
@@ -839,6 +854,7 @@ def compile_parallel_reduction_scenario(
             mandatory_network_place_ids=scenario.mandatory_network_place_ids,
             lineage_fingerprints=scenario.lineage_fingerprints,
         )
+    evidence = build_parallel_evidence(request.routes, request.config)
     artifact = ParallelReductionArtifact(
         relations=relations,
         selected_route_ids=selected,
@@ -848,6 +864,11 @@ def compile_parallel_reduction_scenario(
         network_gaps=gaps,
         officer_compiler_divergences=divergences,
         officer_target_unavailable=tuple(unavailable),
+        section_population_profile=evidence.section_profile,
+        section_population_profile_fingerprint=evidence.section_profile_fingerprint,
+        material_population_differences=evidence.material_population_differences,
+        cumulative_elevation_variation=evidence.cumulative_elevation_variation,
+        missing_evidence=evidence.missing_evidence,
     )
     return ParallelReductionCompilation(scenario=scenario, artifact=artifact)
 
