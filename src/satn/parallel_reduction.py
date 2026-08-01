@@ -15,6 +15,7 @@ from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from dataclasses import dataclass
 from datetime import date
+from itertools import pairwise
 from typing import Literal, Protocol, Self
 
 import geopandas as gpd
@@ -53,6 +54,7 @@ from satn.education_access import (
     assess_education_access,
     governed_education_assessment_fingerprint,
 )
+from satn.identifiers import stable_id
 from satn.network_selection import NetworkSelectionProfile
 from satn.parallel_reduction_evidence import build_parallel_evidence
 from satn.population_reach import (
@@ -97,6 +99,10 @@ class ParallelRoute(BaseModel):
     node_ids: tuple[str, ...] = ()
     elevation_samples: tuple[tuple[float, float], ...] = ()
     guidance_considerations: tuple[GuidanceConsideration, ...] = ()
+    section_evidence: tuple[ParallelSectionEvidence, ...] = ()
+    section_ids: tuple[str, ...] = ()
+    transition_choice_point_ids: tuple[str, ...] = ()
+    composition_provenance_ids: tuple[str, ...] = ()
 
     @field_validator("endpoints")
     @classmethod
@@ -194,6 +200,59 @@ class ParallelOutputAreaCentroid(BaseModel):
     inside_area: bool
 
 
+class ParallelChoicePoint(BaseModel):
+    """One explicitly governed point at which a route may switch section."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    choice_point_id: str = Field(pattern=r"^[a-z0-9][a-z0-9._:-]*$")
+    coordinates: tuple[float, float]
+    kind: Literal[
+        "divergence-rejoin",
+        "junction",
+        "access-obligation",
+        "physical-constraint",
+    ]
+
+
+class ParallelSectionEvidence(BaseModel):
+    """Governed evidence for one declared route section, not a route-wide score."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    start_choice_point_id: str = Field(pattern=r"^[a-z0-9][a-z0-9._:-]*$")
+    end_choice_point_id: str = Field(pattern=r"^[a-z0-9][a-z0-9._:-]*$")
+    population: int = Field(default=0, ge=0)
+    gradient_pct: float = Field(default=0.0, ge=0.0)
+    access_score: float = 0.0
+    existing_infrastructure_score: float = 0.0
+    evidence_ids: tuple[str, ...] = ()
+
+
+class ParallelAlignmentSection(BaseModel):
+    """A maximal chain bounded only by an explicit logical choice point."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    section_id: str
+    source_route_id: str
+    logical_endpoints: tuple[str, str]
+    start_choice_point_id: str
+    end_choice_point_id: str
+    coordinates: tuple[tuple[float, float], ...]
+    provenance_ids: tuple[str, ...] = ()
+
+
+class ParallelAlignmentOption(BaseModel):
+    """An end-to-end base or hybrid route with inspectable section provenance."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    route_id: str
+    ordered_section_ids: tuple[str, ...]
+    transition_choice_point_ids: tuple[str, ...] = ()
+    provenance_ids: tuple[str, ...] = ()
+
 class ParallelReductionRequest(BaseModel):
     """Data-only compiler input; all route candidates are discovered here."""
 
@@ -205,6 +264,7 @@ class ParallelReductionRequest(BaseModel):
     area_id: str = "parallel-reduction-area"
     # A junction is explicit topology.  A geometric intersection alone is not one.
     junction_node_ids: tuple[str, ...] = ()
+    choice_points: tuple[ParallelChoicePoint, ...] = ()
     required_transitions: tuple[tuple[str, str], ...] = ()
     officer_decisions: tuple[PreloadedOfficerDecision, ...] = ()
     output_area_centroids: tuple[ParallelOutputAreaCentroid, ...] = ()
@@ -289,6 +349,8 @@ class ParallelReductionArtifact(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     relations: tuple[ParallelCandidateRelation, ...]
+    sections: tuple[ParallelAlignmentSection, ...] = ()
+    options: tuple[ParallelAlignmentOption, ...] = ()
     selected_route_ids: tuple[str, ...]
     retained_route_ids: tuple[str, ...]
     decisions: tuple[ParallelDecisionArtifact, ...] = ()
@@ -305,6 +367,15 @@ class ParallelReductionArtifact(BaseModel):
     guidance_profile_fingerprint: str = ""
     guidance_findings: tuple[dict[str, object], ...] = ()
     fingerprint: str = ""
+
+    @model_validator(mode="after")
+    def _bind_fingerprint(self) -> Self:
+        payload = self.model_dump(mode="json", exclude={"fingerprint"})
+        expected = _digest(payload)
+        if self.fingerprint and self.fingerprint != expected:
+            raise ValueError("parallel reduction artifact fingerprint is stale")
+        object.__setattr__(self, "fingerprint", expected)
+        return self
 
 
 @dataclass(frozen=True)
@@ -511,6 +582,124 @@ def discover_parallel_relations(
     return tuple(relations)
 
 
+def discover_parallel_components(
+    routes: tuple[ParallelRoute, ...],
+    relations: tuple[ParallelCandidateRelation, ...],
+) -> tuple[tuple[str, ...], ...]:
+    """Return transitive proximity components, retaining every isolated route."""
+
+    by_endpoints: dict[tuple[str, str], set[str]] = {}
+    for route in routes:
+        by_endpoints.setdefault(route.endpoints, set()).add(route.route_id)
+    relation_pairs = {tuple(sorted(item.route_ids)) for item in relations}
+    components: list[tuple[str, ...]] = []
+    for _endpoints, route_ids in sorted(by_endpoints.items()):
+        parents = {route_id: route_id for route_id in route_ids}
+
+        for left, right in relation_pairs:
+            if left in route_ids and right in route_ids:
+                left_root, right_root = _component_find(parents, left), _component_find(
+                    parents, right
+                )
+                if left_root != right_root:
+                    parents[max(left_root, right_root)] = min(left_root, right_root)
+        grouped: dict[str, list[str]] = {}
+        for route_id in sorted(route_ids):
+            grouped.setdefault(_component_find(parents, route_id), []).append(route_id)
+        components.extend(tuple(values) for _, values in sorted(grouped.items()))
+    return tuple(sorted(components))
+
+
+def _component_find(parents: dict[str, str], route_id: str) -> str:
+    while parents[route_id] != route_id:
+        parents[route_id] = parents[parents[route_id]]
+        route_id = parents[route_id]
+    return route_id
+
+
+def discover_parallel_sections(
+    routes: tuple[ParallelRoute, ...],
+    choice_points: tuple[ParallelChoicePoint, ...] = (),
+    junction_node_ids: tuple[str, ...] = (),
+) -> tuple[ParallelAlignmentSection, ...]:
+    """Split only at explicit choice points; ordinary/display cuts remain transparent."""
+
+    declared_by_coordinate = {point.coordinates: point.choice_point_id for point in choice_points}
+    sections: list[ParallelAlignmentSection] = []
+    for route in sorted(routes, key=lambda item: item.route_id):
+        point_ids = _route_choice_point_ids(route, declared_by_coordinate, set(junction_node_ids))
+        positions = sorted(point_ids)
+        for start, end in pairwise(positions):
+            start_id, end_id = point_ids[start], point_ids[end]
+            coordinates = route.coordinates[start : end + 1]
+            sections.append(
+                ParallelAlignmentSection(
+                    section_id=stable_id(
+                        "parallel-section", route.route_id, start_id, end_id, coordinates
+                    ),
+                    source_route_id=route.route_id,
+                    logical_endpoints=route.endpoints,
+                    start_choice_point_id=start_id,
+                    end_choice_point_id=end_id,
+                    coordinates=coordinates,
+                    provenance_ids=route.provenance_ids or (route.route_id,),
+                )
+            )
+    return tuple(sections)
+
+
+def _route_choice_point_ids(
+    route: ParallelRoute,
+    declared_by_coordinate: Mapping[tuple[float, float], str],
+    junction_node_ids: set[str],
+) -> dict[int, str]:
+    point_ids = {
+        0: f"endpoint:{route.endpoints[0]}",
+        len(route.coordinates) - 1: f"endpoint:{route.endpoints[1]}",
+    }
+    for position, coordinate in enumerate(route.coordinates[1:-1], start=1):
+        declared = declared_by_coordinate.get(coordinate)
+        if declared is not None:
+            point_ids[position] = declared
+        elif (
+            len(route.node_ids) == len(route.coordinates)
+            and route.node_ids[position] in junction_node_ids
+        ):
+            point_ids[position] = f"junction:{route.node_ids[position]}"
+    return point_ids
+
+
+def _decorate_base_routes(
+    routes: tuple[ParallelRoute, ...],
+    sections: tuple[ParallelAlignmentSection, ...],
+) -> tuple[ParallelRoute, ...]:
+    by_route: dict[str, list[ParallelAlignmentSection]] = {}
+    for section in sections:
+        by_route.setdefault(section.source_route_id, []).append(section)
+    return tuple(
+        route.model_copy(
+            update={
+                "section_ids": tuple(
+                    item.section_id
+                    for item in sorted(
+                        by_route[route.route_id],
+                        key=lambda item: route.coordinates.index(item.coordinates[0]),
+                    )
+                ),
+                "transition_choice_point_ids": tuple(
+                    item.end_choice_point_id
+                    for item in sorted(
+                        by_route[route.route_id],
+                        key=lambda item: route.coordinates.index(item.coordinates[0]),
+                    )[:-1]
+                ),
+                "composition_provenance_ids": route.provenance_ids or (route.route_id,),
+            }
+        )
+        for route in routes
+    )
+
+
 def _profile(request: ParallelReductionRequest) -> NetworkSelectionProfile:
     return NetworkSelectionProfile.model_validate(
         {
@@ -536,53 +725,193 @@ def _profile(request: ParallelReductionRequest) -> NetworkSelectionProfile:
 
 
 def _bounded_hybrids(
-    routes: tuple[ParallelRoute, ...], config: ParallelReductionConfig
+    routes: tuple[ParallelRoute, ...],
+    sections: tuple[ParallelAlignmentSection, ...],
+    config: ParallelReductionConfig,
 ) -> tuple[ParallelRoute, ...]:
-    """Create only materially better, continuous switches at exact shared nodes."""
-    hybrids: list[ParallelRoute] = []
+    """Create bounded, material, explicit-choice-point compositions only."""
+
+    by_route: dict[str, tuple[ParallelAlignmentSection, ...]] = {}
+    for route in routes:
+        by_route[route.route_id] = tuple(
+            sorted(
+                (item for item in sections if item.source_route_id == route.route_id),
+                key=lambda item: route.section_ids.index(item.section_id),
+            )
+        )
+    base_geometries = {_digest(route.coordinates) for route in routes}
+    hybrids: dict[str, ParallelRoute] = {}
     for index, left in enumerate(routes):
         for right in routes[index + 1 :]:
-            shared = tuple(
-                coordinate
-                for coordinate in left.coordinates[1:-1]
-                if coordinate in right.coordinates[1:-1]
-            )
-            if not shared:
+            if left.endpoints != right.endpoints:
                 continue
-            # The summed section observations are the caller's evidence that a
-            # switch gains a material advantage; geometry must still meet exactly.
-            hybrid_score = left.access_score + right.existing_infrastructure_score
-            if (
-                hybrid_score
-                < max(
-                    left.access_score + left.existing_infrastructure_score,
-                    right.access_score + right.existing_infrastructure_score,
-                )
-                + config.material_score_difference
+            for switch_id in sorted(
+                {
+                    item.end_choice_point_id
+                    for item in by_route[left.route_id][:-1]
+                }
+                & {
+                    item.start_choice_point_id
+                    for item in by_route[right.route_id][1:]
+                }
             ):
-                continue
-            point = shared[0]
-            left_index, right_index = left.coordinates.index(point), right.coordinates.index(point)
-            coordinates = left.coordinates[: left_index + 1] + right.coordinates[right_index + 1 :]
-            hybrids.append(
-                ParallelRoute(
-                    route_id=f"hybrid:{left.route_id}:{right.route_id}:{left_index}:{right_index}",
-                    endpoints=left.endpoints,
-                    coordinates=coordinates,
-                    network_scope=left.network_scope,
-                    source_class="other-routable",
-                    evidence_ids=tuple(sorted({*left.evidence_ids, *right.evidence_ids})),
-                    provenance_ids=(left.route_id, right.route_id),
-                    population=max(left.population, right.population),
-                    gradient_pct=max(left.gradient_pct, right.gradient_pct),
-                    access_score=hybrid_score,
-                    existing_infrastructure_score=hybrid_score,
-                    node_ids=tuple(sorted({*left.node_ids, *right.node_ids})),
+                if switch_id.startswith("endpoint:"):
+                    continue
+                left_prefix = _sections_through(by_route[left.route_id], switch_id, prefix=True)
+                right_suffix = _sections_through(by_route[right.route_id], switch_id, prefix=False)
+                hybrid = _compose_hybrid(
+                    left,
+                    right,
+                    left_prefix,
+                    right_suffix,
+                    switch_id,
+                    config,
                 )
-            )
+                if hybrid is not None and _digest(hybrid.coordinates) not in base_geometries:
+                    hybrids.setdefault(_digest(hybrid.coordinates), hybrid)
+                right_prefix = _sections_through(by_route[right.route_id], switch_id, prefix=True)
+                left_suffix = _sections_through(by_route[left.route_id], switch_id, prefix=False)
+                hybrid = _compose_hybrid(
+                    right,
+                    left,
+                    right_prefix,
+                    left_suffix,
+                    switch_id,
+                    config,
+                )
+                if hybrid is not None and _digest(hybrid.coordinates) not in base_geometries:
+                    hybrids.setdefault(_digest(hybrid.coordinates), hybrid)
     return tuple(
-        sorted(hybrids, key=lambda item: item.route_id)[: config.maximum_hybrids_per_group]
+        sorted(hybrids.values(), key=lambda item: item.route_id)[: config.maximum_hybrids_per_group]
     )
+
+
+def _sections_through(
+    sections: tuple[ParallelAlignmentSection, ...], switch_id: str, *, prefix: bool
+) -> tuple[ParallelAlignmentSection, ...]:
+    index = next(
+        (
+            position
+            for position, section in enumerate(sections)
+            if (
+                section.end_choice_point_id
+                if prefix
+                else section.start_choice_point_id
+            )
+            == switch_id
+        ),
+        None,
+    )
+    if index is None:
+        return ()
+    return sections[: index + 1] if prefix else sections[index:]
+
+
+def _compose_hybrid(
+    first: ParallelRoute,
+    second: ParallelRoute,
+    first_sections: tuple[ParallelAlignmentSection, ...],
+    second_sections: tuple[ParallelAlignmentSection, ...],
+    switch_id: str,
+    config: ParallelReductionConfig,
+) -> ParallelRoute | None:
+    if not first_sections or not second_sections:
+        return None
+    if first_sections[-1].coordinates[-1] != second_sections[0].coordinates[0]:
+        return None
+    selected_sections = (*first_sections, *second_sections)
+    metrics = _composition_metrics(first, second, selected_sections)
+    if metrics is None or not _material_hybrid(metrics, first, second, config):
+        return None
+    coordinates = tuple(
+        coordinate
+        for position, section in enumerate(selected_sections)
+        for coordinate in (
+            section.coordinates if position == 0 else section.coordinates[1:]
+        )
+    )
+    if len(set(coordinates)) < 2:
+        return None
+    return ParallelRoute(
+        route_id=f"hybrid:{first.route_id}:{second.route_id}:{switch_id}",
+        endpoints=first.endpoints,
+        coordinates=coordinates,
+        network_scope=first.network_scope,
+        source_class="other-routable",
+        evidence_ids=metrics["evidence_ids"],
+        provenance_ids=(first.route_id, second.route_id),
+        population=metrics["population"],
+        gradient_pct=metrics["gradient_pct"],
+        access_score=metrics["access_score"],
+        existing_infrastructure_score=metrics["existing_infrastructure_score"],
+        section_ids=tuple(item.section_id for item in selected_sections),
+        transition_choice_point_ids=(switch_id,),
+        composition_provenance_ids=(first.route_id, second.route_id, switch_id),
+    )
+
+
+def _composition_metrics(
+    first: ParallelRoute,
+    second: ParallelRoute,
+    sections: tuple[ParallelAlignmentSection, ...],
+) -> dict[str, object] | None:
+    evidence_by_route = {
+        route.route_id: {
+            frozenset((item.start_choice_point_id, item.end_choice_point_id)): item
+            for item in route.section_evidence
+        }
+        for route in (first, second)
+    }
+    observations = []
+    for section in sections:
+        observation = evidence_by_route[section.source_route_id].get(
+            frozenset((section.start_choice_point_id, section.end_choice_point_id))
+        )
+        if observation is None:
+            return None
+        observations.append(observation)
+    return {
+        "population": sum(item.population for item in observations),
+        "gradient_pct": max(item.gradient_pct for item in observations),
+        "access_score": sum(item.access_score for item in observations),
+        "existing_infrastructure_score": sum(
+            item.existing_infrastructure_score for item in observations
+        ),
+        "evidence_ids": tuple(
+            sorted({evidence_id for item in observations for evidence_id in item.evidence_ids})
+        ),
+    }
+
+
+def _material_hybrid(
+    metrics: Mapping[str, object],
+    first: ParallelRoute,
+    second: ParallelRoute,
+    config: ParallelReductionConfig,
+) -> bool:
+    """Require a governed whole-option advantage; never combine cross-dimension scores."""
+
+    population = int(metrics["population"])
+    gradient = float(metrics["gradient_pct"])
+    access = float(metrics["access_score"])
+    infrastructure = float(metrics["existing_infrastructure_score"])
+    for base in (first, second):
+        no_worse = (
+            population >= base.population
+            and gradient <= base.gradient_pct
+            and access >= base.access_score
+            and infrastructure >= base.existing_infrastructure_score
+        )
+        materially_better = (
+            population >= base.population + config.material_population_difference
+            or gradient <= base.gradient_pct - config.material_score_difference
+            or access >= base.access_score + config.material_score_difference
+            or infrastructure
+            >= base.existing_infrastructure_score + config.material_score_difference
+        )
+        if not (no_worse and materially_better):
+            return False
+    return True
 
 
 def _population_source() -> PopulationReachSource:
@@ -777,43 +1106,66 @@ def compile_parallel_reduction_scenario(
     """
     request = ParallelReductionRequest.model_validate(request)
     profile = _profile(request)
-    relations = discover_parallel_relations(request.routes, request.config)
-    groups: dict[tuple[str, str], list[ParallelRoute]] = {}
-    for route in request.routes:
-        # Parallel reduction is a whole-scenario compiler seam, not a filter.
-        # A route with no qualifying relation is a deterministic one-option
-        # group and must still survive generation.
-        groups.setdefault(route.endpoints, []).append(route)
+    sections = discover_parallel_sections(
+        request.routes,
+        request.choice_points,
+        request.junction_node_ids,
+    )
+    base_routes = _decorate_base_routes(request.routes, sections)
+    relations = discover_parallel_relations(base_routes, request.config)
+    base_by_id = {route.route_id: route for route in base_routes}
+    components = discover_parallel_components(base_routes, relations)
+    component_endpoint_counts: dict[tuple[str, str], int] = {}
+    for component in components:
+        endpoints = base_by_id[component[0]].endpoints
+        component_endpoint_counts[endpoints] = component_endpoint_counts.get(endpoints, 0) + 1
     candidate_sets = []
     selections = []
-    routes_by_group: dict[tuple[str, str], tuple[ParallelRoute, ...]] = {}
-    for endpoints, routes in sorted(groups.items()):
-        routes = [*routes, *_bounded_hybrids(tuple(routes), request.config)]
-        routes_by_group[endpoints] = tuple(sorted(routes, key=lambda item: item.route_id))
+    group_endpoints: dict[str, tuple[str, str]] = {}
+    routes_by_group: dict[str, tuple[ParallelRoute, ...]] = {}
+    for component in components:
+        group_id = "component:" + _digest(component)[:16]
+        base_component_routes = tuple(base_by_id[route_id] for route_id in component)
+        endpoints = base_component_routes[0].endpoints
+        scenario_endpoints = (
+            endpoints
+            if component_endpoint_counts[endpoints] == 1
+            else (
+                f"{endpoints[0]}:component:{group_id.rsplit(':', 1)[1]}",
+                f"{endpoints[1]}:component:{group_id.rsplit(':', 1)[1]}",
+            )
+        )
+        routes = [
+            *base_component_routes,
+            *_bounded_hybrids(base_component_routes, sections, request.config),
+        ]
+        group_endpoints[group_id] = endpoints
+        routes_by_group[group_id] = tuple(sorted(routes, key=lambda item: item.route_id))
         inputs = tuple(
             AlignmentCandidateInput(
                 network_role=NetworkRole.INTERURBAN_SPINE,
-                endpoints=endpoints,
+                    endpoints=scenario_endpoints,
                 source_class=route.source_class,
                 geometry=CanonicalLineString(coordinates=route.coordinates),
                 evidence_fingerprints=(_digest((route.route_id, route.evidence_ids)),),
                 provenance_ids=route.provenance_ids or (route.route_id,),
                 topology_state=route.topology,
-                served_network_place_ids=endpoints,
+                served_network_place_ids=scenario_endpoints,
                 directness_m=LineString(route.coordinates).length,
                 maximum_gradient_pct=route.gradient_pct,
             )
-            for route in sorted(routes, key=lambda item: item.route_id)
+            for route in routes_by_group[group_id]
         )
         candidate_set = admit_candidate_set(
             profile,
             network_role=NetworkRole.INTERURBAN_SPINE,
-            endpoints=endpoints,
+            endpoints=scenario_endpoints,
             candidates=inputs,
-            mandatory_network_place_ids=endpoints,
+            mandatory_network_place_ids=scenario_endpoints,
         )
         by_input_identity = {
-            _digest((route.route_id, route.evidence_ids)): route for route in routes
+            _digest((route.route_id, route.evidence_ids)): route
+            for route in routes_by_group[group_id]
         }
         by_candidate = {
             candidate.candidate_id: by_input_identity[candidate.evidence_fingerprints[0]]
@@ -886,17 +1238,19 @@ def compile_parallel_reduction_scenario(
     }
     decisions: list[ParallelDecisionArtifact] = []
     unavailable: list[OfficerTargetUnavailable] = []
-    selected_by_group: dict[tuple[str, str], str] = {}
+    selected_by_group: dict[str, str] = {}
     officers = {item.target_id: item.route_id for item in request.officer_decisions}
-    for endpoints, routes in routes_by_group.items():
+    endpoint_group_counts = {
+        endpoints: sum(1 for item in group_endpoints.values() if item == endpoints)
+        for endpoints in group_endpoints.values()
+    }
+    for group_id, routes in routes_by_group.items():
+        endpoints = group_endpoints[group_id]
         target_id = "parallel:" + ":".join(endpoints)
-        compiler_preferred = next(
-            route_by_candidate[item]
-            for selection in selections
-            if selection.candidate_set.endpoints == endpoints
-            for item in (selection.selected_candidate_id,)
-            if item is not None
-        )
+        if endpoint_group_counts[endpoints] > 1:
+            target_id = f"{target_id}:{group_id.rsplit(':', 1)[1]}"
+        selection = selections[list(routes_by_group).index(group_id)]
+        compiler_preferred = route_by_candidate[selection.selected_candidate_id]
         by_population = max(routes, key=lambda item: (item.population, item.route_id)).route_id
         by_quality = max(
             routes,
@@ -971,7 +1325,7 @@ def compile_parallel_reduction_scenario(
                     "runtime-unavailable",
                 )
                 selected = _configured_fallback_route(routes, compiler_preferred, request.config)
-        selected_by_group[endpoints] = selected
+        selected_by_group[group_id] = selected
         decisions.append(
             ParallelDecisionArtifact(
                 target_id=target_id,
@@ -1028,12 +1382,8 @@ def compile_parallel_reduction_scenario(
     # scenario with those envelopes rather than exposing a competing wrapper
     # winner list.
     envelopes = []
-    for selection in selections:
-        decision = next(
-            item
-            for item in decisions
-            if item.target_id == "parallel:" + ":".join(selection.candidate_set.endpoints)
-        )
+    for group_id, selection in zip(routes_by_group, selections, strict=True):
+        decision = decisions[list(routes_by_group).index(group_id)]
         if selection.publishable:
             continue
         candidate_id = next(
@@ -1121,6 +1471,17 @@ def compile_parallel_reduction_scenario(
     )
     artifact = ParallelReductionArtifact(
         relations=relations,
+        sections=sections,
+        options=tuple(
+            ParallelAlignmentOption(
+                route_id=route.route_id,
+                ordered_section_ids=route.section_ids,
+                transition_choice_point_ids=route.transition_choice_point_ids,
+                provenance_ids=route.composition_provenance_ids or route.provenance_ids,
+            )
+            for routes in routes_by_group.values()
+            for route in routes
+        ),
         selected_route_ids=selected,
         retained_route_ids=retained,
         decisions=tuple(decisions),

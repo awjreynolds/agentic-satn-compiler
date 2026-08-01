@@ -5,10 +5,15 @@ import time
 import pytest
 
 from satn.parallel_reduction import (
+    ParallelChoicePoint,
+    ParallelReductionArtifact,
     ParallelReductionConfig,
     ParallelReductionRequest,
     ParallelRoute,
     compile_parallel_reduction_scenario,
+    discover_parallel_components,
+    discover_parallel_relations,
+    discover_parallel_sections,
 )
 
 
@@ -751,3 +756,281 @@ def test_runtime_rejects_decisive_considerations_not_relevant_to_selected_route(
     assert result.scenario.publishable
     assert result.artifact.decisions[0].mode == "fallback"
     assert result.artifact.decisions[0].validation_status == "invalid-runtime-response"
+
+
+def test_logical_sections_are_maximal_between_explicit_divergence_and_rejoin_points() -> None:
+    route = ParallelRoute(
+        route_id="west",
+        endpoints=("a", "b"),
+        coordinates=((0, 0), (100, 0), (200, 100), (300, 100), (400, 0)),
+        network_scope="urban",
+    )
+    sections = discover_parallel_sections(
+        (route,),
+        (
+            ParallelChoicePoint(
+                choice_point_id="diverge",
+                coordinates=(100, 0),
+                kind="divergence-rejoin",
+            ),
+            ParallelChoicePoint(
+                choice_point_id="rejoin",
+                coordinates=(300, 100),
+                kind="divergence-rejoin",
+            ),
+        ),
+    )
+
+    assert [(item.start_choice_point_id, item.end_choice_point_id) for item in sections] == [
+        ("endpoint:a", "diverge"),
+        ("diverge", "rejoin"),
+        ("rejoin", "endpoint:b"),
+    ]
+    assert all(item.logical_endpoints == ("a", "b") for item in sections)
+
+
+def test_ordinary_vertices_and_display_boundaries_never_create_section_topology() -> None:
+    route = ParallelRoute(
+        route_id="uncut",
+        endpoints=("a", "b"),
+        coordinates=((0, 0), (100, 0), (200, 0), (300, 0)),
+        network_scope="urban",
+        node_ids=("display-cut", "source-edge-cut", "name-cut", "class-cut"),
+    )
+
+    sections = discover_parallel_sections((route,))
+
+    assert len(sections) == 1
+    assert sections[0].coordinates == route.coordinates
+
+
+def test_parallel_groups_are_transitive_components_not_all_same_endpoint_routes() -> None:
+    routes = (
+        ParallelRoute(
+            route_id="a-west",
+            endpoints=("a", "b"),
+            coordinates=((0, 0), (1_000, 0)),
+            network_scope="urban",
+        ),
+        ParallelRoute(
+            route_id="a-east",
+            endpoints=("a", "b"),
+            coordinates=((0, 300), (1_000, 300)),
+            network_scope="urban",
+        ),
+        ParallelRoute(
+            route_id="b-west",
+            endpoints=("a", "b"),
+            coordinates=((0, 3_000), (1_000, 3_000)),
+            network_scope="urban",
+        ),
+        ParallelRoute(
+            route_id="b-east",
+            endpoints=("a", "b"),
+            coordinates=((0, 3_300), (1_000, 3_300)),
+            network_scope="urban",
+        ),
+    )
+
+    components = discover_parallel_components(
+        routes, discover_parallel_relations(routes, ParallelReductionConfig())
+    )
+
+    assert components == (("a-east", "a-west"), ("b-east", "b-west"))
+
+
+def test_brief_convergence_is_not_a_parallel_relation() -> None:
+    routes = (
+        ParallelRoute(
+            route_id="straight",
+            endpoints=("a", "b"),
+            coordinates=((0, 0), (1_000, 0)),
+            network_scope="urban",
+        ),
+        ParallelRoute(
+            route_id="briefly-near",
+            endpoints=("a", "b"),
+            coordinates=((0, 2_000), (450, 2_000), (500, 0), (550, 2_000), (1_000, 2_000)),
+            network_scope="urban",
+        ),
+    )
+
+    assert discover_parallel_relations(routes, ParallelReductionConfig()) == ()
+
+
+def test_continuous_material_hybrid_exposes_ordered_sections_and_transition() -> None:
+    result = compile_parallel_reduction_scenario(
+        ParallelReductionRequest(
+            profile_id="parallel-explicit-hybrid",
+            choice_points=(
+                ParallelChoicePoint(
+                    choice_point_id="switch",
+                    coordinates=(500, 0),
+                    kind="junction",
+                ),
+            ),
+            routes=(
+                ParallelRoute(
+                    route_id="access-first",
+                    endpoints=("a", "b"),
+                    coordinates=((0, 0), (500, 0), (1_000, 0)),
+                    network_scope="urban",
+                    section_evidence=(
+                        {
+                            "start_choice_point_id": "endpoint:a",
+                            "end_choice_point_id": "switch",
+                            "access_score": 10,
+                            "evidence_ids": ("access-a",),
+                        },
+                        {
+                            "start_choice_point_id": "switch",
+                            "end_choice_point_id": "endpoint:b",
+                            "access_score": 0,
+                            "evidence_ids": ("access-b",),
+                        },
+                    ),
+                ),
+                ParallelRoute(
+                    route_id="infrastructure-last",
+                    endpoints=("a", "b"),
+                    coordinates=((0, 100), (500, 0), (1_000, 100)),
+                    network_scope="urban",
+                    section_evidence=(
+                        {
+                            "start_choice_point_id": "endpoint:a",
+                            "end_choice_point_id": "switch",
+                            "existing_infrastructure_score": 0,
+                            "evidence_ids": ("infra-a",),
+                        },
+                        {
+                            "start_choice_point_id": "switch",
+                            "end_choice_point_id": "endpoint:b",
+                            "existing_infrastructure_score": 10,
+                            "evidence_ids": ("infra-b",),
+                        },
+                    ),
+                ),
+            ),
+        )
+    )
+
+    hybrid = next(item for item in result.artifact.options if item.route_id.startswith("hybrid:"))
+    assert len(hybrid.ordered_section_ids) == 2
+    assert hybrid.transition_choice_point_ids == ("switch",)
+    assert hybrid.provenance_ids == ("access-first", "infrastructure-last", "switch")
+
+
+def test_nonmaterial_or_non_choice_point_hybrids_are_not_generated() -> None:
+    no_material = compile_parallel_reduction_scenario(
+        ParallelReductionRequest(
+            profile_id="parallel-no-material-hybrid",
+            choice_points=(
+                ParallelChoicePoint(
+                    choice_point_id="switch",
+                    coordinates=(500, 0),
+                    kind="junction",
+                ),
+            ),
+            routes=(
+                ParallelRoute(
+                    route_id="left",
+                    endpoints=("a", "b"),
+                    coordinates=((0, 0), (500, 0), (1_000, 0)),
+                    network_scope="urban",
+                    section_evidence=(
+                        {"start_choice_point_id": "endpoint:a", "end_choice_point_id": "switch"},
+                        {"start_choice_point_id": "switch", "end_choice_point_id": "endpoint:b"},
+                    ),
+                ),
+                ParallelRoute(
+                    route_id="right",
+                    endpoints=("a", "b"),
+                    coordinates=((0, 100), (500, 0), (1_000, 100)),
+                    network_scope="urban",
+                    section_evidence=(
+                        {"start_choice_point_id": "endpoint:a", "end_choice_point_id": "switch"},
+                        {"start_choice_point_id": "switch", "end_choice_point_id": "endpoint:b"},
+                    ),
+                ),
+            ),
+        )
+    )
+    no_choice = compile_parallel_reduction_scenario(
+        ParallelReductionRequest(
+            profile_id="parallel-no-choice-hybrid",
+            routes=(
+                ParallelRoute(
+                    route_id="left",
+                    endpoints=("a", "b"),
+                    coordinates=((0, 0), (500, 0), (1_000, 0)),
+                    network_scope="urban",
+                ),
+                ParallelRoute(
+                    route_id="right",
+                    endpoints=("a", "b"),
+                    coordinates=((0, 100), (500, 0), (1_000, 100)),
+                    network_scope="urban",
+                ),
+            ),
+        )
+    )
+
+    assert not any(item.route_id.startswith("hybrid:") for item in no_material.artifact.options)
+    assert not any(item.route_id.startswith("hybrid:") for item in no_choice.artifact.options)
+
+
+def test_independent_components_with_same_endpoints_compile_separately() -> None:
+    routes = tuple(
+        ParallelRoute(
+            route_id=route_id,
+            endpoints=("a", "b"),
+            coordinates=((0, y), (1_000, y)),
+            network_scope="urban",
+        )
+        for route_id, y in (
+            ("a-west", 0),
+            ("a-east", 300),
+            ("b-west", 3_000),
+            ("b-east", 3_300),
+        )
+    )
+
+    result = compile_parallel_reduction_scenario(
+        ParallelReductionRequest(profile_id="parallel-independent-components", routes=routes)
+    )
+
+    assert len(result.scenario.candidate_sets) == 2
+    assert len(result.artifact.decisions) == 2
+
+
+def test_parallel_artifact_fingerprint_is_content_derived_and_order_stable() -> None:
+    routes = (
+        ParallelRoute(
+            route_id="west",
+            endpoints=("a", "b"),
+            coordinates=((0, 0), (1_000, 0)),
+            network_scope="urban",
+        ),
+        ParallelRoute(
+            route_id="east",
+            endpoints=("a", "b"),
+            coordinates=((0, 300), (1_000, 300)),
+            network_scope="urban",
+        ),
+    )
+
+    first = compile_parallel_reduction_scenario(
+        ParallelReductionRequest(profile_id="parallel-artifact-fingerprint", routes=routes)
+    )
+    second = compile_parallel_reduction_scenario(
+        ParallelReductionRequest(
+            profile_id="parallel-artifact-fingerprint", routes=tuple(reversed(routes))
+        )
+    )
+
+    assert first.artifact.fingerprint
+    assert first.artifact.fingerprint == second.artifact.fingerprint
+    with pytest.raises(ValueError, match="fingerprint is stale"):
+        ParallelReductionArtifact.model_validate(
+            first.artifact.model_dump(mode="python") | {"fingerprint": "0" * 64}
+        )
