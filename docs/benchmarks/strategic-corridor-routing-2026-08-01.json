@@ -1,7 +1,7 @@
 {
   "cache_state": "fresh RoadGraph per anchor count; same process; OS cache uncontrolled",
-  "command": "uv run python scripts/benchmark_strategic_corridor_routing.py",
-  "commit": "ea1fbfb5feab5cb03a1a2683f9e7bd3853c1ae1b",
+  "command": "uv run python scripts/benchmark_strategic_corridor_routing.py --material-workloads none",
+  "commit": "bff1f4cb793267a94e3dbcb1d96770ed45b5fdc0",
   "exit_status": 0,
   "governed_inputs": {
     "area_definition": "not-applicable-synthetic-roadgraph",
@@ -27,13 +27,23 @@
   "machine": {
     "cpu_count": 16,
     "machine": "arm64",
-    "material_workloads": "not-recorded",
+    "material_workloads": {
+      "basis": "operator observation supplied to benchmark command",
+      "observed": true,
+      "other_material_workloads": false
+    },
     "node": "Adams-MacBook-Pro-2.local",
     "platform": "macOS-26.5.2-arm64-arm-64bit",
-    "power_mode": "not-recorded"
+    "power_mode": {
+      "basis": "pmset -g batt and pmset -g custom",
+      "observed": true,
+      "pmset_powermode": 0,
+      "power_source": "AC Power",
+      "setting": "automatic"
+    }
   },
-  "peak_rss_bytes": 204455936,
-  "recorded_at": "2026-08-01T21:54:15.623401+00:00",
+  "peak_rss_bytes": 206143488,
+  "recorded_at": "2026-08-01T22:57:57.867492+00:00",
   "result_counts": {
     "route_options": 6280,
     "runs": 3
@@ -47,7 +57,7 @@
   "runs": [
     {
       "anchors": 10,
-      "elapsed_seconds": 0.0863997908309102,
+      "elapsed_seconds": 0.08815058297477663,
       "pairs": 45,
       "route_options": 180,
       "route_searches": 36,
@@ -55,7 +65,7 @@
     },
     {
       "anchors": 25,
-      "elapsed_seconds": 0.5587759579066187,
+      "elapsed_seconds": 0.5179078748915344,
       "pairs": 300,
       "route_options": 1200,
       "route_searches": 96,
@@ -63,7 +73,7 @@
     },
     {
       "anchors": 50,
-      "elapsed_seconds": 2.9434592919424176,
+      "elapsed_seconds": 2.795782416127622,
       "pairs": 1225,
       "route_options": 4900,
       "route_searches": 196,
@@ -81,5 +91,5 @@
   },
   "schema_version": "strategic-corridor-routing-benchmark/v2",
   "semantic_fingerprint": "24096a0b879872d17a3ae431b25a0fd5d4fac2af82dd3828c4443bb3629017ad",
-  "wall_seconds": 3.725374292116612
+  "wall_seconds": 3.5339277498424053
 }
