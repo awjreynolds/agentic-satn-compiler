@@ -77,6 +77,8 @@ def load_manifest(path: Path) -> ParallelReductionCorpusManifest:
             "scripted_runtime",
             "junction_node_ids",
             "choice_points",
+            "output_area_centroids",
+            "output_area_source_fingerprint",
             "required_transitions",
             "officer_decisions",
         },
@@ -137,6 +139,8 @@ def load_manifest(path: Path) -> ParallelReductionCorpusManifest:
         "routes": [dict(item) for item in routes],
         "junction_node_ids": value["junction_node_ids"],
         "choice_points": value["choice_points"],
+        "output_area_centroids": value["output_area_centroids"],
+        "output_area_source_fingerprint": value["output_area_source_fingerprint"],
         "required_transitions": value["required_transitions"],
         "officer_decisions": value["officer_decisions"],
     }
