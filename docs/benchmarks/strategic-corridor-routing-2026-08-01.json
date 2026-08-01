@@ -1,7 +1,7 @@
 {
   "cache_state": "fresh RoadGraph per anchor count; same process; OS cache uncontrolled",
   "command": "uv run python scripts/benchmark_strategic_corridor_routing.py --material-workloads none",
-  "commit": "bff1f4cb793267a94e3dbcb1d96770ed45b5fdc0",
+  "commit": "ec118b5498c1b427aab351374ba4a7bd6a7a3b0a",
   "exit_status": 0,
   "governed_inputs": {
     "area_definition": "not-applicable-synthetic-roadgraph",
@@ -42,8 +42,8 @@
       "setting": "automatic"
     }
   },
-  "peak_rss_bytes": 206143488,
-  "recorded_at": "2026-08-01T22:57:57.867492+00:00",
+  "peak_rss_bytes": 210567168,
+  "recorded_at": "2026-08-01T23:12:07.906231+00:00",
   "result_counts": {
     "route_options": 6280,
     "runs": 3
@@ -57,7 +57,7 @@
   "runs": [
     {
       "anchors": 10,
-      "elapsed_seconds": 0.08815058297477663,
+      "elapsed_seconds": 0.0851645830553025,
       "pairs": 45,
       "route_options": 180,
       "route_searches": 36,
@@ -65,7 +65,7 @@
     },
     {
       "anchors": 25,
-      "elapsed_seconds": 0.5179078748915344,
+      "elapsed_seconds": 0.5280616669915617,
       "pairs": 300,
       "route_options": 1200,
       "route_searches": 96,
@@ -73,7 +73,7 @@
     },
     {
       "anchors": 50,
-      "elapsed_seconds": 2.795782416127622,
+      "elapsed_seconds": 2.8546934160403907,
       "pairs": 1225,
       "route_options": 4900,
       "route_searches": 196,
@@ -91,5 +91,5 @@
   },
   "schema_version": "strategic-corridor-routing-benchmark/v2",
   "semantic_fingerprint": "24096a0b879872d17a3ae431b25a0fd5d4fac2af82dd3828c4443bb3629017ad",
-  "wall_seconds": 3.5339277498424053
+  "wall_seconds": 3.6092561250552535
 }
