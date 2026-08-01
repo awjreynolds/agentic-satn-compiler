@@ -1,8 +1,8 @@
 {"contract":"satn-parallel-reduction-deep-thresholds/v1","cases":[
-{"id":"coverage-79","coverage_pct":79,"expected":"reject"},{"id":"coverage-80","coverage_pct":80,"expected":"admit"},{"id":"coverage-81","coverage_pct":81,"expected":"admit"},
+{"id":"coverage-79","coverage_pct":79,"expected":"reject","divergence_length_m":188},{"id":"coverage-80","coverage_pct":80,"expected":"admit","divergence_length_m":176.78},{"id":"coverage-81","coverage_pct":81,"expected":"admit","divergence_length_m":166},
 {"id":"urban-499","scope":"urban","distance_m":499,"expected":"admit"},{"id":"urban-500","scope":"urban","distance_m":500,"expected":"admit"},{"id":"urban-501","scope":"urban","distance_m":501,"expected":"reject"},
 {"id":"rural-1499","scope":"rural","distance_m":1499,"expected":"admit"},{"id":"rural-1500","scope":"rural","distance_m":1500,"expected":"admit"},{"id":"rural-1501","scope":"rural","distance_m":1501,"expected":"reject"},
-{"id":"population-99","material_population_difference":99,"expected":"deterministic"},{"id":"population-100","material_population_difference":100,"expected":"runtime-boundary"},{"id":"population-101","material_population_difference":101,"expected":"runtime-boundary"},
+{"id":"population-99","material_population_difference":99,"expected":"runtime-boundary"},{"id":"population-100","material_population_difference":100,"expected":"runtime-boundary"},{"id":"population-101","material_population_difference":101,"expected":"deterministic"},
 {"id":"topography-9","material_score_difference":9,"expected":"runtime-boundary"},{"id":"topography-10","material_score_difference":10,"expected":"runtime-boundary"},{"id":"topography-11","material_score_difference":11,"expected":"deterministic"},
 {"id":"reversed-input","expected":"same-identity"},{"id":"missing-evidence","expected":"deterministic-fallback"},{"id":"runtime-timeout","expected":"fallback"},{"id":"runtime-provider-failure","expected":"fallback"},{"id":"runtime-invalid-response","expected":"fallback"},{"id":"repeat-run","expected":"same-identity"}
 ]}

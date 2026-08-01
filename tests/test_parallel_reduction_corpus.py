@@ -52,6 +52,30 @@ def test_deep_data_declares_exact_boundary_and_completion_cases() -> None:
     deep = json.loads(DEEP_THRESHOLDS.read_text(encoding="ascii"))
     cases = {item["id"]: item for item in deep["cases"]}
 
+    assert set(cases) == {
+        "coverage-79",
+        "coverage-80",
+        "coverage-81",
+        "urban-499",
+        "urban-500",
+        "urban-501",
+        "rural-1499",
+        "rural-1500",
+        "rural-1501",
+        "population-99",
+        "population-100",
+        "population-101",
+        "topography-9",
+        "topography-10",
+        "topography-11",
+        "reversed-input",
+        "missing-evidence",
+        "runtime-timeout",
+        "runtime-provider-failure",
+        "runtime-invalid-response",
+        "repeat-run",
+    }
+
     assert [cases[f"coverage-{value}"]["expected"] for value in (79, 80, 81)] == [
         "reject",
         "admit",
@@ -171,6 +195,139 @@ def test_deep_order_and_repeat_cases_have_identical_compiler_identity() -> None:
         first.scenario.scenario_fingerprint
         == compile_parallel_reduction_scenario(reversed_request).scenario.scenario_fingerprint
     )
+
+
+def _deep_cases() -> dict[str, dict[str, object]]:
+    return {
+        item["id"]: item
+        for item in json.loads(DEEP_THRESHOLDS.read_text(encoding="ascii"))["cases"]
+    }
+
+
+def test_deep_coverage_cases_execute_calibrated_raw_divergence_geometry() -> None:
+    """Keep coverage boundaries in the corpus as geometry, not mocked percentages."""
+
+    from satn.parallel_reduction import (
+        ParallelReductionConfig,
+        ParallelReductionRequest,
+        ParallelRoute,
+        compile_parallel_reduction_scenario,
+    )
+
+    for case_id in ("coverage-79", "coverage-80", "coverage-81"):
+        case = _deep_cases()[case_id]
+        divergence = float(case["divergence_length_m"])
+        request = ParallelReductionRequest(
+            profile_id=f"parallel-{case_id}",
+            config=ParallelReductionConfig(
+                urban_proximity_m=0.01,
+                rural_proximity_m=0.01,
+            ),
+            routes=(
+                ParallelRoute(
+                    route_id="coverage-left",
+                    endpoints=("coverage-a", "coverage-b"),
+                    coordinates=((0.0, 0.0), (1_000.0, 0.0), (1_000.0 + divergence, divergence)),
+                    network_scope="urban",
+                ),
+                ParallelRoute(
+                    route_id="coverage-right",
+                    endpoints=("coverage-a", "coverage-b"),
+                    coordinates=((0.0, 0.0), (1_000.0, 0.0), (1_000.0 + divergence, -divergence)),
+                    network_scope="urban",
+                ),
+            ),
+        )
+
+        result = compile_parallel_reduction_scenario(request)
+        assert bool(result.artifact.relations) is (case["expected"] == "admit")
+
+
+@pytest.mark.parametrize("field", ["material_population_difference", "material_score_difference"])
+def test_deep_material_threshold_cases_execute_raw_evidence_conflicts(field: str) -> None:
+    """Materiality comes from actual competing route evidence and config thresholds."""
+
+    from satn.parallel_reduction import (
+        ParallelReductionConfig,
+        ParallelReductionRequest,
+        compile_parallel_reduction_scenario,
+    )
+
+    prefix = "population" if field == "material_population_difference" else "topography"
+    for threshold in (9, 10, 11) if prefix == "topography" else (99, 100, 101):
+        case = _deep_cases()[f"{prefix}-{threshold}"]
+        config = ParallelReductionConfig(
+            runtime_eligible=True,
+            material_population_difference=0 if prefix == "topography" else case[field],
+            material_score_difference=10 if prefix == "population" else case[field],
+        )
+        base_request = _deep_request(distance_m=400, scope="urban", runtime_eligible=True)
+        request_data = base_request.model_dump(mode="python")
+        if prefix == "topography":
+            request_data["routes"] = [
+                {
+                    **route.model_dump(mode="python"),
+                    "population": 100,
+                    "access_score": 10 if route.route_id == "deep-east" else 0,
+                }
+                for route in base_request.routes
+            ]
+        request = ParallelReductionRequest.model_validate(
+            {**request_data, "profile_id": f"parallel-{prefix}-{threshold}", "config": config}
+        )
+
+        result = compile_parallel_reduction_scenario(request)
+        assert result.scenario.publishable is True
+        decision = result.artifact.decisions[0]
+        expected_runtime_boundary = case["expected"] == "runtime-boundary"
+        assert decision.mode == ("fallback" if expected_runtime_boundary else "deterministic")
+        assert decision.fallback_trigger == (
+            "runtime-unavailable" if expected_runtime_boundary else None
+        )
+
+
+def test_deep_missing_evidence_case_completes_with_raw_absent_evidence() -> None:
+    from satn.parallel_reduction import (
+        ParallelReductionConfig,
+        ParallelReductionRequest,
+        ParallelRoute,
+        compile_parallel_reduction_scenario,
+    )
+
+    case = _deep_cases()["missing-evidence"]
+    result = compile_parallel_reduction_scenario(
+        ParallelReductionRequest(
+            profile_id="parallel-missing-evidence",
+            config=ParallelReductionConfig(runtime_eligible=True),
+            routes=(
+                ParallelRoute(
+                    route_id="evidence-present",
+                    endpoints=("evidence-a", "evidence-b"),
+                    coordinates=((0.0, 0.0), (1_000.0, 0.0)),
+                    network_scope="urban",
+                    evidence_ids=("verified-link",),
+                    population=200,
+                ),
+                ParallelRoute(
+                    route_id="evidence-missing",
+                    endpoints=("evidence-a", "evidence-b"),
+                    coordinates=((0.0, 400.0), (1_000.0, 400.0)),
+                    network_scope="urban",
+                    population=0,
+                    access_score=20,
+                ),
+            ),
+        )
+    )
+
+    assert result.scenario.publishable is True
+    assert result.artifact.decisions[0].mode == "fallback"
+    assert result.artifact.decisions[0].fallback_trigger == "runtime-unavailable"
+    assert (
+        result.artifact.decisions[0].selected_route_id
+        == result.artifact.decisions[0].compiler_preferred_route_id
+    )
+    assert case["expected"] == "deterministic-fallback"
 
 
 def test_manifest_rejects_zones_within_rural_candidate_distance(tmp_path: Path) -> None:
