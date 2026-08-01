@@ -979,6 +979,202 @@ def test_nonmaterial_or_non_choice_point_hybrids_are_not_generated() -> None:
     assert not any(item.route_id.startswith("hybrid:") for item in no_choice.artifact.options)
 
 
+def test_complete_section_cev_retains_unselected_topography_only_hybrid() -> None:
+    result = compile_parallel_reduction_scenario(
+        ParallelReductionRequest(
+            profile_id="parallel-hybrid-cev",
+            choice_points=(
+                ParallelChoicePoint(
+                    choice_point_id="switch",
+                    coordinates=(500, 0),
+                    kind="junction",
+                ),
+            ),
+            routes=(
+                ParallelRoute(
+                    route_id="lower-first",
+                    endpoints=("a", "b"),
+                    coordinates=((0, 0), (500, 0), (1_000, 0)),
+                    network_scope="urban",
+                    gradient_pct=0,
+                    section_evidence=(
+                        {
+                            "start_choice_point_id": "endpoint:a",
+                            "end_choice_point_id": "switch",
+                            "cumulative_elevation_variation_m": 20,
+                            "cev_source_fingerprint": "a" * 64,
+                        },
+                        {
+                            "start_choice_point_id": "switch",
+                            "end_choice_point_id": "endpoint:b",
+                            "cumulative_elevation_variation_m": 80,
+                            "cev_source_fingerprint": "a" * 64,
+                        },
+                    ),
+                ),
+                ParallelRoute(
+                    route_id="lower-last",
+                    endpoints=("a", "b"),
+                    coordinates=((0, 100), (500, 0), (1_000, 100)),
+                    network_scope="urban",
+                    gradient_pct=99,
+                    section_evidence=(
+                        {
+                            "start_choice_point_id": "endpoint:a",
+                            "end_choice_point_id": "switch",
+                            "cumulative_elevation_variation_m": 80,
+                            "cev_source_fingerprint": "a" * 64,
+                        },
+                        {
+                            "start_choice_point_id": "switch",
+                            "end_choice_point_id": "endpoint:b",
+                            "cumulative_elevation_variation_m": 20,
+                            "cev_source_fingerprint": "a" * 64,
+                        },
+                    ),
+                ),
+            ),
+        )
+    )
+
+    hybrid = next(item for item in result.artifact.options if item.route_id.startswith("hybrid:"))
+    assert hybrid.cumulative_elevation_variation_m == 40
+    assert hybrid.cev_source_fingerprint == "a" * 64
+    assert hybrid.topography_assessment == "assessed"
+    assert hybrid.topography_only_justification is True
+    assert result.selected_route_ids == ("lower-first",)
+
+
+def test_section_cev_hybrid_uses_exact_absolute_and_relative_boundaries() -> None:
+    result = compile_parallel_reduction_scenario(
+        ParallelReductionRequest(
+            profile_id="parallel-hybrid-cev-boundary",
+            choice_points=(
+                ParallelChoicePoint(
+                    choice_point_id="switch",
+                    coordinates=(500, 0),
+                    kind="junction",
+                ),
+            ),
+            routes=(
+                ParallelRoute(
+                    route_id="first",
+                    endpoints=("a", "b"),
+                    coordinates=((0, 0), (500, 0), (1_000, 0)),
+                    network_scope="urban",
+                    section_evidence=(
+                        {
+                            "start_choice_point_id": "endpoint:a",
+                            "end_choice_point_id": "switch",
+                            "cumulative_elevation_variation_m": 30,
+                            "cev_source_fingerprint": "a" * 64,
+                        },
+                        {
+                            "start_choice_point_id": "switch",
+                            "end_choice_point_id": "endpoint:b",
+                            "cumulative_elevation_variation_m": 50,
+                            "cev_source_fingerprint": "a" * 64,
+                        },
+                    ),
+                ),
+                ParallelRoute(
+                    route_id="second",
+                    endpoints=("a", "b"),
+                    coordinates=((0, 100), (500, 0), (1_000, 100)),
+                    network_scope="urban",
+                    section_evidence=(
+                        {
+                            "start_choice_point_id": "endpoint:a",
+                            "end_choice_point_id": "switch",
+                            "cumulative_elevation_variation_m": 50,
+                            "cev_source_fingerprint": "a" * 64,
+                        },
+                        {
+                            "start_choice_point_id": "switch",
+                            "end_choice_point_id": "endpoint:b",
+                            "cumulative_elevation_variation_m": 30,
+                            "cev_source_fingerprint": "a" * 64,
+                        },
+                    ),
+                ),
+            ),
+        )
+    )
+
+    hybrid = next(item for item in result.artifact.options if item.route_id.startswith("hybrid:"))
+    assert hybrid.cumulative_elevation_variation_m == 60
+
+
+@pytest.mark.parametrize(
+    ("second_suffix_cev", "second_source"),
+    ((None, "a" * 64), (30, "b" * 64)),
+    ids=("incomplete", "incompatible-source"),
+)
+def test_incomplete_or_incompatible_section_cev_cannot_justify_hybrid(
+    second_suffix_cev: float | None, second_source: str
+) -> None:
+    result = compile_parallel_reduction_scenario(
+        ParallelReductionRequest(
+            profile_id=(
+                "parallel-hybrid-cev-missing"
+                if second_suffix_cev is None
+                else "parallel-hybrid-cev-incompatible"
+            ),
+            choice_points=(
+                ParallelChoicePoint(
+                    choice_point_id="switch",
+                    coordinates=(500, 0),
+                    kind="junction",
+                ),
+            ),
+            routes=(
+                ParallelRoute(
+                    route_id="first",
+                    endpoints=("a", "b"),
+                    coordinates=((0, 0), (500, 0), (1_000, 0)),
+                    network_scope="urban",
+                    section_evidence=(
+                        {
+                            "start_choice_point_id": "endpoint:a",
+                            "end_choice_point_id": "switch",
+                            "cumulative_elevation_variation_m": 20,
+                            "cev_source_fingerprint": "a" * 64,
+                        },
+                        {
+                            "start_choice_point_id": "switch",
+                            "end_choice_point_id": "endpoint:b",
+                            "cumulative_elevation_variation_m": 80,
+                            "cev_source_fingerprint": "a" * 64,
+                        },
+                    ),
+                ),
+                ParallelRoute(
+                    route_id="second",
+                    endpoints=("a", "b"),
+                    coordinates=((0, 100), (500, 0), (1_000, 100)),
+                    network_scope="urban",
+                    section_evidence=(
+                        {
+                            "start_choice_point_id": "endpoint:a",
+                            "end_choice_point_id": "switch",
+                            "cumulative_elevation_variation_m": 80,
+                            "cev_source_fingerprint": "a" * 64,
+                        },
+                        {
+                            "start_choice_point_id": "switch",
+                            "end_choice_point_id": "endpoint:b",
+                            "cumulative_elevation_variation_m": second_suffix_cev,
+                            "cev_source_fingerprint": second_source,
+                        },
+                    ),
+                ),
+            ),
+        )
+    )
+
+    assert not any(item.route_id.startswith("hybrid:") for item in result.artifact.options)
+
+
 def test_independent_components_with_same_endpoints_compile_separately() -> None:
     routes = tuple(
         ParallelRoute(

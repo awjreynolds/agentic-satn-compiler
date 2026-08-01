@@ -103,6 +103,9 @@ class ParallelRoute(BaseModel):
     section_ids: tuple[str, ...] = ()
     transition_choice_point_ids: tuple[str, ...] = ()
     composition_provenance_ids: tuple[str, ...] = ()
+    cumulative_elevation_variation_m: float | None = Field(default=None, ge=0)
+    cev_source_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    topography_only_justification: bool = False
 
     @field_validator("endpoints")
     @classmethod
@@ -224,6 +227,8 @@ class ParallelSectionEvidence(BaseModel):
     end_choice_point_id: str = Field(pattern=r"^[a-z0-9][a-z0-9._:-]*$")
     population: int = Field(default=0, ge=0)
     gradient_pct: float = Field(default=0.0, ge=0.0)
+    cumulative_elevation_variation_m: float | None = Field(default=None, ge=0)
+    cev_source_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     access_score: float = 0.0
     existing_infrastructure_score: float = 0.0
     evidence_ids: tuple[str, ...] = ()
@@ -252,6 +257,11 @@ class ParallelAlignmentOption(BaseModel):
     ordered_section_ids: tuple[str, ...]
     transition_choice_point_ids: tuple[str, ...] = ()
     provenance_ids: tuple[str, ...] = ()
+    maximum_gradient_pct: float | None = None
+    cumulative_elevation_variation_m: float | None = None
+    cev_source_fingerprint: str | None = None
+    topography_assessment: Literal["assessed", "unassessed"] = "unassessed"
+    topography_only_justification: bool = False
 
 class ParallelReductionRequest(BaseModel):
     """Data-only compiler input; all route candidates are discovered here."""
@@ -694,6 +704,8 @@ def _decorate_base_routes(
                     )[:-1]
                 ),
                 "composition_provenance_ids": route.provenance_ids or (route.route_id,),
+                "cumulative_elevation_variation_m": _route_cev(route)[0],
+                "cev_source_fingerprint": _route_cev(route)[1],
             }
         )
         for route in routes
@@ -821,7 +833,10 @@ def _compose_hybrid(
         return None
     selected_sections = (*first_sections, *second_sections)
     metrics = _composition_metrics(first, second, selected_sections)
-    if metrics is None or not _material_hybrid(metrics, first, second, config):
+    if metrics is None:
+        return None
+    material, topography_only = _material_hybrid(metrics, first, second, config)
+    if not material:
         return None
     coordinates = tuple(
         coordinate
@@ -844,6 +859,9 @@ def _compose_hybrid(
         gradient_pct=metrics["gradient_pct"],
         access_score=metrics["access_score"],
         existing_infrastructure_score=metrics["existing_infrastructure_score"],
+        cumulative_elevation_variation_m=metrics["cumulative_elevation_variation_m"],
+        cev_source_fingerprint=metrics["cev_source_fingerprint"],
+        topography_only_justification=topography_only,
         section_ids=tuple(item.section_id for item in selected_sections),
         transition_choice_point_ids=(switch_id,),
         composition_provenance_ids=(first.route_id, second.route_id, switch_id),
@@ -873,6 +891,8 @@ def _composition_metrics(
     return {
         "population": sum(item.population for item in observations),
         "gradient_pct": max(item.gradient_pct for item in observations),
+        "cumulative_elevation_variation_m": _complete_cev(observations)[0],
+        "cev_source_fingerprint": _complete_cev(observations)[1],
         "access_score": sum(item.access_score for item in observations),
         "existing_infrastructure_score": sum(
             item.existing_infrastructure_score for item in observations
@@ -883,35 +903,88 @@ def _composition_metrics(
     }
 
 
+def _complete_cev(
+    observations: list[ParallelSectionEvidence] | tuple[ParallelSectionEvidence, ...],
+) -> tuple[float | None, str | None]:
+    """Return a sum only for complete, compatible direction-independent CEV."""
+
+    if not observations or any(
+        item.cumulative_elevation_variation_m is None or item.cev_source_fingerprint is None
+        for item in observations
+    ):
+        return None, None
+    fingerprints = {item.cev_source_fingerprint for item in observations}
+    if len(fingerprints) != 1:
+        return None, None
+    return (
+        sum(float(item.cumulative_elevation_variation_m) for item in observations),
+        next(iter(fingerprints)),
+    )
+
+
+def _route_cev(route: ParallelRoute) -> tuple[float | None, str | None]:
+    if route.cumulative_elevation_variation_m is not None and route.cev_source_fingerprint:
+        return route.cumulative_elevation_variation_m, route.cev_source_fingerprint
+    return _complete_cev(route.section_evidence)
+
+
+def _material_cev_advantage(
+    hybrid_cev: float | None,
+    hybrid_fingerprint: str | None,
+    base: ParallelRoute,
+    config: ParallelReductionConfig,
+) -> bool:
+    base_cev, base_fingerprint = _route_cev(base)
+    if (
+        hybrid_cev is None
+        or hybrid_fingerprint is None
+        or base_cev is None
+        or base_fingerprint != hybrid_fingerprint
+        or hybrid_cev > base_cev
+    ):
+        return False
+    difference = base_cev - hybrid_cev
+    relative = 0.0 if base_cev == 0 else difference / max(base_cev, hybrid_cev) * 100
+    return (
+        difference >= config.material_elevation_variation_m
+        and relative >= config.material_elevation_variation_pct
+    )
+
+
 def _material_hybrid(
     metrics: Mapping[str, object],
     first: ParallelRoute,
     second: ParallelRoute,
     config: ParallelReductionConfig,
-) -> bool:
+) -> tuple[bool, bool]:
     """Require a governed whole-option advantage; never combine cross-dimension scores."""
 
     population = int(metrics["population"])
-    gradient = float(metrics["gradient_pct"])
     access = float(metrics["access_score"])
     infrastructure = float(metrics["existing_infrastructure_score"])
+    cev = metrics["cumulative_elevation_variation_m"]
+    cev_fingerprint = metrics["cev_source_fingerprint"]
+    non_topographic_material = True
+    topographic_material = True
     for base in (first, second):
         no_worse = (
             population >= base.population
-            and gradient <= base.gradient_pct
             and access >= base.access_score
             and infrastructure >= base.existing_infrastructure_score
         )
         materially_better = (
             population >= base.population + config.material_population_difference
-            or gradient <= base.gradient_pct - config.material_score_difference
             or access >= base.access_score + config.material_score_difference
             or infrastructure
             >= base.existing_infrastructure_score + config.material_score_difference
         )
         if not (no_worse and materially_better):
-            return False
-    return True
+            non_topographic_material = False
+        if not _material_cev_advantage(cev, cev_fingerprint, base, config):
+            topographic_material = False
+    return non_topographic_material or topographic_material, (
+        topographic_material and not non_topographic_material
+    )
 
 
 def _population_source() -> PopulationReachSource:
@@ -1123,6 +1196,7 @@ def compile_parallel_reduction_scenario(
     selections = []
     group_endpoints: dict[str, tuple[str, str]] = {}
     routes_by_group: dict[str, tuple[ParallelRoute, ...]] = {}
+    selection_routes_by_group: dict[str, tuple[ParallelRoute, ...]] = {}
     for component in components:
         group_id = "component:" + _digest(component)[:16]
         base_component_routes = tuple(base_by_id[route_id] for route_id in component)
@@ -1141,6 +1215,11 @@ def compile_parallel_reduction_scenario(
         ]
         group_endpoints[group_id] = endpoints
         routes_by_group[group_id] = tuple(sorted(routes, key=lambda item: item.route_id))
+        selection_routes_by_group[group_id] = tuple(
+            route
+            for route in routes_by_group[group_id]
+            if not route.topography_only_justification
+        )
         inputs = tuple(
             AlignmentCandidateInput(
                 network_role=NetworkRole.INTERURBAN_SPINE,
@@ -1154,7 +1233,7 @@ def compile_parallel_reduction_scenario(
                 directness_m=LineString(route.coordinates).length,
                 maximum_gradient_pct=route.gradient_pct,
             )
-            for route in routes_by_group[group_id]
+            for route in selection_routes_by_group[group_id]
         )
         candidate_set = admit_candidate_set(
             profile,
@@ -1165,7 +1244,7 @@ def compile_parallel_reduction_scenario(
         )
         by_input_identity = {
             _digest((route.route_id, route.evidence_ids)): route
-            for route in routes_by_group[group_id]
+            for route in selection_routes_by_group[group_id]
         }
         by_candidate = {
             candidate.candidate_id: by_input_identity[candidate.evidence_fingerprints[0]]
@@ -1231,7 +1310,9 @@ def compile_parallel_reduction_scenario(
     )
     route_by_candidate = {
         candidate.candidate_id: route.route_id
-        for candidate_set, routes in zip(candidate_sets, routes_by_group.values(), strict=True)
+        for candidate_set, routes in zip(
+            candidate_sets, selection_routes_by_group.values(), strict=True
+        )
         for candidate in candidate_set.candidates
         for route in routes
         if candidate.evidence_fingerprints[0] == _digest((route.route_id, route.evidence_ids))
@@ -1244,7 +1325,7 @@ def compile_parallel_reduction_scenario(
         endpoints: sum(1 for item in group_endpoints.values() if item == endpoints)
         for endpoints in group_endpoints.values()
     }
-    for group_id, routes in routes_by_group.items():
+    for group_id, routes in selection_routes_by_group.items():
         endpoints = group_endpoints[group_id]
         target_id = "parallel:" + ":".join(endpoints)
         if endpoint_group_counts[endpoints] > 1:
@@ -1382,8 +1463,8 @@ def compile_parallel_reduction_scenario(
     # scenario with those envelopes rather than exposing a competing wrapper
     # winner list.
     envelopes = []
-    for group_id, selection in zip(routes_by_group, selections, strict=True):
-        decision = decisions[list(routes_by_group).index(group_id)]
+    for group_id, selection in zip(selection_routes_by_group, selections, strict=True):
+        decision = decisions[list(selection_routes_by_group).index(group_id)]
         if selection.publishable:
             continue
         candidate_id = next(
@@ -1478,6 +1559,16 @@ def compile_parallel_reduction_scenario(
                 ordered_section_ids=route.section_ids,
                 transition_choice_point_ids=route.transition_choice_point_ids,
                 provenance_ids=route.composition_provenance_ids or route.provenance_ids,
+                maximum_gradient_pct=route.gradient_pct,
+                cumulative_elevation_variation_m=route.cumulative_elevation_variation_m,
+                cev_source_fingerprint=route.cev_source_fingerprint,
+                topography_assessment=(
+                    "assessed"
+                    if route.cumulative_elevation_variation_m is not None
+                    and route.cev_source_fingerprint is not None
+                    else "unassessed"
+                ),
+                topography_only_justification=route.topography_only_justification,
             )
             for routes in routes_by_group.values()
             for route in routes
