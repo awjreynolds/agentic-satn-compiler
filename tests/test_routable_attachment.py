@@ -131,7 +131,7 @@ def test_batched_routes_preserve_asymmetric_one_way_and_equal_cost_options() -> 
         strategic_use=True,
     )
 
-    assert search_count == 6
+    assert search_count == 4
     for role, option in expected.items():
         actual = routed[("s", "t")][role]
         assert actual is not None and option is not None
@@ -139,6 +139,99 @@ def test_batched_routes_preserve_asymmetric_one_way_and_equal_cost_options() -> 
         assert actual.reverse_edge_ids == option.reverse_edge_ids
         assert actual.geometry.wkb_hex == option.geometry.wkb_hex
         assert actual.bidirectional is option.bidirectional
+
+
+def test_equal_cost_ties_for_one_start_replay_legacy_paths_as_one_grouped_search() -> None:
+    rows: list[dict[str, object]] = []
+    expected_geometries: dict[str, LineString] = {}
+    pairs: list[tuple[str, str]] = []
+    for index in range(8):
+        target = f"t-{index:02d}"
+        c_node = f"c-{index:02d}"
+        d_node = f"d-{index:02d}"
+        c_point = (2, index * 10)
+        d_point = (1, index * 10 + 1)
+        target_point = (3, index * 10)
+        expected_geometries[target] = LineString([(0, 0), c_point, target_point])
+        pairs.append(("s", target))
+        rows.extend(
+            (
+                {
+                    "osmid": f"{c_node}-{target}",
+                    "u": c_node,
+                    "v": target,
+                    "length": 1,
+                    "geometry": LineString([c_point, target_point]),
+                },
+                {
+                    "osmid": f"{target}-{c_node}",
+                    "u": target,
+                    "v": c_node,
+                    "length": 1,
+                    "geometry": LineString([target_point, c_point]),
+                },
+                {
+                    "osmid": f"{d_node}-{target}",
+                    "u": d_node,
+                    "v": target,
+                    "length": 2,
+                    "geometry": LineString([d_point, target_point]),
+                },
+                {
+                    "osmid": f"{target}-{d_node}",
+                    "u": target,
+                    "v": d_node,
+                    "length": 2,
+                    "geometry": LineString([target_point, d_point]),
+                },
+                {
+                    "osmid": f"s-{c_node}",
+                    "u": "s",
+                    "v": c_node,
+                    "length": 2,
+                    "geometry": LineString([(0, 0), c_point]),
+                },
+                {
+                    "osmid": f"{c_node}-s",
+                    "u": c_node,
+                    "v": "s",
+                    "length": 2,
+                    "geometry": LineString([c_point, (0, 0)]),
+                },
+                {
+                    "osmid": f"s-{d_node}",
+                    "u": "s",
+                    "v": d_node,
+                    "length": 1,
+                    "geometry": LineString([(0, 0), d_point]),
+                },
+                {
+                    "osmid": f"{d_node}-s",
+                    "u": d_node,
+                    "v": "s",
+                    "length": 1,
+                    "geometry": LineString([d_point, (0, 0)]),
+                },
+            )
+        )
+    graph = RoadGraph(gpd.GeoDataFrame(rows, geometry="geometry", crs=27700))
+
+    routed, search_count = graph.route_options_for_pairs(
+        pairs,
+        roles=("direct",),
+        strategic_use=True,
+    )
+
+    assert search_count == 1
+    for _start, target in pairs:
+        option = routed[("s", target)]["direct"]
+        assert option is not None
+        assert option.edge_ids == [f"s-c-{target[-2:]}", f"c-{target[-2:]}-{target}"]
+        assert option.reverse_edge_ids == [
+            f"{target}-c-{target[-2:]}",
+            f"c-{target[-2:]}-s",
+        ]
+        assert option.geometry.equals_exact(expected_geometries[target], tolerance=0)
 
 
 @pytest.mark.parametrize("anchor_count", (10, 25, 50))

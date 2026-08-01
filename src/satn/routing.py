@@ -8,7 +8,7 @@ import logging
 import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from itertools import pairwise
+from itertools import count, pairwise
 
 import geopandas as gpd
 import networkx as nx
@@ -99,6 +99,21 @@ class PointAttachment:
     ncn: bool
     impracticable_alongside: bool
     attachment_point: Point
+
+
+@dataclass(frozen=True)
+class _DijkstraRelaxation:
+    node: str
+    distance: float
+    predecessor: str
+
+
+@dataclass(frozen=True)
+class _DijkstraTraceEvent:
+    node: str
+    distance: float
+    settled: bool
+    relaxations: tuple[_DijkstraRelaxation, ...]
 
 
 class RoadGraph:
@@ -1123,6 +1138,7 @@ class RoadGraph:
                 lengths = {}
                 paths = {}
             searches += 1
+            tied_ends: list[str] = []
             for end in sorted(ends):
                 nodes = paths.get(end)
                 if nodes is not None and _has_equal_cost_route_tie(
@@ -1132,18 +1148,17 @@ class RoadGraph:
                     lengths,
                     _weight_for(role),
                 ):
-                    # NetworkX's target-specific bidirectional Dijkstra has a
-                    # distinct deterministic tie choice from its single-source
-                    # implementation.  Retain the legacy path only for the
-                    # bounded targets where equal-cost alternatives exist.
-                    nodes = nx.shortest_path(
-                        route_graph,
-                        start,
-                        end,
-                        weight=_weight_for(role),
-                    )
-                    searches += 1
+                    tied_ends.append(end)
                 primary_paths[((start, end), role)] = nodes
+            if tied_ends:
+                legacy_tied_paths = _legacy_paths_from_grouped_dijkstra_traces(
+                    route_graph,
+                    start,
+                    tied_ends,
+                    _weight_for(role),
+                )
+                for end, nodes in legacy_tied_paths.items():
+                    primary_paths[((start, end), role)] = nodes
 
         reverse_paths: dict[tuple[tuple[str, str], str], list[str] | None] = {}
         reverse_groups: dict[
@@ -1184,6 +1199,7 @@ class RoadGraph:
                 lengths = {}
                 paths = {}
             searches += 1
+            tied_requests: dict[str, list[tuple[tuple[str, str], str]]] = {}
             for request_key, reverse_end in sorted(requests):
                 nodes = paths.get(reverse_end)
                 if nodes is not None and _has_equal_cost_route_tie(
@@ -1193,14 +1209,18 @@ class RoadGraph:
                     lengths,
                     weight,
                 ):
-                    nodes = nx.shortest_path(
-                        route_graph,
-                        reverse_start,
-                        reverse_end,
-                        weight=weight,
-                    )
-                    searches += 1
+                    tied_requests.setdefault(reverse_end, []).append(request_key)
                 reverse_paths[request_key] = nodes
+            if tied_requests:
+                legacy_tied_paths = _legacy_paths_from_grouped_dijkstra_traces(
+                    route_graph,
+                    reverse_start,
+                    tied_requests,
+                    weight,
+                )
+                for reverse_end, nodes in legacy_tied_paths.items():
+                    for request_key in tied_requests[reverse_end]:
+                        reverse_paths[request_key] = nodes
 
         for request_key, nodes in primary_paths.items():
             if nodes is None:
@@ -1417,6 +1437,149 @@ def _weight_for(role: str) -> Callable[[str, str, dict[str, object]], float]:
         return length
 
     return weight
+
+
+def _legacy_paths_from_grouped_dijkstra_traces(
+    graph: nx.DiGraph,
+    start: str,
+    targets: Iterable[str],
+    weight: Callable[[str, str, dict[str, object]], float],
+) -> dict[str, list[str]]:
+    """Replay legacy bidirectional tie choices from grouped deterministic traces.
+
+    NetworkX's target-specific bidirectional Dijkstra can choose a different
+    equal-cost path from its single-source Dijkstra.  The forward event trace
+    is computed once for the grouped start.  Reverse traces are prepared in one
+    grouped operation for the finite tied targets, then the original alternating
+    meet/stop rules are replayed without starting another graph search per pair.
+    """
+
+    ordered_targets = tuple(sorted(set(targets)))
+    forward_trace = _dijkstra_trace(graph, start, weight, reverse=False)
+    reverse_traces = {
+        target: _dijkstra_trace(graph, target, weight, reverse=True)
+        for target in ordered_targets
+    }
+    paths: dict[str, list[str]] = {}
+    for target in ordered_targets:
+        path = _replay_bidirectional_trace(
+            start,
+            target,
+            forward_trace,
+            reverse_traces[target],
+        )
+        if path is not None:
+            paths[target] = path
+    return paths
+
+
+def _dijkstra_trace(
+    graph: nx.DiGraph,
+    root: str,
+    weight: Callable[[str, str, dict[str, object]], float],
+    *,
+    reverse: bool,
+) -> tuple[_DijkstraTraceEvent, ...]:
+    """Capture deterministic Dijkstra settlement and relaxation events once."""
+
+    if root not in graph:
+        return ()
+    sequence = count()
+    fringe: list[tuple[float, int, str]] = [(0.0, next(sequence), root)]
+    seen = {root: 0.0}
+    settled: dict[str, float] = {}
+    events: list[_DijkstraTraceEvent] = []
+    while fringe:
+        distance, _order, node = heapq.heappop(fringe)
+        if node in settled:
+            events.append(_DijkstraTraceEvent(node, distance, False, ()))
+            continue
+        settled[node] = distance
+        relaxations: list[_DijkstraRelaxation] = []
+        neighbors = (
+            ((neighbor, graph[neighbor][node]) for neighbor in graph.predecessors(node))
+            if reverse
+            else graph[node].items()
+        )
+        for neighbor, edge in neighbors:
+            cost = (
+                weight(neighbor, node, edge)
+                if reverse
+                else weight(node, neighbor, edge)
+            )
+            candidate = distance + cost
+            if neighbor in settled:
+                if candidate < settled[neighbor]:
+                    raise ValueError("Contradictory paths found: negative weights?")
+            elif neighbor not in seen or candidate < seen[neighbor]:
+                seen[neighbor] = candidate
+                heapq.heappush(fringe, (candidate, next(sequence), neighbor))
+                relaxations.append(
+                    _DijkstraRelaxation(neighbor, candidate, node)
+                )
+        events.append(
+            _DijkstraTraceEvent(node, distance, True, tuple(relaxations))
+        )
+    return tuple(events)
+
+
+def _replay_bidirectional_trace(
+    source: str,
+    target: str,
+    forward_trace: tuple[_DijkstraTraceEvent, ...],
+    reverse_trace: tuple[_DijkstraTraceEvent, ...],
+) -> list[str] | None:
+    """Replay NetworkX's alternating bidirectional meet and strict tie rules."""
+
+    if source == target:
+        return [source]
+    traces = (forward_trace, reverse_trace)
+    positions = [0, 0]
+    distances: tuple[dict[str, float], dict[str, float]] = ({}, {})
+    seen: tuple[dict[str, float], dict[str, float]] = (
+        {source: 0.0},
+        {target: 0.0},
+    )
+    predecessors: tuple[dict[str, str | None], dict[str, str | None]] = (
+        {source: None},
+        {target: None},
+    )
+    final_distance: float | None = None
+    meeting_node: str | None = None
+    direction = 1
+    while positions[0] < len(traces[0]) and positions[1] < len(traces[1]):
+        direction = 1 - direction
+        event = traces[direction][positions[direction]]
+        positions[direction] += 1
+        if not event.settled:
+            continue
+        distances[direction][event.node] = event.distance
+        if event.node in distances[1 - direction]:
+            if meeting_node is None:
+                return None
+            forward_path: list[str] = []
+            node: str | None = meeting_node
+            while node is not None:
+                forward_path.append(node)
+                node = predecessors[0][node]
+            forward_path.reverse()
+            reverse_path: list[str] = []
+            node = predecessors[1][meeting_node]
+            while node is not None:
+                reverse_path.append(node)
+                node = predecessors[1][node]
+            return [*forward_path, *reverse_path]
+        for relaxation in event.relaxations:
+            seen[direction][relaxation.node] = relaxation.distance
+            predecessors[direction][relaxation.node] = relaxation.predecessor
+            if relaxation.node in seen[1 - direction]:
+                candidate = (
+                    relaxation.distance + seen[1 - direction][relaxation.node]
+                )
+                if final_distance is None or final_distance > candidate:
+                    final_distance = candidate
+                    meeting_node = relaxation.node
+    return None
 
 
 def _has_equal_cost_route_tie(

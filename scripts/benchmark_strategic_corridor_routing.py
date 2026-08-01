@@ -7,14 +7,17 @@ finite anchor pairs and emits elapsed time only as an observation.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import importlib.metadata
 import json
 import os
 import platform
+import re
 import resource
 import subprocess
 import sys
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from itertools import combinations
 from pathlib import Path
@@ -35,9 +38,22 @@ def benchmark(
     anchor_counts: tuple[int, ...] = ANCHOR_COUNTS,
     *,
     commit: str | None = None,
+    power_mode: Mapping[str, object] | None = None,
+    material_workloads: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Return one measured batch record for each requested anchor count."""
 
+    resolved_power_mode = dict(power_mode or _power_mode_observation())
+    if resolved_power_mode.get("observed") is not True:
+        raise ValueError("benchmark requires an actual power-mode observation")
+    if material_workloads is None or material_workloads.get("observed") is not True:
+        raise ValueError("benchmark requires an actual material-workload observation")
+    resolved_material_workloads = dict(material_workloads)
+    workload_argument = (
+        "present"
+        if resolved_material_workloads.get("other_material_workloads") is True
+        else "none"
+    )
     started_benchmark = perf_counter()
     runs: list[dict[str, object]] = []
     for anchor_count in anchor_counts:
@@ -96,14 +112,14 @@ def benchmark(
         "schema_version": "strategic-corridor-routing-benchmark/v2",
         "commit": commit or _current_commit(),
         "recorded_at": datetime.now(UTC).isoformat(),
-        "command": COMMAND,
+        "command": f"{COMMAND} --material-workloads {workload_argument}",
         "machine": {
             "node": platform.node(),
             "platform": platform.platform(),
             "machine": platform.machine(),
             "cpu_count": os.cpu_count(),
-            "power_mode": "not-recorded",
-            "material_workloads": "not-recorded",
+            "power_mode": resolved_power_mode,
+            "material_workloads": resolved_material_workloads,
         },
         "runtime": {
             "python": platform.python_version(),
@@ -169,6 +185,38 @@ def _peak_rss_bytes() -> int:
     return maximum if sys.platform == "darwin" else maximum * 1024
 
 
+def _power_mode_observation() -> dict[str, object]:
+    """Read the active macOS power source and governed performance setting."""
+
+    if sys.platform != "darwin":
+        raise RuntimeError("power-mode observation currently requires macOS pmset")
+    battery = subprocess.check_output(("pmset", "-g", "batt"), text=True)
+    custom = subprocess.check_output(("pmset", "-g", "custom"), text=True)
+    source_match = re.search(r"Now drawing from '([^']+)'", battery)
+    power_source = source_match.group(1) if source_match else None
+    sections = re.split(r"(?m)^([^\n:]+):\s*$", custom)
+    settings_by_source = {
+        sections[index].strip(): sections[index + 1]
+        for index in range(1, len(sections) - 1, 2)
+    }
+    active_settings = settings_by_source.get(str(power_source), "")
+    mode_match = re.search(r"(?m)^\s*powermode\s+(\d+)\s*$", active_settings)
+    if power_source is None or mode_match is None:
+        raise RuntimeError("pmset did not expose the active power-mode observation")
+    mode_value = int(mode_match.group(1))
+    setting = {0: "automatic", 1: "low-power", 2: "high-power"}.get(
+        mode_value,
+        f"unknown-{mode_value}",
+    )
+    return {
+        "observed": True,
+        "power_source": power_source,
+        "setting": setting,
+        "pmset_powermode": mode_value,
+        "basis": "pmset -g batt and pmset -g custom",
+    }
+
+
 def _line_network(anchor_count: int) -> gpd.GeoDataFrame:
     rows: list[dict[str, object]] = []
     for index in range(anchor_count - 1):
@@ -193,5 +241,27 @@ def _line_network(anchor_count: int) -> gpd.GeoDataFrame:
     return gpd.GeoDataFrame(rows, geometry="geometry", crs=27700)
 
 
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--material-workloads",
+        required=True,
+        choices=("none", "present"),
+        help="Operator observation of other material workloads during the run.",
+    )
+    args = parser.parse_args()
+    material_workloads = {
+        "observed": True,
+        "other_material_workloads": args.material_workloads == "present",
+        "basis": "operator observation supplied to benchmark command",
+    }
+    print(
+        json.dumps(
+            benchmark(material_workloads=material_workloads),
+            sort_keys=True,
+        )
+    )
+
+
 if __name__ == "__main__":
-    print(json.dumps(benchmark(), sort_keys=True))
+    main()

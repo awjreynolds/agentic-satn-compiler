@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -23,14 +24,32 @@ def _benchmark_module() -> object:
 def test_benchmark_emits_an_adr0016_bound_semantic_manifest() -> None:
     module = _benchmark_module()
 
-    result = module.benchmark((3,), commit="a" * 40)
+    power_mode = {
+        "observed": True,
+        "power_source": "AC Power",
+        "setting": "automatic",
+    }
+    material_workloads = {
+        "observed": True,
+        "other_material_workloads": False,
+        "basis": "operator observation",
+    }
+    result = module.benchmark(
+        (3,),
+        commit="a" * 40,
+        power_mode=power_mode,
+        material_workloads=material_workloads,
+    )
 
     assert result["schema_version"] == "strategic-corridor-routing-benchmark/v2"
     assert result["commit"] == "a" * 40
     assert result["command"] == (
-        "uv run python scripts/benchmark_strategic_corridor_routing.py"
+        "uv run python scripts/benchmark_strategic_corridor_routing.py "
+        "--material-workloads none"
     )
     assert result["machine"]["machine"]
+    assert result["machine"]["power_mode"] == power_mode
+    assert result["machine"]["material_workloads"] == material_workloads
     assert result["runtime"]["python"]
     assert result["runtime"]["networkx"]
     assert result["input_binding"]["synthetic_input_sha256"]
@@ -72,9 +91,19 @@ def test_committed_manifest_replays_the_bound_semantic_oracle() -> None:
         ).read_text(encoding="utf-8")
     )
 
-    replayed = module.benchmark(commit=manifest["commit"])
+    replayed = module.benchmark(
+        commit=manifest["commit"],
+        power_mode=manifest["machine"]["power_mode"],
+        material_workloads=manifest["machine"]["material_workloads"],
+    )
 
-    assert manifest["commit"] == "ea1fbfb5feab5cb03a1a2683f9e7bd3853c1ae1b"
+    assert subprocess.run(
+        ("git", "merge-base", "--is-ancestor", manifest["commit"], "HEAD"),
+        cwd=PROJECT,
+        check=False,
+    ).returncode == 0
+    assert manifest["machine"]["power_mode"]["observed"] is True
+    assert manifest["machine"]["material_workloads"]["observed"] is True
     assert replayed["input_binding"] == manifest["input_binding"]
     assert replayed["semantic_fingerprint"] == manifest["semantic_fingerprint"]
     assert [
