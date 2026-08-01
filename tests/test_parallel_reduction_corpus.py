@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,7 @@ from satn.parallel_reduction_corpus import (
 
 PROJECT = Path(__file__).parents[1]
 ACCEPTANCE_MANIFEST = PROJECT / "data/corpus/parallel-reduction/acceptance-composite.json"
+DEEP_THRESHOLDS = PROJECT / "data/corpus/parallel-reduction/deep-thresholds.json"
 RUNNER = CliRunner()
 
 
@@ -27,10 +29,16 @@ def test_composite_manifest_declares_every_light_acceptance_zone() -> None:
 
     assert manifest.scenario_id == "parallel-reduction-acceptance-composite"
     assert {zone["zone_id"] for zone in manifest.zones} == {
-        "convergence-and-divergence", "scope-brackets", "continuous-hybrid",
-        "material-dominance", "deterministic-hierarchy", "scripted-agent-choice",
-        "scripted-runtime-fallback", "access-only-quiet-lane",
-        "crossing-warning-and-bridge-gap", "officer-divergence",
+        "convergence-and-divergence",
+        "scope-brackets",
+        "continuous-hybrid",
+        "material-dominance",
+        "deterministic-hierarchy",
+        "scripted-agent-choice",
+        "scripted-runtime-fallback",
+        "access-only-quiet-lane",
+        "crossing-warning-and-bridge-gap",
+        "officer-divergence",
     }
     assert manifest.expected_result_path == (
         ACCEPTANCE_MANIFEST.parent / "expected/acceptance-composite.json"
@@ -41,10 +49,39 @@ def test_composite_manifest_declares_every_light_acceptance_zone() -> None:
     )
 
 
+def test_deep_data_declares_exact_boundary_and_completion_cases() -> None:
+    deep = json.loads(DEEP_THRESHOLDS.read_text(encoding="ascii"))
+    cases = {item["id"]: item for item in deep["cases"]}
+
+    assert [cases[f"coverage-{value}"]["expected"] for value in (79, 80, 81)] == [
+        "reject",
+        "admit",
+        "admit",
+    ]
+    assert [cases[f"urban-{value}"]["expected"] for value in (499, 500, 501)] == [
+        "admit",
+        "admit",
+        "reject",
+    ]
+    assert [cases[f"rural-{value}"]["expected"] for value in (1499, 1500, 1501)] == [
+        "admit",
+        "admit",
+        "reject",
+    ]
+    assert {
+        "reversed-input",
+        "missing-evidence",
+        "runtime-timeout",
+        "runtime-provider-failure",
+        "runtime-invalid-response",
+        "repeat-run",
+    }.issubset(cases)
+
+
 def test_manifest_rejects_zones_within_rural_candidate_distance(tmp_path: Path) -> None:
     source = ACCEPTANCE_MANIFEST.read_text(encoding="ascii")
     invalid = tmp_path / "invalid.json"
-    invalid.write_text(source.replace("[4000, 0]", "[1500, 0]"), encoding="ascii")
+    invalid.write_text(source.replace("[4000,0]", "[1500,0]"), encoding="ascii")
 
     with pytest.raises(ValueError, match="separated beyond rural proximity"):
         load_manifest(invalid)

@@ -560,6 +560,8 @@ def _population_source() -> PopulationReachSource:
 
 def _criteria(candidate_set, route_by_candidate: Mapping[str, ParallelRoute]) -> CandidateCriteria:
     candidates = candidate_set.admitted_candidates
+    network_assessment_id = f"parallel-network-{candidate_set.candidate_set_id[-12:]}"
+    topography_assessment_id = f"parallel-topography-{candidate_set.candidate_set_id[-12:]}"
     option_ids = {
         item.candidate_id: f"parallel-option-{index}" for index, item in enumerate(candidates)
     }
@@ -634,7 +636,7 @@ def _criteria(candidate_set, route_by_candidate: Mapping[str, ParallelRoute]) ->
         assessment_content_sha256=education_content,
     )
     snapshot = GovernedEvidenceSnapshot(
-        snapshot_id="parallel-reduction-evidence",
+        snapshot_id=f"parallel-reduction-evidence-{candidate_set.candidate_set_id[-12:]}",
         assessments=(
             GovernedAssessmentBinding(
                 kind=AssessmentKind.POPULATION_REACH,
@@ -652,16 +654,16 @@ def _criteria(candidate_set, route_by_candidate: Mapping[str, ParallelRoute]) ->
             ),
             GovernedAssessmentBinding(
                 kind=AssessmentKind.NETWORK_GEOMETRY,
-                assessment_id="parallel-network",
-                assessment_content_sha256=_digest("parallel-network"),
-                source_content_sha256=_digest("parallel-network-source"),
+                assessment_id=network_assessment_id,
+                assessment_content_sha256=_digest(network_assessment_id),
+                source_content_sha256=_digest(f"{network_assessment_id}-source"),
                 method_version="parallel-reduction/v1",
             ),
             GovernedAssessmentBinding(
                 kind=AssessmentKind.TOPOGRAPHY,
-                assessment_id="parallel-topography",
-                assessment_content_sha256=_digest("parallel-topography"),
-                source_content_sha256=_digest("parallel-topography-source"),
+                assessment_id=topography_assessment_id,
+                assessment_content_sha256=_digest(topography_assessment_id),
+                source_content_sha256=_digest(f"{topography_assessment_id}-source"),
                 method_version="parallel-reduction/v1",
             ),
         ),
@@ -684,7 +686,7 @@ def _criteria(candidate_set, route_by_candidate: Mapping[str, ParallelRoute]) ->
                 candidate_id=item.candidate_id,
                 state="satisfied",
                 detail=CriterionDetail.DIRECTNESS_EVIDENCE,
-                assessment_id="parallel-network",
+                assessment_id=network_assessment_id,
                 evidence_record_id=f"directness-{item.candidate_id}",
             )
             for item in candidates
@@ -694,7 +696,7 @@ def _criteria(candidate_set, route_by_candidate: Mapping[str, ParallelRoute]) ->
                 candidate_id=item.candidate_id,
                 state="satisfied",
                 detail=CriterionDetail.GRADIENT_EVIDENCE,
-                assessment_id="parallel-topography",
+                assessment_id=topography_assessment_id,
                 evidence_record_id=f"gradient-{item.candidate_id}",
             )
             for item in candidates
@@ -704,7 +706,7 @@ def _criteria(candidate_set, route_by_candidate: Mapping[str, ParallelRoute]) ->
                 candidate_id=item.candidate_id,
                 state="satisfied",
                 detail=CriterionDetail.UNCERTAINTY_EVIDENCE,
-                assessment_id="parallel-network",
+                assessment_id=network_assessment_id,
                 evidence_record_id=f"uncertainty-{item.candidate_id}",
             )
             for item in candidates

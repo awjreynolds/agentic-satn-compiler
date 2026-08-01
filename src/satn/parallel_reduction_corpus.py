@@ -37,13 +37,15 @@ class ScriptedCorpusRuntime:
     """Deterministic corpus-only runtime; it never contacts a model provider."""
 
     def __init__(self, responses: tuple[Mapping[str, object], ...]) -> None:
-        self._responses = {str(item["request_id"]): dict(item) for item in responses}
+        self._responses = {
+            str(item.get("target_id", item.get("request_id"))): dict(item) for item in responses
+        }
         self.calls: list[dict[str, object]] = []
 
     def choose(self, request: Mapping[str, object]) -> str | Mapping[str, object]:
         materialized = dict(request)
         self.calls.append(materialized)
-        request_id = materialized.get("request_id")
+        request_id = materialized.get("target_id", materialized.get("request_id"))
         if not isinstance(request_id, str) or request_id not in self._responses:
             raise RuntimeError("scripted-runtime-response-missing")
         response = self._responses[request_id]
@@ -70,6 +72,9 @@ def load_manifest(path: Path) -> ParallelReductionCorpusManifest:
             "routes",
             "zones",
             "scripted_runtime",
+            "junction_node_ids",
+            "required_transitions",
+            "officer_decisions",
         },
         "scenario manifest",
     )
@@ -91,6 +96,8 @@ def load_manifest(path: Path) -> ParallelReductionCorpusManifest:
             "minimum_symmetric_coverage_pct",
             "material_population_difference",
             "material_score_difference",
+            "runtime_eligible",
+            "maximum_hybrids_per_group",
         },
         "config",
     )
@@ -111,7 +118,10 @@ def load_manifest(path: Path) -> ParallelReductionCorpusManifest:
         raise ValueError("unsupported Scripted Corpus Runtime contract")
     responses = _mapping_list(runtime["responses"], "scripted_runtime.responses")
     response_ids = tuple(
-        _required_text(item.get("request_id"), "scripted runtime request_id")
+        _required_text(
+            item.get("target_id", item.get("request_id")),
+            "scripted runtime target_id",
+        )
         for item in responses
     )
     if len(set(response_ids)) != len(response_ids):
@@ -121,6 +131,9 @@ def load_manifest(path: Path) -> ParallelReductionCorpusManifest:
         "area_id": area_id,
         "config": dict(config),
         "routes": [dict(item) for item in routes],
+        "junction_node_ids": value["junction_node_ids"],
+        "required_transitions": value["required_transitions"],
+        "officer_decisions": value["officer_decisions"],
     }
     canonical_evidence_json(request)
     return ParallelReductionCorpusManifest(
@@ -256,9 +269,7 @@ def _canonical_records(value: object) -> list[dict[str, object]]:
     }
     return sorted(
         [
-            _normalise_result_value(
-                {key: item[key] for key in sorted(item) if key not in volatile}
-            )
+            _normalise_result_value({key: item[key] for key in sorted(item) if key not in volatile})
             for item in records
         ],
         key=canonical_evidence_json,
