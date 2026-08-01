@@ -6,7 +6,7 @@ import heapq
 import json
 import logging
 import math
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from itertools import pairwise
 
@@ -101,6 +101,10 @@ class PointAttachment:
 
 
 class RoadGraph:
+    """A deterministic routed view of governed road-edge evidence."""
+
+    edge_id_attribute = "edge_id"
+
     def __init__(
         self,
         edges: gpd.GeoDataFrame,
@@ -118,7 +122,18 @@ class RoadGraph:
         self._lower_bound_disabled_reason: str | None = "no-routable-edges"
         self._attachment_lower_bound_cost_factor = 0.0
         self._attachment_lower_bound_disabled_reason: str | None = "no-reciprocal-routable-edges"
-        for index, row in sorted(edges.iterrows(), key=_edge_row_sort_key):
+        # Project all source edge geometries in one GeoPandas operation before
+        # constructing the graph.  Projection is evidence normalisation, not
+        # a routing decision, so it must not depend on iteration order.
+        projected_lengths = gpd.GeoSeries(edges.geometry, crs=edges.crs).to_crs(27700).length
+        edge_rows = [
+            (index, row, float(projected_lengths.iloc[position]))
+            for position, (index, row) in enumerate(edges.iterrows())
+        ]
+        for index, row, projected_length_m in sorted(
+            edge_rows,
+            key=lambda item: _edge_row_sort_key((item[0], item[1])),
+        ):
             geometry = row.geometry
             if not isinstance(geometry, LineString) or len(geometry.coords) < 2:
                 continue
@@ -127,16 +142,13 @@ class RoadGraph:
             self.node_points.setdefault(u, Point(geometry.coords[0]))
             self.node_points.setdefault(v, Point(geometry.coords[-1]))
             source_length = row.get("length")
-            if _present(source_length):
-                length_m = float(source_length)
-            else:
-                projected = gpd.GeoSeries([geometry], crs=edges.crs).to_crs(27700)
-                length_m = float(projected.length.iloc[0])
-            projected_length_m = float(
-                gpd.GeoSeries([geometry], crs=edges.crs).to_crs(27700).length.iloc[0]
+            length_m = (
+                float(source_length) if _present(source_length) else projected_length_m
             )
             attrs = {
-                "edge_id": str(row.get("osmid", row.get("source_id", index))),
+                self.edge_id_attribute: str(
+                    row.get("osmid", row.get("source_id", index))
+                ),
                 "geometry": geometry,
                 "length_m": length_m,
                 "projected_length_m": projected_length_m,
@@ -150,6 +162,24 @@ class RoadGraph:
             if not _present(row.get("u")) and not attrs["oneway"]:
                 reverse = attrs | {"geometry": LineString(list(geometry.coords)[::-1])}
                 self._add_best_edge(v, u, reverse)
+        self._edge_ids_by_node: dict[str, tuple[str, ...]] = {}
+        references_by_edge_id: dict[str, set[str]] = {}
+        edge_ids_by_node: dict[str, set[str]] = {}
+        for left, right, attrs in self.graph.edges(data=True):
+            edge_id = str(attrs[self.edge_id_attribute])
+            edge_ids_by_node.setdefault(str(left), set()).add(edge_id)
+            edge_ids_by_node.setdefault(str(right), set()).add(edge_id)
+            references_by_edge_id.setdefault(edge_id, set()).update(
+                str(ref) for ref in attrs["ref"]
+            )
+        self._edge_ids_by_node = {
+            node_id: tuple(sorted(edge_ids))
+            for node_id, edge_ids in edge_ids_by_node.items()
+        }
+        self._references_by_edge_id = {
+            edge_id: tuple(sorted(references))
+            for edge_id, references in references_by_edge_id.items()
+        }
         self.route_controls = (
             RouteControlSet.model_validate(route_controls.model_dump(mode="python"))
             if route_controls is not None
@@ -200,9 +230,16 @@ class RoadGraph:
         )
         if routable_share >= 0.9:
             self._node_ids = [node for node in self._node_ids if node in dominant]
-        self._projected_nodes = gpd.GeoSeries(
-            [self.node_points[node] for node in self._node_ids], crs=self.crs
+        all_node_ids = tuple(sorted(self.node_points))
+        all_projected_nodes = gpd.GeoSeries(
+            [self.node_points[node] for node in all_node_ids], crs=self.crs
         ).to_crs(27700)
+        self._projected_node_by_id = dict(
+            zip(all_node_ids, all_projected_nodes, strict=True)
+        )
+        self._projected_nodes = gpd.GeoSeries(
+            [self._projected_node_by_id[node] for node in self._node_ids], crs=27700
+        )
         self._projected_node_index = self._projected_nodes.sindex
         edge_rows = [
             {"u": u, "v": v, "geometry": attrs["geometry"]}
@@ -215,6 +252,29 @@ class RoadGraph:
             crs=self.crs,
         ).to_crs(27700)
         self._projected_edge_index = self._projected_edges.sindex
+
+    def edge_ids_for_node(self, node_id: str) -> tuple[str, ...]:
+        """Return the canonical source edge identities incident to a graph node."""
+
+        return self._edge_ids_by_node.get(node_id, ())
+
+    def references_for_edge_ids(self, edge_ids: Iterable[str]) -> tuple[str, ...]:
+        """Return canonical road references for known source-edge identities."""
+
+        return tuple(
+            sorted(
+                {
+                    reference
+                    for edge_id in edge_ids
+                    for reference in self._references_by_edge_id.get(str(edge_id), ())
+                }
+            )
+        )
+
+    def projected_node(self, node_id: str) -> Point | None:
+        """Return the preprojected EPSG:27700 coordinate for a current graph node."""
+
+        return self._projected_node_by_id.get(node_id)
 
     def _add_best_edge(self, u: str, v: str, attrs: dict[str, object]) -> None:
         existing = self.graph.get_edge_data(u, v)
@@ -1023,6 +1083,56 @@ class RoadGraph:
             return None
         return self._option_from_nodes(nodes, role, strategic_use=strategic_use)
 
+    def route_options_for_pairs(
+        self,
+        pairs: Iterable[tuple[str, str]],
+        *,
+        roles: Iterable[str],
+        strategic_use: bool = False,
+    ) -> tuple[dict[tuple[str, str], dict[str, RouteOption | None]], int]:
+        """Route finite pairs through one Dijkstra search per role and start node.
+
+        The returned mapping retains one entry per supplied, distinct directed
+        pair and the original role order.  It is intentionally a RoadGraph
+        seam: corridor preparation supplies governed pairs, while graph
+        traversal and its deterministic accounting stay here.
+        """
+
+        unique_pairs = tuple(sorted(set(pairs)))
+        ordered_roles = tuple(dict.fromkeys(roles))
+        options = {
+            pair: {role: None for role in ordered_roles}
+            for pair in unique_pairs
+        }
+        grouped: dict[tuple[str, str, bool], set[str]] = {}
+        for start, end in unique_pairs:
+            for role in ordered_roles:
+                grouped.setdefault((role, start, strategic_use), set()).add(end)
+        searches = 0
+        for (role, start, role_strategic_use), ends in sorted(grouped.items()):
+            route_graph = self._graph_for_role(
+                role,
+                strategic_use=role_strategic_use,
+            )
+            try:
+                _lengths, paths = nx.single_source_dijkstra(
+                    route_graph,
+                    start,
+                    weight=_weight_for(role),
+                )
+            except nx.NodeNotFound:
+                paths = {}
+            searches += 1
+            for end in sorted(ends):
+                nodes = paths.get(end)
+                if nodes is not None:
+                    options[(start, end)][role] = self._option_from_nodes(
+                        nodes,
+                        role,
+                        strategic_use=role_strategic_use,
+                    )
+        return options, searches
+
     def _option_from_nodes(
         self,
         nodes: list[str],
@@ -1137,32 +1247,29 @@ def choose_alignment(
     end: str,
     *,
     strategic_use: bool = False,
+    precomputed_options: Mapping[str, RouteOption | None] | None = None,
 ) -> tuple[RouteOption | None, list[RouteOption], str]:
-    direct = graph.option(
-        start,
-        end,
-        "direct",
-        strategic_use=strategic_use,
+    direct = (
+        precomputed_options.get("direct")
+        if precomputed_options is not None
+        else graph.option(start, end, "direct", strategic_use=strategic_use)
     )
     if direct is None:
         return None, [], "No continuous OSM cycling-network path exists."
-    strategic = graph.option(
-        start,
-        end,
-        "strategic-spine",
-        strategic_use=strategic_use,
+    strategic = (
+        precomputed_options.get("strategic-spine")
+        if precomputed_options is not None
+        else graph.option(start, end, "strategic-spine", strategic_use=strategic_use)
     )
-    ncn = graph.option(
-        start,
-        end,
-        "ncn-informed",
-        strategic_use=strategic_use,
+    ncn = (
+        precomputed_options.get("ncn-informed")
+        if precomputed_options is not None
+        else graph.option(start, end, "ncn-informed", strategic_use=strategic_use)
     )
-    quiet = graph.option(
-        start,
-        end,
-        "low-traffic",
-        strategic_use=strategic_use,
+    quiet = (
+        precomputed_options.get("low-traffic")
+        if precomputed_options is not None
+        else graph.option(start, end, "low-traffic", strategic_use=strategic_use)
     )
     options = _unique_options([direct, strategic, ncn, quiet])
 

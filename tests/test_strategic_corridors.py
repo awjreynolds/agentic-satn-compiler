@@ -297,3 +297,19 @@ def test_strategic_preparation_is_deterministic_and_makes_no_delivery_claims(
     assert metadata["selection_performed"] is False
     assert metadata["network_geometry_mutated"] is False
     assert metadata["publication_performed"] is False
+
+
+def test_strategic_preparation_reports_batched_route_phase_diagnostics(
+    tmp_path: Path,
+) -> None:
+    _config, _source, compiled = _compiled(tmp_path)
+    preparation = compiled.strategic_corridor_preparation
+
+    assert preparation is not None
+    diagnostics = preparation.phase_diagnostics
+    assert diagnostics["anchors"] == 2
+    assert diagnostics["pairs"] == 2
+    assert diagnostics["route_searches"] == 8
+    assert diagnostics["unique_alignments"] == 3
+    assert diagnostics["sections"] == len(preparation.section_population.sections)
+    assert diagnostics["elapsed_seconds"] >= 0

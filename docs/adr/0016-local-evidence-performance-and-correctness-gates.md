@@ -40,6 +40,16 @@ manifest cannot pass a gate.
 Correctness is always a hard prerequisite. Performance results are considered only
 after all semantic, provenance and atomic-publication checks pass.
 
+Strategic-corridor routing records deterministic phase dimensions alongside a
+separate elapsed-time observation: direct-spine anchors, governed directed pairs,
+single-source route searches, unique alignments and display sections.  Timing is
+diagnostic only and never contributes to a candidate, selection, preparation
+fingerprint or semantic oracle.  The compact synthetic routing benchmark exercises
+10, 25 and 50 anchors, records each elapsed time and proves that finite pair routing
+is batched by role, strategic-use and start node.  It retains the exact geometry,
+edge identities, candidate ordering and tie behaviour of individual routing; it does
+not impose a semantic pair limit or introduce a server/runtime architecture.
+
 ## Acceptance corpus
 
 | Corpus | Purpose | Required oracle |

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from itertools import combinations
+from time import perf_counter
+
 import geopandas as gpd
 import networkx as nx
 import pytest
@@ -41,6 +44,139 @@ def test_metric_lower_bound_uses_the_smallest_source_cost_to_geometry_ratio() ->
     assert graph.lower_bound_to_geometry_m(Point(0, 0), LineString([(1000, 0), (1000, 1)])) == (
         pytest.approx(500)
     )
+
+
+def test_road_graph_exposes_canonical_edge_ids_and_projected_nodes() -> None:
+    graph = RoadGraph(
+        gpd.GeoDataFrame(
+            [
+                {
+                    "osmid": "a-road",
+                    "u": "a",
+                    "v": "b",
+                    "length": 100,
+                    "ref": "A4",
+                    "geometry": LineString([(0, 0), (100, 0)]),
+                },
+            ],
+            geometry="geometry",
+            crs=27700,
+        )
+    )
+
+    assert graph.edge_id_attribute == "edge_id"
+    assert graph.edge_ids_for_node("a") == ("a-road",)
+    assert graph.references_for_edge_ids(("a-road", "missing")) == ("A4",)
+    assert graph.projected_node("a") == Point(0, 0)
+    assert graph.projected_node("missing") is None
+
+
+def test_batched_routes_preserve_asymmetric_one_way_and_equal_cost_options() -> None:
+    graph = RoadGraph(
+        gpd.GeoDataFrame(
+            [
+                {
+                    "osmid": "a-b",
+                    "u": "a",
+                    "v": "b",
+                    "length": 10,
+                    "geometry": LineString([(0, 0), (10, 0)]),
+                },
+                {
+                    "osmid": "b-d",
+                    "u": "b",
+                    "v": "d",
+                    "length": 10,
+                    "geometry": LineString([(10, 0), (20, 0)]),
+                },
+                {
+                    "osmid": "a-c",
+                    "u": "a",
+                    "v": "c",
+                    "length": 10,
+                    "geometry": LineString([(0, 0), (10, 10)]),
+                },
+                {
+                    "osmid": "c-d",
+                    "u": "c",
+                    "v": "d",
+                    "length": 10,
+                    "geometry": LineString([(10, 10), (20, 0)]),
+                },
+                {
+                    "osmid": "d-a-one-way",
+                    "u": "d",
+                    "v": "a",
+                    "length": 35,
+                    "geometry": LineString([(20, 0), (0, 0)]),
+                },
+            ],
+            geometry="geometry",
+            crs=27700,
+        )
+    )
+    roles = ("direct", "strategic-spine")
+    expected = {
+        role: graph.option("a", "d", role, strategic_use=True)
+        for role in roles
+    }
+
+    routed, search_count = graph.route_options_for_pairs(
+        (("a", "d"),),
+        roles=roles,
+        strategic_use=True,
+    )
+
+    assert search_count == 2
+    for role, option in expected.items():
+        actual = routed[("a", "d")][role]
+        assert actual is not None and option is not None
+        assert actual.edge_ids == option.edge_ids
+        assert actual.reverse_edge_ids == option.reverse_edge_ids
+        assert actual.geometry.wkb_hex == option.geometry.wkb_hex
+        assert actual.bidirectional is option.bidirectional
+
+
+@pytest.mark.parametrize("anchor_count", (10, 25, 50))
+def test_batched_anchor_benchmark_records_search_count_and_elapsed_time(
+    anchor_count: int,
+) -> None:
+    rows: list[dict[str, object]] = []
+    for index in range(anchor_count - 1):
+        rows.extend(
+            (
+                {
+                    "osmid": f"forward-{index}",
+                    "u": f"node-{index:02d}",
+                    "v": f"node-{index + 1:02d}",
+                    "length": 100,
+                    "geometry": LineString([(index * 100, 0), ((index + 1) * 100, 0)]),
+                },
+                {
+                    "osmid": f"reverse-{index}",
+                    "u": f"node-{index + 1:02d}",
+                    "v": f"node-{index:02d}",
+                    "length": 100,
+                    "geometry": LineString([((index + 1) * 100, 0), (index * 100, 0)]),
+                },
+            )
+        )
+    graph = RoadGraph(gpd.GeoDataFrame(rows, geometry="geometry", crs=27700))
+    anchors = tuple(f"node-{index:02d}" for index in range(anchor_count))
+    pairs = tuple(combinations(anchors, 2))
+
+    started_at = perf_counter()
+    options, search_count = graph.route_options_for_pairs(
+        pairs,
+        roles=("direct",),
+        strategic_use=True,
+    )
+    elapsed_seconds = perf_counter() - started_at
+
+    assert len(pairs) == anchor_count * (anchor_count - 1) // 2
+    assert search_count == anchor_count - 1
+    assert options[pairs[-1]]["direct"] is not None
+    assert elapsed_seconds >= 0
 
 
 def test_attachment_group_distance_bounds_are_exact_zero_snap_costs() -> None:
