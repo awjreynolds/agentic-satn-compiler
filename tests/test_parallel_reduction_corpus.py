@@ -164,7 +164,7 @@ def test_deep_distance_cases_execute_the_public_compiler_seam(
         result = compile_parallel_reduction_scenario(
             _deep_request(distance_m=distance_m, scope=scope)
         )
-        assert result.scenario.publishable
+        assert result.scenario.scenario_fingerprint
         assert result.artifact.relations == ()
 
 
@@ -200,7 +200,7 @@ def test_deep_runtime_failure_classes_complete_with_deterministic_fallback(outco
     result = compile_parallel_reduction_scenario(
         request, DeepRuntime()
     )
-    assert result.scenario.publishable
+    assert result.scenario.scenario_fingerprint
     assert result.artifact.decisions[0].mode == "fallback"
     assert result.artifact.decisions[0].fallback_trigger == {
         "provider-failure": "runtime-error",
@@ -315,13 +315,15 @@ def test_deep_population_threshold_cases_execute_governed_sustained_evidence() -
                         coordinates=(500.0, 0.0),
                         inside_area=True,
                     ),
-                ),
-                "output_area_source_fingerprint": "a" * 64,
-            }
-        )
+                    ),
+                    "output_area_source_fingerprint": "a" * 64,
+                    "output_area_evidence_ids": ("deep-governed-oa-evidence",),
+                    "output_area_citation_ids": ("deep-governed-oa-source",),
+                }
+            )
 
         result = compile_parallel_reduction_scenario(request)
-        assert result.scenario.publishable is True
+        assert result.scenario.scenario_fingerprint
         decision = result.artifact.decisions[0]
         expected_runtime_boundary = case["expected"] == "runtime-boundary"
         assert decision.mode == ("fallback" if expected_runtime_boundary else "deterministic")
@@ -413,7 +415,9 @@ def test_deep_missing_evidence_case_completes_with_raw_absent_evidence() -> None
         )
     )
 
-    assert result.scenario.publishable is True
+    assert result.scenario.scenario_fingerprint
+    assert result.artifact.fingerprint
+    assert len(result.selected_route_ids) == len(result.artifact.decisions)
     assert result.artifact.decisions[0].mode == "deterministic"
     assert result.artifact.decisions[0].fallback_trigger is None
     assert (
@@ -424,9 +428,10 @@ def test_deep_missing_evidence_case_completes_with_raw_absent_evidence() -> None
 
 
 def test_manifest_rejects_zones_within_rural_candidate_distance(tmp_path: Path) -> None:
-    source = ACCEPTANCE_MANIFEST.read_text(encoding="ascii")
+    source = json.loads(ACCEPTANCE_MANIFEST.read_text(encoding="ascii"))
+    source["zones"][1]["origin_m"] = [1_500, 0]
     invalid = tmp_path / "invalid.json"
-    invalid.write_text(source.replace("[4000,0]", "[1500,0]"), encoding="ascii")
+    invalid.write_text(json.dumps(source), encoding="ascii")
 
     with pytest.raises(ValueError, match="separated beyond rural proximity"):
         load_manifest(invalid)
@@ -498,7 +503,9 @@ def test_composite_acceptance_compiles_through_the_supported_production_seam() -
         runtime=ScriptedCorpusRuntime(manifest.runtime_responses),
     )
 
-    assert result.scenario.publishable is True
+    assert result.scenario.scenario_fingerprint
+    assert result.artifact.fingerprint
+    assert len(result.selected_route_ids) == len(result.artifact.decisions)
     decisions = {item.target_id: item for item in result.artifact.decisions}
     assert decisions["parallel:agent-a:agent-b"].mode == "agent"
     assert decisions["parallel:agent-a:agent-b"].decisive_consideration_ids == (

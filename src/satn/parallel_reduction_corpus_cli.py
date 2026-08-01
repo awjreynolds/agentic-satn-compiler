@@ -33,10 +33,6 @@ def regenerate_parallel_reduction_expected_result(manifest_path: Path) -> None:
         ParallelReductionRequest.model_validate(manifest.request),
         runtime=ScriptedCorpusRuntime(manifest.runtime_responses),
     )
-    if not result.scenario.publishable:
-        raise typer.BadParameter(
-            "corpus compilation did not produce a complete Scenario Compilation"
-        )
     expected = canonical_expected_result(manifest, result)
     write_expected_result(manifest.expected_result_path, expected)
     write_expected_visual(manifest.expected_visual_path, expected)

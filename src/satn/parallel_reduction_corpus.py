@@ -86,6 +86,8 @@ def load_manifest(path: Path) -> ParallelReductionCorpusManifest:
             "choice_points",
             "output_area_centroids",
             "output_area_source_fingerprint",
+            "output_area_evidence_ids",
+            "output_area_citation_ids",
             "required_transitions",
             "officer_decisions",
         },
@@ -148,6 +150,8 @@ def load_manifest(path: Path) -> ParallelReductionCorpusManifest:
         "choice_points": value["choice_points"],
         "output_area_centroids": value["output_area_centroids"],
         "output_area_source_fingerprint": value["output_area_source_fingerprint"],
+        "output_area_evidence_ids": value["output_area_evidence_ids"],
+        "output_area_citation_ids": value["output_area_citation_ids"],
         "required_transitions": value["required_transitions"],
         "officer_decisions": value["officer_decisions"],
     }
