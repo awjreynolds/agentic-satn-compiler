@@ -21,6 +21,7 @@ from typing import Literal, Protocol, Self
 import geopandas as gpd
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from shapely.geometry import LineString, Point, box
+from shapely.ops import substring
 
 from satn.alignment_selection import (
     AcceptedDecisionEnvelope,
@@ -76,6 +77,22 @@ def _digest(value: object) -> str:
     ).hexdigest()
 
 
+class ParallelNetworkScopeSpan(BaseModel):
+    """Ordered evidence/display range; it is never a topology boundary."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    start_distance_m: float = Field(ge=0)
+    end_distance_m: float = Field(gt=0)
+    network_scope: _SCOPE
+
+    @model_validator(mode="after")
+    def _range(self):
+        if self.end_distance_m <= self.start_distance_m:
+            raise ValueError("network scope span must have positive length")
+        return self
+
+
 class ParallelRoute(BaseModel):
     """One governed continuous chain in EPSG:27700 metric coordinates."""
 
@@ -106,6 +123,7 @@ class ParallelRoute(BaseModel):
     cumulative_elevation_variation_m: float | None = Field(default=None, ge=0)
     cev_source_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     topography_only_justification: bool = False
+    network_scope_spans: tuple[ParallelNetworkScopeSpan, ...] = ()
 
     @field_validator("endpoints")
     @classmethod
@@ -122,6 +140,14 @@ class ParallelRoute(BaseModel):
         if len(value) < 2 or len(set(value)) < 2:
             raise ValueError("route requires a continuous metric line")
         return value
+
+    @model_validator(mode="after")
+    def _scope_spans(self):
+        spans = tuple(sorted(self.network_scope_spans, key=lambda item: item.start_distance_m))
+        if any(right.start_distance_m < left.end_distance_m for left, right in pairwise(spans)):
+            raise ValueError("network scope spans must not overlap")
+        object.__setattr__(self, "network_scope_spans", spans)
+        return self
 
 
 class GuidanceConsideration(BaseModel):
@@ -262,6 +288,7 @@ class ParallelAlignmentOption(BaseModel):
     cev_source_fingerprint: str | None = None
     topography_assessment: Literal["assessed", "unassessed"] = "unassessed"
     topography_only_justification: bool = False
+
 
 class ParallelReductionRequest(BaseModel):
     """Data-only compiler input; all route candidates are discovered here."""
@@ -546,6 +573,31 @@ def _coverage(left: LineString, right: LineString, distance_m: float) -> float:
     return 100.0 * left.intersection(right.buffer(distance_m)).length / left.length
 
 
+def _scope_coverage(
+    left: ParallelRoute,
+    right: ParallelRoute,
+    config: ParallelReductionConfig,
+    unresolved_distance: float | None = None,
+) -> float:
+    line = LineString(left.coordinates)
+    spans = left.network_scope_spans or (
+        ParallelNetworkScopeSpan(
+            start_distance_m=0, end_distance_m=line.length, network_scope=left.network_scope
+        ),
+    )
+    covered = 0.0
+    for span in spans:
+        segment = substring(line, span.start_distance_m, min(span.end_distance_m, line.length))
+        if span.network_scope == "urban":
+            distance = config.urban_proximity_m
+        elif span.network_scope == "rural":
+            distance = config.rural_proximity_m
+        else:
+            distance = unresolved_distance or config.rural_proximity_m
+        covered += segment.intersection(LineString(right.coordinates).buffer(distance)).length
+    return 0.0 if line.length == 0 else 100.0 * covered / line.length
+
+
 def discover_parallel_relations(
     routes: tuple[ParallelRoute, ...], config: ParallelReductionConfig
 ) -> tuple[ParallelCandidateRelation, ...]:
@@ -556,29 +608,29 @@ def discover_parallel_relations(
         for right in sorted(routes, key=lambda item: item.route_id)[index + 1 :]:
             if left.endpoints != right.endpoints:
                 continue
-            left_line, right_line = LineString(left.coordinates), LineString(right.coordinates)
-            scopes = {left.network_scope, right.network_scope}
+            spans = (*left.network_scope_spans, *right.network_scope_spans)
+            scopes = {
+                left.network_scope,
+                right.network_scope,
+                *(item.network_scope for item in spans),
+            }
             if "unresolved" in scopes:
                 urban = min(
-                    _coverage(left_line, right_line, config.urban_proximity_m),
-                    _coverage(right_line, left_line, config.urban_proximity_m),
+                    _scope_coverage(left, right, config, config.urban_proximity_m),
+                    _scope_coverage(right, left, config, config.urban_proximity_m),
                 )
                 rural = min(
-                    _coverage(left_line, right_line, config.rural_proximity_m),
-                    _coverage(right_line, left_line, config.rural_proximity_m),
+                    _scope_coverage(left, right, config, config.rural_proximity_m),
+                    _scope_coverage(right, left, config, config.rural_proximity_m),
                 )
                 if rural < config.minimum_symmetric_coverage_pct:
                     continue
-                distance = config.rural_proximity_m
                 sensitive = urban < config.minimum_symmetric_coverage_pct
             else:
-                distance = (
-                    config.urban_proximity_m if scopes == {"urban"} else config.rural_proximity_m
-                )
                 sensitive = False
             left_coverage, right_coverage = (
-                _coverage(left_line, right_line, distance),
-                _coverage(right_line, left_line, distance),
+                _scope_coverage(left, right, config),
+                _scope_coverage(right, left, config),
             )
             if min(left_coverage, right_coverage) >= config.minimum_symmetric_coverage_pct:
                 relations.append(
@@ -608,8 +660,9 @@ def discover_parallel_components(
 
         for left, right in relation_pairs:
             if left in route_ids and right in route_ids:
-                left_root, right_root = _component_find(parents, left), _component_find(
-                    parents, right
+                left_root, right_root = (
+                    _component_find(parents, left),
+                    _component_find(parents, right),
                 )
                 if left_root != right_root:
                     parents[max(left_root, right_root)] = min(left_root, right_root)
@@ -758,14 +811,8 @@ def _bounded_hybrids(
             if left.endpoints != right.endpoints:
                 continue
             for switch_id in sorted(
-                {
-                    item.end_choice_point_id
-                    for item in by_route[left.route_id][:-1]
-                }
-                & {
-                    item.start_choice_point_id
-                    for item in by_route[right.route_id][1:]
-                }
+                {item.end_choice_point_id for item in by_route[left.route_id][:-1]}
+                & {item.start_choice_point_id for item in by_route[right.route_id][1:]}
             ):
                 if switch_id.startswith("endpoint:"):
                     continue
@@ -805,11 +852,7 @@ def _sections_through(
         (
             position
             for position, section in enumerate(sections)
-            if (
-                section.end_choice_point_id
-                if prefix
-                else section.start_choice_point_id
-            )
+            if (section.end_choice_point_id if prefix else section.start_choice_point_id)
             == switch_id
         ),
         None,
@@ -841,9 +884,7 @@ def _compose_hybrid(
     coordinates = tuple(
         coordinate
         for position, section in enumerate(selected_sections)
-        for coordinate in (
-            section.coordinates if position == 0 else section.coordinates[1:]
-        )
+        for coordinate in (section.coordinates if position == 0 else section.coordinates[1:])
     )
     if len(set(coordinates)) < 2:
         return None
@@ -1223,7 +1264,7 @@ def compile_parallel_reduction_scenario(
         inputs = tuple(
             AlignmentCandidateInput(
                 network_role=NetworkRole.INTERURBAN_SPINE,
-                    endpoints=scenario_endpoints,
+                endpoints=scenario_endpoints,
                 source_class=route.source_class,
                 geometry=CanonicalLineString(coordinates=route.coordinates),
                 evidence_fingerprints=(_digest((route.route_id, route.evidence_ids)),),

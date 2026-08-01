@@ -1230,3 +1230,42 @@ def test_parallel_artifact_fingerprint_is_content_derived_and_order_stable() -> 
         ParallelReductionArtifact.model_validate(
             first.artifact.model_dump(mode="python") | {"fingerprint": "0" * 64}
         )
+
+
+def test_mixed_local_scope_uses_urban_and_rural_buffers_without_new_sections() -> None:
+    routes = (
+        ParallelRoute(
+            route_id="mixed",
+            endpoints=("a", "b"),
+            coordinates=((0, 0), (1_000, 0)),
+            network_scope="rural",
+            network_scope_spans=(
+                {"start_distance_m": 0, "end_distance_m": 500, "network_scope": "urban"},
+                {"start_distance_m": 500, "end_distance_m": 1_000, "network_scope": "rural"},
+            ),
+            section_ids=("existing-section",),
+        ),
+        ParallelRoute(
+            route_id="parallel",
+            endpoints=("a", "b"),
+            coordinates=((0, 800), (1_000, 800)),
+            network_scope="rural",
+            section_ids=("existing-section",),
+        ),
+    )
+    assert discover_parallel_relations(routes, ParallelReductionConfig()) == ()
+    assert routes[0].section_ids == ("existing-section",)
+
+
+def test_local_scope_span_equality_and_order_are_canonical() -> None:
+    route = ParallelRoute(
+        route_id="mixed",
+        endpoints=("a", "b"),
+        coordinates=((0, 0), (1_000, 0)),
+        network_scope="urban",
+        network_scope_spans=(
+            {"start_distance_m": 500, "end_distance_m": 1_000, "network_scope": "rural"},
+            {"start_distance_m": 0, "end_distance_m": 500, "network_scope": "urban"},
+        ),
+    )
+    assert tuple(item.start_distance_m for item in route.network_scope_spans) == (0, 500)
