@@ -135,6 +135,40 @@ def _split_school_shards(deployment: Path) -> tuple[str, str, str, str, str, str
     )
 
 
+def _split_retail_shards(
+    deployment: Path, manifest: dict[str, object]
+) -> list[str]:
+    group = manifest["groups"]["amenities"]
+    retail_type = group["types"]["retail-centre"]
+    source_entry = retail_type["shards"][0]
+    seed = json.loads((deployment / source_entry["path"]).read_text())["features"][0]
+    entries = []
+    for index in range(3):
+        feature = copy.deepcopy(seed)
+        feature["id"] = f"browser-retail-context-{index + 1}"
+        entry = _write_collection(
+            deployment / "layers" / f"amenities-browser-retail-{index + 1}.geojson",
+            [feature],
+        )
+        entry["bbox"] = None
+        entries.append(entry)
+    retail_type["shards"] = entries
+    retail_type["feature_count"] = len(entries)
+    retail_type["size_bytes"] = sum(entry["size_bytes"] for entry in entries)
+    group["shards"] = [
+        entry
+        for type_metadata in group["types"].values()
+        for entry in type_metadata["shards"]
+    ]
+    group["feature_count"] = sum(
+        type_metadata["feature_count"] for type_metadata in group["types"].values()
+    )
+    group["size_bytes"] = sum(
+        type_metadata["size_bytes"] for type_metadata in group["types"].values()
+    )
+    return [str(entry["path"]) for entry in entries]
+
+
 def _add_unavailable_topography(deployment: Path) -> str:
     manifest_path = deployment / "topography-manifest.json"
     manifest = json.loads(manifest_path.read_text())
@@ -187,6 +221,86 @@ def _fit_map_to_feature(page: Page, feature_id: str) -> None:
         "window.SATN_REVIEW_MAP.loaded() && !window.SATN_REVIEW_MAP.isMoving()",
         timeout=BROWSER_TIMEOUT_MS,
     )
+
+
+@pytest.mark.browser
+def test_area_deployment_batches_deferred_shards_before_updating_map_source(
+    tmp_path: Path,
+) -> None:
+    fixture = tmp_path / "fixture"
+    shutil.copytree(
+        PROJECT / "examples" / "fixture",
+        fixture,
+        ignore=shutil.ignore_patterns(".satn-cache"),
+    )
+    definition = CouncilConfig.from_yaml(fixture / "council.yaml")
+    snapshot(definition)
+    compile(definition)
+    run_path = fixture / "work" / "output" / "run.json"
+    run = json.loads(run_path.read_text())
+    run.setdefault("compilation_diagnostics", {})
+    run_path.write_text(json.dumps(run), encoding="utf-8")
+    deployment = tmp_path / "deployment"
+    build_area_deployment(definition, deployment, bootstrap=True)
+    generate_lock(definition, deployment=deployment)
+    deployment = build_area_deployment(definition, deployment)
+    template = (PROJECT / "src" / "satn" / "assets" / "review-map.html").read_text()
+    replacements = {
+        "__TITLE__": definition.publication.title,
+        "__DISCLAIMER__": DISCLAIMER,
+        "__REVIEW_MAP_CSS__": "review-map.css",
+        "__REVIEW_MAP_JS__": "review-map.js",
+        "__ATM_STATE__": "disabled",
+        "__ATM_STATUS__": "No governed local ATM data loaded.",
+        "__GENTLE_MAX_PCT__": "3",
+        "__NOTICEABLE_MAX_PCT__": "5",
+        "__STEEP_MAX_PCT__": "8",
+        "__VERY_STEEP_MAX_PCT__": "12.5",
+    }
+    for token, replacement in replacements.items():
+        template = template.replace(token, replacement)
+    (deployment / "index.html").write_text(template, encoding="utf-8")
+    (deployment / "assets" / "review-map.js").write_text(
+        (PROJECT / "src" / "satn" / "assets" / "review-map.js").read_text(),
+        encoding="utf-8",
+    )
+    manifest_path = deployment / "layer-manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    retail_paths = _split_retail_shards(deployment, manifest)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with (
+        _serve_deployment(deployment) as (server, origin),
+        sync_playwright() as playwright,
+        playwright.chromium.launch(headless=True) as browser,
+        browser.new_context(viewport={"width": 1280, "height": 900}) as context,
+    ):
+        context.route("https://tile.openstreetmap.org/**", lambda route: route.abort())
+        page = context.new_page()
+        page.goto(f"{origin}/index.html", timeout=BROWSER_TIMEOUT_MS)
+        page.wait_for_function(
+            "document.documentElement.dataset.mapReady === 'true'",
+            timeout=BROWSER_TIMEOUT_MS,
+        )
+        page.evaluate(
+            """() => {
+              const source = window.SATN_REVIEW_MAP.getSource('network');
+              const setData = source.setData.bind(source);
+              window.SATN_NETWORK_SET_DATA_CALLS = 0;
+              source.setData = (data) => {
+                window.SATN_NETWORK_SET_DATA_CALLS += 1;
+                return setData(data);
+              };
+            }"""
+        )
+        page.locator("#layer-retail-centres").click(timeout=BROWSER_TIMEOUT_MS)
+        page.wait_for_function(
+            "document.querySelector('#layer-retail-centres').closest('label')."
+            "querySelector('.layer-load-status').textContent.includes('loaded')",
+            timeout=BROWSER_TIMEOUT_MS,
+        )
+        assert page.evaluate("window.SATN_NETWORK_SET_DATA_CALLS") == 1
+        assert all(server.request_counts[f"/{path}"] == 1 for path in retail_paths)
 
 
 @pytest.mark.browser

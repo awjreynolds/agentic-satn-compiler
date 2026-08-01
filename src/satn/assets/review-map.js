@@ -221,10 +221,9 @@
   function mergeEvidenceCollection(collection) {
     const knownIds = new Set(network.features.map((feature) => feature.id));
     const features = (collection?.features || []).filter((feature) => !knownIds.has(feature.id));
-    if (!features.length) return;
+    if (!features.length) return false;
     network.features.push(...features);
-    map.getSource("network")?.setData(network);
-    renderCards();
+    return true;
   }
 
   async function ensureEvidenceGroupLoaded(group, controlId) {
@@ -257,19 +256,24 @@
     if (pendingBytes) {
       layerStatus(controlId, `loading ${formatBytes(pendingBytes)}…`);
     }
+    let evidenceChanged = false;
     const attempts = await Promise.allSettled(candidates.map((entry) => {
       if (loadedEvidenceShards.has(entry.path)) return Promise.resolve(null);
       if (loadingEvidenceShards.has(entry.path)) return loadingEvidenceShards.get(entry.path);
       const request = fetchJson(entry.path, `${group} evidence shard`).then((collection) => {
         // Merge before recording completion: a sibling failure must not make this
         // successfully fetched shard invisible to a later retry.
-        mergeEvidenceCollection(collection);
+        evidenceChanged = mergeEvidenceCollection(collection) || evidenceChanged;
         loadedEvidenceShards.add(entry.path);
         return collection;
       }).finally(() => loadingEvidenceShards.delete(entry.path));
       loadingEvidenceShards.set(entry.path, request);
       return request;
     }));
+    if (evidenceChanged) {
+      map.getSource("network")?.setData(network);
+      renderCards();
+    }
     const loaded = candidates
       .filter((entry) => loadedEvidenceShards.has(entry.path));
     const loadedBytes = loaded.reduce((sum, entry) => sum + Number(entry.size_bytes), 0);
