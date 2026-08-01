@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from dataclasses import dataclass
 from datetime import date
-from typing import Literal, Protocol
+from typing import Literal, Protocol, Self
 
 import geopandas as gpd
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -210,6 +210,17 @@ class ParallelReductionRequest(BaseModel):
     output_area_centroids: tuple[ParallelOutputAreaCentroid, ...] = ()
     output_area_source_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     guidance_profile: GuidanceProfile = Field(default_factory=GuidanceProfile)
+
+    @model_validator(mode="after")
+    def _governed_output_areas(self) -> Self:
+        if bool(self.output_area_centroids) != bool(self.output_area_source_fingerprint):
+            raise ValueError(
+                "Output Area centroids and their governed source fingerprint are required together"
+            )
+        identifiers = tuple(item.oa_id for item in self.output_area_centroids)
+        if len(identifiers) != len(set(identifiers)):
+            raise ValueError("Output Area centroid IDs must be unique")
+        return self
 
 
 class ParallelCandidateRelation(BaseModel):

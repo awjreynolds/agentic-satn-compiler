@@ -417,6 +417,34 @@ def test_missing_governed_oa_evidence_is_explicit_not_fabricated() -> None:
     assert "section-population:governed-output-area-centroids" in result.artifact.missing_evidence
 
 
+def test_governed_oa_centroids_require_a_unique_roster_and_source_fingerprint() -> None:
+    route = ParallelRoute(
+        route_id="route",
+        endpoints=("a", "b"),
+        coordinates=((0, 0), (200, 0)),
+        network_scope="urban",
+    )
+    centroid = {
+        "oa_id": "E00000001",
+        "residents": 100,
+        "coordinates": (100, 0),
+        "inside_area": True,
+    }
+    with pytest.raises(ValueError, match="required together"):
+        ParallelReductionRequest(
+            profile_id="parallel-oa-source",
+            routes=(route,),
+            output_area_centroids=(centroid,),
+        )
+    with pytest.raises(ValueError, match="must be unique"):
+        ParallelReductionRequest(
+            profile_id="parallel-oa-duplicates",
+            routes=(route,),
+            output_area_centroids=(centroid, centroid),
+            output_area_source_fingerprint="c" * 64,
+        )
+
+
 def test_guidance_findings_are_separate_cited_and_never_a_score_or_veto() -> None:
     request = ParallelReductionRequest(
         profile_id="parallel-guidance",
