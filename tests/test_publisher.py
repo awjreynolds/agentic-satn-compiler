@@ -5,12 +5,13 @@ import json
 import shutil
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import geopandas as gpd
 import pandas as pd
 import pytest
 from pypdf import PdfReader
-from shapely.geometry import LineString, shape
+from shapely.geometry import LineString, Point, mapping, shape
 
 from lcwip import (
     ArtifactLink,
@@ -35,9 +36,143 @@ from satn.models import (
     OfficialRoadClassificationConfig,
     TrafficLight,
 )
+from satn.publisher import _reviewable_map_collection
 from satn.sources import snapshot
 
 PROJECT = Path(__file__).parents[1]
+
+
+def test_reviewable_map_projection_keeps_rejected_routes_and_projects_assets_to_wgs84() -> None:
+    class CandidateGeometry:
+        def __init__(self, geometry):
+            self._geometry = geometry
+
+        def as_shapely(self):
+            return self._geometry
+
+    class Candidate:
+        def __init__(self, candidate_id, geometry, state, basis):
+            self.candidate_id = candidate_id
+            self.geometry = CandidateGeometry(geometry)
+            self.intervention_state = state
+            self.primary_alignment_basis = basis
+            self.alignment_bases = (basis,)
+            self.evidence_fingerprints = ("evidence",)
+            self.network_role = "community-access"
+
+        def model_dump(self, **_kwargs):
+            return {
+                "candidate_id": self.candidate_id,
+                "intervention_state": self.intervention_state,
+                "primary_alignment_basis": self.primary_alignment_basis,
+                "alignment_bases": list(self.alignment_bases),
+                "evidence_fingerprints": list(self.evidence_fingerprints),
+                "network_role": self.network_role,
+            }
+
+    selected = Candidate(
+        "selected-route",
+        LineString([(370000, 170000), (370100, 170100)]),
+        "existing-provision",
+        "current-ncn",
+    )
+    rejected = Candidate(
+        "rejected-route",
+        LineString([(370000, 170000), (370100, 170000)]),
+        "upgrade-required",
+        "mapped-cycleway",
+    )
+    candidate_set = SimpleNamespace(
+        candidate_set_id="set-1",
+        candidates=(selected, rejected),
+        admissions=(
+            SimpleNamespace(
+                candidate_id="selected-route", disposition="admitted", rationale="admitted"
+            ),
+            SimpleNamespace(
+                candidate_id="rejected-route", disposition="rejected", rationale="profile-limit"
+            ),
+        ),
+    )
+    reviewable = SimpleNamespace(
+        scenario=SimpleNamespace(candidate_sets=(candidate_set,)),
+        effective_selections=(
+            SimpleNamespace(
+                candidate=selected,
+                candidate_id="selected-route",
+                candidate_set_id="set-1",
+                connection_id="connection-1",
+                compiler_candidate_id="selected-route",
+                selection_disposition="selected",
+                display_state="existing-provision",
+                officer_decision_id=None,
+            ),
+        ),
+        network_gaps=(
+            SimpleNamespace(
+                gap_id="gap-1",
+                candidate_set_id="gap-set",
+                connection_id="gap-connection",
+                network_role="community-access",
+                endpoints=("place-a", "place-b"),
+                reason="missing-bridge",
+                display_state="unresolved-gap",
+            ),
+        ),
+        divergences=(),
+        result_fingerprint="f" * 64,
+    )
+    places = gpd.GeoDataFrame(
+        [
+            {"place_id": "place-a", "geometry": Point(-2.1, 51.3)},
+            {"place_id": "place-b", "geometry": Point(-2.0, 51.4)},
+        ],
+        crs=4326,
+    )
+    compiled = SimpleNamespace(
+        reviewable_network=reviewable,
+        places=places,
+        asset_accounting={
+            "contract": "satn-asset-accounting/v1",
+            "records": [
+                {
+                    "asset_id": "asset-1",
+                    "asset_kind": "mapped-cycleway",
+                    "primary_alignment_basis": "mapped-cycleway",
+                    "alignment_bases": ["mapped-cycleway"],
+                    "intervention_state": "upgrade-required",
+                    "geometry": mapping(LineString([(370000, 170000), (370100, 170100)])),
+                }
+            ],
+        },
+    )
+
+    payload = _reviewable_map_collection(compiled)
+    by_type = {}
+    for feature in payload["features"]:
+        by_type.setdefault(feature["properties"]["feature_type"], []).append(feature)
+
+    assert {
+        feature["properties"]["candidate_id"]
+        for feature in by_type["reviewable-unselected-candidate"]
+    } == {
+        "rejected-route"
+    }
+    assert (
+        by_type["reviewable-unselected-candidate"][0]["properties"]["admission_disposition"]
+        == "rejected"
+    )
+    assert by_type["reviewable-gap-endpoint"]
+    assert all(
+        feature["geometry"]["type"] == "Point"
+        for feature in by_type["reviewable-gap-endpoint"]
+    )
+    asset = by_type["asset-upgrade-required"][0]
+    coordinates = asset["geometry"]["coordinates"][0]
+    assert -180 <= coordinates[0] <= 180
+    assert -90 <= coordinates[1] <= 90
+    assert asset["properties"]["geometry_crs"] == "EPSG:4326"
+    assert asset["properties"]["source_geometry_crs"] == "EPSG:27700"
 
 
 def prepared_config(tmp_path: Path) -> CouncilConfig:

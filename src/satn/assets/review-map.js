@@ -16,6 +16,10 @@
     data.network = await response.json();
   }
   const network = data.network;
+  const reviewable = data.reviewable_network || data.reviewable || {
+    type: "FeatureCollection",
+    features: []
+  };
   const places = data.places;
   const referenceRecord = data.reference_satn || null;
   const referenceOptions = data.reference_satn_options || { type: "FeatureCollection", features: [] };
@@ -1100,6 +1104,7 @@
   function sourceFeatures(sourceId) {
     if (sourceId === "places") return places.features;
     if (sourceId === "reference-satn-options") return referenceOptions.features;
+    if (sourceId === "reviewable") return reviewable.features;
     if (["network", "topography"].includes(sourceId)) return network.features;
     return [];
   }
@@ -1328,6 +1333,8 @@
       : null;
     if (canonical) {
       showDetails(canonical.id);
+    } else if (artifact.sourceId === "reviewable") {
+      renderReviewableDetails(artifact);
     } else {
       renderGenericArtifact(artifact);
       setHighlight(null);
@@ -1335,6 +1342,42 @@
     appendArtifactContext(document.querySelector("#feature-details"), artifact);
     renderAlignmentComparison(document.querySelector("#feature-details"), artifact);
     renderPopulationSelectionSummary(document.querySelector("#feature-details"));
+  }
+
+  function renderReviewableDetails(artifact) {
+    const properties = artifact.feature.properties || {};
+    const panel = document.querySelector("#feature-details");
+    panel.replaceChildren();
+    const heading = document.createElement("h3");
+    heading.id = "details-heading";
+    heading.textContent = value(
+      properties.route_id,
+      properties.endpoint_id || properties.asset_id || humanLabel(properties.feature_type || "Reviewable evidence")
+    );
+    const list = document.createElement("dl");
+    addDefinition(list, "Stable ID", artifact.id);
+    addDefinition(list, "Layer", humanLabel(properties.feature_type || "reviewable evidence"));
+    addDefinition(list, "Display state", value(properties.display_state));
+    addDefinition(list, "Primary Alignment Basis", value(properties.primary_alignment_basis));
+    addDefinition(list, "All Alignment Bases", parseList(properties.alignment_bases).join(", ") || "None");
+    addDefinition(list, "Evidence fingerprints", parseList(properties.evidence_fingerprints).join(", ") || "None");
+    addDefinition(list, "Geometry meaning", value(properties.geometry_semantics));
+    if (properties.divergence_variant) {
+      addDefinition(list, "Divergence variant", value(properties.divergence_variant));
+      addDefinition(list, "Officer candidate", value(properties.officer_candidate_id));
+      addDefinition(list, "Compiler candidate", value(properties.compiler_candidate_id));
+      addDefinition(list, "Officer decision", value(properties.officer_decision_id));
+    }
+    if (properties.feature_type === "reviewable-gap-endpoint") {
+      addDefinition(list, "Gap reason", value(properties.reason));
+      addDefinition(list, "Endpoint", value(properties.endpoint_id));
+    }
+    if (properties.feature_type === "dft-motor-traffic") {
+      addDefinition(list, "Traffic count", value(properties.all_motor_vehicles));
+      addDefinition(list, "Observation year", value(properties.observation_year));
+      addDefinition(list, "Traffic geometry", value(properties.geometry_semantics));
+    }
+    panel.append(heading, list);
   }
 
   function setHighlight(id) {
@@ -1651,7 +1694,14 @@
     });
     const groups = {
       "layer-authority-boundaries": ["authority-boundaries"],
-      "layer-strategic-network": ["strategic-network"],
+      "layer-strategic-network": ["strategic-network", "reviewable-strategic-network-halo", "reviewable-strategic-network-core", "reviewable-route-labels"],
+      "layer-required-connections": ["reviewable-required-connections"],
+      "layer-reviewable-gaps": ["reviewable-gaps", "reviewable-gap-labels"],
+      "layer-officer-divergences": ["reviewable-divergences-halo", "reviewable-divergences"],
+      "layer-existing-assets": ["reviewable-existing-assets"],
+      "layer-upgradeable-assets": ["reviewable-upgradeable-assets"],
+      "layer-unselected-candidates": ["reviewable-unselected-candidates"],
+      "layer-dft-traffic": ["reviewable-dft-traffic", "reviewable-dft-traffic-points"],
       "layer-spine-access-connections": ["spine-access-connections", "access-obligations", "spine-access-topography-warnings"],
       "layer-cross-spine-connectors": ["cross-spine-connectors"],
       "layer-urban-spines": ["urban-spines"],
@@ -1860,6 +1910,7 @@
 
   map.on("load", () => {
     map.addSource("network", { type: "geojson", data: network });
+    map.addSource("reviewable", { type: "geojson", data: reviewable });
     map.addSource("places", { type: "geojson", data: places });
     map.addSource("topography", {
       type: "geojson",
@@ -1904,6 +1955,184 @@
       });
       document.querySelector("#reference-options-control").hidden = false;
     }
+    const reviewableHaloColour = [
+      "match",
+      ["get", "primary_alignment_basis"],
+      "current-ncn", "#006d77",
+      "ncn-link", "#006d77",
+      "reclassified-ncn", "#00796b",
+      "greenway", "#2e7d32",
+      "mapped-cycleway", "#6a1b9a",
+      "cycle-track", "#7b1fa2",
+      "public-footpath", "#795548",
+      "public-bridleway", "#5d4037",
+      "former-railway", "#8e24aa",
+      "a-road", "#c62828",
+      "b-road", "#ad1457",
+      "#546e7a"
+    ];
+    const reviewableCoreColour = [
+      "match",
+      ["get", "display_state"],
+      "existing-provision", "#1b5e20",
+      "upgrade-required", "#ef6c00",
+      "proposed-new-link", "#1565c0",
+      "unresolved-gap", "#b71c1c",
+      "undetermined", "#455a64",
+      "#455a64"
+    ];
+    const reviewableLineFilter = ["in", ["get", "feature_type"], ["literal", [
+      "reviewable-selected-route"
+    ]]];
+    const reviewableRequiredConnectionFilter = ["all",
+      reviewableLineFilter,
+      ["in", ["get", "network_role"], ["literal", [
+        "community-access",
+        "school-access",
+        "strategic-destination-access"
+      ]]]
+    ];
+    map.addLayer({
+      id: "reviewable-strategic-network-halo",
+      type: "line",
+      source: "reviewable",
+      filter: reviewableLineFilter,
+      paint: {
+        "line-color": reviewableHaloColour,
+        "line-width": ["interpolate", ["linear"], ["zoom"], 7, 8, 13, 13],
+        "line-opacity": .32,
+        "line-blur": ["interpolate", ["linear"], ["zoom"], 7, 1.4, 13, .65]
+      }
+    });
+    map.addLayer({
+      id: "reviewable-required-connections",
+      type: "line",
+      source: "reviewable",
+      filter: reviewableRequiredConnectionFilter,
+      layout: { visibility: "visible" },
+      paint: {
+        "line-color": "#90a4ae",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 7, 7, 13, 10],
+        "line-dasharray": [1, 1],
+        "line-opacity": .22
+      }
+    }, "reviewable-strategic-network-halo");
+    map.addLayer({
+      id: "reviewable-strategic-network-core",
+      type: "line",
+      source: "reviewable",
+      filter: reviewableLineFilter,
+      paint: {
+        "line-color": reviewableCoreColour,
+        "line-width": ["interpolate", ["linear"], ["zoom"], 7, 3, 13, 6],
+        "line-dasharray": ["match", ["get", "display_state"],
+          "existing-provision", [1, 0],
+          "upgrade-required", [1, .8],
+          "proposed-new-link", [2, 1],
+          [1, 0]
+        ],
+        "line-opacity": .96
+      }
+    });
+    map.addLayer({
+      id: "reviewable-route-labels",
+      type: "symbol",
+      source: "reviewable",
+      filter: reviewableLineFilter,
+      layout: {
+        "symbol-placement": "line",
+        "symbol-spacing": 320,
+        "text-field": ["get", "display_state"],
+        "text-size": ["interpolate", ["linear"], ["zoom"], 7, 8, 13, 11],
+        "text-allow-overlap": false,
+        "text-ignore-placement": false
+      },
+      paint: { "text-color": reviewableCoreColour, "text-halo-color": "#ffffff", "text-halo-width": 2 }
+    });
+    map.addLayer({
+      id: "reviewable-gaps",
+      type: "circle",
+      source: "reviewable",
+      filter: ["==", ["get", "feature_type"], "reviewable-gap-endpoint"],
+      paint: {
+        "circle-color": "#b71c1c",
+        "circle-radius": ["interpolate", ["linear"], ["zoom"], 7, 5, 13, 9],
+        "circle-stroke-color": "#ffffff",
+        "circle-stroke-width": 2
+      }
+    });
+    map.addLayer({
+      id: "reviewable-gap-labels",
+      type: "symbol",
+      source: "reviewable",
+      filter: ["==", ["get", "feature_type"], "reviewable-gap-endpoint"],
+      layout: { "text-field": "GAP", "text-size": 9, "text-offset": [0, 1.25], "text-allow-overlap": false },
+      paint: { "text-color": "#7f0000", "text-halo-color": "#ffffff", "text-halo-width": 2 }
+    });
+    map.addLayer({
+      id: "reviewable-divergences-halo",
+      type: "line",
+      source: "reviewable",
+      filter: ["==", ["get", "feature_type"], "officer-compiler-divergence"],
+      layout: { visibility: "visible" },
+      paint: { "line-color": "#6a1b9a", "line-width": 12, "line-opacity": .42, "line-blur": 1 }
+    });
+    map.addLayer({
+      id: "reviewable-divergences",
+      type: "line",
+      source: "reviewable",
+      filter: ["==", ["get", "feature_type"], "officer-compiler-divergence"],
+      paint: {
+        "line-color": ["match", ["get", "divergence_variant"], "officer", "#6a1b9a", "#d84315"],
+        "line-width": 5,
+        "line-dasharray": ["match", ["get", "divergence_variant"], "officer", [2, 1], [1, 1]]
+      }
+    });
+    map.addLayer({
+      id: "reviewable-existing-assets",
+      type: "line",
+      source: "reviewable",
+      filter: ["==", ["get", "feature_type"], "asset-existing-provision"],
+      layout: { visibility: "none" },
+      paint: { "line-color": "#2e7d32", "line-width": 4, "line-dasharray": [1, 1], "line-opacity": .8 }
+    });
+    map.addLayer({
+      id: "reviewable-upgradeable-assets",
+      type: "line",
+      source: "reviewable",
+      filter: ["==", ["get", "feature_type"], "asset-upgrade-required"],
+      layout: { visibility: "none" },
+      paint: { "line-color": "#ef6c00", "line-width": 4, "line-dasharray": [2, 1], "line-opacity": .85 }
+    });
+    map.addLayer({
+      id: "reviewable-unselected-candidates",
+      type: "line",
+      source: "reviewable",
+      filter: ["==", ["get", "feature_type"], "reviewable-unselected-candidate"],
+      layout: { visibility: "none" },
+      paint: {
+        "line-color": ["match", ["get", "display_state"], "existing-provision", "#2e7d32", "upgrade-required", "#ef6c00", "#9e9e9e"],
+        "line-width": 3,
+        "line-dasharray": [2, 2],
+        "line-opacity": .74
+      }
+    });
+    map.addLayer({
+      id: "reviewable-dft-traffic",
+      type: "line",
+      source: "reviewable",
+      filter: ["all", ["==", ["get", "feature_type"], "dft-motor-traffic"], ["in", ["geometry-type"], ["literal", ["LineString", "MultiLineString"]]]],
+      layout: { visibility: "none" },
+      paint: { "line-color": "#263238", "line-width": 3, "line-dasharray": [1, 1], "line-opacity": .72 }
+    });
+    map.addLayer({
+      id: "reviewable-dft-traffic-points",
+      type: "circle",
+      source: "reviewable",
+      filter: ["all", ["==", ["get", "feature_type"], "dft-motor-traffic"], ["==", ["geometry-type"], "Point"]],
+      layout: { visibility: "none" },
+      paint: { "circle-color": "#263238", "circle-radius": 6, "circle-stroke-color": "#ffffff", "circle-stroke-width": 2 }
+    });
     map.addLayer({
       id: "authority-boundaries",
       type: "line",
@@ -1973,6 +2202,9 @@
         "text-halo-width": 2
       }
     });
+    const hasReviewableRoutes = reviewable.features.some(
+      (feature) => feature.properties?.feature_type === "reviewable-selected-route"
+    );
     map.addLayer({
       id: "strategic-network",
       type: "line",
@@ -1987,14 +2219,30 @@
           "greenway-cycleway"
         ]]
       ],
+      layout: { visibility: hasReviewableRoutes ? "none" : "visible" },
       paint: {
         "line-color": "#c0392b",
         "line-width": ["interpolate", ["linear"], ["zoom"], 8, 4, 13, 6],
         "line-opacity": .92
       }
     });
+    [
+      ["layer-authority-boundaries", ["authority-boundaries"]],
+      ["layer-spine-access-connections", ["spine-access-connections", "access-obligations", "spine-access-topography-warnings"]],
+      ["layer-cross-spine-connectors", ["cross-spine-connectors"]],
+      ["layer-gaps-warnings", ["gaps", "crossing-warnings"]],
+      ["layer-existing-assets", ["reviewable-existing-assets"]],
+      ["layer-upgradeable-assets", ["reviewable-upgradeable-assets"]],
+      ["layer-unselected-candidates", ["reviewable-unselected-candidates"]],
+      ["layer-dft-traffic", ["reviewable-dft-traffic", "reviewable-dft-traffic-points"]]
+    ].forEach(([controlId, layerIds]) => {
+      if (document.getElementById(controlId)?.checked) return;
+      layerIds.forEach((layerId) => {
+        if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", "none");
+      });
+    });
     const bounds = new maplibregl.LngLatBounds();
-    [...network.features, ...places.features].forEach((feature) => {
+    [...network.features, ...reviewable.features, ...places.features].forEach((feature) => {
       if (feature.geometry) extendBounds(bounds, feature.geometry.coordinates);
     });
     if (!bounds.isEmpty()) map.fitBounds(bounds, { padding: 60 });
