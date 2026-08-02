@@ -90,10 +90,14 @@ registry membership, evidence, profile and preparation lineage. The plan is
 deterministic, validates a fresh preparation by exact equality and grants no
 network-mutation or publication authority.
 
-No Existing Alignment criterion is invented.  Without a separately supplied
-governed Existing Alignment summary, the Bath fixture currently offers the
-A-road interurban candidate for finite selection rather than asserting that
-the Railway/NCN candidate has a proven reusable-asset advantage.
+No Existing Alignment criterion is invented. The reuse-first compiler now consumes
+claim-specific governed asset observations and assigns Candidate Reuse Class only
+when those observations support it. Missing or conflicted reusable-asset evidence
+remains explicit and cannot create an advantage; conversely, a governed current
+cycleway, Greenway, NCN, PROW, former railway or Local Connector section must be
+accounted for even when it is incomplete, unselected or topologically unconnected.
+The earlier baseline behaviour that could prefer the A-road option merely because a
+separate Existing Alignment summary was absent is superseded.
 
 The physical-alignment registry remains authoritative for geometry identity:
 one physical alignment may have several logical role memberships, but each

@@ -49,6 +49,23 @@ School Access Obligations or other hard safeguards. Candidate precedence is a
 bounded presumption among otherwise eligible, near-equivalent substitutes, not
 an unconditional winner.
 
+The default reuse-first profile orders four evidence-derived Candidate Reuse
+Classes: existing cycle provision; upgradeable off-carriageway assets; low-traffic
+non-A-road alignments; and A-road corridors requiring major protected provision.
+That order, every material threshold and the lexicographic comparator are versioned
+profile data, not engine constants. `proposed-new-link` is an independent
+Intervention State within the applicable class rather than a fifth reuse tier.
+Total elevation effort is the non-negative sum of the absolute change of every
+section; distance and elevation can trade only through an explicit configured rule.
+
+A lower class can displace a higher eligible class only through a cited, structured
+Material Displacement Reason. Missing, stale or conflicting optional evidence never
+becomes zero, safe, favourable or automatically ineligible. A configured DfT traffic
+observation may emit a Traffic Challenge, but is not a veto; absence of protected
+space is asserted only from explicit evidence. When no evidenced continuous option
+exists, the result contains a non-routable endpoint Network Gap rather than invented
+geometry, and valid-input generation still completes.
+
 Different declared profiles may generate comparable Scenario Compilations. An agent
 choice or deterministic fallback grants generated provenance only. Officer Decisions
 are initial governed inputs, apply only to their stable logical targets and never wait
@@ -88,6 +105,20 @@ This integration emits an immutable, reviewable Scenario Compilation and replaya
 decision evidence. It does not create a Reference SATN, mutate the compiled network or
 exercise officer or adoption authority. The current narrower implementation may not
 yet exercise the Agent Runtime and completion fallback described by this decision.
+
+Every governed asset is nevertheless accounted for independently of candidate
+selection. Asset Accounting retains scope, opportunity and evidence states, while a
+Candidate Participation record carries the one disposition of that asset in one exact
+candidate context. A physical section may therefore support several candidates
+without receiving one contradictory global winner/loser state.
+
+Publication makes the selected network intervention-legible. The default view contains
+the SATN, quiet Places, required connections, material gaps and officer/compiler
+divergences. Its line core communicates existing provision, upgrade required, proposed
+new link or unresolved gap; its halo communicates primary Alignment Basis while details
+retain all bases. Existing/upgradeable assets, unselected candidates and DfT traffic are
+optional layers. An unselected existing asset keeps its identity and a divergence is
+not rendered as an ordinary grey alternative.
 
 The following remain separate downstream LCWIP capabilities:
 
