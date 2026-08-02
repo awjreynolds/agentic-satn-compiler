@@ -6,7 +6,8 @@ planning rules and bounded human or AI choices.
 > Experimental proof of concept — not an adopted plan, scheme design, safety audit,
 > legal-access finding or investment case.
 
-[Explore the B&NES example](https://awjreynolds.github.io/agentic-satn-compiler/deployments/banes/)
+[Open SATN Deployments](https://awjreynolds.github.io/agentic-satn-compiler/),
+[explore the B&NES example](https://awjreynolds.github.io/agentic-satn-compiler/deployments/banes/)
 or [build your first local map](docs/getting-started/agent-quickstart.md).
 
 ![B&NES strategic network with intervention states and alignment-basis halos](docs/images/banes-strategic-network.png)
