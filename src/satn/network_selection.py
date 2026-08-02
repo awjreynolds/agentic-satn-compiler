@@ -330,6 +330,9 @@ class NetworkSelectionProfile(BaseModel):
     traffic_profile_fingerprint: str | None = Field(default=None, pattern=_SHA256_PATTERN)
     deterministic_tie_break: Literal["stable-candidate-id"] | None = None
     agent_call_bound: int | None = Field(default=None, ge=0, strict=True)
+    maximum_options_per_candidate_set: int | None = Field(default=None, ge=1, strict=True)
+    maximum_hybrid_candidates_per_set: int | None = Field(default=None, ge=0, strict=True)
+    maximum_transitions_per_candidate: int | None = Field(default=None, ge=0, strict=True)
     primary_objective: AlignmentSelectionObjective = AlignmentSelectionObjective.POPULATION_REACH
     population: PopulationReachProfileConfig = Field(default_factory=PopulationReachProfileConfig)
     section_population: SectionPopulationCaptureProfileConfig = Field(
@@ -476,6 +479,9 @@ class NetworkSelectionProfile(BaseModel):
                 "unknown_value_policy": self.unknown_value_policy,
                 "deterministic_tie_break": self.deterministic_tie_break,
                 "agent_call_bound": self.agent_call_bound,
+                "maximum_options_per_candidate_set": self.maximum_options_per_candidate_set,
+                "maximum_hybrid_candidates_per_set": self.maximum_hybrid_candidates_per_set,
+                "maximum_transitions_per_candidate": self.maximum_transitions_per_candidate,
             }
             missing = [name for name, value in required.items() if value is None]
             if missing:
@@ -502,6 +508,9 @@ class NetworkSelectionProfile(BaseModel):
                 self.traffic_profile_fingerprint,
                 self.deterministic_tie_break,
                 self.agent_call_bound,
+                self.maximum_options_per_candidate_set,
+                self.maximum_hybrid_candidates_per_set,
+                self.maximum_transitions_per_candidate,
             )
         ):
             raise ValueError("vNext fields require contract satn-network-selection-profile/vNext")
@@ -530,8 +539,29 @@ class NetworkSelectionProfile(BaseModel):
                 "traffic_profile_fingerprint": self.traffic_profile_fingerprint,
                 "deterministic_tie_break": self.deterministic_tie_break,
                 "agent_call_bound": self.agent_call_bound,
+                "maximum_options_per_candidate_set": self.maximum_options_per_candidate_set,
+                "maximum_hybrid_candidates_per_set": self.maximum_hybrid_candidates_per_set,
+                "maximum_transitions_per_candidate": self.maximum_transitions_per_candidate,
             }
-        return self.model_dump(mode="json")
+        return self.model_dump(
+            mode="json",
+            exclude={
+                "contract",
+                "version",
+                "candidate_class_order",
+                "intervention_state_order",
+                "comparator_order",
+                "material_difference_rules",
+                "displacement_rules",
+                "unknown_value_policy",
+                "traffic_profile_fingerprint",
+                "deterministic_tie_break",
+                "agent_call_bound",
+                "maximum_options_per_candidate_set",
+                "maximum_hybrid_candidates_per_set",
+                "maximum_transitions_per_candidate",
+            },
+        )
 
     def canonical_json(self) -> str:
         return json.dumps(

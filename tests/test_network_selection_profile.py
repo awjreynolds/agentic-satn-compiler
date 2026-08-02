@@ -84,6 +84,9 @@ def vnext_profile_payload() -> dict[str, object]:
         "traffic_profile_fingerprint": "a" * 64,
         "deterministic_tie_break": "stable-candidate-id",
         "agent_call_bound": 0,
+        "maximum_options_per_candidate_set": 12,
+        "maximum_hybrid_candidates_per_set": 2,
+        "maximum_transitions_per_candidate": 2,
     }
 
 
@@ -162,6 +165,21 @@ def test_vnext_profile_rejects_duplicate_displacement_reason_codes() -> None:
         NetworkSelectionProfile.model_validate(
             payload | {"displacement_rules": rules + rules[:1]}
         )
+
+
+def test_vnext_profile_requires_strict_generation_bounds() -> None:
+    for field in (
+        "maximum_options_per_candidate_set",
+        "maximum_hybrid_candidates_per_set",
+        "maximum_transitions_per_candidate",
+    ):
+        omitted = vnext_profile_payload()
+        omitted.pop(field)
+        with pytest.raises(ValidationError, match=field):
+            NetworkSelectionProfile.model_validate(omitted)
+
+        with pytest.raises(ValidationError, match=field):
+            NetworkSelectionProfile.model_validate(vnext_profile_payload() | {field: "2"})
 
 
 def artifact(name: str) -> GovernedEvidenceArtifactConfig:
