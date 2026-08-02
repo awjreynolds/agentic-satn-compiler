@@ -192,7 +192,12 @@ class EffectiveReviewableSelection:
 
 @dataclass(frozen=True)
 class ReviewableNetworkGap:
-    """A non-routable endpoint gap with no geometry field/value."""
+    """A non-routable gap with no geometry field/value.
+
+    Endpoint IDs are retained when governed preparation has them; an empty
+    tuple truthfully represents a preparation issue known before either
+    network-place endpoint is available.
+    """
 
     gap_id: str
     candidate_set_id: str | None
@@ -908,7 +913,6 @@ def _validate_gap_semantics(
             not isinstance(gap_id, str)
             or gap_id in by_id
             or not isinstance(endpoints, list)
-            or not endpoints
             or any(not isinstance(item, str) or not item for item in endpoints)
             or raw.get("display_state") != ReviewableDisplayState.UNRESOLVED_GAP.value
         ):
@@ -1328,7 +1332,11 @@ def _gap_from_roster(item: object, reason: str) -> ReviewableNetworkGap | None:
             }
         )
     )
-    if not isinstance(connection_id, str) or not endpoints:
+    # A governed preparation issue can be known before either network-place
+    # endpoint is available.  Preserve it as an explicit, endpoint-less gap;
+    # the connection identity and preparation roster still provide its
+    # auditable lineage without inventing a place identifier.
+    if not isinstance(connection_id, str):
         return None
     row_reason = getattr(item, "reason", None)
     if not isinstance(row_reason, str) or not row_reason:

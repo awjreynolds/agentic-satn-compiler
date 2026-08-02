@@ -338,6 +338,35 @@ def test_unresolved_preparation_row_is_a_known_endpoint_gap_not_terminal_failure
     assert any(item.kind == "network-gap" for item in result.evidence_requests)
 
 
+def test_unresolved_preparation_row_without_endpoints_remains_explicit_gap() -> None:
+    roster = PreparedConnectionRosterRecord(
+        access_connection_id="missing-endpoints",
+        obligation_kind="community",
+        parent_role="spine-access-connection",
+        community_id=None,
+        place_id=None,
+        parent_place_id=None,
+        disposition="unresolved-gap",
+        reason="missing-network-place-endpoints",
+    )
+    issue = CandidatePreparationIssue(
+        access_connection_id="missing-endpoints",
+        reason="missing-network-place-endpoints",
+        detail="No governed network-place endpoint was available.",
+    )
+    source = preparation(roster=(roster,), issues=(issue,))
+
+    result = compile_reviewable_network(source, request())
+
+    assert result.status == "complete"
+    assert len(result.network_gaps) == 1
+    gap = result.network_gaps[0]
+    assert gap.connection_id == "missing-endpoints"
+    assert gap.endpoints == ()
+    assert gap.unsatisfied_network_place_ids == ()
+    validate_semantic_payload(result.semantic_payload)
+
+
 def test_valid_prepared_subset_survives_an_unresolved_sibling_row() -> None:
     prepared = connection("mixed")
     unresolved = PreparedConnectionRosterRecord(
