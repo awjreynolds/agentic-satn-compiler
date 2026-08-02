@@ -39,6 +39,7 @@ from satn.alignment_selection import (
     SelectionDisposition,
     orchestrate_scenario_review,
     select_preferred_alignment,
+    traffic_diagnostics_for_candidate,
 )
 from satn.education_access import EducationAccessSourceSnapshot
 from satn.spine_access_candidate_preparation import (
@@ -374,7 +375,7 @@ def compile_prepared_scenario(
         for item in preparation.connection_roster
         if item.disposition == "unresolved-gap"
     )
-    if preparation.status != "prepared" or unresolved_roster_ids:
+    if preparation.status != "prepared":
         missing = {
             *preparation.missing_inputs,
             *(f"unresolved-preparation:{item}" for item in unresolved_roster_ids),
@@ -393,12 +394,20 @@ def compile_prepared_scenario(
             ),
         )
     if not prepared:
+        missing = (
+            tuple(
+                f"unresolved-preparation:{item}"
+                for item in unresolved_roster_ids
+            )
+            if unresolved_roster_ids
+            else ("eligible-chained-community-connection",)
+        )
         return _result(
             status="incomplete",
             preparation=preparation,
             scenario=None,
             review=None,
-            missing=("eligible-chained-community-connection",),
+            missing=missing,
             diagnostics=_roster_diagnostics(
                 preparation,
                 reason="no-eligible-chained-community-connections",
@@ -438,6 +447,7 @@ def compile_prepared_scenario(
         education_governed_source,
     ) = _criterion_source_lineage(preparation)
     selections: list[PreferredStrategicAlignment] = []
+    traffic_diagnostics: list[dict[str, object]] = []
     for item in prepared:
         criterion = criteria_by_id[item.access_connection_id]
         _validate_exact_candidate_set(item, criterion)
@@ -455,6 +465,10 @@ def compile_prepared_scenario(
                 criterion,
             )
         )
+        for candidate in item.candidate_set.candidates:
+            traffic_diagnostics.extend(
+                traffic_diagnostics_for_candidate(candidate, item.candidate_set.profile)
+            )
 
     selections_tuple = tuple(sorted(selections, key=lambda item: item.candidate_set_id))
     decision_record = request.decision_record or ScenarioDecisionRecord(
@@ -477,7 +491,10 @@ def compile_prepared_scenario(
         selections_tuple,
         decision_record,
     )
-    needs_review = not scenario.publishable
+    # An unresolved sibling remains an explicit downstream Network Gap.  It
+    # must not hide valid prepared candidate sets, but it does keep the
+    # scenario in review-required status until that endpoint lineage is fixed.
+    needs_review = not scenario.publishable or bool(unresolved_roster_ids)
     review = (
         orchestrate_scenario_review(
             scenario,
@@ -491,12 +508,35 @@ def compile_prepared_scenario(
         if needs_review or request.prior_orchestration is not None
         else None
     )
+    traffic_payload = (
+        {
+            "traffic_diagnostics": tuple(traffic_diagnostics),
+            "traffic_profile_fingerprints": tuple(
+                sorted(
+                    {
+                        item.candidate_set.profile.traffic_profile.fingerprint
+                        for item in selections_tuple
+                        if item.candidate_set.profile.traffic_profile is not None
+                    }
+                )
+            ),
+        }
+        if traffic_diagnostics
+        else {}
+    )
     return _result(
         status="review-required" if needs_review else "compiled",
         preparation=preparation,
         scenario=scenario,
         review=review,
-        missing=(),
+        missing=tuple(
+            sorted(
+                {
+                    *preparation.missing_inputs,
+                    *(f"unresolved-preparation:{item}" for item in unresolved_roster_ids),
+                }
+            )
+        ),
         diagnostics={
             **_roster_diagnostics(preparation, reason=None),
             "selection_performed": True,
@@ -511,6 +551,7 @@ def compile_prepared_scenario(
             "reference_satn_created": False,
             "authoritative_network_geometry_mutated": False,
             "replay_directive": "recompile-whole-network-on-ledger-change",
+            **traffic_payload,
         },
     )
 
@@ -539,8 +580,17 @@ def _validate_preparation_identity(
         sorted(preparation.connection_roster, key=lambda item: item.access_connection_id)
     )
     roster_ids = tuple(item.access_connection_id for item in roster)
-    if not roster or len(set(roster_ids)) != len(roster_ids):
+    if len(set(roster_ids)) != len(roster_ids):
         raise ValueError("prepared status requires one exhaustive unique connection roster")
+    if not roster and (
+        preparation.prepared_spine_access_connections
+        or preparation.generation_issues
+        or preparation.diagnostics.get("expected_connection_roster_count") != 0
+    ):
+        raise ValueError(
+            "prepared status requires one exhaustive unique connection roster; "
+            "empty roster contradicts its governed inputs"
+        )
     prepared_ids = {
         item.access_connection_id for item in preparation.prepared_spine_access_connections
     }

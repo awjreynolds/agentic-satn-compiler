@@ -44,6 +44,22 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
     "satn/__init__.py": ("module", "executed SATN package import boundary"),
     "satn/agents.py": ("module", "bounded decision selection and replay"),
     "satn/atm.py": ("module", "authoritative ATM comparison"),
+    "satn/asset_accounting.py": (
+        "module",
+        "exhaustive governed reusable-asset accounting",
+    ),
+    "satn/dft_traffic_adapter.py": (
+        "module",
+        "pinned DfT motor-traffic Source Export normalization",
+    ),
+    "satn/dft_traffic_matching.py": (
+        "module",
+        "configured offline DfT observation matching and proof binding",
+    ),
+    "satn/local_evidence_store.py": (
+        "module",
+        "typed pinned Local Evidence Store query seam for governed DfT matching",
+    ),
     "satn/backbone.py": ("module", "Backbone-and-Access assembly"),
     "satn/compilation_dependencies.py": (
         "module",
@@ -79,6 +95,14 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
     "satn/network_selection.py": (
         "module",
         "frozen Network Selection Profile validation and fingerprinting",
+    ),
+    "satn/reviewable_network.py": (
+        "module",
+        "complete reviewable selections, endpoint gaps, and officer divergence",
+    ),
+    "satn/traffic_evidence.py": (
+        "module",
+        "optional DfT traffic and protected-space evidence annotations",
     ),
     "satn/alignment_selection.py": (
         "module",
@@ -152,8 +176,11 @@ OPTIONAL_COMPONENT_GROUPS: Final[dict[str, frozenset[str]]] = {
     "network-selection": frozenset(
         {
             "satn/alignment_selection.py",
+            "satn/dft_traffic_matching.py",
             "satn/existing_alignment.py",
+            "satn/local_evidence_store.py",
             "satn/network_selection.py",
+            "satn/traffic_evidence.py",
             "satn/population_reach.py",
             "satn/section_population.py",
             "satn/psa_evidence_loaders.py",
@@ -238,9 +265,6 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
         "local fixed-point command operations without CompiledNetwork mutation"
     ),
     "satn/heartbeat.py": "operational progress reporting",
-    "satn/local_evidence_store.py": (
-        "additive Local Evidence Store sidecar; not a compiler input before equivalence cutover"
-    ),
     "satn/open_roads_adapter.py": (
         "additive Local Evidence source adapter; not a compiler input before equivalence cutover"
     ),
@@ -261,6 +285,7 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     "satn/parallel_reduction_corpus_cli.py": (
         "explicit synthetic acceptance-reference command adapter"
     ),
+    "satn/proving_cli.py": "read-only proving and explicit reference-promotion command adapter",
     "satn/parallel_reduction_evidence.py": (
         "post-compile governed parallel evidence adapter without CompiledNetwork mutation"
     ),

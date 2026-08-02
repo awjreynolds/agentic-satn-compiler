@@ -19,6 +19,7 @@ from satn.pipeline import compilation_governed_input_fingerprint
 from satn.psa_evidence_loaders import GovernedEvidenceLoadError
 from satn.routing import RoadGraph, RouteOption
 from satn.spine_access_candidate_preparation import prepare_spine_access_candidates
+from satn.traffic_evidence import TrafficMatchState, TrafficObservation
 
 
 def profile(*, include_b_road: bool = False, maximum_options: int = 5) -> NetworkSelectionProfile:
@@ -36,6 +37,17 @@ def profile(*, include_b_road: bool = False, maximum_options: int = 5) -> Networ
             "ambiguity": {"maximum_options_per_candidate_set": maximum_options},
         }
     )
+
+
+def traffic_profile() -> NetworkSelectionProfile:
+    payload = profile().model_dump(mode="json")
+    payload["traffic_match_policy"] = {
+        "policy_id": "dft-test-v1",
+        "version": "1",
+        "route_buffer_m": 20.0,
+        "source_layers": ["aadf"],
+    }
+    return NetworkSelectionProfile.model_validate(payload)
 
 
 def empty_source_config() -> SourceConfig:
@@ -291,6 +303,69 @@ def test_prepares_finite_candidates_per_actual_community_connection_only() -> No
     assert "community_connection_count" not in result.diagnostics
     assert result.contract == "satn-spine-access-candidate-preparation/v1"
     assert result.metadata()["contract"] == result.contract
+
+
+def test_preparation_matches_pinned_traffic_before_candidate_identity() -> None:
+    observation = TrafficObservation(
+        observation_id="dft-row-1",
+        source_export_fingerprint="a" * 64,
+        source_layer="aadf",
+        count_point_id="CP1",
+        observation_year=2024,
+        easting=400500.0,
+        northing=170000.0,
+        declared_crs="EPSG:27700",
+        all_motor_vehicles=1234,
+        row_fingerprint="b" * 64,
+    )
+
+    class Store:
+        def query_traffic(self, **_kwargs):
+            return (observation,)
+
+    baseline = prepare_without_evidence()
+    result = prepare_spine_access_candidates(
+        traffic_profile(),
+        road_graph=routing_graph(),
+        spine_access_connections=connections(),
+        access_obligations=obligations(),
+        strategic_spines=spines(),
+        context=current_asset_context(),
+        official_road_classification=None,
+        source_config=empty_source_config(),
+        config_directory=Path.cwd(),
+        evidence_store=Store(),
+        evidence_state_fingerprint="c" * 64,
+    )
+
+    candidates = result.prepared_spine_access_connections[0].candidate_set.candidates
+    assert candidates
+    assert any(item.traffic_observations for item in candidates)
+    assert all(
+        not item.traffic_observations
+        or item.traffic_observations[0].match_state is TrafficMatchState.MATCHED
+        for item in candidates
+    )
+    assert any(
+        item.traffic_observations[0].match_state is TrafficMatchState.MATCHED
+        for item in candidates
+        if item.traffic_observations
+    )
+    matched = next(item for item in candidates if item.traffic_observations)
+    retained = matched.traffic_observations[0]
+    assert retained.match_proof is not None
+    assert retained.match_proof["evidence_state_fingerprint"] == "c" * 64
+    assert retained.match_state_fingerprint
+    assert result.traffic_match_policy_fingerprint
+    assert result.preparation_fingerprint != baseline.preparation_fingerprint
+    baseline_ids = {
+        item.candidate_id
+        for item in baseline.prepared_spine_access_connections[0].candidate_set.candidates
+    }
+    assert any(item.candidate_id not in baseline_ids for item in candidates)
+    assert result.evidence_lineage["traffic_matching"]["evidence_state_fingerprint"] == (
+        "c" * 64
+    )
 
 
 def test_maps_current_ncn_a_road_and_other_without_declassified_advantage() -> None:

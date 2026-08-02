@@ -43,7 +43,10 @@ from .network_selection import (
     AlignmentSelectionObjective,
     AmbiguityTrigger,
     CandidateSourceClass,
+    DisplacementReasonCode,
+    InterventionState,
     NetworkSelectionProfile,
+    ReuseFirstCandidateClass,
 )
 from .population_reach import (
     PROHIBITED_CLAIMS,
@@ -60,11 +63,44 @@ from .population_reach import (
 from .population_reach import (
     _geometry_sha256 as _population_geometry_sha256,
 )
+from .traffic_evidence import (
+    ProtectedSpaceEvidence,
+    ProtectedSpaceState,
+    TrafficChallengeDiagnostic,
+    TrafficCoverageStatus,
+    TrafficExposure,
+    TrafficFreshnessState,
+    TrafficMatchState,
+    TrafficObservation,
+)
 
 _ID = re.compile(r"^[a-z0-9][a-z0-9._:-]*$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _CANDIDATE_ID = re.compile(r"^candidate-[0-9a-f]{20}$")
 _CANDIDATE_SET_ID = re.compile(r"^candidate-set-[0-9a-f]{20}$")
+_ALIGNMENT_BASIS_VOCABULARY = frozenset(
+    {
+        "current-ncn",
+        "ncn-link",
+        "greenway",
+        "mapped-cycleway",
+        "cycle-track",
+        "shared-use-path",
+        "reclassified-ncn",
+        "public-bridleway",
+        "restricted-byway",
+        "public-footpath",
+        "byway-open-to-all-traffic",
+        "prow-class-unknown",
+        "former-railway",
+        "local-connector",
+        "a-road",
+        "b-road",
+        "classified-unnumbered-road",
+        "unclassified-road",
+        "proposed-new-corridor",
+    }
+)
 _HOSTNAME = re.compile(
     r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\."
     r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$",
@@ -445,6 +481,57 @@ class CanonicalLineString(BaseModel):
         )
 
 
+class TrafficConflictEvidence(BaseModel):
+    """Typed retention of contradictory traffic observations.
+
+    Traffic conflict is optional enrichment.  It must never become a route
+    veto, but the observations and their provenance remain inspectable even
+    when the ordinary traffic status conservatively collapses to unknown.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    observation_ids: tuple[str, ...] = Field(min_length=1)
+    source_export_fingerprints: tuple[str, ...] = ()
+    row_fingerprints: tuple[str, ...] = ()
+    conflicting_fields: tuple[str, ...] = Field(min_length=1)
+    evidence_ids: tuple[str, ...] = ()
+    provenance_ids: tuple[str, ...] = ()
+
+    @field_validator("observation_ids")
+    @classmethod
+    def validate_ids(cls, value: tuple[str, ...], _info: object) -> tuple[str, ...]:
+        if any(not isinstance(item, str) or not item.strip() for item in value):
+            raise ValueError("observation_ids must contain non-blank identifiers")
+        if len(set(value)) != len(value):
+            raise ValueError("observation_ids cannot contain duplicates")
+        return tuple(sorted(value))
+
+    @field_validator("evidence_ids", "provenance_ids")
+    @classmethod
+    def validate_governed_ids(
+        cls, value: tuple[str, ...], info: object
+    ) -> tuple[str, ...]:
+        return _canonical_ids(value, getattr(info, "field_name", "identifiers"))
+
+    @field_validator("source_export_fingerprints", "row_fingerprints")
+    @classmethod
+    def validate_fingerprints(
+        cls, value: tuple[str, ...], info: object
+    ) -> tuple[str, ...]:
+        field = getattr(info, "field_name", "fingerprints")
+        if any(_SHA256.fullmatch(item) is None for item in value):
+            raise ValueError(f"{field} must contain SHA-256 fingerprints")
+        return tuple(sorted(value))
+
+    @field_validator("conflicting_fields")
+    @classmethod
+    def validate_fields(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not item or not item.replace("_", "").isalnum() for item in value):
+            raise ValueError("traffic conflict fields must be canonical names")
+        return tuple(sorted(set(value)))
+
+
 class AlignmentCandidateInput(BaseModel):
     """One compiler-generated option, including its own role obligations."""
 
@@ -461,11 +548,57 @@ class AlignmentCandidateInput(BaseModel):
     served_access_obligation_ids: tuple[str, ...] = ()
     served_strategic_destination_ids: tuple[str, ...] = ()
     directness_m: float = Field(ge=0, strict=True, allow_inf_nan=False)
+    # vNext facts are optional at the model boundary so existing v1 producers
+    # remain valid. vNext Candidate Sets validate the required facts before use.
+    reuse_class: ReuseFirstCandidateClass | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    intervention_state: InterventionState | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    alignment_bases: tuple[str, ...] = Field(
+        default=(), exclude_if=lambda value: not value
+    )
+    primary_alignment_basis: str | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    total_absolute_elevation_change_m: float | None = Field(
+        default=None,
+        ge=0,
+        strict=True,
+        allow_inf_nan=False,
+        exclude_if=lambda value: value is None,
+    )
+    transition_count: int | None = Field(
+        default=None, ge=0, strict=True, exclude_if=lambda value: value is None
+    )
+    fragmentation_count: int | None = Field(
+        default=None, ge=0, strict=True, exclude_if=lambda value: value is None
+    )
+    governed_evidence_ids: tuple[str, ...] = Field(
+        default=(), exclude_if=lambda value: not value
+    )
     maximum_gradient_pct: float | None = Field(
         default=None,
         ge=0,
         strict=True,
         allow_inf_nan=False,
+    )
+    traffic_observation: TrafficObservation | None = Field(
+        default=None, exclude=True
+    )
+    traffic_observations: tuple[TrafficObservation, ...] = Field(
+        default=(), exclude_if=lambda value: not value
+    )
+    traffic_conflict_evidence: TrafficConflictEvidence | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    protected_space_evidence: ProtectedSpaceEvidence | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    traffic_exposure: TrafficExposure | None = Field(
+        default=None, exclude_if=lambda value: value is None
     )
     candidate_id: str = ""
 
@@ -495,16 +628,87 @@ class AlignmentCandidateInput(BaseModel):
     def validate_ids(cls, value: tuple[str, ...], info: object) -> tuple[str, ...]:
         return _canonical_ids(value, getattr(info, "field_name", "identifiers"))
 
-    @field_validator("directness_m", "maximum_gradient_pct")
+    @field_validator("alignment_bases")
+    @classmethod
+    def validate_alignment_bases(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        unsupported = set(value) - _ALIGNMENT_BASIS_VOCABULARY
+        if unsupported:
+            raise ValueError(
+                "alignment_bases contain unsupported Alignment Basis values: "
+                + ", ".join(sorted(unsupported))
+            )
+        return _canonical_ids(value, "alignment_bases")
+
+    @field_validator("governed_evidence_ids")
+    @classmethod
+    def validate_governed_evidence_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _canonical_ids(value, "governed_evidence_ids")
+
+    @field_validator("primary_alignment_basis")
+    @classmethod
+    def validate_primary_alignment_basis(cls, value: str | None) -> str | None:
+        if value is not None and _ID.fullmatch(value) is None:
+            raise ValueError("primary_alignment_basis must be a canonical identifier")
+        if value is not None and value not in _ALIGNMENT_BASIS_VOCABULARY:
+            raise ValueError(
+                "primary_alignment_basis contains unsupported Alignment Basis value: "
+                + value
+            )
+        return value
+
+    @field_validator(
+        "directness_m",
+        "maximum_gradient_pct",
+        "total_absolute_elevation_change_m",
+    )
     @classmethod
     def validate_numbers(cls, value: float | None, info: object) -> float | None:
         return None if value is None else _finite(value, getattr(info, "field_name", "number"))
 
     @model_validator(mode="after")
     def bind_candidate(self) -> Self:
+        observations = list(self.traffic_observations)
+        if (
+            self.traffic_observation is not None
+            and self.traffic_observation not in observations
+        ):
+            observations.append(self.traffic_observation)
+        observations = sorted(
+            observations,
+            key=lambda item: (
+                item.observation_id,
+                item.source_export_fingerprint,
+                item.row_fingerprint,
+            ),
+        )
+        object.__setattr__(self, "traffic_observations", tuple(observations))
+        conflict_evidence = _derive_traffic_conflict_evidence(tuple(observations))
+        if (
+            self.traffic_conflict_evidence is not None
+            and self.traffic_conflict_evidence != conflict_evidence
+        ):
+            raise ValueError("traffic_conflict_evidence is stale for its observations")
+        object.__setattr__(self, "traffic_conflict_evidence", conflict_evidence)
+        if (
+            self.primary_alignment_basis is not None
+            and self.primary_alignment_basis not in self.alignment_bases
+        ):
+            raise ValueError("primary_alignment_basis must be one of alignment_bases")
         payload = self.model_dump(
             mode="json",
-            exclude={"candidate_id", "geometry"},
+            exclude={
+                "candidate_id",
+                "geometry",
+                # Optional evidence annotations are identity-bearing only when
+                # present.  This preserves every legacy/default candidate ID.
+                *(
+                    ("traffic_observation", "protected_space_evidence", "traffic_exposure")
+                    if not self.traffic_observations
+                    and self.protected_space_evidence is None
+                    and self.traffic_exposure is None
+                    else ()
+                ),
+            },
         )
         payload["geometry_fingerprint"] = self.geometry.fingerprint
         expected = _stable_id("candidate", payload)
@@ -520,6 +724,610 @@ class AlignmentCandidateInput(BaseModel):
     @property
     def geometry_equivalence_fingerprint(self) -> str:
         return self.geometry.equivalence_fingerprint
+
+
+def _derive_traffic_conflict_evidence(
+    observations: tuple[TrafficObservation, ...],
+) -> TrafficConflictEvidence | None:
+    """Return a canonical conflict roster without selecting an observation."""
+
+    if not observations:
+        return None
+    normalized_exclusions = {
+        "observation_id",
+        "source_export_fingerprint",
+        "row_fingerprint",
+        "evidence_ids",
+        "provenance_ids",
+    }
+    by_claim: dict[tuple[object, ...], list[TrafficObservation]] = {}
+    for item in observations:
+        by_claim.setdefault(
+            (item.count_point_id, item.observation_year, item.direction_of_travel),
+            [],
+        ).append(item)
+
+    def field_differences(group: list[TrafficObservation]) -> tuple[str, ...]:
+        if len(group) < 2:
+            return ()
+        baseline = group[0].model_dump(mode="json")
+        return tuple(
+            sorted(
+                {
+                    field
+                    for item in group[1:]
+                    for field, value in item.model_dump(mode="json").items()
+                    if field not in normalized_exclusions and value != baseline[field]
+                }
+            )
+        )
+
+    conflicting_claims = [
+        group for group in by_claim.values() if field_differences(group)
+    ]
+    explicitly_conflicting = tuple(
+        item
+        for item in observations
+        if item.match_state == TrafficMatchState.CONFLICTING
+        or item.coverage_status == TrafficCoverageStatus.CONFLICTING
+    )
+    if not explicitly_conflicting and not conflicting_claims:
+        return None
+
+    fields = {
+        field
+        for group in conflicting_claims
+        for field in field_differences(group)
+    }
+    fields.update(
+        field
+        for field in ("match_state", "coverage_status")
+        if any(
+            getattr(item, field)
+            in {TrafficMatchState.CONFLICTING, TrafficCoverageStatus.CONFLICTING}
+            for item in explicitly_conflicting
+        )
+    )
+    # Retain all observations when any conflict exists.  This is intentionally
+    # conservative for distinct directional claims: no observation is silently
+    # discarded while the caller still receives an unknown aggregate status.
+    return TrafficConflictEvidence(
+        observation_ids=tuple(item.observation_id for item in observations),
+        source_export_fingerprints=tuple(
+            item.source_export_fingerprint for item in observations
+        ),
+        row_fingerprints=tuple(item.row_fingerprint for item in observations),
+        conflicting_fields=tuple(sorted(fields)),
+        evidence_ids=tuple(
+            sorted({identifier for item in observations for identifier in item.evidence_ids})
+        ),
+        provenance_ids=tuple(
+            sorted({identifier for item in observations for identifier in item.provenance_ids})
+        ),
+    )
+
+
+def traffic_diagnostics_for_candidate(
+    candidate: AlignmentCandidateInput,
+    profile: NetworkSelectionProfile,
+) -> tuple[dict[str, object], ...]:
+    """Derive non-veto traffic/protected-space diagnostics for one candidate."""
+
+    traffic_profile = profile.traffic_profile
+    if candidate.traffic_exposure != TrafficExposure.ON_CARRIAGEWAY:
+        return ()
+    observations = candidate.traffic_observations
+    if not observations and candidate.traffic_observation is not None:
+        observations = (candidate.traffic_observation,)
+    if traffic_profile is None:
+        if not observations:
+            return ()
+        conflict = candidate.traffic_conflict_evidence
+        return (
+            {
+                "candidate_id": candidate.candidate_id,
+                "diagnostic_id": "traffic-conflict" if conflict is not None else "traffic-unknown",
+                "traffic_status": "conflicting" if conflict is not None else "profile-unavailable",
+                "traffic_profile_fingerprint": None,
+                "traffic_observation_ids": tuple(
+                    item.observation_id for item in observations
+                ),
+                "source_export_fingerprints": tuple(
+                    sorted(item.source_export_fingerprint for item in observations)
+                ),
+                "row_fingerprints": tuple(
+                    sorted(item.row_fingerprint for item in observations)
+                ),
+                "evidence_ids": tuple(
+                    sorted(
+                        {
+                            identifier
+                            for item in observations
+                            for identifier in item.evidence_ids
+                        }
+                    )
+                ),
+                "provenance_ids": tuple(
+                    sorted(
+                        {
+                            identifier
+                            for item in observations
+                            for identifier in item.provenance_ids
+                        }
+                    )
+                ),
+                **(
+                    {
+                        "traffic_conflict_evidence": candidate.traffic_conflict_evidence.model_dump(
+                            mode="json"
+                        )
+                    }
+                    if candidate.traffic_conflict_evidence is not None
+                    else {}
+                ),
+            },
+        )
+    if not observations:
+        return (
+            {
+                "candidate_id": candidate.candidate_id,
+                "diagnostic_id": "traffic-unknown",
+                "traffic_status": "unknown",
+                "traffic_profile_fingerprint": traffic_profile.fingerprint,
+                "evidence_ids": (),
+                "provenance_ids": (),
+            },
+        )
+
+    observation_roster = tuple(observations)
+    by_claim: dict[tuple[object, ...], list[TrafficObservation]] = {}
+    for item in observations:
+        by_claim.setdefault(
+            (item.count_point_id, item.observation_year, item.direction_of_travel),
+            [],
+        ).append(item)
+    normalized_exclusions = {
+        "observation_id",
+        "source_export_fingerprint",
+        "row_fingerprint",
+        "evidence_ids",
+        "provenance_ids",
+    }
+
+    def field_differences(group: list[TrafficObservation]) -> tuple[str, ...]:
+        if len(group) < 2:
+            return ()
+        baseline = group[0].model_dump(mode="json")
+        return tuple(
+            sorted(
+                {
+                    field
+                    for item in group[1:]
+                    for field, value in item.model_dump(mode="json").items()
+                    if field not in normalized_exclusions and value != baseline[field]
+                }
+            )
+        )
+
+    conflicting_claims = [
+        group
+        for group in by_claim.values()
+        if field_differences(group)
+    ]
+    explicitly_conflicting = tuple(
+        item
+        for item in observation_roster
+        if item.match_state == TrafficMatchState.CONFLICTING
+        or item.coverage_status == TrafficCoverageStatus.CONFLICTING
+    )
+    explicitly_conflicting_claims = {
+        (item.count_point_id, item.observation_year, item.direction_of_travel)
+        for item in explicitly_conflicting
+    }
+    local_explicit_conflict = bool(explicitly_conflicting) and (
+        len(by_claim) == 1
+        and len(explicitly_conflicting_claims) == 1
+    )
+    if (
+        candidate.traffic_conflict_evidence is not None
+        or local_explicit_conflict
+        or conflicting_claims
+    ):
+        difference_fields: set[str] = set()
+        for group in conflicting_claims:
+            difference_fields.update(field_differences(group))
+        difference_fields.update(
+            field
+            for field in ("match_state", "coverage_status")
+            if any(
+                getattr(item, field)
+                in {
+                    TrafficMatchState.CONFLICTING,
+                    TrafficCoverageStatus.CONFLICTING,
+                }
+                for item in explicitly_conflicting
+            )
+        )
+        if candidate.traffic_conflict_evidence is not None:
+            difference_fields.update(candidate.traffic_conflict_evidence.conflicting_fields)
+        explicit_ids = {item.observation_id for item in explicitly_conflicting}
+        claim_observations = tuple(
+            item
+            for group in by_claim.values()
+            if field_differences(group)
+            or any(item.observation_id in explicit_ids for item in group)
+            for item in group
+        )
+        if not claim_observations and candidate.traffic_conflict_evidence is not None:
+            typed_ids = set(candidate.traffic_conflict_evidence.observation_ids)
+            claim_observations = tuple(
+                item for item in observations if item.observation_id in typed_ids
+            )
+        claim_observations = tuple(
+            sorted(
+                claim_observations,
+                key=lambda item: (
+                    item.observation_id,
+                    item.source_export_fingerprint,
+                    item.row_fingerprint,
+                ),
+            )
+        )
+        conflict_diagnostic = {
+                "candidate_id": candidate.candidate_id,
+                "diagnostic_id": "traffic-conflict",
+                "traffic_status": "conflicting",
+                "traffic_profile_fingerprint": traffic_profile.fingerprint,
+                "traffic_observation_ids": tuple(
+                    item.observation_id for item in claim_observations
+                ),
+                "source_export_fingerprints": tuple(
+                    sorted(item.source_export_fingerprint for item in claim_observations)
+                ),
+                "row_fingerprints": tuple(
+                    sorted(item.row_fingerprint for item in claim_observations)
+                ),
+                "all_motor_vehicles": None,
+                "field_differences": tuple(sorted(difference_fields)),
+                "evidence_ids": tuple(
+                    sorted(
+                        {
+                            identifier
+                            for item in claim_observations
+                            for identifier in item.evidence_ids
+                        }
+                    )
+                ),
+                "provenance_ids": tuple(
+                    sorted(
+                        {
+                            identifier
+                            for item in claim_observations
+                            for identifier in item.provenance_ids
+                        }
+                    )
+                ),
+                **(
+                    {
+                        "traffic_conflict_evidence": candidate.traffic_conflict_evidence.model_dump(
+                            mode="json"
+                        )
+                    }
+                    if candidate.traffic_conflict_evidence is not None
+                    else {}
+                ),
+            }
+        claim_ids = {item.observation_id for item in claim_observations}
+        remaining = tuple(
+            item for item in observations if item.observation_id not in claim_ids
+        )
+        if not remaining:
+            return (conflict_diagnostic,)
+        # A typed conflict is an additional diagnostic, not permission to hide
+        # a separate observation that independently drives a high-traffic
+        # challenge.  Re-run the ordinary evaluation over the non-conflicting
+        # remainder and retain deterministic conflict-first ordering.
+        reduced_candidate = candidate.model_copy(
+            update={
+                "traffic_observations": remaining,
+                "traffic_observation": None,
+                "traffic_conflict_evidence": None,
+            }
+        )
+        return (conflict_diagnostic, *traffic_diagnostics_for_candidate(reduced_candidate, profile))
+    deduped: list[TrafficObservation] = []
+    substantive_by_key: set[str] = set()
+    for item in observations:
+        substantive = item.model_dump(mode="json", exclude=normalized_exclusions)
+        key = json.dumps(substantive, sort_keys=True, separators=(",", ":"))
+        if key not in substantive_by_key:
+            substantive_by_key.add(key)
+            deduped.append(item)
+    observations = tuple(deduped)
+    if len(observations) > 1:
+        combined = tuple(
+            item
+            for item in observations
+            if item.direction_of_travel == "combined"
+        )
+        if len(combined) != 1:
+            return (
+                {
+                    "candidate_id": candidate.candidate_id,
+                    "diagnostic_id": "traffic-unknown",
+                    "traffic_status": "multiple-observations-no-combined",
+                    "traffic_profile_fingerprint": traffic_profile.fingerprint,
+                    "traffic_observation_ids": tuple(
+                        item.observation_id for item in observations
+                    ),
+                    "source_export_fingerprints": tuple(
+                        sorted(item.source_export_fingerprint for item in observations)
+                    ),
+                    "row_fingerprints": tuple(
+                        sorted(item.row_fingerprint for item in observations)
+                    ),
+                    "evidence_ids": tuple(
+                        sorted(
+                            {
+                                identifier
+                                for item in observations
+                                for identifier in item.evidence_ids
+                            }
+                        )
+                    ),
+                    "provenance_ids": tuple(
+                        sorted(
+                            {
+                                identifier
+                                for item in observations
+                                for identifier in item.provenance_ids
+                            }
+                        )
+                    ),
+                    **(
+                        {
+                            "traffic_conflict_evidence": (
+                                candidate.traffic_conflict_evidence.model_dump(
+                                    mode="json"
+                                )
+                            )
+                        }
+                        if candidate.traffic_conflict_evidence is not None
+                        else {}
+                    ),
+                },
+            )
+        observation = combined[0]
+    else:
+        observation = observations[0]
+
+    freshness_state = traffic_profile.freshness_for(
+        observation.observation_year,
+        observation.freshness_state,
+    )
+    common = {
+        "candidate_id": candidate.candidate_id,
+        "traffic_observation_id": observation.observation_id,
+        "traffic_observation_ids": tuple(
+            item.observation_id for item in observation_roster
+        ),
+        "observation_year": observation.observation_year,
+        "traffic_profile_fingerprint": traffic_profile.fingerprint,
+        "source_export_fingerprint": observation.source_export_fingerprint,
+        "source_export_fingerprints": tuple(
+            sorted(item.source_export_fingerprint for item in observation_roster)
+        ),
+        "row_fingerprint": observation.row_fingerprint,
+        "row_fingerprints": tuple(
+            sorted(item.row_fingerprint for item in observation_roster)
+        ),
+        "all_motor_vehicles": observation.all_motor_vehicles,
+        "freshness_state": freshness_state.value,
+        "estimation_method": observation.estimation_method,
+        "evidence_ids": tuple(
+            sorted(
+                {
+                    identifier
+                    for item in observation_roster
+                    for identifier in item.evidence_ids
+                }
+            )
+        ),
+        "provenance_ids": tuple(
+            sorted(
+                {
+                    identifier
+                    for item in observation_roster
+                    for identifier in item.provenance_ids
+                }
+            )
+        ),
+        **(
+            {
+                "traffic_conflict_evidence": candidate.traffic_conflict_evidence.model_dump(
+                    mode="json"
+                )
+            }
+            if candidate.traffic_conflict_evidence is not None
+            else {}
+        ),
+        **(
+            {
+                "freshness_configuration_diagnostic": (
+                    traffic_profile.freshness_configuration_diagnostic
+                )
+            }
+            if traffic_profile.freshness_configuration_diagnostic is not None
+            else {}
+        ),
+    }
+    if (
+        observation.source_layer != "aadf"
+        or observation.all_motor_vehicles is None
+        or observation.match_state != TrafficMatchState.MATCHED
+        or observation.coverage_status != TrafficCoverageStatus.SAMPLED
+        or freshness_state == TrafficFreshnessState.UNKNOWN
+    ):
+        return (
+            {
+                **common,
+                "diagnostic_id": (
+                    "traffic-freshness-configuration"
+                    if traffic_profile.freshness_configuration_diagnostic is not None
+                    and freshness_state == TrafficFreshnessState.UNKNOWN
+                    else "traffic-unknown"
+                ),
+                "traffic_status": "unknown",
+            },
+        )
+
+    value = observation.all_motor_vehicles
+    band = next(
+        (
+            threshold.id
+            for threshold in traffic_profile.thresholds
+            if threshold.upper_vehicles_per_day is None
+            or value <= threshold.upper_vehicles_per_day
+        ),
+        None,
+    )
+    if band is None:
+        return (
+            {
+                **common,
+                "diagnostic_id": "traffic-unknown",
+                "traffic_status": "unknown",
+            },
+        )
+    protected = candidate.protected_space_evidence
+    protected_state = (
+        protected.state if protected is not None else ProtectedSpaceState.UNKNOWN
+    )
+    protected_evidence_ids = protected.evidence_ids if protected is not None else ()
+    protected_provenance_ids = protected.provenance_ids if protected is not None else ()
+    traffic_evidence_ids = tuple(
+        sorted(
+            {
+                identifier
+                for item in observation_roster
+                for identifier in item.evidence_ids
+            }
+        )
+    )
+    traffic_provenance_ids = tuple(
+        sorted(
+            {
+                identifier
+                for item in observation_roster
+                for identifier in item.provenance_ids
+            }
+        )
+    )
+    stale_diagnostic = (
+        {
+            **common,
+            "diagnostic_id": "traffic-stale",
+            "traffic_status": "stale",
+            "traffic_band": band,
+            "protected_space_state": protected_state.value,
+            "protected_space_evidence_ids": protected_evidence_ids,
+            "protected_space_provenance_ids": protected_provenance_ids,
+            "evidence_ids": tuple(sorted((*traffic_evidence_ids, *protected_evidence_ids))),
+            "provenance_ids": tuple(
+                sorted((*traffic_provenance_ids, *protected_provenance_ids))
+            ),
+        }
+        if freshness_state == TrafficFreshnessState.STALE
+        else None
+    )
+    estimated_diagnostic = (
+        {
+            **common,
+            "diagnostic_id": "traffic-estimated",
+            "traffic_status": "estimated",
+            "traffic_band": band,
+            "protected_space_state": protected_state.value,
+            "protected_space_evidence_ids": protected_evidence_ids,
+            "protected_space_provenance_ids": protected_provenance_ids,
+        }
+        if observation.estimation_method is not None
+        and observation.estimation_method.lower() == "estimated"
+        else None
+    )
+
+    def with_auxiliary(*records: dict[str, object]) -> tuple[dict[str, object], ...]:
+        return tuple(
+            (
+                *([stale_diagnostic] if stale_diagnostic is not None else []),
+                *([estimated_diagnostic] if estimated_diagnostic is not None else []),
+                *records,
+            )
+        )
+
+    if band != traffic_profile.high_traffic_challenge_band:
+        if protected_state in {
+            ProtectedSpaceState.MISSING,
+            ProtectedSpaceState.STALE,
+            ProtectedSpaceState.UNKNOWN,
+            ProtectedSpaceState.CONFLICTING,
+        }:
+            return with_auxiliary(
+                {
+                    **common,
+                    "diagnostic_id": (
+                        "protected-space-conflict"
+                        if protected_state == ProtectedSpaceState.CONFLICTING
+                        else "protected-space-evidence-unknown"
+                    ),
+                    "traffic_band": band,
+                    "protected_space_state": protected_state.value,
+                    "protected_space_evidence_ids": (
+                        protected.evidence_ids if protected is not None else ()
+                    ),
+                    "protected_space_provenance_ids": (
+                        protected.provenance_ids if protected is not None else ()
+                    ),
+                },
+            )
+        return with_auxiliary()
+
+    if protected_state == ProtectedSpaceState.PRESENT:
+        return with_auxiliary()
+    if protected_state == ProtectedSpaceState.ABSENT:
+        diagnostic_id = "traffic-high-on-carriageway-without-protected-space"
+    elif protected_state == ProtectedSpaceState.CONFLICTING:
+        diagnostic_id = "protected-space-conflict"
+    else:
+        diagnostic_id = "protected-space-evidence-unknown"
+    challenge = {
+        **TrafficChallengeDiagnostic(
+            diagnostic_id=diagnostic_id,
+            candidate_id=candidate.candidate_id,
+            traffic_observation_id=observation.observation_id,
+            observation_year=observation.observation_year,
+            traffic_band=band,
+            traffic_profile_fingerprint=traffic_profile.fingerprint,
+            source_export_fingerprint=observation.source_export_fingerprint,
+            row_fingerprint=observation.row_fingerprint,
+            freshness_state=freshness_state,
+            estimation_method=observation.estimation_method,
+            protected_space_state=protected_state,
+            evidence_ids=tuple(sorted((*traffic_evidence_ids, *protected_evidence_ids))),
+            provenance_ids=tuple(
+                sorted((*traffic_provenance_ids, *protected_provenance_ids))
+            ),
+        ).model_dump(mode="json"),
+        "traffic_observation_ids": tuple(
+            item.observation_id for item in observation_roster
+        ),
+        "source_export_fingerprints": tuple(
+            sorted(item.source_export_fingerprint for item in observation_roster)
+        ),
+        "row_fingerprints": tuple(
+            sorted(item.row_fingerprint for item in observation_roster)
+        ),
+    }
+    return with_auxiliary(challenge)
 
 
 class CandidateAdmission(BaseModel):
@@ -555,18 +1363,39 @@ class CandidateAdmission(BaseModel):
 def _derive_admissions(
     candidates: tuple[AlignmentCandidateInput, ...],
     *,
-    precedence_order: tuple[CandidateSourceClass, ...],
+    precedence_order: tuple[CandidateSourceClass, ...] = (),
+    class_order: tuple[ReuseFirstCandidateClass, ...] | None = None,
+    intervention_order: tuple[InterventionState, ...] | None = None,
     maximum_options: int,
     mandatory_network_place_ids: tuple[str, ...],
     mandatory_access_obligation_ids: tuple[str, ...],
     mandatory_strategic_destination_ids: tuple[str, ...],
 ) -> tuple[CandidateAdmission, ...]:
-    precedence = {source: index for index, source in enumerate(precedence_order)}
-    if any(item.source_class not in precedence for item in candidates):
+    precedence = {
+        source: index for index, source in enumerate(precedence_order or ())
+    }
+    classes = {candidate_class: index for index, candidate_class in enumerate(class_order or ())}
+    interventions = {
+        state: index for index, state in enumerate(intervention_order or ())
+    }
+    if class_order is not None:
+        if any(item.reuse_class not in classes for item in candidates):
+            raise ValueError("candidate reuse class is absent from the frozen profile")
+        if any(item.intervention_state not in interventions for item in candidates):
+            raise ValueError("candidate intervention state is absent from the frozen profile")
+    elif any(item.source_class not in precedence for item in candidates):
         raise ValueError("candidate source class is absent from the frozen profile")
     ordered = sorted(
         candidates,
-        key=lambda item: (precedence[item.source_class], item.candidate_id),
+        key=(
+            lambda item: (
+                classes[item.reuse_class],
+                interventions[item.intervention_state],
+                item.candidate_id,
+            )
+            if class_order is not None
+            else (precedence[item.source_class], item.candidate_id)
+        ),
     )
     eligible: list[AlignmentCandidateInput] = []
     records: dict[str, CandidateAdmission] = {}
@@ -606,13 +1435,30 @@ def _derive_admissions(
         eligible.append(candidate)
 
     diverse: list[AlignmentCandidateInput] = []
-    for source in precedence_order:
-        first = next(
-            (item for item in eligible if item.source_class == source and item not in diverse),
-            None,
-        )
-        if first is not None and len(diverse) < maximum_options:
-            diverse.append(first)
+    if class_order is not None:
+        for candidate_class in class_order:
+            first = next(
+                (
+                    item
+                    for item in eligible
+                    if item.reuse_class == candidate_class and item not in diverse
+                ),
+                None,
+            )
+            if first is not None and len(diverse) < maximum_options:
+                diverse.append(first)
+    else:
+        for source in precedence_order:
+            first = next(
+                (
+                    item
+                    for item in eligible
+                    if item.source_class == source and item not in diverse
+                ),
+                None,
+            )
+            if first is not None and len(diverse) < maximum_options:
+                diverse.append(first)
     for candidate in eligible:
         if candidate not in diverse and len(diverse) < maximum_options:
             diverse.append(candidate)
@@ -646,8 +1492,11 @@ class AlignmentCandidateSet(BaseModel):
     mandatory_strategic_destination_ids: tuple[str, ...] = ()
     profile: NetworkSelectionProfile
     profile_fingerprint: str = Field(pattern=_SHA256.pattern)
-    candidate_source_precedence: tuple[CandidateSourceClass, ...]
-    maximum_options: int = Field(ge=1, le=5, strict=True)
+    candidate_source_precedence: tuple[CandidateSourceClass, ...] = ()
+    candidate_class_order: tuple[ReuseFirstCandidateClass, ...] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    maximum_options: int = Field(ge=1, strict=True)
     geometry_equivalence_profile: MaterialGeometryEquivalenceProfile
     candidates: tuple[AlignmentCandidateInput, ...] = ()
     admissions: tuple[CandidateAdmission, ...] = ()
@@ -680,7 +1529,7 @@ class AlignmentCandidateSet(BaseModel):
         cls,
         value: tuple[CandidateSourceClass, ...],
     ) -> tuple[CandidateSourceClass, ...]:
-        if not value or len(set(value)) != len(value):
+        if len(set(value)) != len(value):
             raise ValueError("candidate source precedence must be finite and unique")
         return value
 
@@ -689,10 +1538,31 @@ class AlignmentCandidateSet(BaseModel):
         profile = NetworkSelectionProfile.model_validate(self.profile.model_dump(mode="json"))
         if self.profile_fingerprint != profile.fingerprint:
             raise ValueError("Candidate Set profile fingerprint is stale")
-        if self.candidate_source_precedence != profile.candidate_source_precedence:
-            raise ValueError("Candidate Set source precedence is stale")
-        if self.maximum_options != profile.ambiguity.maximum_options_per_candidate_set:
-            raise ValueError("Candidate Set option limit is stale")
+        if profile.contract == "satn-network-selection-profile/vNext":
+            if self.candidate_source_precedence:
+                raise ValueError("vNext Candidate Set cannot carry legacy source precedence")
+            if self.candidate_class_order != profile.candidate_class_order:
+                raise ValueError("Candidate Set reuse class order is stale")
+            if self.maximum_options != profile.maximum_options_per_candidate_set:
+                raise ValueError("Candidate Set option limit is stale")
+            if any(
+                candidate.reuse_class is None
+                or candidate.intervention_state is None
+                or not candidate.alignment_bases
+                or candidate.primary_alignment_basis is None
+                or candidate.transition_count is None
+                or candidate.fragmentation_count is None
+                or not candidate.governed_evidence_ids
+                for candidate in self.candidates
+            ):
+                raise ValueError("vNext candidates require complete immutable selection facts")
+        else:
+            if self.candidate_source_precedence != profile.candidate_source_precedence:
+                raise ValueError("Candidate Set source precedence is stale")
+            if self.candidate_class_order is not None:
+                raise ValueError("legacy Candidate Sets cannot carry reuse class order")
+            if self.maximum_options != profile.ambiguity.maximum_options_per_candidate_set:
+                raise ValueError("Candidate Set option limit is stale")
         object.__setattr__(self, "profile", profile)
         candidates = tuple(
             sorted(
@@ -725,6 +1595,8 @@ class AlignmentCandidateSet(BaseModel):
         expected_admissions = _derive_admissions(
             candidates,
             precedence_order=self.candidate_source_precedence,
+            class_order=self.candidate_class_order,
+            intervention_order=profile.intervention_state_order,
             maximum_options=self.maximum_options,
             mandatory_network_place_ids=self.mandatory_network_place_ids,
             mandatory_access_obligation_ids=self.mandatory_access_obligation_ids,
@@ -1714,6 +2586,50 @@ class CandidateComparisonDisposition(BaseModel):
         return tuple(sorted(set(value), key=str))
 
 
+class MaterialDisplacementRecord(BaseModel):
+    """Cited profile rule permitting a lower reuse class to be selected."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    selected_candidate_id: str = Field(pattern=_CANDIDATE_ID.pattern)
+    displaced_candidate_id: str = Field(pattern=_CANDIDATE_ID.pattern)
+    reason_code: DisplacementReasonCode
+    rule_predicate: str = Field(min_length=1)
+    observed_values: dict[str, float]
+    threshold: float = Field(ge=0, strict=True, allow_inf_nan=False)
+    unit: str = Field(min_length=1)
+    evidence_ids: tuple[str, ...] = Field(min_length=1)
+    profile_fingerprint: str = Field(pattern=_SHA256.pattern)
+    decision_provenance: Literal["deterministic-profile"] = "deterministic-profile"
+    record_fingerprint: str = ""
+
+    @field_validator("evidence_ids")
+    @classmethod
+    def canonical_evidence_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _canonical_ids(value, "material displacement evidence")
+
+    @field_validator("observed_values")
+    @classmethod
+    def canonical_observed_values(cls, value: dict[str, float]) -> dict[str, float]:
+        if not value:
+            raise ValueError("material displacement requires observed values")
+        return {
+            key: _finite(number, f"material displacement {key}")
+            for key, number in sorted(value.items())
+        }
+
+    @model_validator(mode="after")
+    def bind_record(self) -> Self:
+        if self.selected_candidate_id == self.displaced_candidate_id:
+            raise ValueError("material displacement requires two candidates")
+        payload = self.model_dump(mode="json", exclude={"record_fingerprint"})
+        expected = _fingerprint(payload)
+        if self.record_fingerprint and self.record_fingerprint != expected:
+            raise ValueError("material displacement fingerprint is stale")
+        object.__setattr__(self, "record_fingerprint", expected)
+        return self
+
+
 class PreferredStrategicAlignment(BaseModel):
     """A candidate-set-bound result; not Reference SATN authority."""
 
@@ -1730,6 +2646,7 @@ class PreferredStrategicAlignment(BaseModel):
     admitted_loser_ids: tuple[str, ...] = ()
     precomparison_rejections: tuple[CandidateAdmission, ...] = ()
     comparison_dispositions: tuple[CandidateComparisonDisposition, ...] = ()
+    material_displacements: tuple[MaterialDisplacementRecord, ...] = ()
     active_frontier_candidate_ids: tuple[str, ...] = ()
     detected_ambiguity_triggers: tuple[AmbiguityTrigger, ...] = ()
     ambiguity_triggers: tuple[AmbiguityTrigger, ...] = ()
@@ -1879,6 +2796,12 @@ class PreferredStrategicAlignment(BaseModel):
             "active_frontier_candidate_ids",
             pattern=_CANDIDATE_ID,
         )
+        displacements = tuple(
+            sorted(
+                self.material_displacements,
+                key=lambda item: (item.displaced_candidate_id, item.selected_candidate_id),
+            )
+        )
         if (
             self.selected_candidate_id != expected_selected
             or complements != expected_complements
@@ -1891,6 +2814,7 @@ class PreferredStrategicAlignment(BaseModel):
             or self.ambiguity_triggers != derivation.blocking
             or self.change_conditions != derivation.change_conditions
             or frontier != derivation.active_frontier_candidate_ids
+            or displacements != derivation.material_displacements
         ):
             raise ValueError(
                 "Preferred Strategic Alignment is not the deterministic profile result"
@@ -1979,8 +2903,14 @@ def admit_candidate_set(
         )
     admissions = _derive_admissions(
         generated,
-        precedence_order=profile.candidate_source_precedence,
-        maximum_options=profile.ambiguity.maximum_options_per_candidate_set,
+        precedence_order=profile.candidate_source_precedence or (),
+        class_order=profile.candidate_class_order,
+        intervention_order=profile.intervention_state_order,
+        maximum_options=(
+            profile.maximum_options_per_candidate_set
+            if profile.contract == "satn-network-selection-profile/vNext"
+            else profile.ambiguity.maximum_options_per_candidate_set
+        ),
         mandatory_network_place_ids=mandatory_network_place_ids,
         mandatory_access_obligation_ids=mandatory_access_obligation_ids,
         mandatory_strategic_destination_ids=mandatory_strategic_destination_ids,
@@ -1993,8 +2923,13 @@ def admit_candidate_set(
         mandatory_strategic_destination_ids=mandatory_strategic_destination_ids,
         profile=profile,
         profile_fingerprint=profile.fingerprint,
-        candidate_source_precedence=profile.candidate_source_precedence,
-        maximum_options=profile.ambiguity.maximum_options_per_candidate_set,
+        candidate_source_precedence=profile.candidate_source_precedence or (),
+        candidate_class_order=profile.candidate_class_order,
+        maximum_options=(
+            profile.maximum_options_per_candidate_set
+            if profile.contract == "satn-network-selection-profile/vNext"
+            else profile.ambiguity.maximum_options_per_candidate_set
+        ),
         geometry_equivalence_profile=(
             generated[0].geometry.equivalence_profile
             if generated
@@ -2420,6 +3355,7 @@ class _SelectionDerivation:
     hard_gate_unknown: bool
     change_conditions: tuple[ChangeCondition, ...]
     active_frontier_candidate_ids: tuple[str, ...]
+    material_displacements: tuple[MaterialDisplacementRecord, ...] = ()
 
 
 def _empty_gap_derivation(
@@ -2438,6 +3374,143 @@ def _empty_gap_derivation(
             ChangeCondition.ROLE_COVERAGE_CHANGES,
         ),
         active_frontier_candidate_ids=(),
+    )
+
+
+def _reuse_first_sort_key(
+    profile: NetworkSelectionProfile,
+    candidate: AlignmentCandidateInput,
+) -> tuple[tuple[int, object], ...]:
+    """Build the configured vNext lexicographic key without inventing unknowns."""
+    assert profile.candidate_class_order is not None
+    assert profile.intervention_state_order is not None
+    assert profile.comparator_order is not None
+    assert candidate.reuse_class is not None
+    assert candidate.intervention_state is not None
+    class_rank = {
+        value: index for index, value in enumerate(profile.candidate_class_order)
+    }
+    intervention_rank = {
+        value: index for index, value in enumerate(profile.intervention_state_order)
+    }
+    values: dict[object, tuple[int, object]] = {
+        "mandatory-obligation-service": (0, 0),
+        "reuse-class": (0, class_rank[candidate.reuse_class]),
+        "intervention-state": (0, intervention_rank[candidate.intervention_state]),
+        "route-length": (0, candidate.directness_m),
+        "route-detour": (0, candidate.directness_m),
+        "route-effort": (
+            (1, 0.0)
+            if candidate.total_absolute_elevation_change_m is None
+            else (0, candidate.total_absolute_elevation_change_m)
+        ),
+        "transition-fragmentation-burden": (
+            (1, 0)
+            if candidate.transition_count is None or candidate.fragmentation_count is None
+            else (0, candidate.transition_count + candidate.fragmentation_count)
+        ),
+        # Constraint and traffic facts are added by their governed evidence slices.
+        # Until present, all candidates remain equally unknown rather than favourable.
+        "governed-constraints": (1, 0),
+        "traffic-challenge": (1, 0),
+        "stable-candidate-id": (0, candidate.candidate_id),
+    }
+    return tuple(values[str(dimension)] for dimension in profile.comparator_order)
+
+
+def _derive_reuse_first_selection(
+    profile: NetworkSelectionProfile,
+    considered: tuple[AlignmentCandidateInput, ...],
+    validity: dict[str, CandidateValidity],
+    *,
+    hard_gate_unknown: bool,
+) -> _SelectionDerivation:
+    winner = min(considered, key=lambda item: _reuse_first_sort_key(profile, item))
+    material_displacements: tuple[MaterialDisplacementRecord, ...] = ()
+    detour_rule = next(
+        (
+            rule
+            for rule in (profile.displacement_rules or ())
+            if rule.reason_code is DisplacementReasonCode.DETOUR_LIMIT_EXCEEDED
+            and rule.predicate == "detour-ratio-exceeds-threshold"
+            and rule.threshold is not None
+            and rule.unit == "ratio"
+        ),
+        None,
+    )
+    if detour_rule is not None:
+        assert profile.candidate_class_order is not None
+        class_rank = {
+            value: index for index, value in enumerate(profile.candidate_class_order)
+        }
+        highest_rank = min(class_rank[item.reuse_class] for item in considered)
+        highest = tuple(
+            item for item in considered if class_rank[item.reuse_class] == highest_rank
+        )
+        displaced = min(highest, key=lambda item: _reuse_first_sort_key(profile, item))
+        lower = tuple(
+            item for item in considered if class_rank[item.reuse_class] > highest_rank
+        )
+        selected_lower = min(
+            lower,
+            key=lambda item: (item.directness_m, _reuse_first_sort_key(profile, item)),
+            default=None,
+        )
+        if selected_lower is not None and selected_lower.directness_m > 0:
+            ratio = displaced.directness_m / selected_lower.directness_m
+            if ratio > float(detour_rule.threshold):
+                winner = selected_lower
+                material_displacements = (
+                    MaterialDisplacementRecord(
+                        selected_candidate_id=selected_lower.candidate_id,
+                        displaced_candidate_id=displaced.candidate_id,
+                        reason_code=detour_rule.reason_code,
+                        rule_predicate=detour_rule.predicate,
+                        observed_values={
+                            "displaced_route_length_m": displaced.directness_m,
+                            "selected_route_length_m": selected_lower.directness_m,
+                            "detour_ratio": ratio,
+                        },
+                        threshold=float(detour_rule.threshold),
+                        unit=detour_rule.unit,
+                        evidence_ids=tuple(
+                            sorted(
+                                {
+                                    *displaced.governed_evidence_ids,
+                                    *selected_lower.governed_evidence_ids,
+                                }
+                            )
+                        ),
+                        profile_fingerprint=profile.fingerprint,
+                    ),
+                )
+    triggers = (
+        (AmbiguityTrigger.MATERIAL_GREY_EVIDENCE,) if hard_gate_unknown else ()
+    )
+    conditions = {
+        ChangeCondition.EVIDENCE_CHANGES,
+        ChangeCondition.PROFILE_CHANGES,
+        ChangeCondition.WINNER_TOPOLOGY_INVALIDATED,
+        ChangeCondition.WINNER_EDUCATION_INVALIDATED,
+    }
+    if hard_gate_unknown:
+        conditions.update(
+            {
+                ChangeCondition.TOPOLOGY_REPAIRED,
+                ChangeCondition.EDUCATION_COMPLETENESS_CHANGES,
+            }
+        )
+    return _SelectionDerivation(
+        winner=winner,
+        validity=validity,
+        triggers=triggers,
+        blocking=(),
+        hard_gate_unknown=hard_gate_unknown,
+        change_conditions=tuple(sorted(conditions, key=str)),
+        active_frontier_candidate_ids=tuple(
+            sorted(item.candidate_id for item in considered)
+        ),
+        material_displacements=material_displacements,
     )
 
 
@@ -2486,7 +3559,18 @@ def _derive_selection(
             active_frontier_candidate_ids=(),
         )
     hard_gate_unknown = bool(grey)
-    considered = viable or grey
+    considered = (
+        tuple((*viable, *grey))
+        if profile.contract == "satn-network-selection-profile/vNext"
+        else (viable or grey)
+    )
+    if profile.contract == "satn-network-selection-profile/vNext":
+        return _derive_reuse_first_selection(
+            profile,
+            considered,
+            validity,
+            hard_gate_unknown=hard_gate_unknown,
+        )
 
     triggers: set[AmbiguityTrigger] = set()
     selection_grey = hard_gate_unknown
@@ -2705,6 +3789,7 @@ def select_preferred_alignment(
     winner_fields: dict[str, object] = {
         "selected_candidate_id": winner.candidate_id,
         "complementary_candidate_ids": (),
+        "material_displacements": derivation.material_displacements,
     }
     if derivation.blocking:
         return PreferredStrategicAlignment(

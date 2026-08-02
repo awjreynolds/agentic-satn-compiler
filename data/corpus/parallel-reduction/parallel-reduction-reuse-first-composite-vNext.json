@@ -1,0 +1,301 @@
+{
+  "contract": "satn-reuse-first-proving-manifest/v1",
+  "scenario_id": "parallel-reduction-reuse-first-composite-vNext",
+  "expected_result": "expected/parallel-reduction-reuse-first-composite-vNext.expected.json",
+  "area_id": "synthetic-reuse-first-area",
+  "profile": {
+    "contract": "satn-network-selection-profile/vNext",
+    "profile_id": "synthetic-reuse-first-vnext",
+    "version": "2026-08-02",
+    "candidate_class_order": [
+      "existing-cycle-provision",
+      "upgradeable-off-carriageway",
+      "low-traffic-non-a-road",
+      "a-road-major-protected-infrastructure"
+    ],
+    "intervention_state_order": [
+      "existing-provision",
+      "upgrade-required",
+      "proposed-new-link"
+    ],
+    "comparator_order": [
+      "mandatory-obligation-service",
+      "reuse-class",
+      "intervention-state",
+      "route-length",
+      "route-detour",
+      "route-effort",
+      "transition-fragmentation-burden",
+      "governed-constraints",
+      "traffic-challenge",
+      "stable-candidate-id"
+    ],
+    "material_difference_rules": [],
+    "displacement_rules": [],
+    "unknown_value_policy": "retain-and-request-evidence",
+    "deterministic_tie_break": "stable-candidate-id",
+    "agent_call_bound": 0,
+    "maximum_options_per_candidate_set": 5,
+    "maximum_hybrid_candidates_per_set": 2,
+    "maximum_transitions_per_candidate": 2,
+    "traffic_profile": {
+      "profile_id": "proving-traffic-profile",
+      "version": "synthetic-2026-08",
+      "thresholds": [
+        {"id": "low", "upper_vehicles_per_day": 5000},
+        {"id": "high", "upper_vehicles_per_day": null}
+      ],
+      "high_traffic_challenge_band": "high",
+      "max_observation_age_years": 5,
+      "as_at_year": 2026
+    },
+    "traffic_match_policy": {
+      "policy_id": "proving-dft-route-buffer",
+      "version": "synthetic-2026-08",
+      "route_buffer_m": 250,
+      "source_layers": ["aadf"]
+    }
+  },
+  "candidate_sets": [
+    {
+      "case_id": "existing-cycleway-over-shorter-a-road",
+      "network_role": "community-access",
+      "endpoints": ["cycleway-west", "cycleway-east"],
+      "candidates": [
+        {
+          "route_id": "cycleway-existing",
+          "coordinates": [[0, 0], [1200, 0]],
+          "reuse_class": "existing-cycle-provision",
+          "intervention_state": "existing-provision",
+          "alignment_bases": ["cycle-track"],
+          "primary_alignment_basis": "cycle-track",
+          "directness_m": 1200,
+          "governed_evidence_ids": ["asset-cycleway-existing"],
+          "maximum_gradient_pct": 2,
+          "elevation_change_m": 12
+        },
+        {
+          "route_id": "cycleway-short-a-road",
+          "coordinates": [[0, 100], [1000, 100]],
+          "reuse_class": "a-road-major-protected-infrastructure",
+          "intervention_state": "upgrade-required",
+          "alignment_bases": ["a-road"],
+          "primary_alignment_basis": "a-road",
+          "directness_m": 1000,
+          "governed_evidence_ids": ["asset-cycleway-a-road"],
+          "maximum_gradient_pct": 2,
+          "elevation_change_m": 12
+        }
+      ]
+    },
+    {
+      "case_id": "upgradeable-prow-over-a-road",
+      "network_role": "community-access",
+      "endpoints": ["prow-west", "prow-east"],
+      "candidates": [
+        {
+          "route_id": "prow-upgrade",
+          "coordinates": [[0, 1000], [1300, 1000]],
+          "reuse_class": "upgradeable-off-carriageway",
+          "intervention_state": "upgrade-required",
+          "alignment_bases": ["public-footpath"],
+          "primary_alignment_basis": "public-footpath",
+          "directness_m": 1300,
+          "governed_evidence_ids": ["asset-prow-upgrade"],
+          "maximum_gradient_pct": 3,
+          "elevation_change_m": 15
+        },
+        {
+          "route_id": "prow-a-road",
+          "coordinates": [[0, 1100], [1000, 1100]],
+          "reuse_class": "a-road-major-protected-infrastructure",
+          "intervention_state": "upgrade-required",
+          "alignment_bases": ["a-road"],
+          "primary_alignment_basis": "a-road",
+          "directness_m": 1000,
+          "governed_evidence_ids": ["asset-prow-a-road"],
+          "maximum_gradient_pct": 3,
+          "elevation_change_m": 15
+        }
+      ]
+    },
+    {
+      "case_id": "bounded-hybrid",
+      "network_role": "community-access",
+      "endpoints": ["hybrid-west", "hybrid-east"],
+      "candidates": [
+        {
+          "route_id": "hybrid-reuse",
+          "coordinates": [[0, 2000], [500, 2000], [1000, 2100]],
+          "reuse_class": "existing-cycle-provision",
+          "intervention_state": "existing-provision",
+          "alignment_bases": ["cycle-track", "public-footpath"],
+          "primary_alignment_basis": "cycle-track",
+          "directness_m": 1100,
+          "transition_count": 1,
+          "fragmentation_count": 1,
+          "governed_evidence_ids": ["asset-hybrid-cycleway", "asset-hybrid-prow"],
+          "maximum_gradient_pct": 2,
+          "elevation_change_m": 11
+        },
+        {
+          "route_id": "hybrid-a-road",
+          "coordinates": [[0, 2200], [900, 2200]],
+          "reuse_class": "a-road-major-protected-infrastructure",
+          "intervention_state": "upgrade-required",
+          "alignment_bases": ["a-road"],
+          "primary_alignment_basis": "a-road",
+          "directness_m": 900,
+          "governed_evidence_ids": ["asset-hybrid-a-road"],
+          "maximum_gradient_pct": 2,
+          "elevation_change_m": 11
+        }
+      ]
+    },
+    {
+      "case_id": "unresolved-local-connector",
+      "network_role": "community-access",
+      "endpoints": ["connector-west", "connector-east"],
+      "candidates": []
+    },
+    {
+      "case_id": "proposed-new-versus-gap",
+      "network_role": "community-access",
+      "endpoints": ["new-west", "new-east"],
+      "candidates": [
+        {
+          "route_id": "proposed-new-link",
+          "coordinates": [[0, 3000], [1400, 3000]],
+          "reuse_class": "low-traffic-non-a-road",
+          "intervention_state": "proposed-new-link",
+          "alignment_bases": ["proposed-new-corridor"],
+          "primary_alignment_basis": "proposed-new-corridor",
+          "directness_m": 1400,
+          "governed_evidence_ids": ["asset-proposed-new"],
+          "maximum_gradient_pct": 2,
+          "elevation_change_m": 10
+        }
+      ]
+    },
+    {
+      "case_id": "traffic-challenge",
+      "network_role": "community-access",
+      "endpoints": ["traffic-west", "traffic-east"],
+      "candidates": [
+        {
+          "route_id": "traffic-a-road",
+          "coordinates": [[0, 4000], [900, 4000]],
+          "reuse_class": "a-road-major-protected-infrastructure",
+          "intervention_state": "upgrade-required",
+          "alignment_bases": ["a-road"],
+          "primary_alignment_basis": "a-road",
+          "directness_m": 900,
+          "governed_evidence_ids": ["asset-traffic-a-road"],
+          "maximum_gradient_pct": 2,
+          "elevation_change_m": 8
+        }
+      ]
+    },
+    {
+      "case_id": "evidence-quality",
+      "network_role": "community-access",
+      "endpoints": ["quality-west", "quality-east"],
+      "candidates": [
+        {
+          "route_id": "quality-cycleway",
+          "coordinates": [[0, 5000], [1000, 5000]],
+          "reuse_class": "existing-cycle-provision",
+          "intervention_state": "existing-provision",
+          "alignment_bases": ["cycle-track"],
+          "primary_alignment_basis": "cycle-track",
+          "directness_m": 1000,
+          "governed_evidence_ids": ["asset-quality-supported"],
+          "maximum_gradient_pct": 2,
+          "elevation_change_m": 7
+        }
+      ]
+    },
+    {
+      "case_id": "complete-accounting",
+      "network_role": "community-access",
+      "endpoints": ["accounting-west", "accounting-east"],
+      "candidates": [
+        {
+          "route_id": "accounting-asset",
+          "coordinates": [[0, 6000], [1000, 6000]],
+          "reuse_class": "existing-cycle-provision",
+          "intervention_state": "existing-provision",
+          "alignment_bases": ["greenway"],
+          "primary_alignment_basis": "greenway",
+          "directness_m": 1000,
+          "governed_evidence_ids": ["asset-accounting"],
+          "maximum_gradient_pct": 2,
+          "elevation_change_m": 7
+        }
+      ]
+    },
+    {
+      "case_id": "map-semantics",
+      "network_role": "community-access",
+      "endpoints": ["map-west", "map-east"],
+      "candidates": [
+        {
+          "route_id": "map-upgrade",
+          "coordinates": [[0, 7000], [1000, 7000]],
+          "reuse_class": "upgradeable-off-carriageway",
+          "intervention_state": "upgrade-required",
+          "alignment_bases": ["former-railway"],
+          "primary_alignment_basis": "former-railway",
+          "directness_m": 1000,
+          "governed_evidence_ids": ["asset-map-upgrade"],
+          "maximum_gradient_pct": 2,
+          "elevation_change_m": 7
+        }
+      ]
+    },
+    {
+      "case_id": "officer-target-unavailable",
+      "network_role": "community-access",
+      "endpoints": ["officer-west", "officer-east"],
+      "candidates": [
+        {
+          "route_id": "officer-compiler-route",
+          "coordinates": [[0, 8000], [1000, 8000]],
+          "reuse_class": "low-traffic-non-a-road",
+          "intervention_state": "upgrade-required",
+          "alignment_bases": ["unclassified-road"],
+          "primary_alignment_basis": "unclassified-road",
+          "directness_m": 1000,
+          "governed_evidence_ids": ["asset-officer-compiler"],
+          "maximum_gradient_pct": 2,
+          "elevation_change_m": 7
+        }
+      ]
+    }
+  ],
+  "assets": [
+    {"asset_id": "asset-cycleway-existing", "asset_kind": "cycle-track", "feature_type": "cycleway", "claim_type": "current-cycling-provision", "bicycle": "designated", "evidence_state": "supported", "governed_evidence_ids": ["asset-cycleway-existing"], "coordinates": [[0, 0], [1200, 0]]},
+    {"asset_id": "asset-cycleway-a-road", "asset_kind": "a-road", "feature_type": "a-road-spine", "evidence_state": "supported", "governed_evidence_ids": ["asset-cycleway-a-road"], "coordinates": [[0, 100], [1000, 100]]},
+    {"asset_id": "asset-prow-upgrade", "asset_kind": "public-footpath", "feature_type": "public-footpath", "evidence_state": "supported", "governed_evidence_ids": ["asset-prow-upgrade"], "coordinates": [[0, 1000], [1300, 1000]]},
+    {"asset_id": "asset-prow-a-road", "asset_kind": "a-road", "feature_type": "a-road-spine", "evidence_state": "supported", "governed_evidence_ids": ["asset-prow-a-road"], "coordinates": [[0, 1100], [1000, 1100]]},
+    {"asset_id": "asset-hybrid-cycleway", "asset_kind": "cycle-track", "feature_type": "cycleway", "claim_type": "current-cycling-provision", "bicycle": "designated", "evidence_state": "supported", "governed_evidence_ids": ["asset-hybrid-cycleway"], "coordinates": [[0, 2000], [500, 2000]]},
+    {"asset_id": "asset-hybrid-prow", "asset_kind": "public-footpath", "feature_type": "public-footpath", "evidence_state": "provisional", "governed_evidence_ids": ["asset-hybrid-prow"], "coordinates": [[500, 2000], [1000, 2100]]},
+    {"asset_id": "asset-hybrid-a-road", "asset_kind": "a-road", "feature_type": "a-road-spine", "evidence_state": "supported", "governed_evidence_ids": ["asset-hybrid-a-road"], "coordinates": [[0, 2200], [900, 2200]]},
+    {"asset_id": "asset-proposed-new", "asset_kind": "proposed-new-corridor", "feature_type": "proposed-new-corridor", "evidence_state": "provisional", "governed_evidence_ids": ["asset-proposed-new"], "coordinates": [[0, 3000], [1400, 3000]]},
+    {"asset_id": "asset-quality-supported", "asset_kind": "cycle-track", "feature_type": "cycleway", "claim_type": "current-cycling-provision", "bicycle": "designated", "evidence_state": "supported", "governed_evidence_ids": ["asset-quality-supported"], "coordinates": [[0, 5000], [1000, 5000]]},
+    {"asset_id": "asset-accounting", "asset_kind": "greenway", "feature_type": "greenway-cycleway", "claim_type": "current-cycling-provision", "bicycle": "designated", "evidence_state": "supported", "governed_evidence_ids": ["asset-accounting"], "coordinates": [[0, 6000], [1000, 6000]]},
+    {"asset_id": "asset-accounting-conflict", "asset_kind": "greenway", "feature_type": "greenway-cycleway", "claim_type": "current-cycling-provision", "bicycle": "designated", "evidence_state": "conflicting", "governed_evidence_ids": ["asset-accounting-conflict"], "coordinates": [[0, 6000], [1000, 6000]]}
+    ,{"asset_id": "asset-map-upgrade", "asset_kind": "former-railway", "feature_type": "former-railway", "evidence_state": "supported", "governed_evidence_ids": ["asset-map-upgrade"], "coordinates": [[0, 7000], [1000, 7000]]}
+    ,{"asset_id": "asset-officer-compiler", "asset_kind": "unclassified-road", "feature_type": "unclassified-road", "evidence_state": "supported", "governed_evidence_ids": ["asset-officer-compiler"], "coordinates": [[0, 8000], [1000, 8000]]}
+  ],
+  "traffic_observations": [
+    {"route_id": "traffic-a-road", "observations": [{"observation_id": "traffic-a-road-2025", "count_point_id": "traffic-a-road-point", "observation_year": 2025, "all_motor_vehicles": 18000, "easting": 450, "northing": 4000}]},
+    {"route_id": "quality-cycleway", "observations": [{"observation_id": "quality-cycleway-stale", "count_point_id": "quality-cycleway-point", "observation_year": 2015, "all_motor_vehicles": 4000, "easting": 500, "northing": 5000}]},
+    {"route_id": "map-upgrade", "observations": [{"observation_id": "map-upgrade-a", "count_point_id": "map-upgrade-point", "observation_year": 2025, "all_motor_vehicles": 5000, "easting": 400, "northing": 7000}, {"observation_id": "map-upgrade-b", "count_point_id": "map-upgrade-point", "observation_year": 2025, "all_motor_vehicles": 9000, "easting": 400, "northing": 7000}]},
+    {"route_id": "officer-compiler-route", "observations": []}
+  ],
+  "officer_inputs": [
+    {"case_id": "officer-target-unavailable", "target_route_id": "officer-preferred-missing"},
+    {"case_id": "existing-cycleway-over-shorter-a-road", "target_route_id": "cycleway-short-a-road"}
+  ]
+}

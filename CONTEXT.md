@@ -77,8 +77,28 @@ A deliberately bounded, informative and inspectable layered picture showing the 
 _Avoid_: final scheme map, cycle-route inventory, undifferentiated linework
 
 **Strategic Network Route Layer**:
-The topmost red route layer in the Strategic Network Visualization, combining governed A roads, established National Cycle Network routes, Declassified NCN Routes and Greenway Cycleways. It remains visually distinct from contextual, analytical and warning layers.
-_Avoid_: separate competing spine overlays, contextual route colour, hidden backbone
+The default-on selected SATN layer, including its required Community and destination connections. Its line core communicates Network Display State, while its halo communicates the primary Alignment Basis; details retain every basis and the evidence behind it. It is accompanied by quiet Places and prominent material gaps and officer–compiler divergences rather than an undifferentiated red backbone.
+_Avoid_: uniform-red route, hidden connectors, contextual asset inventory, colour-only meaning
+
+**Alignment Basis**:
+The evidence-backed physical or corridor basis followed by an Alignment Section, such as current cycle provision, Greenway, current or reclassified National Cycle Network, public right of way, former railway, governed Local Connector, classified road or proposed corridor. A section retains every applicable basis and names one primary basis for map presentation; basis alone never establishes condition, access, feasibility or Intervention State.
+_Avoid_: route quality, intervention need, single source label, inferred suitability
+
+**Intervention State**:
+The delivery state of a selected or complementary routable section: `existing-provision`, `upgrade-required` or `proposed-new-link`. It is supported independently of Alignment Basis and does not claim cost, funding, legal authority, design readiness or deliverability.
+_Avoid_: asset type, scheme status, feasibility class, unresolved gap
+
+**Network Display State**:
+The map-facing union of the three routable Intervention States and `unresolved-gap`. The core line encodes this state, while the halo encodes primary Alignment Basis; text and pattern duplicate colour meaning in the legend and details.
+_Avoid_: route score, colour-only state, alignment source
+
+**Existing and Upgradeable Assets Layer**:
+An optional inventory layer containing every governed in-scope reusable asset whether selected, complementary, unselected, incomplete or topologically unconnected. An unselected existing asset retains its basis identity rather than becoming an anonymous grey alternative.
+_Avoid_: selected network, hidden asset loss, feasibility inventory
+
+**Unselected Candidates Layer**:
+An optional layer containing finite compiler-authored candidates not selected into the active Scenario Compilation. Ordinary alternatives may be muted, but existing-asset identity and Material Officer–Compiler Divergence styling remain distinct and inspectable.
+_Avoid_: discarded geometry, deleted options, grey divergence
 
 **Backbone-Outward Assembly**:
 The iterative formation of a Backbone-and-Access Network from all Strategic Spines concurrently, extending through the nearest reachable unserved Access Obligations and joining differently rooted branches where they first meet. It ends with every Access Obligation served or exposed as a Network Gap.
@@ -119,6 +139,38 @@ _Avoid_: parallel connection, final design
 **Alignment Candidate Set**:
 The finite, evidence-backed Alignment Options generated for one strategic Community Connection before substitute/complementary classification and selection.
 _Avoid_: unconstrained route search, alternative network
+
+**Evidence Observation**:
+One atomic, claim-specific statement from a governed Source Export, retaining publisher, source family, stable publisher key where governed, observation/effective dates, licence, coverage, raw-content SHA-256, canonical evidence-geometry fingerprint and explicit missing, stale or conflict state. An observation supports only the claim it names.
+_Avoid_: dataset confidence score, uncited tag, inferred condition, mutable fact
+
+**Governed Asset Record**:
+The stable compiler record for one physical reusable asset assembled from Evidence Observations under a configured claim-specific authority hierarchy. Conflicting observations remain attached; they are not collapsed into an unsupported best answer, and unavailable optional evidence never removes the asset.
+_Avoid_: source feature copy, verified condition, globally preferred dataset
+
+**Asset Accounting**:
+The exhaustive result record for every governed asset, keeping scope state, opportunity state and evidence states independent from zero or more Candidate Participation records. An in-scope asset with no candidate participation carries an explicit non-participation reason.
+_Avoid_: selected-assets list, global candidate disposition, silent omission
+
+**Candidate Participation**:
+One asset's role in one exact `(candidate_set_id, candidate_id)` context: selected contributor, complementary contributor, eligible not selected, ineligible, officer excluded, incomplete evidence or topology unconnected. The same physical section may participate differently in several candidates without acquiring one contradictory global outcome.
+_Avoid_: asset-wide winner state, candidate membership flag, deleted alternative
+
+**Selection Disposition**:
+The exact outcome for one candidate participation, including its structured reason, failed rule or selection provenance. Every participation has exactly one disposition; candidate-set context is part of its identity.
+_Avoid_: global section status, free-text rejection, implicit non-selection
+
+**Constraint Assessment**:
+A claim-specific supported, contradicted or unknown assessment of access, condition, land, continuity, protected space or another configured constraint. Unknown, stale and conflicting evidence stays unknown and can create an Evidence Request; it is never converted to safe, absent, favourable or automatically ineligible.
+_Avoid_: confidence score, missing-means-clear, hidden veto
+
+**Local Connector Evidence**:
+A governed local assertion for a reusable link not adequately represented by the configured source hierarchy, with stable identity, geometry, source, author or responsible role, observation date, verification state and provenance. It may preserve local knowledge or a newly built link but cannot invent routing continuity or legal access.
+_Avoid_: freehand route, uncited officer note, automatic network edge
+
+**Evidence Request**:
+A structured, queued request for a missing or conflicted claim, naming its affected asset/candidate, required evidence kind and deterministic consequence. Requests are handled outside compilation; they never cause a valid-input compile to wait or an agent to fetch raw facts.
+_Avoid_: interactive blocker, agent web search, missing-is-zero
 
 **Alignment Choice Point**:
 A governed topological point that bounds a real corridor choice: an Alignment Option endpoint, a usable divergence or rejoining point, or a connector or crossing where a continuous selected alignment could switch between alternatives. An ordinary intermediate RoadGraph node, evidence change or access attachment is not a choice point unless it changes that switchability.
@@ -229,8 +281,16 @@ The one selected Alignment Option for a substitute Alignment Candidate Set under
 _Avoid_: objectively correct route, scheme approval, preferred scheme
 
 **Network Selection Profile**:
-A frozen, versioned, data-only local policy declaration that orders candidate classes and defines how otherwise eligible Alignment Options are compared, including population, education, existing-alignment, ambiguity and publication policies.
-_Avoid_: hidden score, agent policy, mutable setting
+A frozen, fingerprinted, data-only local policy declaration that orders every supported Candidate Reuse Class and Intervention State, declares a lexicographic comparator, material-difference and displacement rules, unknown-value behaviour, optional traffic profile, deterministic final tie-break and bounded agent calls. Council order and thresholds are supplied by configuration rather than embedded in compiler code.
+_Avoid_: hidden score, hard-coded council preference, agent policy, mutable setting
+
+**Candidate Reuse Class**:
+The evidence-derived selection tier assigned to an eligible Alignment Option by the active profile: `existing-cycle-provision`, `upgradeable-off-carriageway`, `low-traffic-non-a-road` or `a-road-major-protected-infrastructure` in the starter profile. Every supported class appears exactly once in configured order; no candidate receives an implicit class or status-only advantage.
+_Avoid_: Intervention State, road hierarchy, automatic asset winner, unconfigured fallback
+
+**Material Displacement Reason**:
+A machine-readable, profile-versioned finding required when a lower-ranked Candidate Reuse Class displaces a higher-ranked eligible candidate. It identifies selected and displaced candidates, reason code, observed values, configured threshold, governed evidence identifiers, profile fingerprint and decision provenance; being shorter, being an A road or lacking optional evidence is not sufficient.
+_Avoid_: free-text rationale, weighted-score difference, unexplained exception
 
 **Population Reach Profile**:
 The governed whole-Output-Area measure of residents whose population-weighted centroids lie within a declared straight-line corridor around one complete end-to-end Alignment Option, with its source date, configurable radii and sensitivity retained. The measure belongs to the whole option even when its geometry is rendered as several line sections; those sections do not independently redefine or subdivide its population reach. It is not predicted demand, accessible population or a walking-time claim.
@@ -369,8 +429,8 @@ The explicit public status of one deployment output as a Baseline Scenario Compi
 _Avoid_: generic published network, implied officer approval, agent adoption
 
 **Network Gap**:
-An unresolved absence of a continuous, bidirectionally traversable connection with plausible intervention coverage. A Network Gap prevents a network being Complete.
-_Avoid_: visual gap, omitted link
+An explicit non-routable result feature between governed endpoints where no continuous, bidirectionally traversable evidenced candidate exists. It carries `unresolved-gap` Network Display State and applicable Evidence Requests, allows generation to complete as a Reviewable Network, and prevents the network being Complete without pretending that indicative geometry is a route.
+_Avoid_: visual gap, omitted link, proposed new link, routable candidate geometry
 
 **Route Refinement Finding**:
 A recorded defect in an Alignment Option, such as a discontinuity, invalid join, excessive detour, or uncovered intervention need, that must be repaired or become a Network Gap.
@@ -539,6 +599,14 @@ _Avoid_: prompt context, live web research
 **Source Export**:
 The immutable governed received artifact selected as authoritative for one source family, dataset and layer. Its raw bytes and declared release provenance identify it; a download location or local cache does not.
 _Avoid_: download URL, cache file, latest source
+
+**DfT Motor-Traffic Evidence**:
+An optional governed observation matched deterministically from a pinned Department for Transport Source Export to a road section, retaining count-point identity, observation year, counted or estimated status, direction, freshness, coverage and provenance. Missing minor-road observations remain unknown; compilation and an asset's eligibility do not depend on live DfT access.
+_Avoid_: live API lookup, absent-means-zero, current traffic guarantee, route veto
+
+**Traffic Challenge**:
+A non-veto diagnostic emitted for an on-carriageway candidate when configured motor-traffic evidence is material. `traffic-high-on-carriageway-without-protected-space` is emitted only when protected-space absence is explicitly evidenced; unknown or conflicting protected-space evidence has its own diagnostic and is never treated as absence.
+_Avoid_: safety verdict, traffic score, missing-space assumption, automatic exclusion
 
 **Evidence Partition**:
 The stable source-layer and spatial-cell subset of a Source Export, represented by its content record and Source Export attestation. It is spatial coverage rather than a council or Area Definition.

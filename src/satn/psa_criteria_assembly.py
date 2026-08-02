@@ -298,7 +298,13 @@ def assemble_prepared_candidate_criteria(
         requested=request.population_profile,
     )
     missing = _missing_inputs(request, preparation)
-    if missing:
+    # A preparation may have an exhaustive roster and usable prepared packets
+    # while another roster row remains unresolved.  Keep assembling the valid
+    # packets in that case; the downstream scenario seam retains the unresolved
+    # roster as an explicit gap.  Missing governed source/area inputs still
+    # fail closed as an incomplete assembly with no packets.
+    preparation_only_missing = missing == ("candidate-preparation-not-ready",)
+    if missing and not preparation_only_missing:
         return _result(
             "incomplete",
             preparation.preparation_fingerprint,
@@ -337,10 +343,10 @@ def assemble_prepared_candidate_criteria(
         for item in promotable
     )
     return _result(
-        "assembled",
+        "incomplete" if preparation_only_missing else "assembled",
         preparation.preparation_fingerprint,
         packets,
-        (),
+        missing if preparation_only_missing else (),
         {
             "promotable_connection_ids": [item.access_connection_id for item in promotable],
             "out_of_scope_connection_ids": _out_of_scope_ids(preparation),
@@ -353,6 +359,11 @@ def assemble_prepared_candidate_criteria(
             "agent_runtime_invoked": False,
             "network_geometry_mutated": False,
             "publication_performed": False,
+            **(
+                {"reason": "candidate-preparation-roster-not-ready"}
+                if preparation_only_missing
+                else {}
+            ),
         },
     )
 
@@ -729,7 +740,13 @@ def _validate_preparation(preparation: SpineAccessCandidatePreparationResult) ->
     roster = tuple(
         sorted(preparation.connection_roster, key=lambda item: item.access_connection_id)
     )
-    if not roster or len({item.access_connection_id for item in roster}) != len(roster):
+    if len({item.access_connection_id for item in roster}) != len(roster):
+        raise ValueError("candidate preparation requires an exhaustive unique roster")
+    if not roster and (
+        preparation.prepared_spine_access_connections
+        or preparation.generation_issues
+        or preparation.diagnostics.get("expected_connection_roster_count") != 0
+    ):
         raise ValueError("candidate preparation requires an exhaustive unique roster")
     prepared_ids = {
         item.access_connection_id
@@ -895,6 +912,14 @@ def _missing_inputs(
     preparation: SpineAccessCandidatePreparationResult,
 ) -> tuple[str, ...]:
     missing = set(preparation.missing_inputs)
+    # A caller may complete an earlier preparation pass by supplying the exact
+    # governed loaders at this assembly boundary.  Do not retain stale
+    # preparation-local absence markers once those typed inputs are present.
+    if request.population_evidence is not None:
+        missing.discard("population-reach-evidence")
+    if request.education_evidence is not None:
+        missing.discard("education-access-evidence")
+        missing.discard("school-register-evidence")
     if preparation.status != "prepared":
         missing.add("candidate-preparation-not-ready")
     if request.population_evidence is None:

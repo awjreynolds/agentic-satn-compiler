@@ -5,12 +5,13 @@ import json
 import shutil
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import geopandas as gpd
 import pandas as pd
 import pytest
 from pypdf import PdfReader
-from shapely.geometry import LineString
+from shapely.geometry import LineString, Point, mapping, shape
 
 from lcwip import (
     ArtifactLink,
@@ -35,9 +36,203 @@ from satn.models import (
     OfficialRoadClassificationConfig,
     TrafficLight,
 )
+from satn.publisher import _reviewable_map_collection
 from satn.sources import snapshot
 
 PROJECT = Path(__file__).parents[1]
+
+
+def test_reviewable_map_projection_keeps_rejected_routes_and_projects_assets_to_wgs84() -> None:
+    class CandidateGeometry:
+        def __init__(self, geometry):
+            self._geometry = geometry
+
+        def as_shapely(self):
+            return self._geometry
+
+    class Candidate:
+        def __init__(self, candidate_id, geometry, state, basis):
+            self.candidate_id = candidate_id
+            self.geometry = CandidateGeometry(geometry)
+            self.intervention_state = state
+            self.primary_alignment_basis = basis
+            self.alignment_bases = (basis,)
+            self.evidence_fingerprints = ("evidence",)
+            self.network_role = "community-access"
+
+        def model_dump(self, **_kwargs):
+            return {
+                "candidate_id": self.candidate_id,
+                "intervention_state": self.intervention_state,
+                "primary_alignment_basis": self.primary_alignment_basis,
+                "alignment_bases": list(self.alignment_bases),
+                "evidence_fingerprints": list(self.evidence_fingerprints),
+                "network_role": self.network_role,
+            }
+
+    selected = Candidate(
+        "selected-route",
+        LineString([(370000, 170000), (370100, 170100)]),
+        "existing-provision",
+        "current-ncn",
+    )
+    rejected = Candidate(
+        "rejected-route",
+        LineString([(370000, 170000), (370100, 170000)]),
+        "upgrade-required",
+        "mapped-cycleway",
+    )
+    candidate_set = SimpleNamespace(
+        candidate_set_id="set-1",
+        candidates=(selected, rejected),
+        admissions=(
+            SimpleNamespace(
+                candidate_id="selected-route", disposition="admitted", rationale="admitted"
+            ),
+            SimpleNamespace(
+                candidate_id="rejected-route", disposition="rejected", rationale="profile-limit"
+            ),
+        ),
+    )
+    reviewable = SimpleNamespace(
+        scenario=SimpleNamespace(candidate_sets=(candidate_set,)),
+        effective_selections=(
+            SimpleNamespace(
+                candidate=selected,
+                candidate_id="selected-route",
+                candidate_set_id="set-1",
+                connection_id="connection-1",
+                compiler_candidate_id="selected-route",
+                selection_disposition="selected",
+                display_state="existing-provision",
+                officer_decision_id=None,
+            ),
+        ),
+        network_gaps=(
+            SimpleNamespace(
+                gap_id="gap-1",
+                candidate_set_id="gap-set",
+                connection_id="gap-connection",
+                network_role="community-access",
+                endpoints=("place-a", "place-b"),
+                reason="missing-bridge",
+                display_state="unresolved-gap",
+            ),
+        ),
+        divergences=(),
+        result_fingerprint="f" * 64,
+    )
+    places = gpd.GeoDataFrame(
+        [
+            {"place_id": "place-a", "geometry": Point(-2.1, 51.3)},
+        ],
+        crs=4326,
+    )
+    strategic_spines = gpd.GeoDataFrame(
+        [
+            {
+                "spine_id": "spine-a-road",
+                "network_role": "strategic-spine",
+                "spine_kind": "a-road",
+                "evidence_id": "a-road-evidence",
+                "source_id": "a-road-source",
+                "provenance": json.dumps(
+                    {
+                        "canonical_geometry_sha256": "a" * 64,
+                        "source_ids": ["a-road-source"],
+                    },
+                    sort_keys=True,
+                ),
+                "geometry": LineString([(370000, 170000), (370200, 170000)]),
+            },
+            {
+                "spine_id": "spine-ncn",
+                "network_role": "strategic-spine",
+                "spine_kind": "ncn",
+                "evidence_id": "ncn-evidence",
+                "source_id": "ncn-source",
+                "provenance": json.dumps(
+                    {
+                        "canonical_geometry_sha256": "b" * 64,
+                        "source_ids": ["ncn-source"],
+                    },
+                    sort_keys=True,
+                ),
+                "geometry": LineString([(370000, 170100), (370200, 170100)]),
+            },
+        ],
+        crs=27700,
+    )
+    compiled = SimpleNamespace(
+        reviewable_network=reviewable,
+        places=places,
+        strategic_spines=strategic_spines,
+        asset_accounting={
+            "contract": "satn-asset-accounting/v1",
+            "records": [
+                {
+                    "asset_id": "asset-1",
+                    "asset_kind": "mapped-cycleway",
+                    "primary_alignment_basis": "mapped-cycleway",
+                    "alignment_bases": ["mapped-cycleway"],
+                    "intervention_state": "upgrade-required",
+                    "geometry": mapping(LineString([(370000, 170000), (370100, 170100)])),
+                },
+                {
+                    "asset_id": "asset-ncn",
+                    "asset_identity_sha256": "c" * 64,
+                    "asset_kind": "current-ncn",
+                    "primary_alignment_basis": "current-ncn",
+                    "alignment_bases": ["current-ncn"],
+                    "intervention_state": "existing-provision",
+                    "governed_source_identities": ["ncn-source"],
+                    "geometry": mapping(LineString([(370000, 170100), (370200, 170100)])),
+                },
+            ],
+        },
+    )
+
+    payload = _reviewable_map_collection(compiled)
+    by_type = {}
+    for feature in payload["features"]:
+        by_type.setdefault(feature["properties"]["feature_type"], []).append(feature)
+
+    assert {
+        feature["properties"]["candidate_id"]
+        for feature in by_type["reviewable-unselected-candidate"]
+    } == {
+        "rejected-route"
+    }
+    assert (
+        by_type["reviewable-unselected-candidate"][0]["properties"]["admission_disposition"]
+        == "rejected"
+    )
+    gap_endpoints = {
+        feature["properties"]["endpoint_id"]: feature
+        for feature in by_type["reviewable-gap-endpoint"]
+    }
+    assert set(gap_endpoints) == {"place-a", "place-b"}
+    assert gap_endpoints["place-a"]["geometry"]["type"] == "Point"
+    assert gap_endpoints["place-b"]["geometry"] is None
+    assert gap_endpoints["place-b"]["properties"]["missing_endpoint_geometry"] is True
+    selected_routes = {
+        feature["properties"]["route_id"]: feature
+        for feature in by_type["reviewable-selected-route"]
+    }
+    assert {"selected-route", "spine-a-road", "spine-ncn"} <= set(selected_routes)
+    assert selected_routes["spine-a-road"]["properties"]["display_state"] == "undetermined"
+    assert selected_routes["spine-a-road"]["properties"]["primary_alignment_basis"] == (
+        "a-road"
+    )
+    assert selected_routes["spine-ncn"]["properties"]["display_state"] == (
+        "existing-provision"
+    )
+    asset = by_type["asset-upgrade-required"][0]
+    coordinates = asset["geometry"]["coordinates"][0]
+    assert -180 <= coordinates[0] <= 180
+    assert -90 <= coordinates[1] <= 90
+    assert asset["properties"]["geometry_crs"] == "EPSG:4326"
+    assert asset["properties"]["source_geometry_crs"] == "EPSG:27700"
 
 
 def prepared_config(tmp_path: Path) -> CouncilConfig:
@@ -166,6 +361,480 @@ def test_public_artifact_reference_uses_the_successful_run_identity_and_file_dig
     assert reference.uri == result.artifacts["geojson"].resolve().as_uri()
     assert reference.sha256 == checksum(result.artifacts["geojson"])
     assert reference.public_identifier == f"{result.run_id}:geojson"
+
+
+def test_public_compile_exhaustively_publishes_reusable_asset_accounting(
+    tmp_path: Path,
+) -> None:
+    result = compile(prepared_config(tmp_path))
+
+    accounting = json.loads(result.artifacts["asset_accounting"].read_text())
+    spatial = json.loads(result.artifacts["asset_accounting_geojson"].read_text())
+
+    assert accounting["schema_version"]
+    assert accounting["asset_count"] == len(accounting["records"])
+    assert accounting["records"]
+    assert {record["asset_kind"] for record in accounting["records"]} >= {
+        "current-ncn"
+    }
+    assert all(len(record["asset_identity_sha256"]) == 64 for record in accounting["records"])
+    assert all("candidate_participations" in record for record in accounting["records"])
+    network_source_ids = {
+        str(value)
+        for value in gpd.read_file(
+            result.output_dir.parent.parent
+            / "source"
+            / "network.geojson"
+        ).get("source_id", [])
+        if value is not None
+    }
+    accounted_source_ids = {
+        str(item.get("source_id"))
+        for record in accounting["records"]
+        for item in record["source_provenance"]
+        if item.get("source_id")
+    } | {
+        str(item.get("source_id"))
+        for item in accounting["excluded_observations"]
+        if item.get("source_id")
+    }
+    assert network_source_ids <= accounted_source_ids
+    assert spatial["type"] == "FeatureCollection"
+    assert {feature["id"] for feature in spatial["features"]} == {
+        record["asset_id"] for record in accounting["records"]
+    }
+
+
+def test_public_compile_accounts_reusable_source_classes_and_canonical_geometry(
+    tmp_path: Path,
+) -> None:
+    fixture = tmp_path / "asset-classes"
+    shutil.copytree(
+        PROJECT / "examples" / "fixture",
+        fixture,
+        ignore=shutil.ignore_patterns("work", ".satn-cache"),
+    )
+    context_path = fixture / "source" / "context.geojson"
+    context = gpd.read_file(context_path)
+    class_geometries = {
+        "declassified": LineString([(-2.50, 51.401), (-2.49, 51.402)]),
+        "former-railway": LineString([(-2.50, 51.403), (-2.49, 51.404)]),
+        "local-connector": LineString([(-2.50, 51.405), (-2.49, 51.406)]),
+    }
+    context = gpd.GeoDataFrame(
+        pd.concat(
+            [
+                context,
+                gpd.GeoDataFrame(
+                    [
+                            {
+                                "evidence_id": evidence_id,
+                                "feature_type": feature_type,
+                                "name": evidence_id,
+                                "source_id": evidence_id,
+                                "source_family": (
+                                    "officer-local-connector"
+                                    if evidence_id == "local-connector"
+                                    else None
+                                ),
+                                "dataset": (
+                                    "governed-local-connector"
+                                    if evidence_id == "local-connector"
+                                    else None
+                                ),
+                                "publisher_release": (
+                                    "2026-08-02"
+                                    if evidence_id == "local-connector"
+                                    else None
+                                ),
+                                "effective_date": (
+                                    "2026-08-01"
+                                    if evidence_id == "local-connector"
+                                    else None
+                                ),
+                                "licence": (
+                                    "Open Government Licence v3.0"
+                                    if evidence_id == "local-connector"
+                                    else None
+                                ),
+                                "evidence_mode": (
+                                    "observed" if evidence_id == "local-connector" else None
+                                ),
+                                "coverage_state": (
+                                    "available" if evidence_id == "local-connector" else None
+                                ),
+                                "evidence_state": (
+                                    "supported" if evidence_id == "local-connector" else None
+                                ),
+                                "geometry": geometry,
+                            }
+                        for evidence_id, feature_type, geometry in (
+                            (
+                                "declassified",
+                                "declassified-ncn-route",
+                                class_geometries["declassified"],
+                            ),
+                            (
+                                "former-railway",
+                                "former-railway",
+                                class_geometries["former-railway"],
+                            ),
+                            (
+                                "local-connector",
+                                "local-connector",
+                                class_geometries["local-connector"],
+                            ),
+                        )
+                    ],
+                    crs=context.crs,
+                ),
+            ],
+            ignore_index=True,
+        ),
+        geometry="geometry",
+        crs=context.crs,
+    )
+    context.to_file(context_path, driver="GeoJSON")
+    network_path = fixture / "source" / "network.geojson"
+    network = gpd.read_file(network_path)
+    network = gpd.GeoDataFrame(
+        pd.concat(
+            [
+                network,
+                gpd.GeoDataFrame(
+                    [
+                        {
+                            "source_id": "cycleway",
+                            "highway": "cycleway",
+                            "evidence_state": "supported",
+                            "claim_type": "cycling-access",
+                            "source_family": "governed-cycleway",
+                            "dataset": "cycleway-register",
+                            "publisher": "Example authority",
+                            "source_authority_role": "custodian_classification",
+                            "effective_date": "2026-08-01",
+                            "licence": "Open Government Licence v3.0",
+                            "source_export_sha256": "a" * 64,
+                            "evidence_mode": "observed",
+                            "coverage_state": "complete",
+                            "ingestion_contract": "satn-cycleway/v1",
+                            "geometry": LineString([(-2.50, 51.407), (-2.49, 51.408)]),
+                        },
+                        {
+                            "source_id": "footway",
+                            "highway": "footway",
+                            "designation": "public_footpath",
+                            "geometry": LineString([(-2.50, 51.409), (-2.49, 51.410)]),
+                        },
+                        {
+                            "source_id": "bridleway",
+                            "highway": "path",
+                            "designation": "public_bridleway",
+                            "geometry": LineString([(-2.50, 51.411), (-2.49, 51.412)]),
+                        },
+                            {
+                                "source_id": "former-railway-network",
+                                "railway": "abandoned",
+                                "evidence_state": "conflicting",
+                                "geometry": class_geometries["former-railway"].reverse(),
+                        },
+                    ],
+                    crs=network.crs,
+                ),
+            ],
+            ignore_index=True,
+        ),
+        geometry="geometry",
+        crs=network.crs,
+    )
+    network.to_file(network_path, driver="GeoJSON")
+    config = CouncilConfig.from_yaml(fixture / "council.yaml")
+    snapshot(config)
+
+    result = compile(config)
+    accounting = json.loads(result.artifacts["asset_accounting"].read_text())
+    records = accounting["records"]
+    by_kind = {record["asset_kind"]: record for record in records}
+
+    assert {
+        "current-ncn",
+        "reclassified-ncn",
+        "cycle-track",
+        "public-footpath",
+        "public-bridleway",
+        "former-railway",
+        "local-connector",
+    } <= set(by_kind)
+    allowed_bases = {
+        "current-ncn",
+        "reclassified-ncn",
+        "cycle-track",
+        "public-footpath",
+        "public-bridleway",
+        "former-railway",
+        "local-connector",
+        "a-road",
+        "b-road",
+        "unclassified-road",
+        "classified-unnumbered-road",
+    }
+    allowed_interventions = {
+        "existing-provision",
+        "upgrade-required",
+        "proposed-new-link",
+        "unresolved-gap",
+    }
+    allowed_evidence = {
+        "supported",
+        "provisional",
+        "conflicting",
+        "stale",
+        "missing",
+        "coverage_unknown",
+        "not_applicable",
+        "unknown",
+    }
+    for record in records:
+        assert set(record["alignment_bases"]) <= allowed_bases
+        assert record["primary_alignment_basis"] in record["alignment_bases"]
+        assert record["intervention_state"] in allowed_interventions
+        assert record["evidence_state"] in allowed_evidence
+        assert all(
+            participation["selection_disposition"]
+            for participation in record["candidate_participations"]
+        )
+
+    local = by_kind["local-connector"]
+    assert len(local["source_provenance"]) == 1
+    assert local["source_provenance"][0]["source_family"] == "officer-local-connector"
+    assert local["source_provenance"][0]["observation_state"] == "provisional"
+    assert "claim_type" in local["source_provenance"][0]
+    assert "ingestion_contract" in local["source_provenance"][0]
+    assert "raw_attributes" in local["source_provenance"][0]
+    former = by_kind["former-railway"]
+    assert len(former["source_provenance"]) == 2
+    assert len({item["evidence_geometry_fingerprint"] for item in former["source_provenance"]}) == 1
+    assert former["evidence_state"] == "conflicting"
+    assert "former-railway-network" in former["conflict_roster"]
+    serialized_metric = gpd.GeoSeries([shape(former["geometry"])], crs=4326).to_crs(27700).iloc[0]
+    assert tuple(serialized_metric.coords[0]) <= tuple(serialized_metric.coords[-1])
+    assert all(record["candidate_participations"] == [] for record in records)
+    assert all(
+        record["non_participation_reason"] == "no-governed-candidate-binding"
+        for record in records
+    )
+
+
+def test_public_compile_keeps_unqualified_path_features_provisional_and_unbound(
+    tmp_path: Path,
+) -> None:
+    fixture = tmp_path / "unqualified-paths"
+    shutil.copytree(
+        PROJECT / "examples" / "fixture",
+        fixture,
+        ignore=shutil.ignore_patterns("work", ".satn-cache"),
+    )
+    network_path = fixture / "source" / "network.geojson"
+    network = gpd.read_file(network_path)
+    raw_features = gpd.GeoDataFrame(
+        [
+            {
+                "source_id": f"raw-{highway}",
+                "highway": highway,
+                "geometry": LineString([(-2.50, latitude), (-2.49, latitude)]),
+            }
+            for highway, latitude in (
+                ("footway", 51.417),
+                ("path", 51.419),
+                ("track", 51.421),
+            )
+        ],
+        crs=network.crs,
+    )
+    gpd.GeoDataFrame(
+        pd.concat([network, raw_features], ignore_index=True),
+        geometry="geometry",
+        crs=network.crs,
+    ).to_file(network_path, driver="GeoJSON")
+    config = CouncilConfig.from_yaml(fixture / "council.yaml")
+    snapshot(config)
+
+    result = compile(config)
+    accounting = json.loads(result.artifacts["asset_accounting"].read_text())
+    records_by_source = {
+        provenance["source_id"]: record
+        for record in accounting["records"]
+        for provenance in record["source_provenance"]
+        if provenance.get("source_id", "").startswith("raw-")
+    }
+    excluded_by_source = {
+        observation["source_id"]: observation
+        for observation in accounting["excluded_observations"]
+        if observation.get("source_id", "").startswith("raw-")
+    }
+
+    assert records_by_source == {}
+    assert set(excluded_by_source) == {"raw-footway", "raw-path", "raw-track"}
+    assert all(
+        observation["observation_state"] == "provisional"
+        for observation in excluded_by_source.values()
+    )
+    assert all(
+        observation["accounting_disposition"] == "excluded-unbound"
+        for observation in excluded_by_source.values()
+    )
+
+
+def test_public_compile_aggregates_same_asset_independently_of_source_order(
+    tmp_path: Path,
+) -> None:
+    shared_geometry = LineString([(-2.50, 51.425), (-2.49, 51.426)])
+
+    def compile_ordered(name: str, feature_types: tuple[str, str]):
+        fixture = tmp_path / name
+        shutil.copytree(
+            PROJECT / "examples" / "fixture",
+            fixture,
+            ignore=shutil.ignore_patterns("work", ".satn-cache"),
+        )
+        context_path = fixture / "source" / "context.geojson"
+        context = gpd.read_file(context_path)
+        additions = gpd.GeoDataFrame(
+            [
+                {
+                    "evidence_id": f"order-{feature_type}",
+                    "source_id": f"order-{feature_type}",
+                    "feature_type": feature_type,
+                    "geometry": shared_geometry,
+                }
+                for feature_type in feature_types
+            ],
+            crs=context.crs,
+        )
+        gpd.GeoDataFrame(
+            pd.concat([context, additions], ignore_index=True),
+            geometry="geometry",
+            crs=context.crs,
+        ).to_file(context_path, driver="GeoJSON")
+        config = CouncilConfig.from_yaml(fixture / "council.yaml")
+        snapshot(config)
+        return compile(config)
+
+    first = compile_ordered("asset-order-a", ("greenway-cycleway", "ncn-route"))
+    second = compile_ordered("asset-order-b", ("ncn-route", "greenway-cycleway"))
+
+    def shared_record(result):
+        accounting = json.loads(result.artifacts["asset_accounting"].read_text())
+        return next(
+            record
+            for record in accounting["records"]
+            if {
+                "order-greenway-cycleway",
+                "order-ncn-route",
+            }
+            <= {
+                item["source_id"]
+                for item in record["source_provenance"]
+            }
+        )
+
+    first_record = shared_record(first)
+    second_record = shared_record(second)
+    assert first_record["asset_id"] == second_record["asset_id"]
+    assert first_record["asset_kind"] == second_record["asset_kind"] == "current-ncn"
+    assert first_record["primary_alignment_basis"] == second_record[
+        "primary_alignment_basis"
+    ] == "current-ncn"
+    assert first_record["alignment_bases"] == second_record["alignment_bases"] == [
+        "current-ncn",
+        "greenway",
+    ]
+
+
+def test_public_compile_requires_supported_cycling_access_for_existing_provision(
+    tmp_path: Path,
+) -> None:
+    fixture = tmp_path / "intervention-evidence"
+    shutil.copytree(
+        PROJECT / "examples" / "fixture",
+        fixture,
+        ignore=shutil.ignore_patterns("work", ".satn-cache"),
+    )
+    context_path = fixture / "source" / "context.geojson"
+    context = gpd.read_file(context_path)
+    additions = gpd.GeoDataFrame(
+        [
+            {
+                "evidence_id": "continuity-permissive",
+                "source_id": "continuity-permissive",
+                "feature_type": "cycleway",
+                "evidence_state": "supported",
+                "claim_type": "continuity",
+                "access": "permissive",
+                "source_family": "governed-cycleway",
+                "dataset": "cycleway-register",
+                "publisher": "Example authority",
+                "source_authority_role": "custodian_classification",
+                "publisher_release": "2026-08-02",
+                "effective_date": "2026-08-01",
+                "licence": "Open Government Licence v3.0",
+                "source_export_sha256": "a" * 64,
+                "evidence_mode": "observed",
+                "coverage_state": "complete",
+                "ingestion_contract": "satn-cycleway/v1",
+                "geometry": LineString([(-2.50, 51.427), (-2.49, 51.428)]),
+            },
+            {
+                "evidence_id": "cycling-access-designated",
+                "source_id": "cycling-access-designated",
+                "feature_type": "cycleway",
+                "evidence_state": "supported",
+                "claim_type": "cycling-access",
+                "bicycle": "designated",
+                "source_family": "governed-cycleway",
+                "dataset": "cycleway-register",
+                "publisher": "Example authority",
+                "source_authority_role": "custodian_classification",
+                "publisher_release": "2026-08-02",
+                "effective_date": "2026-08-01",
+                "licence": "Open Government Licence v3.0",
+                "source_export_sha256": "b" * 64,
+                "evidence_mode": "observed",
+                "coverage_state": "complete",
+                "ingestion_contract": "satn-cycleway/v1",
+                "geometry": LineString([(-2.50, 51.429), (-2.49, 51.430)]),
+            },
+        ],
+        crs=context.crs,
+    )
+    gpd.GeoDataFrame(
+        pd.concat([context, additions], ignore_index=True),
+        geometry="geometry",
+        crs=context.crs,
+    ).to_file(context_path, driver="GeoJSON")
+    config = CouncilConfig.from_yaml(fixture / "council.yaml")
+    snapshot(config)
+
+    result = compile(config)
+    accounting = json.loads(result.artifacts["asset_accounting"].read_text())
+    records_by_source = {
+        item["source_id"]: record
+        for record in accounting["records"]
+        for item in record["source_provenance"]
+        if item.get("source_id") in {
+            "continuity-permissive",
+            "cycling-access-designated",
+        }
+    }
+
+    assert (
+        records_by_source["continuity-permissive"]["intervention_state"]
+        == "upgrade-required"
+    )
+    assert (
+        records_by_source["cycling-access-designated"]["intervention_state"]
+        == "existing-provision"
+    )
 
 
 def test_public_feature_reference_derives_one_geometry_free_feature_from_real_public_geojson(

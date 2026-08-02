@@ -18,6 +18,7 @@ from playwright.sync_api import Page, sync_playwright
 from satn.constants import DISCLAIMER
 from satn.deployment import build_area_deployment
 from satn.deployment_provenance import generate_lock
+from satn.filesystem_safety import publication_destination_authority
 from satn.models import CouncilConfig
 from satn.pipeline import compile
 from satn.sources import snapshot
@@ -241,9 +242,19 @@ def test_area_deployment_batches_deferred_shards_before_updating_map_source(
     run.setdefault("compilation_diagnostics", {})
     run_path.write_text(json.dumps(run), encoding="utf-8")
     deployment = tmp_path / "deployment"
-    build_area_deployment(definition, deployment, bootstrap=True)
+    deployment_authority = publication_destination_authority(workspace_root=tmp_path)
+    build_area_deployment(
+        definition,
+        deployment,
+        bootstrap=True,
+        publication_authority=deployment_authority,
+    )
     generate_lock(definition, deployment=deployment)
-    deployment = build_area_deployment(definition, deployment)
+    deployment = build_area_deployment(
+        definition,
+        deployment,
+        publication_authority=deployment_authority,
+    )
     template = (PROJECT / "src" / "satn" / "assets" / "review-map.html").read_text()
     replacements = {
         "__TITLE__": definition.publication.title,
@@ -321,9 +332,19 @@ def test_area_deployment_progressive_loading_recovers_without_losing_data(
     run.setdefault("compilation_diagnostics", {})
     run_path.write_text(json.dumps(run), encoding="utf-8")
     deployment = tmp_path / "deployment"
-    build_area_deployment(definition, deployment, bootstrap=True)
+    deployment_authority = publication_destination_authority(workspace_root=tmp_path)
+    build_area_deployment(
+        definition,
+        deployment,
+        bootstrap=True,
+        publication_authority=deployment_authority,
+    )
     generate_lock(definition, deployment=deployment)
-    deployment = build_area_deployment(definition, deployment)
+    deployment = build_area_deployment(
+        definition,
+        deployment,
+        publication_authority=deployment_authority,
+    )
     template = (PROJECT / "src" / "satn" / "assets" / "review-map.html").read_text()
     replacements = {
         "__TITLE__": definition.publication.title,
@@ -598,5 +619,9 @@ def test_area_deployment_progressive_loading_recovers_without_losing_data(
             "document.documentElement.dataset.mapReady === 'true'",
             timeout=BROWSER_TIMEOUT_MS,
         )
-        assert page.locator("#layer-authority-boundaries").is_checked(timeout=BROWSER_TIMEOUT_MS)
+        assert page.locator("#layer-strategic-network").is_checked(timeout=BROWSER_TIMEOUT_MS)
+        assert page.locator("#layer-places").is_checked(timeout=BROWSER_TIMEOUT_MS)
+        assert not page.locator("#layer-authority-boundaries").is_checked(
+            timeout=BROWSER_TIMEOUT_MS
+        )
         context.set_offline(False)

@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from collections.abc import Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from itertools import combinations
 from numbers import Number
@@ -17,6 +20,7 @@ import pandas as pd
 from shapely.geometry import MultiPoint
 
 from satn.agents import AgentDecisionResolver, AgentRuntimeSource, CompilationGate
+from satn.asset_accounting import build_asset_accounting
 from satn.backbone import (
     GAP_COLUMNS,
     _assemble_backbone_outward,
@@ -39,6 +43,7 @@ from satn.evidence import (
 )
 from satn.heartbeat import StageHeartbeat
 from satn.identifiers import stable_id as _stable_id
+from satn.local_evidence_store import LocalEvidenceStore
 from satn.models import (
     AccessPointStatus,
     AccessServiceStatus,
@@ -52,11 +57,29 @@ from satn.models import (
     TrafficLight,
     UrbanClassificationStatus,
 )
+from satn.parallel_reduction import PreloadedOfficerDecision
+from satn.psa_criteria_assembly import (
+    CriteriaAssemblyInput,
+    assemble_prepared_candidate_criteria,
+)
+from satn.psa_evidence_loaders import (
+    GovernedEvidenceLoadError,
+    load_education_access_evidence,
+    load_population_reach_evidence,
+)
 from satn.reference_application import (
     ReferenceApplicationPlan,
     ReferenceSATNPublicationRecord,
 )
+from satn.reviewable_network import (
+    ReviewableNetwork,
+    compile_reviewable_network,
+    reviewable_network_for_optional_context_unavailable,
+    terminal_reviewable_network_for_governed_error,
+    terminal_reviewable_network_for_governed_evidence,
+)
 from satn.routing import RoadGraph
+from satn.scenario_compilation import PreparedScenarioCompilationInput
 from satn.school_street import assess_school_street_candidates
 from satn.settlement import (
     assess_community_urban_eligibility,
@@ -92,6 +115,56 @@ if TYPE_CHECKING:
     from satn.strategic_reference_publication import StrategicReferencePublicationRecord
 
 URBAN_A_ROAD_SOURCE_ALIGNMENT_TOLERANCE_M = 100.0
+
+
+@dataclass(frozen=True)
+class _GovernedInputBinding:
+    """Pipeline-owned inputs scoped to one public compiler invocation."""
+
+    officer_decisions: tuple[PreloadedOfficerDecision, ...]
+    evidence_store: LocalEvidenceStore | None
+    evidence_state_fingerprint: str | None
+
+
+_GOVERNED_INPUT_BINDING: ContextVar[_GovernedInputBinding | None] = ContextVar(
+    "satn_compiler_governed_input_binding",
+    default=None,
+)
+
+
+@contextmanager
+def governed_input_binding(
+    *,
+    officer_decisions: tuple[PreloadedOfficerDecision, ...] = (),
+    evidence_store: LocalEvidenceStore | None = None,
+    evidence_state_fingerprint: str | None = None,
+):
+    """Bind pipeline-only inputs for one public ``compile_network`` call.
+
+    Context-local state keeps the public seven-parameter API stable while
+    ensuring nested or concurrent compilations cannot leak officer or evidence
+    bindings into one another.
+    """
+
+    if (evidence_store is None) != (evidence_state_fingerprint is None):
+        raise ValueError("evidence_store and evidence_state_fingerprint must be supplied together")
+    if evidence_store is not None:
+        if not isinstance(evidence_store, LocalEvidenceStore):
+            raise TypeError("evidence_store must be a LocalEvidenceStore")
+        if re.fullmatch(r"[0-9a-f]{64}", evidence_state_fingerprint or "") is None:
+            raise ValueError("evidence_state_fingerprint must be a full lowercase SHA-256")
+        evidence_store.resolve_coverage(state_fingerprint=evidence_state_fingerprint)
+    token = _GOVERNED_INPUT_BINDING.set(
+        _GovernedInputBinding(
+            officer_decisions=tuple(officer_decisions),
+            evidence_store=evidence_store,
+            evidence_state_fingerprint=evidence_state_fingerprint,
+        )
+    )
+    try:
+        yield
+    finally:
+        _GOVERNED_INPUT_BINDING.reset(token)
 
 
 @dataclass
@@ -132,10 +205,13 @@ class CompiledNetwork:
     human_intervention_requests: list[HumanInterventionRequest]
     compilation_diagnostics: dict[str, object]
     compilation_input_fingerprint: str = ""
+    asset_accounting: dict[str, object] = field(default_factory=dict)
     governed_input_fingerprint: str = ""
     snapshot_manifest_sha256: str = ""
     area_definition_sha256: str = ""
     compilation_dependency_manifest: dict[str, object] = field(default_factory=dict)
+    evidence_state_fingerprint: str | None = None
+    traffic_match_policy_fingerprint: str | None = None
     decision_contract: str = "agent-decision-menu/v1"
     population_display_sections: gpd.GeoDataFrame = field(
         default_factory=lambda: gpd.GeoDataFrame(
@@ -189,6 +265,9 @@ class CompiledNetwork:
     # Strategic publication provenance is intentionally a sibling of the
     # replay frames.  It is absent from ordinary and community paths.
     strategic_reference_publication: StrategicReferencePublicationRecord | None = None
+    # Immutable candidate-selection seam. It is absent for legacy compilations
+    # so their route and publication contracts remain unchanged.
+    reviewable_network: ReviewableNetwork | None = None
 
     @property
     def connection_count(self) -> int:
@@ -205,6 +284,11 @@ class CompiledNetwork:
 
     @property
     def status(self) -> str:
+        if self.reviewable_network is not None and (
+            self.reviewable_network.status.value != "complete"
+            or self.reviewable_network.network_gaps
+        ):
+            return "reviewable"
         has_red = any(
             status == TrafficLight.RED
             for section in self.criteria.values()
@@ -223,8 +307,15 @@ def compile_network(
     heartbeat: StageHeartbeat | None = None,
     cross_spine_progress: CrossSpineProgress | None = None,
 ) -> CompiledNetwork:
-    """Compile the ordinary current-input network with no Reference replay input."""
+    """Compile the ordinary current-input network with no Reference replay input.
 
+    This is the stable public compiler contract.  Pipeline-only governed
+    evidence and officer-decision bindings live behind
+    :func:`governed_input_binding` so adding orchestration state
+    does not change the public callable surface.
+    """
+
+    binding = _GOVERNED_INPUT_BINDING.get()
     return _compile_network(
         config,
         source,
@@ -233,6 +324,15 @@ def compile_network(
         decision_resolver=decision_resolver,
         heartbeat=heartbeat,
         cross_spine_progress=cross_spine_progress,
+        **(
+            {
+                "officer_decisions": binding.officer_decisions,
+                "evidence_store": binding.evidence_store,
+                "evidence_state_fingerprint": binding.evidence_state_fingerprint,
+            }
+            if binding is not None
+            else {}
+        ),
     )
 
 
@@ -297,9 +397,13 @@ def _compile_network(
     cross_spine_progress: CrossSpineProgress | None = None,
     reference_application_plan: ReferenceApplicationPlan | None = None,
     validated_strategic_replay: ValidatedStrategicReferenceReplay | None = None,
+    officer_decisions: tuple[PreloadedOfficerDecision, ...] = (),
+    evidence_store: LocalEvidenceStore | None = None,
+    evidence_state_fingerprint: str | None = None,
 ) -> CompiledNetwork:
     places = source["places"].copy().sort_values("place_id").reset_index(drop=True)
     context = source.get("context", empty_context(source["network"].crs)).copy()
+    asset_context = context.copy()
     official_road_classification = source.get("official_road_classification")
     context, road_classification_disagreements = govern_a_road_context(
         context,
@@ -549,6 +653,8 @@ def _compile_network(
             official_road_classification=official_road_classification,
             source_config=config.source,
             config_directory=config.config_path.parent,
+            evidence_store=evidence_store,
+            evidence_state_fingerprint=evidence_state_fingerprint,
         )
         # Direct-to-spine rows retain their existing out-of-scope Spine Access
         # disposition.  The sibling module derives finite strategic units from
@@ -824,6 +930,12 @@ def _compile_network(
             ),
         },
         spine_access_candidate_preparation=spine_access_candidate_preparation,
+        evidence_state_fingerprint=evidence_state_fingerprint,
+        traffic_match_policy_fingerprint=(
+            spine_access_candidate_preparation.traffic_match_policy_fingerprint
+            if spine_access_candidate_preparation is not None
+            else None
+        ),
         strategic_corridor_preparation=strategic_corridor_preparation,
         network_selection_preparation=network_selection_preparation,
         population_display_sections=(
@@ -873,6 +985,13 @@ def _compile_network(
             else {}
         ),
     )
+    compiled.reviewable_network = _compile_reviewable_network(
+        config,
+        source,
+        compiled,
+        officer_decisions=officer_decisions,
+    )
+    compiled.asset_accounting = build_asset_accounting(asset_context, source["network"], compiled)
     # ``compile_network`` is also a supported public entry point.  Its output
     # must therefore carry the same exact decision wire contract as the
     # pipeline path, rather than relying on dataclass defaults which would
@@ -890,6 +1009,159 @@ def _compile_network(
         }
     ).model_dump(mode="json")["responses"]
     return compiled
+
+
+def _compile_reviewable_network(
+    config: AreaConfig,
+    source: dict[str, gpd.GeoDataFrame],
+    compiled: CompiledNetwork,
+    *,
+    officer_decisions: tuple[PreloadedOfficerDecision, ...] = (),
+) -> ReviewableNetwork | None:
+    """Derive the immutable reviewable seam from the actual public preparation.
+
+    The ordinary network geometry is already complete at this point.  This
+    adapter only reloads the exact governed evidence declarations used by
+    candidate preparation, assembles criterion packets, and hands those
+    packets to the reviewable wrapper.  It never alters a compiled frame.
+    """
+
+    preparation = compiled.spine_access_candidate_preparation
+    if config.compilation.network_selection is None or preparation is None:
+        return None
+
+    # The reviewable seam is optional for callers that provide only the
+    # ordinary network inputs (notably the compiler-only/reference fixtures).
+    # Do not turn an absent or malformed boundary into synthetic evidence, and
+    # do not let the criteria adapter raise while the authoritative network has
+    # already compiled successfully.  The ordinary compiled network remains a
+    # truthful compatibility fallback; a later governed run with a complete
+    # Area Definition can opt into the reviewable seam.
+    area_definition = source.get("boundary")
+    if not _reviewable_area_definition_available(area_definition):
+        return reviewable_network_for_optional_context_unavailable(
+            preparation,
+            officer_decisions,
+            missing_inputs=("area-definition",),
+        )
+    # Candidate preparation can run with no optional PSA evidence declarations
+    # (for example, a legacy network-selection profile).  Keep that ordinary
+    # compile path publishable; reviewable criteria are only attempted once
+    # both governed evidence declarations are present.
+    if (
+        config.source.population_reach_evidence is None
+        or config.source.school_register_evidence is None
+    ):
+        missing_inputs: list[str] = []
+        if config.source.population_reach_evidence is None:
+            missing_inputs.append("population-reach-evidence")
+        if config.source.school_register_evidence is None:
+            missing_inputs.append("education-access-evidence")
+        return reviewable_network_for_optional_context_unavailable(
+            preparation,
+            officer_decisions,
+            missing_inputs=missing_inputs,
+        )
+
+    try:
+        population_config = config.source.population_reach_evidence
+        population_evidence = (
+            load_population_reach_evidence(
+                population_config,
+                base_directory=config.config_path.parent,
+                pwc_outside_tolerance_m=0,
+            )
+            if population_config is not None
+            else None
+        )
+        school_config = config.source.school_register_evidence
+        education_evidence = None
+        if school_config is not None:
+            if config.source.network_selection_as_at is None:
+                raise GovernedEvidenceLoadError(
+                    "network selection education evidence requires an as-at date"
+                )
+            if config.source.network_selection_school_register_max_age_days is None:
+                raise GovernedEvidenceLoadError(
+                    "network selection education evidence requires a freshness bound"
+                )
+            education_evidence = load_education_access_evidence(
+                school_config,
+                config.source.strategic_education_destination_admissions,
+                base_directory=config.config_path.parent,
+                as_at=config.source.network_selection_as_at,
+                school_register_max_age_days=(
+                    config.source.network_selection_school_register_max_age_days
+                ),
+                strategic_admissions_max_age_days=(
+                    config.source.network_selection_strategic_admissions_max_age_days
+                ),
+            )
+    except GovernedEvidenceLoadError as error:
+        return terminal_reviewable_network_for_governed_evidence(
+            preparation,
+            officer_decisions,
+            detail=str(error),
+        )
+
+    try:
+        assembly = assemble_prepared_candidate_criteria(
+            CriteriaAssemblyInput(
+                preparation=preparation,
+                population_evidence=population_evidence,
+                education_evidence=education_evidence,
+                area_definition=area_definition,
+                # Option-specific education evidence is optional at this
+                # boundary; the governed adapter preserves unknown findings.
+                option_education_evidence={},
+            )
+        )
+    except ValueError as error:
+        return terminal_reviewable_network_for_governed_error(
+            preparation,
+            officer_decisions,
+            error=error,
+        )
+    area_fingerprint = compiled.area_definition_sha256
+    if not area_fingerprint:
+        area_fingerprint = hashlib.sha256(config.config_path.read_bytes()).hexdigest()
+    request = PreparedScenarioCompilationInput(
+        area_fingerprint=area_fingerprint,
+        criteria=assembly.packets,
+        review_run_instance_id=f"public-compile-{config.area_id}",
+    )
+    return compile_reviewable_network(
+        preparation,
+        request,
+        officer_decisions=officer_decisions,
+    )
+
+
+def _reviewable_area_definition_available(
+    area_definition: object,
+) -> bool:
+    """Return whether the optional reviewable boundary is safely bindable.
+
+    Criteria assembly requires a non-empty CRS-bearing polygon frame.  The
+    ordinary compiler accepts synthetic/reference sources without that frame,
+    so the reviewable adapter must decline them rather than inventing geometry
+    or raising from an optional context.
+    """
+
+    if not isinstance(area_definition, gpd.GeoDataFrame):
+        return False
+    if area_definition.empty or area_definition.crs is None:
+        return False
+    try:
+        geometries = tuple(area_definition.geometry)
+    except Exception:
+        return False
+    return all(
+        geometry is not None
+        and not geometry.is_empty
+        and geometry.geom_type in {"Polygon", "MultiPolygon"}
+        for geometry in geometries
+    )
 
 
 def _cross_spine_progress_observer(

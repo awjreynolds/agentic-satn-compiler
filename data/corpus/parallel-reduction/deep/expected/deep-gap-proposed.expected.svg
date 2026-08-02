@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="222" viewBox="0 0 1200 222" role="img" aria-labelledby="title description">
+<title id="title">Parallel reduction acceptance expectation</title>
+<desc id="description">Selected routes are coloured; retained alternatives are grey; officer and compiler divergences are yellow.</desc>
+<rect width="1200" height="100%" fill="#f7f5ef"/>
+<text x="32" y="42" font-family="sans-serif" font-size="24" font-weight="700">Parallel reduction acceptance expectation</text>
+<text x="32" y="70" font-family="sans-serif" font-size="14" fill="#444">One synthetic compile | coloured selection | grey alternatives | yellow divergence</text>
+<text x="32" y="96" font-family="sans-serif" font-size="13" fill="#444">2 groups | 0 logical sections | 0 options | 1 gaps | 0 crossing warnings</text>
+</svg>

@@ -9,6 +9,7 @@ from types import MappingProxyType
 from typing import Literal
 
 import pytest
+from pydantic import ValidationError
 from test_alignment_selection import (
     accepted_envelope,
     candidate,
@@ -19,6 +20,7 @@ from test_alignment_selection import (
 )
 
 from satn.alignment_selection import (
+    AlignmentCandidateInput,
     AssessmentKind,
     CandidateCriteria,
     CandidateGenerationGapReason,
@@ -32,11 +34,13 @@ from satn.alignment_selection import (
     ScenarioDecisionRecord,
     admit_candidate_set,
     review_frontier_fingerprint,
+    traffic_diagnostics_for_candidate,
 )
 from satn.education_access import (
     assess_education_access,
     governed_education_assessment_fingerprint,
 )
+from satn.network_selection import NetworkSelectionProfile
 from satn.scenario_compilation import (
     PreparedCandidateCriteria,
     PreparedCriteriaLineage,
@@ -50,6 +54,11 @@ from satn.spine_access_candidate_preparation import (
     PreparedConnectionRosterRecord,
     PreparedSpineAccessConnection,
     SpineAccessCandidatePreparationResult,
+)
+from satn.traffic_evidence import (
+    ProtectedSpaceEvidence,
+    TrafficFreshnessState,
+    TrafficObservation,
 )
 
 AREA = hashlib.sha256(b"prepared-scenario-area").hexdigest()
@@ -182,6 +191,232 @@ def connection(
         community_id=endpoints[0],
         place_id=endpoints[0],
         parent_place_id=endpoints[1],
+        candidate_generation_rationales=(),
+        candidate_records=(),
+    )
+
+
+def reuse_first_profile(
+    *, detour_limit: float = 1.5, traffic_profile: dict[str, object] | None = None
+) -> NetworkSelectionProfile:
+    payload: dict[str, object] = {
+            "contract": "satn-network-selection-profile/vNext",
+            "profile_id": "prepared-reuse-first",
+            "version": "2026-08-02",
+            "candidate_class_order": [
+                "existing-cycle-provision",
+                "upgradeable-off-carriageway",
+                "low-traffic-non-a-road",
+                "a-road-major-protected-infrastructure",
+            ],
+            "intervention_state_order": [
+                "existing-provision",
+                "upgrade-required",
+                "proposed-new-link",
+            ],
+            "comparator_order": [
+                "mandatory-obligation-service",
+                "reuse-class",
+                "intervention-state",
+                "route-detour",
+                "route-effort",
+                "transition-fragmentation-burden",
+                "governed-constraints",
+                "traffic-challenge",
+                "stable-candidate-id",
+            ],
+            "material_difference_rules": [
+                {"dimension": "route-effort", "threshold": 100, "unit": "m"}
+            ],
+            "displacement_rules": [
+                {
+                    "reason_code": "detour-limit-exceeded",
+                    "predicate": "detour-ratio-exceeds-threshold",
+                    "threshold": detour_limit,
+                    "unit": "ratio",
+                    "evidence_requirements": ["route-length-evidence"],
+                }
+            ],
+            "unknown_value_policy": "retain-and-request-evidence",
+            "deterministic_tie_break": "stable-candidate-id",
+            "agent_call_bound": 0,
+            "maximum_options_per_candidate_set": 12,
+            "maximum_hybrid_candidates_per_set": 2,
+            "maximum_transitions_per_candidate": 2,
+    }
+    if traffic_profile is not None:
+        payload["traffic_profile"] = traffic_profile
+    return NetworkSelectionProfile.model_validate(payload)
+
+
+def reuse_candidate(
+    label: str,
+    *,
+    reuse_class: str,
+    intervention_state: str,
+    alignment_basis: str,
+    route_length_m: float,
+    total_absolute_elevation_change_m: float | None = 20.0,
+) -> AlignmentCandidateInput:
+    base = candidate(
+        label,
+        role="community-access",
+        endpoints=("community-reuse", "parent-community-reuse"),
+        places=("community-reuse", "parent-community-reuse"),
+        source="other-routable",
+        directness=route_length_m,
+    )
+    return AlignmentCandidateInput.model_validate(
+        base.model_dump(mode="python", exclude={"candidate_id"})
+        | {
+            "reuse_class": reuse_class,
+            "intervention_state": intervention_state,
+            "alignment_bases": [alignment_basis],
+            "primary_alignment_basis": alignment_basis,
+            "total_absolute_elevation_change_m": total_absolute_elevation_change_m,
+            "transition_count": 0,
+            "fragmentation_count": 0,
+            "governed_evidence_ids": [f"evidence-{label}"],
+        }
+    )
+
+
+def high_traffic_on_carriageway_candidate(
+    *,
+    protected_state: str = "absent",
+    include_observation: bool = True,
+    observation_year: int = 2025,
+    reported_freshness: TrafficFreshnessState = TrafficFreshnessState.FRESH,
+    estimation_method: str = "Counted",
+) -> AlignmentCandidateInput:
+    base = reuse_candidate(
+        "traffic-high",
+        reuse_class="a-road-major-protected-infrastructure",
+        intervention_state="upgrade-required",
+        alignment_basis="a-road",
+        route_length_m=1_000.0,
+    )
+    annotations: dict[str, object] = {
+        "traffic_exposure": "on-carriageway",
+        "protected_space_evidence": ProtectedSpaceEvidence(
+            state=protected_state,
+            evidence_ids=("protected-evidence-123",),
+            provenance_ids=("protected-provenance-123",),
+        ),
+    }
+    if include_observation:
+        annotations["traffic_observation"] = TrafficObservation(
+                observation_id="traffic-observation-traffic-high",
+                source_export_fingerprint=hashlib.sha256(b"dft-export").hexdigest(),
+                source_layer="aadf",
+                count_point_id="cp-123",
+                observation_year=observation_year,
+                all_motor_vehicles=12_000,
+                estimation_method=estimation_method,
+                freshness_state=reported_freshness,
+                match_state="matched",
+                coverage_status="sampled",
+                row_fingerprint=hashlib.sha256(b"dft-row").hexdigest(),
+                evidence_ids=("traffic-evidence-123",),
+                provenance_ids=("traffic-provenance-123",),
+            )
+    return AlignmentCandidateInput.model_validate(
+        base.model_dump(mode="python", exclude={"candidate_id"}) | annotations
+    )
+
+
+def test_legacy_candidate_without_traffic_annotations_keeps_exact_identity_and_dump_shape() -> None:
+    legacy = candidate("legacy-fingerprint")
+
+    assert legacy.candidate_id == "candidate-6d43843933834b51bea0"
+    payload = legacy.model_dump(mode="json")
+    assert not {
+        "reuse_class",
+        "intervention_state",
+        "alignment_bases",
+        "primary_alignment_basis",
+        "total_absolute_elevation_change_m",
+        "transition_count",
+        "fragmentation_count",
+        "governed_evidence_ids",
+        "traffic_observation",
+        "protected_space_evidence",
+        "traffic_exposure",
+    } & payload.keys()
+
+
+def test_on_carriageway_is_not_an_alignment_basis() -> None:
+    with pytest.raises(ValidationError, match="Alignment Basis"):
+        candidate_value = candidate("invalid-basis")
+        AlignmentCandidateInput.model_validate(
+            candidate_value.model_dump(mode="python", exclude={"candidate_id"})
+            | {
+                "alignment_bases": ("on-carriageway",),
+                "primary_alignment_basis": "on-carriageway",
+                "traffic_exposure": "on-carriageway",
+            }
+        )
+
+
+def test_alignment_basis_uses_the_closed_governed_vocabulary() -> None:
+    vocabulary = (
+        "current-ncn",
+        "ncn-link",
+        "greenway",
+        "cycle-track",
+        "shared-use-path",
+        "reclassified-ncn",
+        "public-bridleway",
+        "restricted-byway",
+        "public-footpath",
+        "byway-open-to-all-traffic",
+        "prow-class-unknown",
+        "former-railway",
+        "local-connector",
+        "a-road",
+        "b-road",
+        "classified-unnumbered-road",
+        "unclassified-road",
+        "proposed-new-corridor",
+    )
+    for basis in vocabulary:
+        value = candidate(f"basis-{basis}")
+        AlignmentCandidateInput.model_validate(
+            value.model_dump(mode="python", exclude={"candidate_id"})
+            | {"alignment_bases": (basis,), "primary_alignment_basis": basis}
+        )
+    with pytest.raises(ValidationError, match="Alignment Basis"):
+        value = candidate("basis-invented")
+        AlignmentCandidateInput.model_validate(
+            value.model_dump(mode="python", exclude={"candidate_id"})
+            | {
+                "alignment_bases": ("invented-corridor",),
+                "primary_alignment_basis": "invented-corridor",
+            }
+        )
+
+
+def reuse_connection(
+    *candidates: AlignmentCandidateInput,
+    selection_profile: NetworkSelectionProfile,
+) -> PreparedSpineAccessConnection:
+    candidate_set_value = candidate_set(
+        *candidates,
+        selection_profile=selection_profile,
+        places=("community-reuse", "parent-community-reuse"),
+    )
+    return PreparedSpineAccessConnection(
+        access_connection_id="prepared-community-access-reuse",
+        candidate_set=candidate_set_value,
+        root_spine_id="root-spine",
+        strategic_source_id="source",
+        strategic_evidence_id="evidence",
+        strategic_provenance={},
+        obligation_kind="community",
+        parent_role="spine-access-connection",
+        community_id="community-reuse",
+        place_id="community-reuse",
+        parent_place_id="parent-community-reuse",
         candidate_generation_rationales=(),
         candidate_records=(),
     )
@@ -424,6 +659,869 @@ def test_profile_disabled_is_a_no_op_artifact() -> None:
     assert result.scenario is None
     assert result.reference_satn_created is False
     assert result.can_mutate_authoritative_network is False
+
+
+def test_reuse_first_scenario_prefers_existing_cycle_provision_to_shorter_a_road() -> None:
+    profile_value = reuse_first_profile()
+    cycleway = reuse_candidate(
+        "reuse-cycleway",
+        reuse_class="existing-cycle-provision",
+        intervention_state="existing-provision",
+        alignment_basis="cycle-track",
+        route_length_m=1_200.0,
+    )
+    a_road = reuse_candidate(
+        "reuse-a-road",
+        reuse_class="a-road-major-protected-infrastructure",
+        intervention_state="upgrade-required",
+        alignment_basis="a-road",
+        route_length_m=1_000.0,
+    )
+    prepared = reuse_connection(
+        cycleway,
+        a_road,
+        selection_profile=profile_value,
+    )
+    source_preparation = preparation(prepared)
+    result = compile_prepared_scenario(
+        source_preparation,
+        request(
+            (
+                packet(
+                    prepared,
+                    bound_criteria(prepared),
+                    source_preparation=source_preparation,
+                ),
+            )
+        ),
+    )
+
+    assert result.status == "compiled"
+    assert result.scenario is not None
+    assert result.scenario.selections[0].selected_candidate_id == cycleway.candidate_id
+
+
+def test_reuse_first_scenario_records_configured_detour_displacement() -> None:
+    profile_value = reuse_first_profile(detour_limit=1.5)
+    cycleway = reuse_candidate(
+        "detour-cycleway",
+        reuse_class="existing-cycle-provision",
+        intervention_state="existing-provision",
+        alignment_basis="cycle-track",
+        route_length_m=1_600.0,
+    )
+    a_road = reuse_candidate(
+        "detour-a-road",
+        reuse_class="a-road-major-protected-infrastructure",
+        intervention_state="upgrade-required",
+        alignment_basis="a-road",
+        route_length_m=1_000.0,
+    )
+    prepared = reuse_connection(
+        cycleway,
+        a_road,
+        selection_profile=profile_value,
+    )
+    source_preparation = preparation(prepared)
+    result = compile_prepared_scenario(
+        source_preparation,
+        request(
+            (
+                packet(
+                    prepared,
+                    bound_criteria(prepared),
+                    source_preparation=source_preparation,
+                ),
+            )
+        ),
+    )
+
+    assert result.scenario is not None
+    selection = result.scenario.selections[0]
+    assert selection.selected_candidate_id == a_road.candidate_id
+    assert len(selection.material_displacements) == 1
+    displacement = selection.material_displacements[0]
+    assert displacement.reason_code == "detour-limit-exceeded"
+    assert displacement.selected_candidate_id == a_road.candidate_id
+    assert displacement.displaced_candidate_id == cycleway.candidate_id
+    assert displacement.observed_values == {
+        "displaced_route_length_m": 1_600.0,
+        "selected_route_length_m": 1_000.0,
+        "detour_ratio": 1.6,
+    }
+    assert displacement.threshold == 1.5
+    assert displacement.unit == "ratio"
+    assert displacement.evidence_ids == (
+        "evidence-detour-a-road",
+        "evidence-detour-cycleway",
+    )
+    assert displacement.profile_fingerprint == profile_value.fingerprint
+    assert displacement.decision_provenance == "deterministic-profile"
+
+
+def test_high_traffic_on_carriageway_without_protected_space_is_a_non_veto_diagnostic() -> None:
+    profile_value = reuse_first_profile(
+        traffic_profile={
+            "profile_id": "prepared-dft-traffic",
+            "version": "2026-08-02",
+            "metric": "all_motor_vehicles",
+            "thresholds": [
+                {"id": "low", "upper_vehicles_per_day": 1_000},
+                {"id": "high", "upper_vehicles_per_day": None},
+            ],
+            "high_traffic_challenge_band": "high",
+            "max_observation_age_years": 3,
+            "as_at_year": 2026,
+            "stale_value_policy": "retain-and-diagnose",
+            "missing_policy": "explicit-unknown",
+        }
+    )
+    candidate_value = high_traffic_on_carriageway_candidate()
+    competing = reuse_candidate(
+        "traffic-competing-existing",
+        reuse_class="existing-cycle-provision",
+        intervention_state="existing-provision",
+        alignment_basis="cycle-track",
+        route_length_m=1_200.0,
+    )
+    prepared = reuse_connection(
+        competing,
+        candidate_value,
+        selection_profile=profile_value,
+    )
+    source_preparation = preparation(prepared)
+    result = compile_prepared_scenario(
+        source_preparation,
+        request(
+            (
+                packet(
+                    prepared,
+                    bound_criteria(prepared),
+                    source_preparation=source_preparation,
+                ),
+            )
+        ),
+    )
+
+    assert result.scenario is not None
+    selected_with_traffic = result.scenario.selections[0].selected_candidate_id
+    assert selected_with_traffic == competing.candidate_id
+    assert candidate_value.candidate_id in {
+        item.candidate_id for item in result.scenario.candidate_sets[0].admitted_candidates
+    }
+    diagnostics = result.diagnostics["traffic_diagnostics"]
+    assert isinstance(diagnostics, tuple)
+    challenge = next(
+        item
+        for item in diagnostics
+        if item["diagnostic_id"] == "traffic-high-on-carriageway-without-protected-space"
+    )
+    assert challenge["traffic_observation_id"] == "traffic-observation-traffic-high"
+    assert challenge["traffic_profile_fingerprint"] == profile_value.traffic_profile.fingerprint
+    assert challenge["evidence_ids"] == (
+        "protected-evidence-123",
+        "traffic-evidence-123",
+    )
+    assert challenge["provenance_ids"] == (
+        "protected-provenance-123",
+        "traffic-provenance-123",
+    )
+
+    baseline_candidate = reuse_candidate(
+        "traffic-high",
+        reuse_class="a-road-major-protected-infrastructure",
+        intervention_state="upgrade-required",
+        alignment_basis="a-road",
+        route_length_m=1_000.0,
+    )
+    baseline_prepared = reuse_connection(
+        competing,
+        baseline_candidate,
+        selection_profile=profile_value,
+    )
+    baseline_source_preparation = preparation(baseline_prepared)
+    baseline = compile_prepared_scenario(
+        baseline_source_preparation,
+        request(
+            (
+                packet(
+                    baseline_prepared,
+                    bound_criteria(baseline_prepared),
+                    source_preparation=baseline_source_preparation,
+                ),
+            )
+        ),
+    )
+    assert baseline.scenario is not None
+    assert baseline.scenario.selections[0].selected_candidate_id == selected_with_traffic
+
+
+def test_configured_on_carriageway_without_observation_emits_explicit_unknown_traffic() -> None:
+    profile_value = reuse_first_profile(
+        traffic_profile={
+            "profile_id": "prepared-dft-traffic-missing-observation",
+            "version": "2026-08-02",
+            "metric": "all_motor_vehicles",
+            "thresholds": [
+                {"id": "high", "upper_vehicles_per_day": None},
+            ],
+            "high_traffic_challenge_band": "high",
+            "max_observation_age_years": 3,
+            "as_at_year": 2026,
+            "stale_value_policy": "retain-and-diagnose",
+            "missing_policy": "explicit-unknown",
+        }
+    )
+    candidate_value = high_traffic_on_carriageway_candidate(include_observation=False)
+    prepared = reuse_connection(candidate_value, selection_profile=profile_value)
+    source_preparation = preparation(prepared)
+    result = compile_prepared_scenario(
+        source_preparation,
+        request(
+            (
+                packet(
+                    prepared,
+                    bound_criteria(prepared),
+                    source_preparation=source_preparation,
+                ),
+            )
+        ),
+    )
+
+    assert result.scenario is not None
+    assert result.scenario.selections[0].selected_candidate_id == candidate_value.candidate_id
+    diagnostics = result.diagnostics["traffic_diagnostics"]
+    assert diagnostics[0]["diagnostic_id"] == "traffic-unknown"
+    assert diagnostics[0]["traffic_status"] == "unknown"
+    assert "all_motor_vehicles" not in diagnostics[0]
+    assert 0 not in diagnostics[0].values()
+
+
+def test_traffic_freshness_is_derived_from_profile_as_at_and_observation_year() -> None:
+    profile_value = reuse_first_profile(
+        traffic_profile={
+            "profile_id": "prepared-dft-traffic-stale",
+            "version": "2026-08-02",
+            "metric": "all_motor_vehicles",
+            "thresholds": [{"id": "high", "upper_vehicles_per_day": None}],
+            "high_traffic_challenge_band": "high",
+            "max_observation_age_years": 3,
+            "as_at_year": 2026,
+            "stale_value_policy": "retain-and-diagnose",
+            "missing_policy": "explicit-unknown",
+        }
+    )
+    candidate_value = high_traffic_on_carriageway_candidate(
+        observation_year=2020,
+        reported_freshness=TrafficFreshnessState.FRESH,
+    )
+    prepared = reuse_connection(candidate_value, selection_profile=profile_value)
+    source_preparation = preparation(prepared)
+    result = compile_prepared_scenario(
+        source_preparation,
+        request(
+            (
+                packet(
+                    prepared,
+                    bound_criteria(prepared),
+                    source_preparation=source_preparation,
+                ),
+            )
+        ),
+    )
+
+    diagnostics = result.diagnostics["traffic_diagnostics"]
+    diagnostic_ids = tuple(item["diagnostic_id"] for item in diagnostics)
+    assert "traffic-stale" in diagnostic_ids
+    assert "traffic-high-on-carriageway-without-protected-space" in diagnostic_ids
+    stale = next(item for item in diagnostics if item["diagnostic_id"] == "traffic-stale")
+    assert stale["freshness_state"] == "stale"
+    assert stale["traffic_observation_id"] == "traffic-observation-traffic-high"
+    assert stale["traffic_profile_fingerprint"] == profile_value.traffic_profile.fingerprint
+    assert stale["evidence_ids"] == (
+        "protected-evidence-123",
+        "traffic-evidence-123",
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("match_state", "ambiguous"),
+        ("match_state", "unmatched"),
+        ("match_state", "unknown"),
+        ("coverage_status", "not_sampled"),
+        ("coverage_status", "unknown"),
+    ],
+)
+def test_unmatched_or_unresolved_traffic_observation_is_explicit_unknown(
+    field: str,
+    value: str,
+) -> None:
+    profile_value = reuse_first_profile(
+        traffic_profile={
+            "profile_id": "prepared-dft-traffic-unresolved",
+            "version": "2026-08-02",
+            "metric": "all_motor_vehicles",
+            "thresholds": [{"id": "high", "upper_vehicles_per_day": None}],
+            "high_traffic_challenge_band": "high",
+            "max_observation_age_years": 3,
+            "as_at_year": 2026,
+            "stale_value_policy": "retain-and-diagnose",
+            "missing_policy": "explicit-unknown",
+        }
+    )
+    base = high_traffic_on_carriageway_candidate()
+    observation = base.traffic_observations[0]
+    unresolved = observation.model_dump(mode="python")
+    unresolved[field] = value
+    candidate_value = AlignmentCandidateInput.model_validate(
+        base.model_dump(mode="python", exclude={"candidate_id", "traffic_observations"})
+        | {"traffic_observations": (TrafficObservation(**unresolved),)}
+    )
+    prepared = reuse_connection(candidate_value, selection_profile=profile_value)
+    source_preparation = preparation(prepared)
+    result = compile_prepared_scenario(
+        source_preparation,
+        request(
+            (
+                packet(
+                    prepared,
+                    bound_criteria(prepared),
+                    source_preparation=source_preparation,
+                ),
+            )
+        ),
+    )
+
+    assert result.scenario is not None
+    diagnostic = result.diagnostics["traffic_diagnostics"][0]
+    assert diagnostic["diagnostic_id"] == "traffic-unknown"
+    assert diagnostic["traffic_status"] == "unknown"
+
+
+def test_conflicting_traffic_observation_roster_is_retained_and_never_averaged() -> None:
+    profile_value = reuse_first_profile(
+        traffic_profile={
+            "profile_id": "prepared-dft-traffic-conflict",
+            "version": "2026-08-02",
+            "metric": "all_motor_vehicles",
+            "thresholds": [{"id": "high", "upper_vehicles_per_day": None}],
+            "high_traffic_challenge_band": "high",
+            "max_observation_age_years": 3,
+            "as_at_year": 2026,
+            "stale_value_policy": "retain-and-diagnose",
+            "missing_policy": "explicit-unknown",
+        }
+    )
+    base = high_traffic_on_carriageway_candidate()
+    first = base.traffic_observation
+    assert first is not None
+    first_payload = first.model_dump(mode="python")
+    first_payload["direction_of_travel"] = "combined"
+    first = TrafficObservation(**first_payload)
+    second_payload = first.model_dump(mode="python")
+    second_payload.update(
+        {
+            "observation_id": "traffic-observation-traffic-conflict",
+            "source_export_fingerprint": hashlib.sha256(b"dft-export-2").hexdigest(),
+            "all_motor_vehicles": 13_000,
+            "row_fingerprint": hashlib.sha256(b"dft-row-2").hexdigest(),
+        }
+    )
+    candidate_value = AlignmentCandidateInput.model_validate(
+        base.model_dump(mode="python", exclude={"candidate_id", "traffic_observation"})
+        | {"traffic_observations": (first, TrafficObservation(**second_payload))}
+    )
+    prepared = reuse_connection(candidate_value, selection_profile=profile_value)
+    source_preparation = preparation(prepared)
+    result = compile_prepared_scenario(
+        source_preparation,
+        request(
+            (
+                packet(
+                    prepared,
+                    bound_criteria(prepared),
+                    source_preparation=source_preparation,
+                ),
+            )
+        ),
+    )
+
+    assert result.scenario is not None
+    assert candidate_value.candidate_id in {
+        item.candidate_id for item in result.scenario.candidate_sets[0].admitted_candidates
+    }
+    conflict = next(
+        item
+        for item in result.diagnostics["traffic_diagnostics"]
+        if item["diagnostic_id"] == "traffic-conflict"
+    )
+    assert conflict["traffic_observation_ids"] == (
+        "traffic-observation-traffic-conflict",
+        "traffic-observation-traffic-high",
+    )
+    assert conflict["source_export_fingerprints"] == tuple(
+        sorted(
+            (
+                hashlib.sha256(b"dft-export").hexdigest(),
+                hashlib.sha256(b"dft-export-2").hexdigest(),
+            )
+        )
+    )
+    assert conflict["all_motor_vehicles"] is None
+    assert conflict["field_differences"] == ("all_motor_vehicles",)
+    assert "traffic-unknown" not in {
+        item["diagnostic_id"] for item in result.diagnostics["traffic_diagnostics"]
+    }
+
+
+def test_distinct_direction_observations_are_retained_without_conflict_or_aggregation() -> None:
+    profile_value = reuse_first_profile(
+        traffic_profile={
+            "profile_id": "prepared-dft-traffic-distinct-directions",
+            "version": "2026-08-02",
+            "metric": "all_motor_vehicles",
+            "thresholds": [{"id": "high", "upper_vehicles_per_day": None}],
+            "high_traffic_challenge_band": "high",
+            "max_observation_age_years": 3,
+            "as_at_year": 2026,
+            "stale_value_policy": "retain-and-diagnose",
+            "missing_policy": "explicit-unknown",
+        }
+    )
+    base = high_traffic_on_carriageway_candidate()
+    first = base.traffic_observation
+    assert first is not None
+    first_payload = first.model_dump(mode="python")
+    first_payload["direction_of_travel"] = "N"
+    second_payload = first.model_dump(mode="python")
+    second_payload.update(
+        {
+            "observation_id": "traffic-observation-traffic-south",
+            "direction_of_travel": "S",
+            "all_motor_vehicles": 13_000,
+            "row_fingerprint": hashlib.sha256(b"dft-row-south").hexdigest(),
+        }
+    )
+    candidate_value = AlignmentCandidateInput.model_validate(
+        base.model_dump(mode="python", exclude={"candidate_id", "traffic_observation"})
+        | {
+            "traffic_observations": (
+                TrafficObservation(**first_payload),
+                TrafficObservation(**second_payload),
+            )
+        }
+    )
+    prepared = reuse_connection(candidate_value, selection_profile=profile_value)
+    source_preparation = preparation(prepared)
+    result = compile_prepared_scenario(
+        source_preparation,
+        request(
+            (
+                packet(
+                    prepared,
+                    bound_criteria(prepared),
+                    source_preparation=source_preparation,
+                ),
+            )
+        ),
+    )
+
+    diagnostics = result.diagnostics["traffic_diagnostics"]
+    assert "traffic-conflict" not in {
+        item["diagnostic_id"] for item in diagnostics
+    }
+    unknown = next(item for item in diagnostics if item["diagnostic_id"] == "traffic-unknown")
+    assert unknown["traffic_status"] == "multiple-observations-no-combined"
+    assert unknown["traffic_observation_ids"] == (
+        "traffic-observation-traffic-high",
+        "traffic-observation-traffic-south",
+    )
+
+
+def test_identical_same_claim_observations_are_deduped_without_conflict() -> None:
+    profile_value = reuse_first_profile(
+        traffic_profile={
+            "profile_id": "prepared-dft-traffic-duplicate",
+            "version": "2026-08-02",
+            "metric": "all_motor_vehicles",
+            "thresholds": [{"id": "high", "upper_vehicles_per_day": None}],
+            "high_traffic_challenge_band": "high",
+            "max_observation_age_years": 3,
+            "as_at_year": 2026,
+            "stale_value_policy": "retain-and-diagnose",
+            "missing_policy": "explicit-unknown",
+        }
+    )
+    base = high_traffic_on_carriageway_candidate()
+    first = base.traffic_observation
+    assert first is not None
+    first = TrafficObservation(
+        **(first.model_dump(mode="python") | {"direction_of_travel": "combined"})
+    )
+    duplicate_payload = first.model_dump(mode="python")
+    duplicate_payload.update(
+        {
+            "observation_id": "traffic-observation-duplicate",
+            "source_export_fingerprint": hashlib.sha256(b"dft-export-duplicate").hexdigest(),
+            "row_fingerprint": hashlib.sha256(b"dft-row-duplicate").hexdigest(),
+            "evidence_ids": ("traffic-evidence-duplicate",),
+            "provenance_ids": ("traffic-provenance-duplicate",),
+        }
+    )
+    candidate_value = AlignmentCandidateInput.model_validate(
+        base.model_dump(mode="python", exclude={"candidate_id", "traffic_observation"})
+        | {
+            "traffic_observations": (first, TrafficObservation(**duplicate_payload))
+        }
+    )
+    prepared = reuse_connection(candidate_value, selection_profile=profile_value)
+    source_preparation = preparation(prepared)
+    result = compile_prepared_scenario(
+        source_preparation,
+        request(
+            (
+                packet(
+                    prepared,
+                    bound_criteria(prepared),
+                    source_preparation=source_preparation,
+                ),
+            )
+        ),
+    )
+
+    diagnostics = result.diagnostics["traffic_diagnostics"]
+    assert "traffic-conflict" not in {
+        item["diagnostic_id"] for item in diagnostics
+    }
+    challenge = next(
+        item
+        for item in diagnostics
+        if item["diagnostic_id"] == "traffic-high-on-carriageway-without-protected-space"
+    )
+    assert challenge["traffic_observation_ids"] == (
+        "traffic-observation-duplicate",
+        "traffic-observation-traffic-high",
+    )
+    assert challenge["provenance_ids"] == (
+        "protected-provenance-123",
+        "traffic-provenance-123",
+        "traffic-provenance-duplicate",
+    )
+
+
+def test_conflicting_directional_claim_does_not_contaminate_distinct_direction() -> None:
+    profile_value = reuse_first_profile(
+        traffic_profile={
+            "profile_id": "prepared-dft-traffic-local-conflict",
+            "version": "2026-08-02",
+            "metric": "all_motor_vehicles",
+            "thresholds": [{"id": "high", "upper_vehicles_per_day": None}],
+            "high_traffic_challenge_band": "high",
+            "max_observation_age_years": 3,
+            "as_at_year": 2026,
+            "stale_value_policy": "retain-and-diagnose",
+            "missing_policy": "explicit-unknown",
+        }
+    )
+    base = high_traffic_on_carriageway_candidate()
+    first = base.traffic_observation
+    assert first is not None
+    conflicting = TrafficObservation(
+        **(
+            first.model_dump(mode="python")
+            | {"direction_of_travel": "N", "match_state": "conflicting"}
+        )
+    )
+    distinct = TrafficObservation(
+        **(
+            first.model_dump(mode="python")
+            | {
+                "observation_id": "traffic-observation-south-usable",
+                "direction_of_travel": "S",
+            }
+        )
+    )
+    candidate_value = AlignmentCandidateInput.model_validate(
+        base.model_dump(mode="python", exclude={"candidate_id", "traffic_observation"})
+        | {"traffic_observations": (conflicting, distinct)}
+    )
+    prepared = reuse_connection(candidate_value, selection_profile=profile_value)
+    source_preparation = preparation(prepared)
+    result = compile_prepared_scenario(
+        source_preparation,
+        request(
+            (
+                packet(
+                    prepared,
+                    bound_criteria(prepared),
+                    source_preparation=source_preparation,
+                ),
+            )
+        ),
+    )
+
+    diagnostics = result.diagnostics["traffic_diagnostics"]
+    diagnostic_ids = {item["diagnostic_id"] for item in diagnostics}
+    assert "traffic-conflict" in diagnostic_ids
+    assert "traffic-high-on-carriageway-without-protected-space" in diagnostic_ids
+
+
+def test_normalized_traffic_observation_retains_direction_dates_link_identity_and_crs() -> None:
+    with pytest.raises(ValidationError, match="direction"):
+        TrafficObservation(
+            observation_id="traffic-direction-missing",
+            source_export_fingerprint=hashlib.sha256(b"dft-export").hexdigest(),
+            source_layer="aadf-by-direction",
+            count_point_id="cp-123",
+            observation_year=2025,
+            all_motor_vehicles=12_000,
+            row_fingerprint=hashlib.sha256(b"dft-row").hexdigest(),
+        )
+    observation = TrafficObservation(
+        observation_id="traffic-direction-combined",
+        source_export_fingerprint=hashlib.sha256(b"dft-export").hexdigest(),
+        source_layer="aadf-by-direction",
+        count_point_id="cp-123",
+        observation_year=2025,
+        count_date="2025-06-01",
+        direction_of_travel="combined",
+        road_name="A36",
+        road_category="PA",
+        road_type="Major",
+        start_junction_road_name="Bathwick Hill",
+        end_junction_road_name="Cleveland Bridge",
+        latitude=51.38,
+        longitude=-2.34,
+        declared_crs="EPSG:4326",
+        geometry_fingerprint=hashlib.sha256(b"cp-geometry").hexdigest(),
+        link_length_km=1.2,
+        all_motor_vehicles=12_000,
+        row_fingerprint=hashlib.sha256(b"dft-row").hexdigest(),
+    )
+    assert observation.direction_of_travel == "combined"
+    assert observation.count_date.isoformat() == "2025-06-01"
+    assert observation.road_name == "A36"
+    assert observation.declared_crs == "EPSG:4326"
+    assert observation.geometry_fingerprint == hashlib.sha256(b"cp-geometry").hexdigest()
+    assert observation.link_length_km == 1.2
+
+
+def test_on_carriageway_traffic_evidence_without_profile_is_explicit_unknown() -> None:
+    profile_value = reuse_first_profile()
+    candidate_value = high_traffic_on_carriageway_candidate()
+    prepared = reuse_connection(candidate_value, selection_profile=profile_value)
+    source_preparation = preparation(prepared)
+    result = compile_prepared_scenario(
+        source_preparation,
+        request(
+            (
+                packet(
+                    prepared,
+                    bound_criteria(prepared),
+                    source_preparation=source_preparation,
+                ),
+            )
+        ),
+    )
+
+    assert result.scenario is not None
+    diagnostics = result.diagnostics["traffic_diagnostics"]
+    assert diagnostics[0]["diagnostic_id"] == "traffic-unknown"
+    assert diagnostics[0]["traffic_status"] == "profile-unavailable"
+
+
+def test_singular_conflicting_traffic_observation_has_typed_roster_without_profile() -> None:
+    profile_value = reuse_first_profile()
+    base = high_traffic_on_carriageway_candidate()
+    observation = base.traffic_observation
+    assert observation is not None
+    conflicting = TrafficObservation(
+        **(observation.model_dump(mode="python") | {"match_state": "conflicting"})
+    )
+    candidate_value = AlignmentCandidateInput.model_validate(
+        base.model_dump(mode="python", exclude={"candidate_id", "traffic_observation"})
+        | {"traffic_observations": (conflicting,)}
+    )
+
+    diagnostics = traffic_diagnostics_for_candidate(
+        candidate_value,
+        profile_value,
+    )
+
+    assert diagnostics[0]["diagnostic_id"] == "traffic-conflict"
+    assert diagnostics[0]["traffic_status"] == "conflicting"
+    assert diagnostics[0]["traffic_conflict_evidence"]["observation_ids"] == [
+        "traffic-observation-traffic-high",
+    ]
+    assert diagnostics[0]["traffic_conflict_evidence"]["conflicting_fields"] == [
+        "match_state",
+    ]
+
+
+def test_unapplied_traffic_freshness_is_unknown_with_configuration_diagnostic() -> None:
+    profile_value = reuse_first_profile(
+        traffic_profile={
+            "profile_id": "prepared-dft-traffic-unapplied-freshness",
+            "version": "2026-08-02",
+            "thresholds": [{"id": "high", "upper_vehicles_per_day": None}],
+            "high_traffic_challenge_band": "high",
+            "max_observation_age_years": 3,
+            "stale_value_policy": "retain-and-diagnose",
+            "missing_policy": "explicit-unknown",
+        }
+    )
+    candidate_value = high_traffic_on_carriageway_candidate()
+
+    diagnostics = traffic_diagnostics_for_candidate(candidate_value, profile_value)
+
+    assert diagnostics[0]["diagnostic_id"] == "traffic-freshness-configuration"
+    assert diagnostics[0]["traffic_status"] == "unknown"
+    assert diagnostics[0]["freshness_state"] == "unknown"
+    assert diagnostics[0]["freshness_configuration_diagnostic"] == (
+        "max-observation-age-without-as-at-year"
+    )
+
+
+def test_estimated_aadf_retains_band_and_emits_traffic_estimated() -> None:
+    profile_value = reuse_first_profile(
+        traffic_profile={
+            "profile_id": "prepared-dft-traffic-estimated",
+            "version": "2026-08-02",
+            "metric": "all_motor_vehicles",
+            "thresholds": [{"id": "high", "upper_vehicles_per_day": None}],
+            "high_traffic_challenge_band": "high",
+            "max_observation_age_years": 3,
+            "as_at_year": 2026,
+            "stale_value_policy": "retain-and-diagnose",
+            "missing_policy": "explicit-unknown",
+        }
+    )
+    candidate_value = high_traffic_on_carriageway_candidate(
+        estimation_method="Estimated"
+    )
+    prepared = reuse_connection(candidate_value, selection_profile=profile_value)
+    source_preparation = preparation(prepared)
+    result = compile_prepared_scenario(
+        source_preparation,
+        request(
+            (
+                packet(
+                    prepared,
+                    bound_criteria(prepared),
+                    source_preparation=source_preparation,
+                ),
+            )
+        ),
+    )
+
+    diagnostics = result.diagnostics["traffic_diagnostics"]
+    estimated = next(
+        item for item in diagnostics if item["diagnostic_id"] == "traffic-estimated"
+    )
+    assert estimated["traffic_band"] == "high"
+    assert estimated["traffic_observation_id"] == "traffic-observation-traffic-high"
+    assert estimated["estimation_method"] == "Estimated"
+
+
+@pytest.mark.parametrize(
+    ("protected_state", "expected_diagnostic"),
+    [
+        ("missing", "protected-space-evidence-unknown"),
+        ("stale", "protected-space-evidence-unknown"),
+        ("unknown", "protected-space-evidence-unknown"),
+        ("conflicting", "protected-space-conflict"),
+    ],
+)
+def test_unknown_protected_space_never_becomes_absence_or_candidate_ineligibility(
+    protected_state: str,
+    expected_diagnostic: str,
+) -> None:
+    profile_value = reuse_first_profile(
+        traffic_profile={
+            "profile_id": "prepared-dft-traffic-unknown-space",
+            "version": "2026-08-02",
+            "metric": "all_motor_vehicles",
+            "thresholds": [
+                {"id": "high", "upper_vehicles_per_day": None},
+            ],
+            "high_traffic_challenge_band": "high",
+            "max_observation_age_years": 3,
+            "as_at_year": 2026,
+            "stale_value_policy": "retain-and-diagnose",
+            "missing_policy": "explicit-unknown",
+        }
+    )
+    candidate_value = high_traffic_on_carriageway_candidate(
+        protected_state=protected_state
+    )
+    prepared = reuse_connection(candidate_value, selection_profile=profile_value)
+    source_preparation = preparation(prepared)
+    result = compile_prepared_scenario(
+        source_preparation,
+        request(
+            (
+                packet(
+                    prepared,
+                    bound_criteria(prepared),
+                    source_preparation=source_preparation,
+                ),
+            )
+        ),
+    )
+
+    assert result.scenario is not None
+    assert result.scenario.selections[0].selected_candidate_id == candidate_value.candidate_id
+    diagnostic_ids = tuple(
+        item["diagnostic_id"] for item in result.diagnostics["traffic_diagnostics"]
+    )
+    assert expected_diagnostic in diagnostic_ids
+    assert "traffic-high-on-carriageway-without-protected-space" not in diagnostic_ids
+    assert result.scenario.candidate_sets[0].admitted_candidates
+
+
+def test_reuse_first_scenario_retains_unknown_optional_effort_without_treating_it_as_zero() -> None:
+    profile_value = reuse_first_profile()
+    cycleway = reuse_candidate(
+        "unknown-effort-cycleway",
+        reuse_class="existing-cycle-provision",
+        intervention_state="existing-provision",
+        alignment_basis="cycle-track",
+        route_length_m=1_200.0,
+        total_absolute_elevation_change_m=None,
+    )
+    a_road = reuse_candidate(
+        "known-effort-a-road",
+        reuse_class="a-road-major-protected-infrastructure",
+        intervention_state="upgrade-required",
+        alignment_basis="a-road",
+        route_length_m=1_000.0,
+        total_absolute_elevation_change_m=0.0,
+    )
+    prepared = reuse_connection(cycleway, a_road, selection_profile=profile_value)
+    source_preparation = preparation(prepared)
+    result = compile_prepared_scenario(
+        source_preparation,
+        request(
+            (
+                packet(
+                    prepared,
+                    bound_criteria(prepared),
+                    source_preparation=source_preparation,
+                ),
+            )
+        ),
+    )
+
+    assert result.scenario is not None
+    assert result.scenario.selections[0].selected_candidate_id == cycleway.candidate_id
+    selected = next(
+        item
+        for item in result.scenario.candidate_sets[0].candidates
+        if item.candidate_id == cycleway.candidate_id
+    )
+    assert selected.total_absolute_elevation_change_m is None
 
 
 def test_direct_spine_attachment_is_preserved_but_never_promoted() -> None:

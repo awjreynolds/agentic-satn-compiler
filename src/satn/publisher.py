@@ -28,6 +28,7 @@ from reportlab.pdfgen.canvas import Canvas
 from shapely.geometry import LineString, MultiLineString, mapping, shape
 
 from satn.alignment_selection import CandidateValidity, CanonicalLineString, CriterionState
+from satn.asset_accounting import accounting_geojson
 from satn.compiler import CompiledNetwork
 from satn.constants import DISCLAIMER, SCHEMA_VERSION
 from satn.content_identity import content_fingerprint
@@ -64,6 +65,10 @@ from satn.reference_application import (
     REFERENCE_SELECTED_ALIGNMENT_OPTION_FIELDS,
     ReferenceApplicationPlan,
     ReferenceSATNPublicationRecord,
+)
+from satn.reviewable_network import (
+    ReviewableNetwork,
+    validate_semantic_payload,
 )
 from satn.runtime_governance import classify_runtime_governance, validate_runtime_governance
 from satn.sources import (
@@ -165,9 +170,11 @@ def _strategic_binding_identity(value: object, *, application_plan: bool = False
 
 def publication_artifacts(output: Path) -> dict[str, Path]:
     """Return the stable artifact contract for a validated publication directory."""
-    return {
+    artifacts = {
         "geopackage": output / "network.gpkg",
         "geojson": output / "network.geojson",
+        "asset_accounting": output / "asset-accounting.json",
+        "asset_accounting_geojson": output / "asset-accounting.geojson",
         "run": output / "run.json",
         "agents": output / "agent-records.json",
         "divergences": output / "divergence-records.json",
@@ -177,6 +184,13 @@ def publication_artifacts(output: Path) -> dict[str, Path]:
         "review_zip": output / "review-map.zip",
         "pdf": output / "network-map.pdf",
     }
+    reviewable = output / "reviewable-network.json"
+    if reviewable.is_file():
+        artifacts["reviewable_network"] = reviewable
+    reviewable_geojson = output / "reviewable-network.geojson"
+    if reviewable_geojson.is_file():
+        artifacts["reviewable_network_geojson"] = reviewable_geojson
+    return artifacts
 
 
 def published_artifact_reference(
@@ -339,6 +353,16 @@ def publish(
     try:
         _write_geopackage(temporary / "network.gpkg", compiled)
         _write_geojson(temporary / "network.geojson", compiled)
+        _write_asset_accounting(
+            temporary / "asset-accounting.json",
+            temporary / "asset-accounting.geojson",
+            compiled,
+        )
+        if compiled.reviewable_network is not None:
+            _write_reviewable_network(
+                temporary / "reviewable-network.json",
+                compiled.reviewable_network,
+            )
         try:
             _validate_ea_elevation_fixed_point(config, temporary / "network.geojson")
         except EAFixedPointMismatchError as error:
@@ -373,6 +397,24 @@ def publish(
         review.mkdir()
         _write_review_map(
             review, config, compiled, reference_publication, strategic_reference_publication
+        )
+        reviewable_map = _reviewable_map_collection(compiled)
+        (review / "reviewable-network.geojson").write_text(
+            json.dumps(reviewable_map, indent=2),
+            encoding="utf-8",
+        )
+        if compiled.reviewable_network is not None:
+            (temporary / "reviewable-network.geojson").write_text(
+                json.dumps(reviewable_map, indent=2),
+                encoding="utf-8",
+            )
+        (review / "asset-accounting.json").write_text(
+            (temporary / "asset-accounting.json").read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        (review / "asset-accounting.geojson").write_text(
+            (temporary / "asset-accounting.geojson").read_text(encoding="utf-8"),
+            encoding="utf-8",
         )
         _zip_review_map(temporary / "review-map.zip", review)
         _write_pdf(temporary / "network-map.pdf", config, compiled)
@@ -1438,8 +1480,525 @@ def _network_collection(compiled: CompiledNetwork) -> dict[str, object]:
     }
 
 
+def _reviewable_geometry_wgs84(candidate: object) -> dict[str, object] | None:
+    """Project one governed candidate's exact metric line into WGS84.
+
+    Candidate geometry is a ``CanonicalLineString`` in EPSG:27700.  Keeping
+    this transform in the publisher means the browser only ever receives the
+    exact compiler linework; it cannot silently snap or invent a route.
+    """
+    geometry = getattr(candidate, "geometry", None)
+    if geometry is None:
+        return None
+    as_shapely = getattr(geometry, "as_shapely", None)
+    if not callable(as_shapely):
+        return None
+    metric = as_shapely()
+    if metric is None or metric.is_empty:
+        return None
+    projected = gpd.GeoSeries([metric], crs="EPSG:27700").to_crs(4326).iloc[0]
+    return mapping(projected)
+
+
+def _reviewable_candidate_properties(candidate: object) -> dict[str, object]:
+    """Expose all governed candidate evidence while omitting duplicate geometry."""
+    model_dump = getattr(candidate, "model_dump", None)
+    if callable(model_dump):
+        raw = model_dump(mode="json", exclude={"geometry", "traffic_observation"})
+    else:
+        raw = {
+            key: value
+            for key, value in vars(candidate).items()
+            if key not in {"geometry", "traffic_observation"}
+        }
+    return {
+        str(key): _json_value(value)
+        for key, value in raw.items()
+        if _json_value(value) is not None
+    }
+
+
+def _reviewable_candidate_feature(
+    candidate: object,
+    *,
+    feature_id: str,
+    feature_type: str,
+    display_state: str,
+    candidate_set_id: str | None,
+    extra_properties: dict[str, object] | None = None,
+) -> dict[str, object] | None:
+    geometry = _reviewable_geometry_wgs84(candidate)
+    if geometry is None:
+        return None
+    properties = _reviewable_candidate_properties(candidate)
+    properties.update(
+        {
+            "feature_type": feature_type,
+            "candidate_id": str(getattr(candidate, "candidate_id", feature_id)),
+            "route_id": str(getattr(candidate, "candidate_id", feature_id)),
+            "candidate_set_id": candidate_set_id,
+            "display_state": display_state,
+            "primary_alignment_basis": getattr(candidate, "primary_alignment_basis", None),
+            "alignment_bases": list(getattr(candidate, "alignment_bases", ()) or ()),
+            "evidence_fingerprints": list(
+                getattr(candidate, "evidence_fingerprints", ()) or ()
+            ),
+            "geometry_crs": "EPSG:4326",
+            "source_geometry_crs": "EPSG:27700",
+            "geometry_semantics": "exact-governed-candidate-line",
+        }
+    )
+    if extra_properties:
+        properties.update(extra_properties)
+    return {
+        "type": "Feature",
+        "id": feature_id,
+        "properties": {
+            key: _json_value(value)
+            for key, value in properties.items()
+            if _json_value(value) is not None
+        },
+        "geometry": geometry,
+    }
+
+
+def _reviewable_candidate_roster(reviewable: ReviewableNetwork) -> dict[str, object]:
+    """Index every Scenario candidate, including rejected alternatives."""
+    scenario = reviewable.scenario
+    if scenario is None:
+        return {}
+    roster: dict[str, object] = {}
+    for candidate_set in scenario.candidate_sets:
+        for candidate in candidate_set.candidates:
+            roster[str(candidate.candidate_id)] = (candidate_set, candidate)
+    return roster
+
+
+def _reviewable_place_points(compiled: CompiledNetwork) -> dict[str, tuple[float, float]]:
+    if compiled.places.empty:
+        return {}
+    points: dict[str, tuple[float, float]] = {}
+    for _, row in compiled.places.to_crs(4326).iterrows():
+        place_id = _json_value(row.get("place_id"))
+        geometry = row.geometry
+        if place_id is None or geometry is None or geometry.is_empty:
+            continue
+        point = geometry if geometry.geom_type == "Point" else geometry.representative_point()
+        points[str(place_id)] = (float(point.x), float(point.y))
+    return points
+
+
+def _reviewable_coordinate_values(value: object) -> list[float]:
+    if not isinstance(value, (list, tuple)) or not value:
+        return []
+    if isinstance(value[0], (int, float)):
+        return [float(item) for item in value[:2]]
+    values: list[float] = []
+    for item in value:
+        values.extend(_reviewable_coordinate_values(item))
+    return values
+
+
+def _reviewable_strategic_spine_projection_properties(
+    spine_properties: dict[str, object],
+    accounting_records: tuple[dict[str, object], ...],
+) -> dict[str, object] | None:
+    """Derive the governed semantic projection for one selected spine.
+
+    This pure projection contract is shared by publication and validation. It
+    derives intervention state only from matching Asset Accounting records;
+    Strategic Reference alignments therefore remain ``undetermined``/``unknown``
+    when no governed asset evidence binds to them.
+    """
+
+    spine_kind = str(spine_properties.get("spine_kind") or "")
+    bases = {
+        "a-road": "a-road",
+        "ncn": "current-ncn",
+        "declassified-ncn": "reclassified-ncn",
+        "greenway": "greenway",
+        "selected-interurban-reference": "strategic-reference",
+    }
+    basis = bases.get(spine_kind)
+    spine_id = spine_properties.get("spine_id")
+    if basis is None or spine_id is None:
+        return None
+    provenance: dict[str, object] = {}
+    raw_provenance = spine_properties.get("provenance")
+    if isinstance(raw_provenance, str):
+        try:
+            parsed = json.loads(raw_provenance)
+            if isinstance(parsed, dict):
+                provenance = parsed
+        except json.JSONDecodeError:
+            provenance = {}
+    source_identities = {str(item) for item in provenance.get("source_ids", []) if item}
+    matched_assets = tuple(
+        item
+        for item in accounting_records
+        if source_identities
+        & {
+            str(identity)
+            for identity in item.get("governed_source_identities", [])
+            if identity
+        }
+    )
+    matched_states = {
+        str(item.get("intervention_state"))
+        for item in matched_assets
+        if basis in item.get("alignment_bases", [])
+        and item.get("intervention_state")
+        in {"existing-provision", "upgrade-required", "proposed-new-link"}
+    }
+    display_state = next(iter(matched_states)) if len(matched_states) == 1 else "undetermined"
+    intervention_evidence_state = (
+        "asset-accounting-bound"
+        if len(matched_states) == 1
+        else "conflicting"
+        if len(matched_states) > 1
+        else "unknown"
+    )
+    evidence_fingerprints = sorted(
+        {
+            str(item.get("asset_identity_sha256"))
+            for item in matched_assets
+            if item.get("asset_identity_sha256")
+        }
+    )
+    return {
+        "feature_type": "reviewable-selected-route",
+        "route_id": str(spine_id),
+        "candidate_id": None,
+        "candidate_set_id": None,
+        "connection_id": None,
+        "selection_disposition": "selected-strategic-spine",
+        "network_role": "strategic-spine",
+        "spine_kind": spine_kind,
+        "display_state": display_state,
+        "primary_alignment_basis": basis,
+        "alignment_bases": [basis],
+        "evidence_fingerprints": evidence_fingerprints,
+        "intervention_evidence_state": intervention_evidence_state,
+        "evidence_id": _json_value(spine_properties.get("evidence_id")),
+        "source_id": _json_value(spine_properties.get("source_id")),
+        "geometry_crs": "EPSG:4326",
+        "source_geometry_crs": "EPSG:27700",
+        "geometry_semantics": "exact-compiler-selected-strategic-spine",
+    }
+
+
+def _reviewable_strategic_spine_features(compiled: CompiledNetwork) -> list[dict[str, object]]:
+    """Carry the exact compiler-selected Strategic Spine into the legible SATN."""
+
+    frame = getattr(compiled, "strategic_spines", None)
+    if not isinstance(frame, gpd.GeoDataFrame) or frame.empty:
+        return []
+    accounting_records = tuple(
+        item
+        for item in compiled.asset_accounting.get("records", [])
+        if isinstance(item, dict)
+    )
+    features: list[dict[str, object]] = []
+    for _, row in frame.to_crs(4326).sort_values("spine_id").iterrows():
+        geometry = row.geometry
+        if geometry is None or geometry.is_empty:
+            continue
+        spine_properties = {
+            str(key): _json_value(value)
+            for key, value in row.items()
+            if key != "geometry"
+        }
+        projected_properties = _reviewable_strategic_spine_projection_properties(
+            spine_properties,
+            accounting_records,
+        )
+        if projected_properties is None:
+            continue
+        features.append(
+            {
+                "type": "Feature",
+                "id": f"reviewable-strategic-spine:{projected_properties['route_id']}",
+                "properties": projected_properties,
+                "geometry": mapping(geometry),
+            }
+        )
+    return features
+
+
+def _reviewable_map_collection(compiled: CompiledNetwork) -> dict[str, object]:
+    """Build the production-backed review-map layer package.
+
+    This projection is deliberately separate from the legacy ``network``
+    collection.  It carries the immutable Reviewable Network selection and
+    asset accounting without changing existing GeoJSON layer counts.
+    """
+    reviewable = compiled.reviewable_network
+    features: list[dict[str, object]] = []
+    if reviewable is None:
+        return {
+            "type": "FeatureCollection",
+            "name": "SATN reviewable network map",
+            "contract": "satn-reviewable-map/v1",
+            "disclaimer": DISCLAIMER,
+            "features": features,
+        }
+    roster = _reviewable_candidate_roster(reviewable)
+    selected_ids = {str(item.candidate_id) for item in reviewable.effective_selections}
+    features.extend(_reviewable_strategic_spine_features(compiled))
+    for selection in reviewable.effective_selections:
+        feature = _reviewable_candidate_feature(
+            selection.candidate,
+            feature_id=f"reviewable-route:{selection.candidate_id}",
+            feature_type="reviewable-selected-route",
+            display_state=str(selection.display_state),
+            candidate_set_id=selection.candidate_set_id,
+            extra_properties={
+                "connection_id": selection.connection_id,
+                "compiler_candidate_id": selection.compiler_candidate_id,
+                "selection_disposition": str(selection.selection_disposition),
+                "officer_decision_id": selection.officer_decision_id,
+                "network_role": str(getattr(selection.candidate, "network_role", "")),
+            },
+        )
+        if feature is not None:
+            features.append(feature)
+
+    # Rejected alternatives remain inspectable, but are not confused with the
+    # selected network. Existing/upgradeable alternatives retain their typed
+    # identity and receive a coloured state rather than ordinary grey styling.
+    for candidate_set in reviewable.scenario.candidate_sets if reviewable.scenario else ():
+        selected_id = next(
+            (
+                item.candidate_id
+                for item in reviewable.effective_selections
+                if item.candidate_set_id == candidate_set.candidate_set_id
+            ),
+            None,
+        )
+        admission_by_id = {
+            str(item.candidate_id): item for item in candidate_set.admissions
+        }
+        for candidate in candidate_set.candidates:
+            if str(candidate.candidate_id) in selected_ids or candidate.candidate_id == selected_id:
+                continue
+            display_state = getattr(candidate, "intervention_state", None)
+            display_state = getattr(display_state, "value", display_state) or "undetermined"
+            feature = _reviewable_candidate_feature(
+                candidate,
+                feature_id=f"reviewable-unselected:{candidate.candidate_id}",
+                feature_type="reviewable-unselected-candidate",
+                display_state=str(display_state),
+                candidate_set_id=candidate_set.candidate_set_id,
+                extra_properties={
+                    "selection_disposition": "unselected",
+                    "network_role": str(getattr(candidate, "network_role", "")),
+                    "alternative_identity": str(candidate.candidate_id),
+                    "admission_disposition": str(
+                        getattr(
+                            admission_by_id.get(str(candidate.candidate_id)),
+                            "disposition",
+                            "unknown",
+                        )
+                    ),
+                    "admission_rationale": str(
+                        getattr(
+                            admission_by_id.get(str(candidate.candidate_id)),
+                            "rationale",
+                            "unknown",
+                        )
+                    ),
+                },
+            )
+            if feature is not None:
+                features.append(feature)
+
+    # A divergence is rendered as two exact candidate lines. The officer line
+    # is never collapsed to grey: the difference itself is a material finding.
+    for divergence in reviewable.divergences:
+        candidate_set_candidate = roster.get(str(divergence.compiler_candidate_id))
+        officer_candidate = roster.get(str(divergence.officer_candidate_id))
+        for variant, item in (
+            ("compiler", candidate_set_candidate),
+            ("officer", officer_candidate),
+        ):
+            if item is None:
+                continue
+            candidate_set, candidate = item
+            display_state = getattr(candidate, "intervention_state", None)
+            display_state = getattr(display_state, "value", display_state) or "undetermined"
+            feature = _reviewable_candidate_feature(
+                candidate,
+                feature_id=(
+                    f"officer-compiler-divergence:{divergence.candidate_set_id}:"
+                    f"{variant}:{candidate.candidate_id}"
+                ),
+                feature_type="officer-compiler-divergence",
+                display_state=str(display_state),
+                candidate_set_id=candidate_set.candidate_set_id,
+                extra_properties={
+                    "divergence_variant": variant,
+                    "officer_decision_id": divergence.officer_decision_id,
+                    "target_id": divergence.target_id,
+                    "officer_candidate_id": divergence.officer_candidate_id,
+                    "compiler_candidate_id": divergence.compiler_candidate_id,
+                    "network_role": str(getattr(candidate, "network_role", "")),
+                },
+            )
+            if feature is not None:
+                features.append(feature)
+
+    # Gaps are point findings at governed endpoint Places. Never serialize a
+    # LineString for a gap, even where an unresolved candidate used to exist.
+    place_points = _reviewable_place_points(compiled)
+    for gap in reviewable.network_gaps:
+        for endpoint_id in gap.endpoints:
+            coordinate = place_points.get(str(endpoint_id))
+            features.append(
+                {
+                    "type": "Feature",
+                    "id": f"reviewable-gap:{gap.gap_id}:{endpoint_id}",
+                    "properties": {
+                        "feature_type": "reviewable-gap-endpoint",
+                        "gap_id": gap.gap_id,
+                        "endpoint_id": endpoint_id,
+                        "candidate_set_id": gap.candidate_set_id,
+                        "connection_id": gap.connection_id,
+                        "network_role": str(gap.network_role) if gap.network_role else None,
+                        "reason": gap.reason,
+                        "display_state": str(gap.display_state),
+                        "missing_endpoint_geometry": coordinate is None,
+                        "geometry_semantics": "endpoint-marker-only-no-route-geometry",
+                    },
+                    "geometry": (
+                        {"type": "Point", "coordinates": list(coordinate)}
+                        if coordinate is not None
+                        else None
+                    ),
+                }
+            )
+
+    # Asset accounting is exhaustive and already carries WGS84 geometry.
+    for record in compiled.asset_accounting.get("records", []):
+        if not isinstance(record, dict) or not record.get("geometry"):
+            continue
+        state = str(record.get("intervention_state", "undetermined"))
+        kind = {
+            "existing-provision": "asset-existing-provision",
+            "upgrade-required": "asset-upgrade-required",
+        }.get(state)
+        if kind is None:
+            continue
+        geometry = record["geometry"]
+        try:
+            source_shape = shape(geometry)
+            source_crs = str(record.get("geometry_crs") or "")
+            coordinates = _reviewable_coordinate_values(geometry.get("coordinates"))
+            # Asset Accounting v1 historically serialised its public sibling in
+            # WGS84; newer producers may retain canonical BNG geometry. Detect
+            # the latter conservatively by explicit CRS or metric-sized values.
+            if source_crs in {"EPSG:27700", "27700"} or any(
+                abs(value) > 180 for value in coordinates[0::2]
+            ):
+                source_crs = "EPSG:27700"
+                source_shape = gpd.GeoSeries([source_shape], crs=source_crs).to_crs(4326).iloc[0]
+            else:
+                source_crs = "EPSG:4326"
+            geometry = mapping(source_shape)
+        except (AttributeError, KeyError, TypeError, ValueError):
+            continue
+        features.append(
+            {
+                "type": "Feature",
+                "id": f"{kind}:{record.get('asset_id')}",
+                "properties": {
+                    key: _json_value(value)
+                    for key, value in record.items()
+                    if key != "geometry"
+                }
+                | {
+                    "feature_type": kind,
+                    "display_state": state,
+                    "geometry_crs": "EPSG:4326",
+                    "source_geometry_crs": source_crs,
+                    "geometry_semantics": "accounted-governed-asset-line",
+                },
+                "geometry": geometry,
+            }
+        )
+
+    # DfT observations may carry no point geometry. In that case retain the
+    # bounded candidate route as evidence rather than inventing a point.
+    for candidate_id, (_candidate_set, candidate) in roster.items():
+        observations = getattr(candidate, "traffic_observations", ()) or ()
+        for observation in observations:
+            props = (
+                observation.model_dump(mode="json")
+                if hasattr(observation, "model_dump")
+                else dict(vars(observation))
+            )
+            point = None
+            if props.get("longitude") is not None and props.get("latitude") is not None:
+                point = {
+                    "type": "Point",
+                    "coordinates": [float(props["longitude"]), float(props["latitude"])],
+                }
+            elif props.get("easting") is not None and props.get("northing") is not None:
+                coordinates = [float(props["easting"]), float(props["northing"])]
+                metric = gpd.GeoSeries(
+                    [shape({"type": "Point", "coordinates": coordinates})],
+                    crs=props.get("declared_crs") or "EPSG:27700",
+                ).to_crs(4326).iloc[0]
+                point = mapping(metric)
+            geometry = point or _reviewable_geometry_wgs84(candidate)
+            if geometry is None:
+                continue
+            features.append(
+                {
+                    "type": "Feature",
+                    "id": f"dft-traffic:{candidate_id}:{props.get('observation_id')}",
+                    "properties": {
+                        **_json_value(props),
+                        "feature_type": "dft-motor-traffic",
+                        "candidate_id": candidate_id,
+                        "geometry_semantics": (
+                            "raw-observation-point"
+                            if point is not None
+                            else "bounded-candidate-route-evidence-no-point"
+                        ),
+                    },
+                    "geometry": geometry,
+                }
+            )
+    features.sort(key=lambda feature: str(feature.get("id")))
+    return {
+        "type": "FeatureCollection",
+        "name": "SATN reviewable network map",
+        "contract": "satn-reviewable-map/v1",
+        "disclaimer": DISCLAIMER,
+        "reviewable_result_fingerprint": reviewable.result_fingerprint,
+        "asset_accounting_contract": compiled.asset_accounting.get("contract"),
+        "features": features,
+    }
+
+
 def _write_geojson(path: Path, compiled: CompiledNetwork) -> None:
     path.write_text(json.dumps(_network_collection(compiled), indent=2), encoding="utf-8")
+
+
+def _write_asset_accounting(
+    json_path: Path,
+    geojson_path: Path,
+    compiled: CompiledNetwork,
+) -> None:
+    """Write the exhaustive reusable-asset accounting and spatial sibling."""
+    accounting = compiled.asset_accounting
+    if not accounting or not isinstance(accounting.get("records"), list):
+        raise ValueError("compiled network has no valid asset accounting")
+    json_path.write_text(json.dumps(accounting, indent=2), encoding="utf-8")
+    geojson_path.write_text(
+        json.dumps(accounting_geojson(accounting), indent=2),
+        encoding="utf-8",
+    )
 
 
 def _layer_counts(compiled: CompiledNetwork) -> dict[str, int]:
@@ -1478,6 +2037,80 @@ def _layer_counts(compiled: CompiledNetwork) -> dict[str, int]:
         "retail_centres": len(compiled.retail_centres),
         "healthcare": len(compiled.healthcare),
     }
+
+
+def _write_reviewable_network(path: Path, reviewable: ReviewableNetwork) -> None:
+    """Persist the immutable reviewable payload with a recomputable identity."""
+
+    semantic = reviewable.semantic_payload
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "disclaimer": DISCLAIMER,
+        "contract": reviewable.contract,
+        "status": reviewable.status.value,
+        "result_fingerprint": reviewable.result_fingerprint,
+        "semantic": semantic,
+        "metadata": reviewable.metadata,
+    }
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _validate_reviewable_network_artifact(path: Path) -> dict[str, object]:
+    """Parse and deep-check one reviewable artifact before reuse/publication."""
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError("reviewable-network artifact is not valid JSON") from error
+    if not isinstance(payload, dict):
+        raise ValueError("reviewable-network artifact must be an object")
+    if payload.get("disclaimer") != DISCLAIMER:
+        raise ValueError("reviewable-network disclaimer mismatch")
+    if payload.get("contract") != "satn-reviewable-network/v1":
+        raise ValueError("reviewable-network contract mismatch")
+    semantic = payload.get("semantic")
+    result_fingerprint = payload.get("result_fingerprint")
+    if not isinstance(semantic, dict) or not isinstance(result_fingerprint, str):
+        raise ValueError("reviewable-network semantic payload is malformed")
+    validate_semantic_payload(semantic)
+    expected = semantic.get("result_fingerprint")
+    if expected != result_fingerprint:
+        raise ValueError("reviewable-network result fingerprint mismatch")
+    metadata = payload.get("metadata")
+    if not isinstance(metadata, dict) or metadata.get("result_fingerprint") != result_fingerprint:
+        raise ValueError("reviewable-network metadata fingerprint mismatch")
+    if metadata.get("contract") != payload.get("contract"):
+        raise ValueError("reviewable-network metadata contract mismatch")
+    if metadata.get("status") != payload.get("status"):
+        raise ValueError("reviewable-network metadata status mismatch")
+    expected_metadata = {
+        "contract": semantic["contract"],
+        "status": semantic["status"],
+        "preparation_fingerprint": semantic["preparation_fingerprint"],
+        "profile_fingerprint": semantic["profile_fingerprint"],
+        "scenario_fingerprint": semantic["fingerprints"]["scenario"],
+        "effective_selection_ids": [
+            item["candidate_id"] for item in semantic["effective_selections"]
+        ],
+        "network_gap_ids": [item["gap_id"] for item in semantic["network_gaps"]],
+        "evidence_request_ids": [
+            item["request_id"] for item in semantic["evidence_requests"]
+        ],
+        "officer_decision_ids": [
+            item["decision_id"] for item in semantic["officer_decisions"]
+        ],
+        "divergence_ids": [
+            item["candidate_set_id"] for item in semantic["divergences"]
+        ],
+        "target_unavailable_ids": [
+            item["decision_id"] for item in semantic["target_unavailable"]
+        ],
+        "failure_code": semantic["failure_code"],
+        "result_fingerprint": result_fingerprint,
+    }
+    if metadata != expected_metadata:
+        raise ValueError("reviewable-network metadata is not derived from semantic payload")
+    return payload
 
 
 def _write_json_records(
@@ -1575,6 +2208,13 @@ def _write_json_records(
             ),
         },
         "layer_counts": _layer_counts(compiled),
+        "asset_accounting": {
+            "contract": compiled.asset_accounting.get("contract"),
+            "asset_count": compiled.asset_accounting.get("asset_count", 0),
+            "excluded_observation_count": len(
+                compiled.asset_accounting.get("excluded_observations", [])
+            ),
+        },
         "network_units": compiled.network_units,
         "superseded_hypotheses": compiled.superseded_hypotheses,
         "atm_mode": config.atm.mode if config.atm.enabled else "disabled",
@@ -1587,6 +2227,17 @@ def _write_json_records(
         run["strategic_reference"] = _strategic_publication_view(
             compiled, strategic_reference_publication
         )
+    if compiled.reviewable_network is not None:
+        run["reviewable_network"] = compiled.reviewable_network.metadata
+        run["officer_decision_input"] = [
+            {
+                "target_id": item["target_id"],
+                "route_id": item["route_id"],
+            }
+            for item in compiled.reviewable_network.semantic_payload[
+                "officer_decision_input"
+            ]
+        ]
     (output / "run.json").write_text(json.dumps(run, indent=2), encoding="utf-8")
     records = {
         "schema_version": SCHEMA_VERSION,
@@ -2943,8 +3594,11 @@ def _write_review_map(
             f'<script src="assets/{fingerprinted_assets["review-map.js"]}"></script>',
         )
     (review / "index.html").write_text(html, encoding="utf-8")
+    reviewable_map = _reviewable_map_collection(compiled)
     data = {
         "network": _network_collection(compiled),
+        "reviewable": reviewable_map,
+        "reviewable_network": reviewable_map,
         "places": {
             "type": "FeatureCollection",
             "features": _features(compiled.places, "place"),
@@ -3844,6 +4498,8 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
     required = (
         "network.gpkg",
         "network.geojson",
+        "asset-accounting.json",
+        "asset-accounting.geojson",
         "run.json",
         "agent-records.json",
         "divergence-records.json",
@@ -3852,6 +4508,9 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
         "review-map/index.html",
         "review-map/data.js",
         "review-map/network.geojson",
+        "review-map/reviewable-network.geojson",
+        "review-map/asset-accounting.json",
+        "review-map/asset-accounting.geojson",
         "review-map/agent-records.json",
         "review-map/assets/maplibre-gl.js",
         "review-map/assets/maplibre-gl.css",
@@ -3861,6 +4520,8 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
         "review-map.zip",
         "network-map.pdf",
     )
+    if config.compilation.network_selection is not None:
+        required = (*required, "reviewable-network.json", "reviewable-network.geojson")
     missing = [name for name in required if not (output / name).exists()]
     if missing:
         raise ValueError(f"publication incomplete: {', '.join(missing)}")
@@ -3876,9 +4537,167 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
     geojson = json.loads((output / "network.geojson").read_text(encoding="utf-8"))
     if geojson.get("disclaimer") != DISCLAIMER:
         raise ValueError("GeoJSON disclaimer mismatch")
+    accounting = json.loads((output / "asset-accounting.json").read_text(encoding="utf-8"))
+    accounting_geojson_payload = json.loads(
+        (output / "asset-accounting.geojson").read_text(encoding="utf-8")
+    )
+    if (
+        accounting.get("disclaimer") != DISCLAIMER
+        or accounting.get("contract") != "satn-asset-accounting/v1"
+        or accounting.get("asset_count") != len(accounting.get("records", []))
+    ):
+        raise ValueError("asset accounting manifest is malformed")
+    if (
+        accounting_geojson_payload.get("type") != "FeatureCollection"
+        or accounting_geojson_payload.get("disclaimer") != DISCLAIMER
+    ):
+        raise ValueError("asset accounting GeoJSON is malformed")
+    accounting_ids = {
+        str(record.get("asset_id"))
+        for record in accounting.get("records", [])
+        if isinstance(record, dict)
+    }
+    accounting_geojson_ids = {
+        str(feature.get("id"))
+        for feature in accounting_geojson_payload.get("features", [])
+        if isinstance(feature, dict)
+    }
+    if accounting_ids != accounting_geojson_ids:
+        raise ValueError("asset accounting JSON and GeoJSON identities differ")
     run = json.loads((output / "run.json").read_text(encoding="utf-8"))
     if run.get("disclaimer") != DISCLAIMER or run.get("network_model") != "backbone-outward":
         raise ValueError("run manifest does not describe the current publication")
+    reviewable_path = output / "reviewable-network.json"
+    if config.compilation.network_selection is not None:
+        artifact = _validate_reviewable_network_artifact(reviewable_path)
+        manifest = run.get("reviewable_network")
+        if not isinstance(manifest, dict) or manifest != artifact.get("metadata"):
+            raise ValueError("run manifest reviewable-network identity mismatch")
+        if run.get("officer_decision_input") != artifact["semantic"].get(
+            "officer_decision_input"
+        ):
+            raise ValueError("run manifest officer input differs from reviewable network")
+    elif reviewable_path.exists():
+        raise ValueError("legacy publication unexpectedly contains reviewable-network artifact")
+    reviewable_map_path = output / "reviewable-network.geojson"
+    reviewable_map = json.loads(
+        (output / "review-map" / "reviewable-network.geojson").read_text(encoding="utf-8")
+    )
+    if reviewable_map.get("disclaimer") != DISCLAIMER or reviewable_map.get(
+        "contract"
+    ) != "satn-reviewable-map/v1":
+        raise ValueError("review map reviewable-network GeoJSON contract mismatch")
+    reviewable_features = reviewable_map.get("features")
+    if not isinstance(reviewable_features, list):
+        raise ValueError("review map reviewable-network GeoJSON has no feature roster")
+    reviewable_ids: set[str] = set()
+    for feature in reviewable_features:
+        if not isinstance(feature, dict) or feature.get("type") != "Feature":
+            raise ValueError("review map reviewable-network feature is malformed")
+        feature_id = feature.get("id")
+        properties = feature.get("properties")
+        geometry = feature.get("geometry")
+        if not isinstance(feature_id, str) or not feature_id or feature_id in reviewable_ids:
+            raise ValueError("review map reviewable-network feature IDs are not stable and unique")
+        if not isinstance(properties, dict):
+            raise ValueError("review map reviewable-network feature lacks properties")
+        reviewable_ids.add(feature_id)
+        feature_type = properties.get("feature_type")
+        if geometry is None:
+            if feature_type != "reviewable-gap-endpoint" or properties.get(
+                "missing_endpoint_geometry"
+            ) is not True:
+                raise ValueError("review map reviewable-network feature lacks geometry")
+            continue
+        if not isinstance(geometry, dict):
+            raise ValueError("review map reviewable-network feature geometry is malformed")
+        if feature_type == "reviewable-gap-endpoint" and geometry.get("type") != "Point":
+            raise ValueError("reviewable network gaps must remain endpoint markers")
+        if feature_type in {
+            "reviewable-selected-route",
+            "reviewable-unselected-candidate",
+            "officer-compiler-divergence",
+            "asset-existing-provision",
+            "asset-upgrade-required",
+            "dft-motor-traffic",
+        } and geometry.get("type") not in {"LineString", "MultiLineString", "Point"}:
+            raise ValueError("reviewable network line evidence has unsupported geometry")
+        coordinates = geometry.get("coordinates")
+        if coordinates is None:
+            raise ValueError("reviewable network feature has no coordinates")
+        coordinate_values = _reviewable_coordinate_values(coordinates)
+        if not coordinate_values or any(
+            not math.isfinite(value) for value in coordinate_values
+        ):
+            raise ValueError("reviewable network feature coordinates are invalid")
+        if any(abs(value) > 180 for value in coordinate_values[0::2]) or any(
+            abs(value) > 90 for value in coordinate_values[1::2]
+        ):
+            raise ValueError("reviewable network feature coordinates are not WGS84")
+    if config.compilation.network_selection is not None:
+        if not reviewable_map_path.is_file():
+            raise ValueError("reviewable-network GeoJSON artifact is missing")
+        top_level_reviewable_map = json.loads(reviewable_map_path.read_text(encoding="utf-8"))
+        if top_level_reviewable_map != reviewable_map:
+            raise ValueError("reviewable-network GeoJSON differs from review map")
+        expected_gap_ids = {
+            f"reviewable-gap:{gap['gap_id']}:{endpoint_id}"
+            for gap in artifact["semantic"].get("network_gaps", [])
+            for endpoint_id in gap.get("endpoints", [])
+        }
+        actual_gap_ids = {
+            str(feature["id"])
+            for feature in reviewable_features
+            if feature["properties"].get("feature_type") == "reviewable-gap-endpoint"
+        }
+        if actual_gap_ids != expected_gap_ids:
+            raise ValueError("reviewable-network gap endpoint roster is incomplete")
+        expected_spines = {
+            f"reviewable-strategic-spine:{feature['id']}": feature
+            for feature in geojson.get("features", [])
+            if feature.get("properties", {}).get("feature_type") == "strategic-spine"
+        }
+        actual_spines = {
+            str(feature["id"]): feature
+            for feature in reviewable_features
+            if feature["properties"].get("selection_disposition")
+            == "selected-strategic-spine"
+        }
+        prefixed_spine_ids = {
+            str(feature["id"])
+            for feature in reviewable_features
+            if str(feature["id"]).startswith("reviewable-strategic-spine:")
+        }
+        if set(actual_spines) != set(expected_spines) or prefixed_spine_ids != set(
+            expected_spines
+        ):
+            raise ValueError("reviewable-network strategic spine roster is incomplete")
+        accounting_records = tuple(
+            item for item in accounting.get("records", []) if isinstance(item, dict)
+        )
+        for feature_id, expected_feature in expected_spines.items():
+            actual_feature = actual_spines[feature_id]
+            expected_properties = expected_feature["properties"]
+            actual_properties = actual_feature["properties"]
+            if not isinstance(expected_properties, dict):
+                raise ValueError("strategic spine source feature properties are malformed")
+            expected_projection = _reviewable_strategic_spine_projection_properties(
+                expected_properties,
+                accounting_records,
+            )
+            if (
+                expected_projection is None
+                or actual_feature.get("geometry") != expected_feature.get("geometry")
+                or actual_properties != expected_projection
+            ):
+                raise ValueError("reviewable-network strategic spine projection differs")
+    elif reviewable_map_path.exists():
+        raise ValueError("legacy publication unexpectedly contains reviewable-network GeoJSON")
+    accounting_manifest = run.get("asset_accounting", {})
+    if accounting_manifest.get("asset_count") != len(accounting_ids) or accounting_manifest.get(
+        "excluded_observation_count"
+    ) != len(accounting.get("excluded_observations", [])):
+        raise ValueError("run manifest asset accounting count mismatch")
     strategic = run.get("strategic_reference")
     if strategic is not None:
         _validate_strategic_artifacts(output, strategic, geojson)

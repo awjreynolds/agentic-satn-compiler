@@ -29,6 +29,7 @@ from pathlib import Path
 import geopandas as gpd
 import pandas as pd
 from shapely.geometry import LineString, MultiLineString
+from shapely.geometry.base import BaseGeometry
 
 from satn.alignment_selection import (
     AlignmentCandidateInput,
@@ -38,12 +39,15 @@ from satn.alignment_selection import (
     NetworkRole,
     admit_candidate_set,
 )
+from satn.dft_traffic_matching import TrafficMatchPolicy, match_dft_traffic
 from satn.evidence import corridor_overlap_share
 from satn.identifiers import stable_id
+from satn.local_evidence_store import LocalEvidenceStore
 from satn.models import SourceConfig
 from satn.network_selection import CandidateSourceClass, NetworkSelectionProfile
 from satn.psa_evidence_loaders import (
     EducationAccessEvidenceLoad,
+    GovernedEvidenceLoadError,
     PopulationReachEvidenceLoad,
     load_education_access_evidence,
     load_population_reach_evidence,
@@ -245,6 +249,8 @@ class SpineAccessCandidatePreparationResult:
     evidence_lineage: dict[str, object]
     preparation_fingerprint: str
     diagnostics: dict[str, object]
+    traffic_match_policy_fingerprint: str | None = None
+    evidence_state_fingerprint: str | None = None
 
     @property
     def prepared(self) -> bool:
@@ -302,6 +308,8 @@ def prepare_spine_access_candidates(
     official_road_classification: gpd.GeoDataFrame | None,
     source_config: SourceConfig,
     config_directory: Path,
+    evidence_store: LocalEvidenceStore | None = None,
+    evidence_state_fingerprint: str | None = None,
 ) -> SpineAccessCandidatePreparationResult:
     """Prepare bounded Spine Access candidate sets and verify declared inputs.
 
@@ -312,6 +320,13 @@ def prepare_spine_access_candidates(
     """
 
     profile = NetworkSelectionProfile.model_validate(profile.model_dump(mode="json"))
+    traffic_policy = (
+        TrafficMatchPolicy.model_validate(
+            profile.traffic_match_policy.model_dump(mode="json")
+        )
+        if profile.traffic_match_policy is not None
+        else None
+    )
     prepared_spine_access_connections, issues, connection_roster = (
         _prepare_spine_access_candidate_sets(
             profile,
@@ -321,6 +336,9 @@ def prepare_spine_access_candidates(
             strategic_spines=strategic_spines,
             context=context,
             official_road_classification=official_road_classification,
+            traffic_policy=traffic_policy,
+            evidence_store=evidence_store,
+            evidence_state_fingerprint=evidence_state_fingerprint,
         )
     )
     missing: list[str] = []
@@ -356,9 +374,36 @@ def prepare_spine_access_candidates(
             ),
         )
     evidence_lineage = _evidence_lineage(population_evidence, education_evidence)
+    traffic_match_policy_fingerprint = traffic_policy.fingerprint if traffic_policy else None
+    evidence_lineage["traffic_matching"] = {
+        "policy_fingerprint": traffic_match_policy_fingerprint,
+        "evidence_state_fingerprint": evidence_state_fingerprint,
+        "status": (
+            "requested-unknown"
+            if traffic_policy is not None and evidence_store is None
+            else "queried"
+            if traffic_policy is not None
+            else "not-configured"
+        ),
+    }
     evidence_fingerprints = _evidence_fingerprints(
         population_evidence,
         education_evidence,
+    )
+    evidence_fingerprints = tuple(
+        sorted(
+            {
+                *evidence_fingerprints,
+                *(
+                    value
+                    for value in (
+                        traffic_match_policy_fingerprint,
+                        evidence_state_fingerprint,
+                    )
+                    if value is not None
+                ),
+            }
+        )
     )
     ordered_missing = tuple(sorted(set(missing)))
     status = (
@@ -401,6 +446,17 @@ def prepare_spine_access_candidates(
         "agent_runtime_invoked": False,
         "scope": "spine-access-candidate-preparation",
         "strategic_community_connection_scope": "chained-community-connections-only",
+        "traffic_matching": {
+            "policy_fingerprint": traffic_match_policy_fingerprint,
+            "evidence_state_fingerprint": evidence_state_fingerprint,
+            "status": (
+                "requested-unknown"
+                if traffic_policy is not None and evidence_store is None
+                else "queried"
+                if traffic_policy is not None
+                else "not-configured"
+            ),
+        },
     }
     preparation_payload = {
         "contract": _PREPARATION_CONTRACT,
@@ -428,6 +484,8 @@ def prepare_spine_access_candidates(
         evidence_lineage=evidence_lineage,
         preparation_fingerprint=_fingerprint(preparation_payload),
         diagnostics=diagnostics,
+        traffic_match_policy_fingerprint=traffic_match_policy_fingerprint,
+        evidence_state_fingerprint=evidence_state_fingerprint,
     )
 
 
@@ -440,6 +498,9 @@ def _prepare_spine_access_candidate_sets(
     strategic_spines: gpd.GeoDataFrame,
     context: gpd.GeoDataFrame,
     official_road_classification: gpd.GeoDataFrame | None,
+    traffic_policy: TrafficMatchPolicy | None,
+    evidence_store: LocalEvidenceStore | None,
+    evidence_state_fingerprint: str | None,
 ) -> tuple[
     tuple[PreparedSpineAccessConnection, ...],
     tuple[CandidatePreparationIssue, ...],
@@ -711,6 +772,18 @@ def _prepare_spine_access_candidate_sets(
                 "connection": connection_payload,
                 "strategic_spine": strategic_payload,
             }
+            traffic_result = _match_candidate_traffic(
+                geometry.as_shapely(),
+                policy=traffic_policy,
+                evidence_store=evidence_store,
+                evidence_state_fingerprint=evidence_state_fingerprint,
+            )
+            if traffic_result is not None:
+                option_payload["traffic_match_state"] = traffic_result.match_state.value
+                option_payload["traffic_match_proof"] = dict(traffic_result.match_proof)
+                option_payload["traffic_match_state_fingerprint"] = (
+                    traffic_result.state_fingerprint
+                )
             provenance_ids = tuple(
                 sorted(
                     {
@@ -743,6 +816,9 @@ def _prepare_spine_access_candidate_sets(
                 served_network_place_ids=(endpoint_left, endpoint_right),
                 served_access_obligation_ids=obligation_ids,
                 directness_m=float(option.length_km * 1000),
+                traffic_observations=(
+                    traffic_result.observations if traffic_result is not None else ()
+                ),
             )
             record = PreparedCandidateRecord(
                 candidate=candidate,
@@ -1351,6 +1427,42 @@ def _evidence_fingerprints(
         if education.admissions_lineage is not None:
             fingerprints.add(education.admissions_lineage.content_sha256)
     return tuple(sorted(fingerprints))
+
+
+def _match_candidate_traffic(
+    geometry: BaseGeometry,
+    *,
+    policy: TrafficMatchPolicy | None,
+    evidence_store: LocalEvidenceStore | None,
+    evidence_state_fingerprint: str | None,
+):
+    """Read pinned DfT observations and annotate them before candidate identity."""
+
+    if policy is None:
+        return None
+    observations = []
+    if evidence_store is not None:
+        selector = geometry.buffer(policy.route_buffer_m)
+        for layer in policy.source_layers:
+            try:
+                observations.extend(
+                    evidence_store.query_traffic(
+                        state_fingerprint=evidence_state_fingerprint,
+                        source_layer=f"dft/{layer}",
+                        selector=selector,
+                        predicate="intersects",
+                    )
+                )
+            except Exception as error:
+                raise GovernedEvidenceLoadError(
+                    "DfT Local Evidence Store query failed: " + str(error)
+                ) from error
+    return match_dft_traffic(
+        tuple(observations),
+        policy=policy,
+        candidate_geometry=geometry,
+        evidence_state_fingerprint=evidence_state_fingerprint,
+    )
 
 
 def _evidence_lineage(

@@ -1,0 +1,34 @@
+{
+  "contract": "satn-reuse-first-proving-manifest/v1",
+  "scenario_id": "deep-detour-threshold",
+  "expected_result": "expected/deep-detour-threshold.expected.json",
+  "area_id": "deep-detour-area",
+  "profile": {
+    "contract": "satn-network-selection-profile/vNext",
+    "profile_id": "deep-detour-profile",
+    "version": "2026-08-02",
+    "candidate_class_order": ["existing-cycle-provision", "upgradeable-off-carriageway", "low-traffic-non-a-road", "a-road-major-protected-infrastructure"],
+    "intervention_state_order": ["existing-provision", "upgrade-required", "proposed-new-link"],
+    "comparator_order": ["mandatory-obligation-service", "reuse-class", "intervention-state", "route-detour", "route-effort", "transition-fragmentation-burden", "governed-constraints", "traffic-challenge", "stable-candidate-id"],
+    "material_difference_rules": [],
+    "displacement_rules": [{"reason_code": "detour-limit-exceeded", "predicate": "detour-ratio-exceeds-threshold", "threshold": 1.5, "unit": "ratio", "evidence_requirements": ["route-length-evidence"]}],
+    "unknown_value_policy": "retain-and-request-evidence",
+    "deterministic_tie_break": "stable-candidate-id",
+    "agent_call_bound": 0,
+    "maximum_options_per_candidate_set": 5,
+    "maximum_hybrid_candidates_per_set": 2,
+    "maximum_transitions_per_candidate": 2
+  },
+  "candidate_sets": [{
+    "case_id": "detour-threshold",
+    "network_role": "community-access",
+    "endpoints": ["deep-detour-west", "deep-detour-east"],
+    "candidates": [
+      {"route_id": "deep-long-cycleway", "coordinates": [[0, 0], [1600, 0]], "reuse_class": "existing-cycle-provision", "intervention_state": "existing-provision", "alignment_bases": ["cycle-track"], "primary_alignment_basis": "cycle-track", "directness_m": 1600, "governed_evidence_ids": ["deep-long-cycleway"], "maximum_gradient_pct": 2, "elevation_change_m": 5},
+      {"route_id": "deep-short-a-road", "coordinates": [[0, 100], [1000, 100]], "reuse_class": "a-road-major-protected-infrastructure", "intervention_state": "upgrade-required", "alignment_bases": ["a-road"], "primary_alignment_basis": "a-road", "directness_m": 1000, "governed_evidence_ids": ["deep-short-a-road"], "maximum_gradient_pct": 2, "elevation_change_m": 5}
+    ]
+  }],
+  "assets": [{"asset_id": "deep-long-cycleway", "asset_kind": "cycle-track", "feature_type": "cycleway", "claim_type": "current-cycling-provision", "bicycle": "designated", "evidence_state": "supported", "governed_evidence_ids": ["deep-long-cycleway"], "coordinates": [[0, 0], [1600, 0]]}],
+  "traffic_observations": [],
+  "officer_inputs": []
+}
