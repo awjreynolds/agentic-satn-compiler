@@ -69,6 +69,8 @@ def test_public_api_runs_complete_fixture(tmp_path: Path) -> None:
     assert set(result.artifacts) == {
         "geopackage",
         "geojson",
+        "asset_accounting",
+        "asset_accounting_geojson",
         "run",
         "agents",
         "divergences",

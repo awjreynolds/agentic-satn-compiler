@@ -24,6 +24,8 @@ from pydantic import (
     model_validator,
 )
 
+from .traffic_evidence import TrafficFreshnessState
+
 _PROFILE_ID_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
 
@@ -44,6 +46,110 @@ class ReuseFirstCandidateClass(StrEnum):
     UPGRADEABLE_OFF_CARRIAGEWAY = "upgradeable-off-carriageway"
     LOW_TRAFFIC_NON_A_ROAD = "low-traffic-non-a-road"
     A_ROAD_MAJOR_PROTECTED_INFRASTRUCTURE = "a-road-major-protected-infrastructure"
+
+
+class TrafficBandConfig(BaseModel):
+    """One ordered upper-bound band in a deployment traffic profile."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: str = Field(min_length=1)
+    upper_vehicles_per_day: int | None = Field(default=None, ge=0, strict=True)
+
+    @field_validator("id")
+    @classmethod
+    def validate_id(cls, value: str) -> str:
+        if _PROFILE_ID_PATTERN.fullmatch(value) is None:
+            raise ValueError("traffic band id must be a lowercase kebab-case identifier")
+        return value
+
+
+class TrafficProfileConfig(BaseModel):
+    """Frozen, data-only DfT AADF classification and freshness policy."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    profile_id: str = Field(min_length=1)
+    version: str = Field(min_length=1)
+    metric: Literal["all_motor_vehicles"] = "all_motor_vehicles"
+    thresholds: tuple[TrafficBandConfig, ...] = Field(min_length=1)
+    high_traffic_challenge_band: str = Field(min_length=1)
+    max_observation_age_years: int | None = Field(default=None, ge=0, strict=True)
+    as_at_year: int | None = Field(default=None, ge=1900, strict=True)
+    stale_value_policy: Literal["retain-and-diagnose"] = "retain-and-diagnose"
+    missing_policy: Literal["explicit-unknown"] = "explicit-unknown"
+
+    @field_validator("profile_id")
+    @classmethod
+    def validate_profile_id(cls, value: str) -> str:
+        if _PROFILE_ID_PATTERN.fullmatch(value) is None:
+            raise ValueError(
+                "traffic profile_id must be a lowercase kebab-case identifier"
+            )
+        return value
+
+    @field_validator("thresholds")
+    @classmethod
+    def validate_thresholds(
+        cls, value: tuple[TrafficBandConfig, ...]
+    ) -> tuple[TrafficBandConfig, ...]:
+        ids = tuple(item.id for item in value)
+        if len(set(ids)) != len(ids):
+            raise ValueError("traffic thresholds cannot contain duplicate ids")
+        if value[-1].upper_vehicles_per_day is not None:
+            raise ValueError("traffic thresholds must end with an open upper bound")
+        if any(item.upper_vehicles_per_day is None for item in value[:-1]):
+            raise ValueError("traffic thresholds may only use an open upper bound last")
+        numeric = tuple(
+            item.upper_vehicles_per_day for item in value if item.upper_vehicles_per_day is not None
+        )
+        if tuple(sorted(numeric)) != numeric or len(set(numeric)) != len(numeric):
+            raise ValueError("traffic thresholds must be strictly increasing")
+        return value
+
+    @model_validator(mode="after")
+    def validate_challenge_band(self) -> Self:
+        if self.max_observation_age_years is not None and self.as_at_year is None:
+            raise ValueError("max_observation_age_years requires as_at_year")
+        if self.high_traffic_challenge_band not in {
+            item.id for item in self.thresholds
+        }:
+            raise ValueError("high traffic challenge band must name a configured threshold")
+        return self
+
+    def canonical_payload(self) -> dict[str, object]:
+        return self.model_dump(mode="json")
+
+    def canonical_json(self) -> str:
+        return json.dumps(
+            self.canonical_payload(),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+
+    @property
+    def fingerprint(self) -> str:
+        return hashlib.sha256(self.canonical_json().encode("utf-8")).hexdigest()
+
+    def freshness_for(
+        self,
+        observation_year: int,
+        reported_state: TrafficFreshnessState,
+    ) -> TrafficFreshnessState:
+        """Derive freshness from the declared as-at year when configured."""
+
+        if self.as_at_year is None or self.max_observation_age_years is None:
+            return reported_state
+        age = self.as_at_year - observation_year
+        if age < 0:
+            return TrafficFreshnessState.UNKNOWN
+        return (
+            TrafficFreshnessState.STALE
+            if age > self.max_observation_age_years
+            else TrafficFreshnessState.FRESH
+        )
 
 
 class InterventionState(StrEnum):
@@ -334,6 +440,7 @@ class NetworkSelectionProfile(BaseModel):
     material_difference_rules: tuple[MaterialDifferenceRule, ...] | None = None
     displacement_rules: tuple[DisplacementRule, ...] | None = None
     unknown_value_policy: Literal["retain-and-request-evidence"] | None = None
+    traffic_profile: TrafficProfileConfig | None = None
     traffic_profile_fingerprint: str | None = Field(default=None, pattern=_SHA256_PATTERN)
     deterministic_tie_break: Literal["stable-candidate-id"] | None = None
     agent_call_bound: int | None = Field(default=None, ge=0, strict=True)
@@ -458,6 +565,18 @@ class NetworkSelectionProfile(BaseModel):
 
     @model_validator(mode="after")
     def validate_contract(self) -> Self:
+        if self.traffic_profile is not None:
+            expected_traffic_fingerprint = self.traffic_profile.fingerprint
+            if (
+                self.traffic_profile_fingerprint is not None
+                and self.traffic_profile_fingerprint != expected_traffic_fingerprint
+            ):
+                raise ValueError("traffic_profile_fingerprint is stale for traffic_profile")
+            object.__setattr__(
+                self,
+                "traffic_profile_fingerprint",
+                expected_traffic_fingerprint,
+            )
         is_vnext = self.contract == "satn-network-selection-profile/vNext"
         if is_vnext:
             legacy_fields = frozenset(
@@ -512,6 +631,7 @@ class NetworkSelectionProfile(BaseModel):
                 self.material_difference_rules,
                 self.displacement_rules,
                 self.unknown_value_policy,
+                self.traffic_profile,
                 self.traffic_profile_fingerprint,
                 self.deterministic_tie_break,
                 self.agent_call_bound,
@@ -533,7 +653,7 @@ class NetworkSelectionProfile(BaseModel):
     def serialize_profile(self, handler: Any) -> dict[str, object]:
         """Serialize only the policy surface belonging to the active contract."""
         if self.contract == "satn-network-selection-profile/vNext":
-            return {
+            payload: dict[str, object] = {
                 "contract": self.contract,
                 "profile_id": self.profile_id,
                 "version": self.version,
@@ -555,6 +675,9 @@ class NetworkSelectionProfile(BaseModel):
                 "maximum_hybrid_candidates_per_set": self.maximum_hybrid_candidates_per_set,
                 "maximum_transitions_per_candidate": self.maximum_transitions_per_candidate,
             }
+            if self.traffic_profile is not None:
+                payload["traffic_profile"] = self.traffic_profile.model_dump(mode="json")
+            return payload
         payload = handler(self)
         for field in (
             "contract",
@@ -565,6 +688,7 @@ class NetworkSelectionProfile(BaseModel):
             "material_difference_rules",
             "displacement_rules",
             "unknown_value_policy",
+            "traffic_profile",
             "traffic_profile_fingerprint",
             "deterministic_tie_break",
             "agent_call_bound",

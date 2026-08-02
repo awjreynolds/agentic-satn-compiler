@@ -28,6 +28,7 @@ from reportlab.pdfgen.canvas import Canvas
 from shapely.geometry import LineString, MultiLineString, mapping, shape
 
 from satn.alignment_selection import CandidateValidity, CanonicalLineString, CriterionState
+from satn.asset_accounting import accounting_geojson
 from satn.compiler import CompiledNetwork
 from satn.constants import DISCLAIMER, SCHEMA_VERSION
 from satn.content_identity import content_fingerprint
@@ -168,6 +169,8 @@ def publication_artifacts(output: Path) -> dict[str, Path]:
     return {
         "geopackage": output / "network.gpkg",
         "geojson": output / "network.geojson",
+        "asset_accounting": output / "asset-accounting.json",
+        "asset_accounting_geojson": output / "asset-accounting.geojson",
         "run": output / "run.json",
         "agents": output / "agent-records.json",
         "divergences": output / "divergence-records.json",
@@ -339,6 +342,11 @@ def publish(
     try:
         _write_geopackage(temporary / "network.gpkg", compiled)
         _write_geojson(temporary / "network.geojson", compiled)
+        _write_asset_accounting(
+            temporary / "asset-accounting.json",
+            temporary / "asset-accounting.geojson",
+            compiled,
+        )
         try:
             _validate_ea_elevation_fixed_point(config, temporary / "network.geojson")
         except EAFixedPointMismatchError as error:
@@ -373,6 +381,14 @@ def publish(
         review.mkdir()
         _write_review_map(
             review, config, compiled, reference_publication, strategic_reference_publication
+        )
+        (review / "asset-accounting.json").write_text(
+            (temporary / "asset-accounting.json").read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        (review / "asset-accounting.geojson").write_text(
+            (temporary / "asset-accounting.geojson").read_text(encoding="utf-8"),
+            encoding="utf-8",
         )
         _zip_review_map(temporary / "review-map.zip", review)
         _write_pdf(temporary / "network-map.pdf", config, compiled)
@@ -1442,6 +1458,22 @@ def _write_geojson(path: Path, compiled: CompiledNetwork) -> None:
     path.write_text(json.dumps(_network_collection(compiled), indent=2), encoding="utf-8")
 
 
+def _write_asset_accounting(
+    json_path: Path,
+    geojson_path: Path,
+    compiled: CompiledNetwork,
+) -> None:
+    """Write the exhaustive reusable-asset accounting and spatial sibling."""
+    accounting = compiled.asset_accounting
+    if not accounting or not isinstance(accounting.get("records"), list):
+        raise ValueError("compiled network has no valid asset accounting")
+    json_path.write_text(json.dumps(accounting, indent=2), encoding="utf-8")
+    geojson_path.write_text(
+        json.dumps(accounting_geojson(accounting), indent=2),
+        encoding="utf-8",
+    )
+
+
 def _layer_counts(compiled: CompiledNetwork) -> dict[str, int]:
     return {
         "strategic_spines": len(compiled.strategic_spines),
@@ -1575,6 +1607,13 @@ def _write_json_records(
             ),
         },
         "layer_counts": _layer_counts(compiled),
+        "asset_accounting": {
+            "contract": compiled.asset_accounting.get("contract"),
+            "asset_count": compiled.asset_accounting.get("asset_count", 0),
+            "excluded_observation_count": len(
+                compiled.asset_accounting.get("excluded_observations", [])
+            ),
+        },
         "network_units": compiled.network_units,
         "superseded_hypotheses": compiled.superseded_hypotheses,
         "atm_mode": config.atm.mode if config.atm.enabled else "disabled",
@@ -3844,6 +3883,8 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
     required = (
         "network.gpkg",
         "network.geojson",
+        "asset-accounting.json",
+        "asset-accounting.geojson",
         "run.json",
         "agent-records.json",
         "divergence-records.json",
@@ -3852,6 +3893,8 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
         "review-map/index.html",
         "review-map/data.js",
         "review-map/network.geojson",
+        "review-map/asset-accounting.json",
+        "review-map/asset-accounting.geojson",
         "review-map/agent-records.json",
         "review-map/assets/maplibre-gl.js",
         "review-map/assets/maplibre-gl.css",
@@ -3876,9 +3919,41 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
     geojson = json.loads((output / "network.geojson").read_text(encoding="utf-8"))
     if geojson.get("disclaimer") != DISCLAIMER:
         raise ValueError("GeoJSON disclaimer mismatch")
+    accounting = json.loads((output / "asset-accounting.json").read_text(encoding="utf-8"))
+    accounting_geojson_payload = json.loads(
+        (output / "asset-accounting.geojson").read_text(encoding="utf-8")
+    )
+    if (
+        accounting.get("disclaimer") != DISCLAIMER
+        or accounting.get("contract") != "satn-asset-accounting/v1"
+        or accounting.get("asset_count") != len(accounting.get("records", []))
+    ):
+        raise ValueError("asset accounting manifest is malformed")
+    if (
+        accounting_geojson_payload.get("type") != "FeatureCollection"
+        or accounting_geojson_payload.get("disclaimer") != DISCLAIMER
+    ):
+        raise ValueError("asset accounting GeoJSON is malformed")
+    accounting_ids = {
+        str(record.get("asset_id"))
+        for record in accounting.get("records", [])
+        if isinstance(record, dict)
+    }
+    accounting_geojson_ids = {
+        str(feature.get("id"))
+        for feature in accounting_geojson_payload.get("features", [])
+        if isinstance(feature, dict)
+    }
+    if accounting_ids != accounting_geojson_ids:
+        raise ValueError("asset accounting JSON and GeoJSON identities differ")
     run = json.loads((output / "run.json").read_text(encoding="utf-8"))
     if run.get("disclaimer") != DISCLAIMER or run.get("network_model") != "backbone-outward":
         raise ValueError("run manifest does not describe the current publication")
+    accounting_manifest = run.get("asset_accounting", {})
+    if accounting_manifest.get("asset_count") != len(accounting_ids) or accounting_manifest.get(
+        "excluded_observation_count"
+    ) != len(accounting.get("excluded_observations", [])):
+        raise ValueError("run manifest asset accounting count mismatch")
     strategic = run.get("strategic_reference")
     if strategic is not None:
         _validate_strategic_artifacts(output, strategic, geojson)

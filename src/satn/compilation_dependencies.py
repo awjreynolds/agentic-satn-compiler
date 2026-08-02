@@ -44,6 +44,10 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
     "satn/__init__.py": ("module", "executed SATN package import boundary"),
     "satn/agents.py": ("module", "bounded decision selection and replay"),
     "satn/atm.py": ("module", "authoritative ATM comparison"),
+    "satn/asset_accounting.py": (
+        "module",
+        "exhaustive governed reusable-asset accounting",
+    ),
     "satn/backbone.py": ("module", "Backbone-and-Access assembly"),
     "satn/compilation_dependencies.py": (
         "module",
@@ -79,6 +83,10 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
     "satn/network_selection.py": (
         "module",
         "frozen Network Selection Profile validation and fingerprinting",
+    ),
+    "satn/traffic_evidence.py": (
+        "module",
+        "optional DfT traffic and protected-space evidence annotations",
     ),
     "satn/alignment_selection.py": (
         "module",
@@ -154,6 +162,7 @@ OPTIONAL_COMPONENT_GROUPS: Final[dict[str, frozenset[str]]] = {
             "satn/alignment_selection.py",
             "satn/existing_alignment.py",
             "satn/network_selection.py",
+            "satn/traffic_evidence.py",
             "satn/population_reach.py",
             "satn/section_population.py",
             "satn/psa_evidence_loaders.py",

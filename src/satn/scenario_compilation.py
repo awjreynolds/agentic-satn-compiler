@@ -39,6 +39,7 @@ from satn.alignment_selection import (
     SelectionDisposition,
     orchestrate_scenario_review,
     select_preferred_alignment,
+    traffic_diagnostics_for_candidate,
 )
 from satn.education_access import EducationAccessSourceSnapshot
 from satn.spine_access_candidate_preparation import (
@@ -438,6 +439,7 @@ def compile_prepared_scenario(
         education_governed_source,
     ) = _criterion_source_lineage(preparation)
     selections: list[PreferredStrategicAlignment] = []
+    traffic_diagnostics: list[dict[str, object]] = []
     for item in prepared:
         criterion = criteria_by_id[item.access_connection_id]
         _validate_exact_candidate_set(item, criterion)
@@ -455,6 +457,10 @@ def compile_prepared_scenario(
                 criterion,
             )
         )
+        for candidate in item.candidate_set.candidates:
+            traffic_diagnostics.extend(
+                traffic_diagnostics_for_candidate(candidate, item.candidate_set.profile)
+            )
 
     selections_tuple = tuple(sorted(selections, key=lambda item: item.candidate_set_id))
     decision_record = request.decision_record or ScenarioDecisionRecord(
@@ -491,6 +497,22 @@ def compile_prepared_scenario(
         if needs_review or request.prior_orchestration is not None
         else None
     )
+    traffic_payload = (
+        {
+            "traffic_diagnostics": tuple(traffic_diagnostics),
+            "traffic_profile_fingerprints": tuple(
+                sorted(
+                    {
+                        item.candidate_set.profile.traffic_profile.fingerprint
+                        for item in selections_tuple
+                        if item.candidate_set.profile.traffic_profile is not None
+                    }
+                )
+            ),
+        }
+        if traffic_diagnostics
+        else {}
+    )
     return _result(
         status="review-required" if needs_review else "compiled",
         preparation=preparation,
@@ -511,6 +533,7 @@ def compile_prepared_scenario(
             "reference_satn_created": False,
             "authoritative_network_geometry_mutated": False,
             "replay_directive": "recompile-whole-network-on-ledger-change",
+            **traffic_payload,
         },
     )
 

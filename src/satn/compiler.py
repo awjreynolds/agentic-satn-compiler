@@ -17,6 +17,7 @@ import pandas as pd
 from shapely.geometry import MultiPoint
 
 from satn.agents import AgentDecisionResolver, AgentRuntimeSource, CompilationGate
+from satn.asset_accounting import build_asset_accounting
 from satn.backbone import (
     GAP_COLUMNS,
     _assemble_backbone_outward,
@@ -132,6 +133,7 @@ class CompiledNetwork:
     human_intervention_requests: list[HumanInterventionRequest]
     compilation_diagnostics: dict[str, object]
     compilation_input_fingerprint: str = ""
+    asset_accounting: dict[str, object] = field(default_factory=dict)
     governed_input_fingerprint: str = ""
     snapshot_manifest_sha256: str = ""
     area_definition_sha256: str = ""
@@ -300,6 +302,7 @@ def _compile_network(
 ) -> CompiledNetwork:
     places = source["places"].copy().sort_values("place_id").reset_index(drop=True)
     context = source.get("context", empty_context(source["network"].crs)).copy()
+    asset_context = context.copy()
     official_road_classification = source.get("official_road_classification")
     context, road_classification_disagreements = govern_a_road_context(
         context,
@@ -873,6 +876,7 @@ def _compile_network(
             else {}
         ),
     )
+    compiled.asset_accounting = build_asset_accounting(asset_context, source["network"], compiled)
     # ``compile_network`` is also a supported public entry point.  Its output
     # must therefore carry the same exact decision wire contract as the
     # pipeline path, rather than relying on dataclass defaults which would

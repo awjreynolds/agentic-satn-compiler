@@ -140,6 +140,126 @@ def test_vnext_profile_parses_through_area_definition_from_yaml(tmp_path: Path) 
     )
 
 
+def test_vnext_area_definition_accepts_configurable_data_only_traffic_profile(
+    tmp_path: Path,
+) -> None:
+    traffic_profile = {
+        "profile_id": "bath-dft-traffic",
+        "version": "2026-08-02",
+        "metric": "all_motor_vehicles",
+        "thresholds": [
+            {"id": "low", "upper_vehicles_per_day": 1000},
+            {"id": "medium", "upper_vehicles_per_day": 5000},
+            {"id": "high", "upper_vehicles_per_day": 10000},
+            {"id": "very-high", "upper_vehicles_per_day": None},
+        ],
+        "high_traffic_challenge_band": "very-high",
+        "max_observation_age_years": 3,
+        "as_at_year": 2026,
+        "stale_value_policy": "retain-and-diagnose",
+        "missing_policy": "explicit-unknown",
+    }
+    payload = vnext_profile_payload() | {"traffic_profile": traffic_profile}
+    payload.pop("traffic_profile_fingerprint", None)
+    path = tmp_path / "area.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "area_id": "bath",
+                "area_name": "Bath",
+                "source": {"snapshot_dir": "snapshots"},
+                "compilation": {"network_selection": payload},
+                "publication": {"output_dir": "output", "title": "Bath SATN"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = AreaDefinition.from_yaml(path)
+
+    assert isinstance(config, AreaDefinition)
+    profile = config.compilation.network_selection
+    assert profile is not None
+    assert profile.traffic_profile is not None
+    assert profile.traffic_profile.profile_id == "bath-dft-traffic"
+    assert profile.traffic_profile.version == "2026-08-02"
+    assert profile.traffic_profile.metric == "all_motor_vehicles"
+    assert profile.traffic_profile.thresholds[-1].upper_vehicles_per_day is None
+    assert profile.traffic_profile.high_traffic_challenge_band == "very-high"
+    assert profile.traffic_profile.max_observation_age_years == 3
+    assert profile.traffic_profile.stale_value_policy == "retain-and-diagnose"
+    assert profile.traffic_profile.missing_policy == "explicit-unknown"
+    assert profile.traffic_profile.fingerprint == (
+        "20d21c07aa88fd236d8a6c97cbda4068b13b6e3bd21dc7f40f03f1efee4e1648"
+    )
+
+
+def test_vnext_profile_without_optional_traffic_preserves_legacy_payload_and_fingerprint() -> None:
+    profile = NetworkSelectionProfile.model_validate(vnext_profile_payload())
+    payload = profile.model_dump(mode="json")
+
+    assert "traffic_profile" not in payload
+    assert profile.fingerprint == (
+        "f0b3b7344336044cd6cf055fca227d3d7b0745823d0742c44d38c1af593059b7"
+    )
+
+
+def test_traffic_profile_rejects_duplicate_or_unsorted_thresholds() -> None:
+    base = {
+        "profile_id": "bath-dft-traffic",
+        "version": "2026-08-02",
+        "metric": "all_motor_vehicles",
+        "thresholds": [
+            {"id": "low", "upper_vehicles_per_day": 1000},
+            {"id": "high", "upper_vehicles_per_day": None},
+        ],
+        "high_traffic_challenge_band": "high",
+        "max_observation_age_years": 3,
+        "as_at_year": 2026,
+        "stale_value_policy": "retain-and-diagnose",
+        "missing_policy": "explicit-unknown",
+    }
+    duplicate = base | {
+        "thresholds": [
+            {"id": "low", "upper_vehicles_per_day": 1000},
+            {"id": "medium", "upper_vehicles_per_day": 1000},
+            {"id": "high", "upper_vehicles_per_day": None},
+        ]
+    }
+    unsorted = base | {
+        "thresholds": [
+            {"id": "low", "upper_vehicles_per_day": 5000},
+            {"id": "medium", "upper_vehicles_per_day": 1000},
+            {"id": "high", "upper_vehicles_per_day": None},
+        ]
+    }
+    with pytest.raises(ValidationError, match="threshold"):
+        NetworkSelectionProfile.model_validate(
+            vnext_profile_payload() | {"traffic_profile": duplicate}
+        )
+    with pytest.raises(ValidationError, match="threshold"):
+        NetworkSelectionProfile.model_validate(
+            vnext_profile_payload() | {"traffic_profile": unsorted}
+        )
+
+
+def test_traffic_profile_requires_declared_as_at_year_for_age_policy() -> None:
+    traffic_profile = {
+        "profile_id": "bath-dft-traffic-age-policy",
+        "version": "2026-08-02",
+        "metric": "all_motor_vehicles",
+        "thresholds": [{"id": "high", "upper_vehicles_per_day": None}],
+        "high_traffic_challenge_band": "high",
+        "max_observation_age_years": 3,
+        "stale_value_policy": "retain-and-diagnose",
+        "missing_policy": "explicit-unknown",
+    }
+    payload = vnext_profile_payload() | {"traffic_profile": traffic_profile}
+    payload.pop("traffic_profile_fingerprint", None)
+    with pytest.raises(ValidationError, match="as_at_year"):
+        NetworkSelectionProfile.model_validate(payload)
+
+
 def test_vnext_profile_rejects_explicit_legacy_policy_fields() -> None:
     with pytest.raises(ValidationError, match="legacy"):
         NetworkSelectionProfile.model_validate(

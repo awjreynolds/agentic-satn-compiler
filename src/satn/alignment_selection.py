@@ -63,11 +63,43 @@ from .population_reach import (
 from .population_reach import (
     _geometry_sha256 as _population_geometry_sha256,
 )
+from .traffic_evidence import (
+    ProtectedSpaceEvidence,
+    ProtectedSpaceState,
+    TrafficChallengeDiagnostic,
+    TrafficCoverageStatus,
+    TrafficExposure,
+    TrafficFreshnessState,
+    TrafficMatchState,
+    TrafficObservation,
+)
 
 _ID = re.compile(r"^[a-z0-9][a-z0-9._:-]*$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _CANDIDATE_ID = re.compile(r"^candidate-[0-9a-f]{20}$")
 _CANDIDATE_SET_ID = re.compile(r"^candidate-set-[0-9a-f]{20}$")
+_ALIGNMENT_BASIS_VOCABULARY = frozenset(
+    {
+        "current-ncn",
+        "ncn-link",
+        "greenway",
+        "cycle-track",
+        "shared-use-path",
+        "reclassified-ncn",
+        "public-bridleway",
+        "restricted-byway",
+        "public-footpath",
+        "byway-open-to-all-traffic",
+        "prow-class-unknown",
+        "former-railway",
+        "local-connector",
+        "a-road",
+        "b-road",
+        "classified-unnumbered-road",
+        "unclassified-road",
+        "proposed-new-corridor",
+    }
+)
 _HOSTNAME = re.compile(
     r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\."
     r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$",
@@ -466,21 +498,51 @@ class AlignmentCandidateInput(BaseModel):
     directness_m: float = Field(ge=0, strict=True, allow_inf_nan=False)
     # vNext facts are optional at the model boundary so existing v1 producers
     # remain valid. vNext Candidate Sets validate the required facts before use.
-    reuse_class: ReuseFirstCandidateClass | None = None
-    intervention_state: InterventionState | None = None
-    alignment_bases: tuple[str, ...] = ()
-    primary_alignment_basis: str | None = None
-    total_absolute_elevation_change_m: float | None = Field(
-        default=None, ge=0, strict=True, allow_inf_nan=False
+    reuse_class: ReuseFirstCandidateClass | None = Field(
+        default=None, exclude_if=lambda value: value is None
     )
-    transition_count: int | None = Field(default=None, ge=0, strict=True)
-    fragmentation_count: int | None = Field(default=None, ge=0, strict=True)
-    governed_evidence_ids: tuple[str, ...] = ()
+    intervention_state: InterventionState | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    alignment_bases: tuple[str, ...] = Field(
+        default=(), exclude_if=lambda value: not value
+    )
+    primary_alignment_basis: str | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    total_absolute_elevation_change_m: float | None = Field(
+        default=None,
+        ge=0,
+        strict=True,
+        allow_inf_nan=False,
+        exclude_if=lambda value: value is None,
+    )
+    transition_count: int | None = Field(
+        default=None, ge=0, strict=True, exclude_if=lambda value: value is None
+    )
+    fragmentation_count: int | None = Field(
+        default=None, ge=0, strict=True, exclude_if=lambda value: value is None
+    )
+    governed_evidence_ids: tuple[str, ...] = Field(
+        default=(), exclude_if=lambda value: not value
+    )
     maximum_gradient_pct: float | None = Field(
         default=None,
         ge=0,
         strict=True,
         allow_inf_nan=False,
+    )
+    traffic_observation: TrafficObservation | None = Field(
+        default=None, exclude=True
+    )
+    traffic_observations: tuple[TrafficObservation, ...] = Field(
+        default=(), exclude_if=lambda value: not value
+    )
+    protected_space_evidence: ProtectedSpaceEvidence | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    traffic_exposure: TrafficExposure | None = Field(
+        default=None, exclude_if=lambda value: value is None
     )
     candidate_id: str = ""
 
@@ -513,6 +575,12 @@ class AlignmentCandidateInput(BaseModel):
     @field_validator("alignment_bases")
     @classmethod
     def validate_alignment_bases(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        unsupported = set(value) - _ALIGNMENT_BASIS_VOCABULARY
+        if unsupported:
+            raise ValueError(
+                "alignment_bases contain unsupported Alignment Basis values: "
+                + ", ".join(sorted(unsupported))
+            )
         return _canonical_ids(value, "alignment_bases")
 
     @field_validator("governed_evidence_ids")
@@ -538,6 +606,21 @@ class AlignmentCandidateInput(BaseModel):
 
     @model_validator(mode="after")
     def bind_candidate(self) -> Self:
+        observations = list(self.traffic_observations)
+        if (
+            self.traffic_observation is not None
+            and self.traffic_observation not in observations
+        ):
+            observations.append(self.traffic_observation)
+        observations = sorted(
+            observations,
+            key=lambda item: (
+                item.observation_id,
+                item.source_export_fingerprint,
+                item.row_fingerprint,
+            ),
+        )
+        object.__setattr__(self, "traffic_observations", tuple(observations))
         if (
             self.primary_alignment_basis is not None
             and self.primary_alignment_basis not in self.alignment_bases
@@ -545,7 +628,19 @@ class AlignmentCandidateInput(BaseModel):
             raise ValueError("primary_alignment_basis must be one of alignment_bases")
         payload = self.model_dump(
             mode="json",
-            exclude={"candidate_id", "geometry"},
+            exclude={
+                "candidate_id",
+                "geometry",
+                # Optional evidence annotations are identity-bearing only when
+                # present.  This preserves every legacy/default candidate ID.
+                *(
+                    ("traffic_observation", "protected_space_evidence", "traffic_exposure")
+                    if not self.traffic_observations
+                    and self.protected_space_evidence is None
+                    and self.traffic_exposure is None
+                    else ()
+                ),
+            },
         )
         payload["geometry_fingerprint"] = self.geometry.fingerprint
         expected = _stable_id("candidate", payload)
@@ -561,6 +656,408 @@ class AlignmentCandidateInput(BaseModel):
     @property
     def geometry_equivalence_fingerprint(self) -> str:
         return self.geometry.equivalence_fingerprint
+
+
+def traffic_diagnostics_for_candidate(
+    candidate: AlignmentCandidateInput,
+    profile: NetworkSelectionProfile,
+) -> tuple[dict[str, object], ...]:
+    """Derive non-veto traffic/protected-space diagnostics for one candidate."""
+
+    traffic_profile = profile.traffic_profile
+    if candidate.traffic_exposure != TrafficExposure.ON_CARRIAGEWAY:
+        return ()
+    observations = candidate.traffic_observations
+    if not observations and candidate.traffic_observation is not None:
+        observations = (candidate.traffic_observation,)
+    if traffic_profile is None:
+        if not observations:
+            return ()
+        return (
+            {
+                "candidate_id": candidate.candidate_id,
+                "diagnostic_id": "traffic-unknown",
+                "traffic_status": "profile-unavailable",
+                "traffic_profile_fingerprint": None,
+                "traffic_observation_ids": tuple(
+                    item.observation_id for item in observations
+                ),
+                "source_export_fingerprints": tuple(
+                    sorted(item.source_export_fingerprint for item in observations)
+                ),
+                "row_fingerprints": tuple(
+                    sorted(item.row_fingerprint for item in observations)
+                ),
+                "evidence_ids": tuple(
+                    sorted(
+                        {
+                            identifier
+                            for item in observations
+                            for identifier in item.evidence_ids
+                        }
+                    )
+                ),
+                "provenance_ids": tuple(
+                    sorted(
+                        {
+                            identifier
+                            for item in observations
+                            for identifier in item.provenance_ids
+                        }
+                    )
+                ),
+            },
+        )
+    if not observations:
+        return (
+            {
+                "candidate_id": candidate.candidate_id,
+                "diagnostic_id": "traffic-unknown",
+                "traffic_status": "unknown",
+                "traffic_profile_fingerprint": traffic_profile.fingerprint,
+                "evidence_ids": (),
+                "provenance_ids": (),
+            },
+        )
+
+    observation_roster = tuple(observations)
+    by_claim: dict[tuple[object, ...], list[TrafficObservation]] = {}
+    for item in observations:
+        by_claim.setdefault(
+            (item.count_point_id, item.observation_year, item.direction_of_travel),
+            [],
+        ).append(item)
+    normalized_exclusions = {
+        "observation_id",
+        "source_export_fingerprint",
+        "row_fingerprint",
+        "evidence_ids",
+        "provenance_ids",
+    }
+
+    def field_differences(group: list[TrafficObservation]) -> tuple[str, ...]:
+        if len(group) < 2:
+            return ()
+        baseline = group[0].model_dump(mode="json")
+        return tuple(
+            sorted(
+                {
+                    field
+                    for item in group[1:]
+                    for field, value in item.model_dump(mode="json").items()
+                    if field not in normalized_exclusions and value != baseline[field]
+                }
+            )
+        )
+
+    conflicting_claims = [
+        group
+        for group in by_claim.values()
+        if field_differences(group)
+    ]
+    if conflicting_claims:
+        difference_fields: set[str] = set()
+        for group in conflicting_claims:
+            difference_fields.update(field_differences(group))
+        claim_observations = tuple(
+            item for group in conflicting_claims for item in group
+        )
+        return (
+            {
+                "candidate_id": candidate.candidate_id,
+                "diagnostic_id": "traffic-conflict",
+                "traffic_status": "conflicting",
+                "traffic_profile_fingerprint": traffic_profile.fingerprint,
+                "traffic_observation_ids": tuple(
+                    item.observation_id for item in claim_observations
+                ),
+                "source_export_fingerprints": tuple(
+                    sorted(item.source_export_fingerprint for item in claim_observations)
+                ),
+                "row_fingerprints": tuple(
+                    sorted(item.row_fingerprint for item in claim_observations)
+                ),
+                "all_motor_vehicles": None,
+                "field_differences": tuple(sorted(difference_fields)),
+                "evidence_ids": tuple(
+                    sorted(
+                        {
+                            identifier
+                            for item in claim_observations
+                            for identifier in item.evidence_ids
+                        }
+                    )
+                ),
+                "provenance_ids": tuple(
+                    sorted(
+                        {
+                            identifier
+                            for item in claim_observations
+                            for identifier in item.provenance_ids
+                        }
+                    )
+                ),
+            },
+        )
+    deduped: list[TrafficObservation] = []
+    substantive_by_key: set[str] = set()
+    for item in observations:
+        substantive = item.model_dump(mode="json", exclude=normalized_exclusions)
+        key = json.dumps(substantive, sort_keys=True, separators=(",", ":"))
+        if key not in substantive_by_key:
+            substantive_by_key.add(key)
+            deduped.append(item)
+    observations = tuple(deduped)
+    if len(observations) > 1:
+        combined = tuple(
+            item
+            for item in observations
+            if item.direction_of_travel == "combined"
+        )
+        if len(combined) != 1:
+            return (
+                {
+                    "candidate_id": candidate.candidate_id,
+                    "diagnostic_id": "traffic-unknown",
+                    "traffic_status": "multiple-observations-no-combined",
+                    "traffic_profile_fingerprint": traffic_profile.fingerprint,
+                    "traffic_observation_ids": tuple(
+                        item.observation_id for item in observations
+                    ),
+                    "source_export_fingerprints": tuple(
+                        sorted(item.source_export_fingerprint for item in observations)
+                    ),
+                    "row_fingerprints": tuple(
+                        sorted(item.row_fingerprint for item in observations)
+                    ),
+                    "evidence_ids": tuple(
+                        sorted(
+                            {
+                                identifier
+                                for item in observations
+                                for identifier in item.evidence_ids
+                            }
+                        )
+                    ),
+                    "provenance_ids": tuple(
+                        sorted(
+                            {
+                                identifier
+                                for item in observations
+                                for identifier in item.provenance_ids
+                            }
+                        )
+                    ),
+                },
+            )
+        observation = combined[0]
+    else:
+        observation = observations[0]
+
+    freshness_state = traffic_profile.freshness_for(
+        observation.observation_year,
+        observation.freshness_state,
+    )
+    common = {
+        "candidate_id": candidate.candidate_id,
+        "traffic_observation_id": observation.observation_id,
+        "traffic_observation_ids": tuple(
+            item.observation_id for item in observation_roster
+        ),
+        "observation_year": observation.observation_year,
+        "traffic_profile_fingerprint": traffic_profile.fingerprint,
+        "source_export_fingerprint": observation.source_export_fingerprint,
+        "source_export_fingerprints": tuple(
+            sorted(item.source_export_fingerprint for item in observation_roster)
+        ),
+        "row_fingerprint": observation.row_fingerprint,
+        "row_fingerprints": tuple(
+            sorted(item.row_fingerprint for item in observation_roster)
+        ),
+        "all_motor_vehicles": observation.all_motor_vehicles,
+        "freshness_state": freshness_state.value,
+        "estimation_method": observation.estimation_method,
+        "evidence_ids": tuple(
+            sorted(
+                {
+                    identifier
+                    for item in observation_roster
+                    for identifier in item.evidence_ids
+                }
+            )
+        ),
+        "provenance_ids": tuple(
+            sorted(
+                {
+                    identifier
+                    for item in observation_roster
+                    for identifier in item.provenance_ids
+                }
+            )
+        ),
+    }
+    if (
+        observation.source_layer != "aadf"
+        or observation.all_motor_vehicles is None
+        or observation.match_state != TrafficMatchState.MATCHED
+        or observation.coverage_status != TrafficCoverageStatus.SAMPLED
+        or freshness_state == TrafficFreshnessState.UNKNOWN
+    ):
+        return (
+            {
+                **common,
+                "diagnostic_id": "traffic-unknown",
+                "traffic_status": "unknown",
+            },
+        )
+
+    value = observation.all_motor_vehicles
+    band = next(
+        (
+            threshold.id
+            for threshold in traffic_profile.thresholds
+            if threshold.upper_vehicles_per_day is None
+            or value <= threshold.upper_vehicles_per_day
+        ),
+        None,
+    )
+    if band is None:
+        return (
+            {
+                **common,
+                "diagnostic_id": "traffic-unknown",
+                "traffic_status": "unknown",
+            },
+        )
+    protected = candidate.protected_space_evidence
+    protected_state = (
+        protected.state if protected is not None else ProtectedSpaceState.UNKNOWN
+    )
+    protected_evidence_ids = protected.evidence_ids if protected is not None else ()
+    protected_provenance_ids = protected.provenance_ids if protected is not None else ()
+    traffic_evidence_ids = tuple(
+        sorted(
+            {
+                identifier
+                for item in observation_roster
+                for identifier in item.evidence_ids
+            }
+        )
+    )
+    traffic_provenance_ids = tuple(
+        sorted(
+            {
+                identifier
+                for item in observation_roster
+                for identifier in item.provenance_ids
+            }
+        )
+    )
+    stale_diagnostic = (
+        {
+            **common,
+            "diagnostic_id": "traffic-stale",
+            "traffic_status": "stale",
+            "traffic_band": band,
+            "protected_space_state": protected_state.value,
+            "protected_space_evidence_ids": protected_evidence_ids,
+            "protected_space_provenance_ids": protected_provenance_ids,
+            "evidence_ids": tuple(sorted((*traffic_evidence_ids, *protected_evidence_ids))),
+            "provenance_ids": tuple(
+                sorted((*traffic_provenance_ids, *protected_provenance_ids))
+            ),
+        }
+        if freshness_state == TrafficFreshnessState.STALE
+        else None
+    )
+    estimated_diagnostic = (
+        {
+            **common,
+            "diagnostic_id": "traffic-estimated",
+            "traffic_status": "estimated",
+            "traffic_band": band,
+            "protected_space_state": protected_state.value,
+            "protected_space_evidence_ids": protected_evidence_ids,
+            "protected_space_provenance_ids": protected_provenance_ids,
+        }
+        if observation.estimation_method is not None
+        and observation.estimation_method.lower() == "estimated"
+        else None
+    )
+
+    def with_auxiliary(*records: dict[str, object]) -> tuple[dict[str, object], ...]:
+        return tuple(
+            (
+                *([stale_diagnostic] if stale_diagnostic is not None else []),
+                *([estimated_diagnostic] if estimated_diagnostic is not None else []),
+                *records,
+            )
+        )
+
+    if band != traffic_profile.high_traffic_challenge_band:
+        if protected_state in {
+            ProtectedSpaceState.MISSING,
+            ProtectedSpaceState.STALE,
+            ProtectedSpaceState.UNKNOWN,
+            ProtectedSpaceState.CONFLICTING,
+        }:
+            return with_auxiliary(
+                {
+                    **common,
+                    "diagnostic_id": (
+                        "protected-space-conflict"
+                        if protected_state == ProtectedSpaceState.CONFLICTING
+                        else "protected-space-evidence-unknown"
+                    ),
+                    "traffic_band": band,
+                    "protected_space_state": protected_state.value,
+                    "protected_space_evidence_ids": (
+                        protected.evidence_ids if protected is not None else ()
+                    ),
+                    "protected_space_provenance_ids": (
+                        protected.provenance_ids if protected is not None else ()
+                    ),
+                },
+            )
+        return with_auxiliary()
+
+    if protected_state == ProtectedSpaceState.PRESENT:
+        return with_auxiliary()
+    if protected_state == ProtectedSpaceState.ABSENT:
+        diagnostic_id = "traffic-high-on-carriageway-without-protected-space"
+    elif protected_state == ProtectedSpaceState.CONFLICTING:
+        diagnostic_id = "protected-space-conflict"
+    else:
+        diagnostic_id = "protected-space-evidence-unknown"
+    challenge = {
+        **TrafficChallengeDiagnostic(
+            diagnostic_id=diagnostic_id,
+            candidate_id=candidate.candidate_id,
+            traffic_observation_id=observation.observation_id,
+            observation_year=observation.observation_year,
+            traffic_band=band,
+            traffic_profile_fingerprint=traffic_profile.fingerprint,
+            source_export_fingerprint=observation.source_export_fingerprint,
+            row_fingerprint=observation.row_fingerprint,
+            freshness_state=freshness_state,
+            estimation_method=observation.estimation_method,
+            protected_space_state=protected_state,
+            evidence_ids=tuple(sorted((*traffic_evidence_ids, *protected_evidence_ids))),
+            provenance_ids=tuple(
+                sorted((*traffic_provenance_ids, *protected_provenance_ids))
+            ),
+        ).model_dump(mode="json"),
+        "traffic_observation_ids": tuple(
+            item.observation_id for item in observation_roster
+        ),
+        "source_export_fingerprints": tuple(
+            sorted(item.source_export_fingerprint for item in observation_roster)
+        ),
+        "row_fingerprints": tuple(
+            sorted(item.row_fingerprint for item in observation_roster)
+        ),
+    }
+    return with_auxiliary(challenge)
 
 
 class CandidateAdmission(BaseModel):
@@ -726,7 +1223,9 @@ class AlignmentCandidateSet(BaseModel):
     profile: NetworkSelectionProfile
     profile_fingerprint: str = Field(pattern=_SHA256.pattern)
     candidate_source_precedence: tuple[CandidateSourceClass, ...] = ()
-    candidate_class_order: tuple[ReuseFirstCandidateClass, ...] | None = None
+    candidate_class_order: tuple[ReuseFirstCandidateClass, ...] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     maximum_options: int = Field(ge=1, strict=True)
     geometry_equivalence_profile: MaterialGeometryEquivalenceProfile
     candidates: tuple[AlignmentCandidateInput, ...] = ()

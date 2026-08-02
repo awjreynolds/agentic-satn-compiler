@@ -723,6 +723,13 @@ def _compile(
                 )
                 for evidence_id in frame.get("evidence_id", [])
             ),
+            "asset_accounting_fingerprint": hashlib.sha256(
+                json.dumps(
+                    compiled.asset_accounting,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
             "school_street_assessments": sorted(
                 (
                     row.assessment_id,
