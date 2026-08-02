@@ -11,6 +11,29 @@
 - Do not run GitNexus impact, detect-changes, or other audit tooling unless the user
   explicitly requests an audit. GitNexus may still be used for quick code navigation.
 
+## Delegation
+
+- Work directly for routine questions, small edits, and tightly coupled changes.
+- For a substantial task with genuinely independent work, the main agent may
+  coordinate the global `bounded_explorer`, `bounded_executor`, `bounded_tester`,
+  and `bounded_doc_writer` roles. Use `deep_executor` only as a fallback for an
+  unusually difficult cross-cutting package.
+- Keep the main agent responsible for requirements, planning, task boundaries,
+  integration, Git state, user communication, `CONTEXT.md`, and ADR decisions.
+- Delegate bounded packages, not the conversation. Each package must name its
+  outcome, owned files or investigation surface, acceptance criteria, relevant
+  context paths, focused validation, protected areas, and return format.
+- Prefer one executor followed by independent verification. Run agents in parallel
+  only when their work is read-only or their write surfaces cannot conflict.
+- Keep at most three subagents active. Reuse an existing executor for fixes found by
+  the tester instead of spawning a replacement without evidence.
+- Require concise evidence: changed files, commands and actual results, defects or
+  blockers, and the next action. Store long logs under `/tmp`.
+- Do not delegate merely to fill concurrency, and do not let delegation trigger the
+  broad audits or full-suite checks prohibited above.
+
+See `docs/agents/delegation.md` for role selection and the bounded repair loop.
+
 ## Agent skills
 
 ### Issue tracker
