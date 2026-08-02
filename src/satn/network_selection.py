@@ -15,7 +15,14 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 _PROFILE_ID_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
@@ -520,6 +527,11 @@ class NetworkSelectionProfile(BaseModel):
 
     def canonical_payload(self) -> dict[str, object]:
         """Return the exact JSON-safe payload used for immutable profile identity."""
+        return self.model_dump(mode="json")
+
+    @model_serializer(mode="wrap")
+    def serialize_profile(self, handler: Any) -> dict[str, object]:
+        """Serialize only the policy surface belonging to the active contract."""
         if self.contract == "satn-network-selection-profile/vNext":
             return {
                 "contract": self.contract,
@@ -543,25 +555,25 @@ class NetworkSelectionProfile(BaseModel):
                 "maximum_hybrid_candidates_per_set": self.maximum_hybrid_candidates_per_set,
                 "maximum_transitions_per_candidate": self.maximum_transitions_per_candidate,
             }
-        return self.model_dump(
-            mode="json",
-            exclude={
-                "contract",
-                "version",
-                "candidate_class_order",
-                "intervention_state_order",
-                "comparator_order",
-                "material_difference_rules",
-                "displacement_rules",
-                "unknown_value_policy",
-                "traffic_profile_fingerprint",
-                "deterministic_tie_break",
-                "agent_call_bound",
-                "maximum_options_per_candidate_set",
-                "maximum_hybrid_candidates_per_set",
-                "maximum_transitions_per_candidate",
-            },
-        )
+        payload = handler(self)
+        for field in (
+            "contract",
+            "version",
+            "candidate_class_order",
+            "intervention_state_order",
+            "comparator_order",
+            "material_difference_rules",
+            "displacement_rules",
+            "unknown_value_policy",
+            "traffic_profile_fingerprint",
+            "deterministic_tie_break",
+            "agent_call_bound",
+            "maximum_options_per_candidate_set",
+            "maximum_hybrid_candidates_per_set",
+            "maximum_transitions_per_candidate",
+        ):
+            payload.pop(field, None)
+        return payload
 
     def canonical_json(self) -> str:
         return json.dumps(

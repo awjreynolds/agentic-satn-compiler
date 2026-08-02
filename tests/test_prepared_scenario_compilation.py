@@ -19,6 +19,7 @@ from test_alignment_selection import (
 )
 
 from satn.alignment_selection import (
+    AlignmentCandidateInput,
     AssessmentKind,
     CandidateCriteria,
     CandidateGenerationGapReason,
@@ -37,6 +38,7 @@ from satn.education_access import (
     assess_education_access,
     governed_education_assessment_fingerprint,
 )
+from satn.network_selection import NetworkSelectionProfile
 from satn.scenario_compilation import (
     PreparedCandidateCriteria,
     PreparedCriteriaLineage,
@@ -182,6 +184,114 @@ def connection(
         community_id=endpoints[0],
         place_id=endpoints[0],
         parent_place_id=endpoints[1],
+        candidate_generation_rationales=(),
+        candidate_records=(),
+    )
+
+
+def reuse_first_profile(*, detour_limit: float = 1.5) -> NetworkSelectionProfile:
+    return NetworkSelectionProfile.model_validate(
+        {
+            "contract": "satn-network-selection-profile/vNext",
+            "profile_id": "prepared-reuse-first",
+            "version": "2026-08-02",
+            "candidate_class_order": [
+                "existing-cycle-provision",
+                "upgradeable-off-carriageway",
+                "low-traffic-non-a-road",
+                "a-road-major-protected-infrastructure",
+            ],
+            "intervention_state_order": [
+                "existing-provision",
+                "upgrade-required",
+                "proposed-new-link",
+            ],
+            "comparator_order": [
+                "mandatory-obligation-service",
+                "reuse-class",
+                "intervention-state",
+                "route-detour",
+                "route-effort",
+                "transition-fragmentation-burden",
+                "governed-constraints",
+                "traffic-challenge",
+                "stable-candidate-id",
+            ],
+            "material_difference_rules": [
+                {"dimension": "route-effort", "threshold": 100, "unit": "m"}
+            ],
+            "displacement_rules": [
+                {
+                    "reason_code": "detour-limit-exceeded",
+                    "predicate": "detour-ratio-exceeds-threshold",
+                    "threshold": detour_limit,
+                    "unit": "ratio",
+                    "evidence_requirements": ["route-length-evidence"],
+                }
+            ],
+            "unknown_value_policy": "retain-and-request-evidence",
+            "deterministic_tie_break": "stable-candidate-id",
+            "agent_call_bound": 0,
+            "maximum_options_per_candidate_set": 12,
+            "maximum_hybrid_candidates_per_set": 2,
+            "maximum_transitions_per_candidate": 2,
+        }
+    )
+
+
+def reuse_candidate(
+    label: str,
+    *,
+    reuse_class: str,
+    intervention_state: str,
+    alignment_basis: str,
+    route_length_m: float,
+    total_absolute_elevation_change_m: float | None = 20.0,
+) -> AlignmentCandidateInput:
+    base = candidate(
+        label,
+        role="community-access",
+        endpoints=("community-reuse", "parent-community-reuse"),
+        places=("community-reuse", "parent-community-reuse"),
+        source="other-routable",
+        directness=route_length_m,
+    )
+    return AlignmentCandidateInput.model_validate(
+        base.model_dump(mode="python", exclude={"candidate_id"})
+        | {
+            "reuse_class": reuse_class,
+            "intervention_state": intervention_state,
+            "alignment_bases": [alignment_basis],
+            "primary_alignment_basis": alignment_basis,
+            "total_absolute_elevation_change_m": total_absolute_elevation_change_m,
+            "transition_count": 0,
+            "fragmentation_count": 0,
+            "governed_evidence_ids": [f"evidence-{label}"],
+        }
+    )
+
+
+def reuse_connection(
+    *candidates: AlignmentCandidateInput,
+    selection_profile: NetworkSelectionProfile,
+) -> PreparedSpineAccessConnection:
+    candidate_set_value = candidate_set(
+        *candidates,
+        selection_profile=selection_profile,
+        places=("community-reuse", "parent-community-reuse"),
+    )
+    return PreparedSpineAccessConnection(
+        access_connection_id="prepared-community-access-reuse",
+        candidate_set=candidate_set_value,
+        root_spine_id="root-spine",
+        strategic_source_id="source",
+        strategic_evidence_id="evidence",
+        strategic_provenance={},
+        obligation_kind="community",
+        parent_role="spine-access-connection",
+        community_id="community-reuse",
+        place_id="community-reuse",
+        parent_place_id="parent-community-reuse",
         candidate_generation_rationales=(),
         candidate_records=(),
     )
@@ -424,6 +534,147 @@ def test_profile_disabled_is_a_no_op_artifact() -> None:
     assert result.scenario is None
     assert result.reference_satn_created is False
     assert result.can_mutate_authoritative_network is False
+
+
+def test_reuse_first_scenario_prefers_existing_cycle_provision_to_shorter_a_road() -> None:
+    profile_value = reuse_first_profile()
+    cycleway = reuse_candidate(
+        "reuse-cycleway",
+        reuse_class="existing-cycle-provision",
+        intervention_state="existing-provision",
+        alignment_basis="cycle-track",
+        route_length_m=1_200.0,
+    )
+    a_road = reuse_candidate(
+        "reuse-a-road",
+        reuse_class="a-road-major-protected-infrastructure",
+        intervention_state="upgrade-required",
+        alignment_basis="a-road",
+        route_length_m=1_000.0,
+    )
+    prepared = reuse_connection(
+        cycleway,
+        a_road,
+        selection_profile=profile_value,
+    )
+    source_preparation = preparation(prepared)
+    result = compile_prepared_scenario(
+        source_preparation,
+        request(
+            (
+                packet(
+                    prepared,
+                    bound_criteria(prepared),
+                    source_preparation=source_preparation,
+                ),
+            )
+        ),
+    )
+
+    assert result.status == "compiled"
+    assert result.scenario is not None
+    assert result.scenario.selections[0].selected_candidate_id == cycleway.candidate_id
+
+
+def test_reuse_first_scenario_records_configured_detour_displacement() -> None:
+    profile_value = reuse_first_profile(detour_limit=1.5)
+    cycleway = reuse_candidate(
+        "detour-cycleway",
+        reuse_class="existing-cycle-provision",
+        intervention_state="existing-provision",
+        alignment_basis="cycle-track",
+        route_length_m=1_600.0,
+    )
+    a_road = reuse_candidate(
+        "detour-a-road",
+        reuse_class="a-road-major-protected-infrastructure",
+        intervention_state="upgrade-required",
+        alignment_basis="a-road",
+        route_length_m=1_000.0,
+    )
+    prepared = reuse_connection(
+        cycleway,
+        a_road,
+        selection_profile=profile_value,
+    )
+    source_preparation = preparation(prepared)
+    result = compile_prepared_scenario(
+        source_preparation,
+        request(
+            (
+                packet(
+                    prepared,
+                    bound_criteria(prepared),
+                    source_preparation=source_preparation,
+                ),
+            )
+        ),
+    )
+
+    assert result.scenario is not None
+    selection = result.scenario.selections[0]
+    assert selection.selected_candidate_id == a_road.candidate_id
+    assert len(selection.material_displacements) == 1
+    displacement = selection.material_displacements[0]
+    assert displacement.reason_code == "detour-limit-exceeded"
+    assert displacement.selected_candidate_id == a_road.candidate_id
+    assert displacement.displaced_candidate_id == cycleway.candidate_id
+    assert displacement.observed_values == {
+        "displaced_route_length_m": 1_600.0,
+        "selected_route_length_m": 1_000.0,
+        "detour_ratio": 1.6,
+    }
+    assert displacement.threshold == 1.5
+    assert displacement.unit == "ratio"
+    assert displacement.evidence_ids == (
+        "evidence-detour-a-road",
+        "evidence-detour-cycleway",
+    )
+    assert displacement.profile_fingerprint == profile_value.fingerprint
+    assert displacement.decision_provenance == "deterministic-profile"
+
+
+def test_reuse_first_scenario_retains_unknown_optional_effort_without_treating_it_as_zero() -> None:
+    profile_value = reuse_first_profile()
+    cycleway = reuse_candidate(
+        "unknown-effort-cycleway",
+        reuse_class="existing-cycle-provision",
+        intervention_state="existing-provision",
+        alignment_basis="cycle-track",
+        route_length_m=1_200.0,
+        total_absolute_elevation_change_m=None,
+    )
+    a_road = reuse_candidate(
+        "known-effort-a-road",
+        reuse_class="a-road-major-protected-infrastructure",
+        intervention_state="upgrade-required",
+        alignment_basis="a-road",
+        route_length_m=1_000.0,
+        total_absolute_elevation_change_m=0.0,
+    )
+    prepared = reuse_connection(cycleway, a_road, selection_profile=profile_value)
+    source_preparation = preparation(prepared)
+    result = compile_prepared_scenario(
+        source_preparation,
+        request(
+            (
+                packet(
+                    prepared,
+                    bound_criteria(prepared),
+                    source_preparation=source_preparation,
+                ),
+            )
+        ),
+    )
+
+    assert result.scenario is not None
+    assert result.scenario.selections[0].selected_candidate_id == cycleway.candidate_id
+    selected = next(
+        item
+        for item in result.scenario.candidate_sets[0].candidates
+        if item.candidate_id == cycleway.candidate_id
+    )
+    assert selected.total_absolute_elevation_change_m is None
 
 
 def test_direct_spine_attachment_is_preserved_but_never_promoted() -> None:

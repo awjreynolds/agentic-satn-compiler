@@ -43,7 +43,10 @@ from .network_selection import (
     AlignmentSelectionObjective,
     AmbiguityTrigger,
     CandidateSourceClass,
+    DisplacementReasonCode,
+    InterventionState,
     NetworkSelectionProfile,
+    ReuseFirstCandidateClass,
 )
 from .population_reach import (
     PROHIBITED_CLAIMS,
@@ -461,6 +464,18 @@ class AlignmentCandidateInput(BaseModel):
     served_access_obligation_ids: tuple[str, ...] = ()
     served_strategic_destination_ids: tuple[str, ...] = ()
     directness_m: float = Field(ge=0, strict=True, allow_inf_nan=False)
+    # vNext facts are optional at the model boundary so existing v1 producers
+    # remain valid. vNext Candidate Sets validate the required facts before use.
+    reuse_class: ReuseFirstCandidateClass | None = None
+    intervention_state: InterventionState | None = None
+    alignment_bases: tuple[str, ...] = ()
+    primary_alignment_basis: str | None = None
+    total_absolute_elevation_change_m: float | None = Field(
+        default=None, ge=0, strict=True, allow_inf_nan=False
+    )
+    transition_count: int | None = Field(default=None, ge=0, strict=True)
+    fragmentation_count: int | None = Field(default=None, ge=0, strict=True)
+    governed_evidence_ids: tuple[str, ...] = ()
     maximum_gradient_pct: float | None = Field(
         default=None,
         ge=0,
@@ -495,13 +510,39 @@ class AlignmentCandidateInput(BaseModel):
     def validate_ids(cls, value: tuple[str, ...], info: object) -> tuple[str, ...]:
         return _canonical_ids(value, getattr(info, "field_name", "identifiers"))
 
-    @field_validator("directness_m", "maximum_gradient_pct")
+    @field_validator("alignment_bases")
+    @classmethod
+    def validate_alignment_bases(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _canonical_ids(value, "alignment_bases")
+
+    @field_validator("governed_evidence_ids")
+    @classmethod
+    def validate_governed_evidence_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _canonical_ids(value, "governed_evidence_ids")
+
+    @field_validator("primary_alignment_basis")
+    @classmethod
+    def validate_primary_alignment_basis(cls, value: str | None) -> str | None:
+        if value is not None and _ID.fullmatch(value) is None:
+            raise ValueError("primary_alignment_basis must be a canonical identifier")
+        return value
+
+    @field_validator(
+        "directness_m",
+        "maximum_gradient_pct",
+        "total_absolute_elevation_change_m",
+    )
     @classmethod
     def validate_numbers(cls, value: float | None, info: object) -> float | None:
         return None if value is None else _finite(value, getattr(info, "field_name", "number"))
 
     @model_validator(mode="after")
     def bind_candidate(self) -> Self:
+        if (
+            self.primary_alignment_basis is not None
+            and self.primary_alignment_basis not in self.alignment_bases
+        ):
+            raise ValueError("primary_alignment_basis must be one of alignment_bases")
         payload = self.model_dump(
             mode="json",
             exclude={"candidate_id", "geometry"},
@@ -555,18 +596,39 @@ class CandidateAdmission(BaseModel):
 def _derive_admissions(
     candidates: tuple[AlignmentCandidateInput, ...],
     *,
-    precedence_order: tuple[CandidateSourceClass, ...],
+    precedence_order: tuple[CandidateSourceClass, ...] = (),
+    class_order: tuple[ReuseFirstCandidateClass, ...] | None = None,
+    intervention_order: tuple[InterventionState, ...] | None = None,
     maximum_options: int,
     mandatory_network_place_ids: tuple[str, ...],
     mandatory_access_obligation_ids: tuple[str, ...],
     mandatory_strategic_destination_ids: tuple[str, ...],
 ) -> tuple[CandidateAdmission, ...]:
-    precedence = {source: index for index, source in enumerate(precedence_order)}
-    if any(item.source_class not in precedence for item in candidates):
+    precedence = {
+        source: index for index, source in enumerate(precedence_order or ())
+    }
+    classes = {candidate_class: index for index, candidate_class in enumerate(class_order or ())}
+    interventions = {
+        state: index for index, state in enumerate(intervention_order or ())
+    }
+    if class_order is not None:
+        if any(item.reuse_class not in classes for item in candidates):
+            raise ValueError("candidate reuse class is absent from the frozen profile")
+        if any(item.intervention_state not in interventions for item in candidates):
+            raise ValueError("candidate intervention state is absent from the frozen profile")
+    elif any(item.source_class not in precedence for item in candidates):
         raise ValueError("candidate source class is absent from the frozen profile")
     ordered = sorted(
         candidates,
-        key=lambda item: (precedence[item.source_class], item.candidate_id),
+        key=(
+            lambda item: (
+                classes[item.reuse_class],
+                interventions[item.intervention_state],
+                item.candidate_id,
+            )
+            if class_order is not None
+            else (precedence[item.source_class], item.candidate_id)
+        ),
     )
     eligible: list[AlignmentCandidateInput] = []
     records: dict[str, CandidateAdmission] = {}
@@ -606,13 +668,30 @@ def _derive_admissions(
         eligible.append(candidate)
 
     diverse: list[AlignmentCandidateInput] = []
-    for source in precedence_order:
-        first = next(
-            (item for item in eligible if item.source_class == source and item not in diverse),
-            None,
-        )
-        if first is not None and len(diverse) < maximum_options:
-            diverse.append(first)
+    if class_order is not None:
+        for candidate_class in class_order:
+            first = next(
+                (
+                    item
+                    for item in eligible
+                    if item.reuse_class == candidate_class and item not in diverse
+                ),
+                None,
+            )
+            if first is not None and len(diverse) < maximum_options:
+                diverse.append(first)
+    else:
+        for source in precedence_order:
+            first = next(
+                (
+                    item
+                    for item in eligible
+                    if item.source_class == source and item not in diverse
+                ),
+                None,
+            )
+            if first is not None and len(diverse) < maximum_options:
+                diverse.append(first)
     for candidate in eligible:
         if candidate not in diverse and len(diverse) < maximum_options:
             diverse.append(candidate)
@@ -646,8 +725,9 @@ class AlignmentCandidateSet(BaseModel):
     mandatory_strategic_destination_ids: tuple[str, ...] = ()
     profile: NetworkSelectionProfile
     profile_fingerprint: str = Field(pattern=_SHA256.pattern)
-    candidate_source_precedence: tuple[CandidateSourceClass, ...]
-    maximum_options: int = Field(ge=1, le=5, strict=True)
+    candidate_source_precedence: tuple[CandidateSourceClass, ...] = ()
+    candidate_class_order: tuple[ReuseFirstCandidateClass, ...] | None = None
+    maximum_options: int = Field(ge=1, strict=True)
     geometry_equivalence_profile: MaterialGeometryEquivalenceProfile
     candidates: tuple[AlignmentCandidateInput, ...] = ()
     admissions: tuple[CandidateAdmission, ...] = ()
@@ -680,7 +760,7 @@ class AlignmentCandidateSet(BaseModel):
         cls,
         value: tuple[CandidateSourceClass, ...],
     ) -> tuple[CandidateSourceClass, ...]:
-        if not value or len(set(value)) != len(value):
+        if len(set(value)) != len(value):
             raise ValueError("candidate source precedence must be finite and unique")
         return value
 
@@ -689,10 +769,31 @@ class AlignmentCandidateSet(BaseModel):
         profile = NetworkSelectionProfile.model_validate(self.profile.model_dump(mode="json"))
         if self.profile_fingerprint != profile.fingerprint:
             raise ValueError("Candidate Set profile fingerprint is stale")
-        if self.candidate_source_precedence != profile.candidate_source_precedence:
-            raise ValueError("Candidate Set source precedence is stale")
-        if self.maximum_options != profile.ambiguity.maximum_options_per_candidate_set:
-            raise ValueError("Candidate Set option limit is stale")
+        if profile.contract == "satn-network-selection-profile/vNext":
+            if self.candidate_source_precedence:
+                raise ValueError("vNext Candidate Set cannot carry legacy source precedence")
+            if self.candidate_class_order != profile.candidate_class_order:
+                raise ValueError("Candidate Set reuse class order is stale")
+            if self.maximum_options != profile.maximum_options_per_candidate_set:
+                raise ValueError("Candidate Set option limit is stale")
+            if any(
+                candidate.reuse_class is None
+                or candidate.intervention_state is None
+                or not candidate.alignment_bases
+                or candidate.primary_alignment_basis is None
+                or candidate.transition_count is None
+                or candidate.fragmentation_count is None
+                or not candidate.governed_evidence_ids
+                for candidate in self.candidates
+            ):
+                raise ValueError("vNext candidates require complete immutable selection facts")
+        else:
+            if self.candidate_source_precedence != profile.candidate_source_precedence:
+                raise ValueError("Candidate Set source precedence is stale")
+            if self.candidate_class_order is not None:
+                raise ValueError("legacy Candidate Sets cannot carry reuse class order")
+            if self.maximum_options != profile.ambiguity.maximum_options_per_candidate_set:
+                raise ValueError("Candidate Set option limit is stale")
         object.__setattr__(self, "profile", profile)
         candidates = tuple(
             sorted(
@@ -725,6 +826,8 @@ class AlignmentCandidateSet(BaseModel):
         expected_admissions = _derive_admissions(
             candidates,
             precedence_order=self.candidate_source_precedence,
+            class_order=self.candidate_class_order,
+            intervention_order=profile.intervention_state_order,
             maximum_options=self.maximum_options,
             mandatory_network_place_ids=self.mandatory_network_place_ids,
             mandatory_access_obligation_ids=self.mandatory_access_obligation_ids,
@@ -1714,6 +1817,50 @@ class CandidateComparisonDisposition(BaseModel):
         return tuple(sorted(set(value), key=str))
 
 
+class MaterialDisplacementRecord(BaseModel):
+    """Cited profile rule permitting a lower reuse class to be selected."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    selected_candidate_id: str = Field(pattern=_CANDIDATE_ID.pattern)
+    displaced_candidate_id: str = Field(pattern=_CANDIDATE_ID.pattern)
+    reason_code: DisplacementReasonCode
+    rule_predicate: str = Field(min_length=1)
+    observed_values: dict[str, float]
+    threshold: float = Field(ge=0, strict=True, allow_inf_nan=False)
+    unit: str = Field(min_length=1)
+    evidence_ids: tuple[str, ...] = Field(min_length=1)
+    profile_fingerprint: str = Field(pattern=_SHA256.pattern)
+    decision_provenance: Literal["deterministic-profile"] = "deterministic-profile"
+    record_fingerprint: str = ""
+
+    @field_validator("evidence_ids")
+    @classmethod
+    def canonical_evidence_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _canonical_ids(value, "material displacement evidence")
+
+    @field_validator("observed_values")
+    @classmethod
+    def canonical_observed_values(cls, value: dict[str, float]) -> dict[str, float]:
+        if not value:
+            raise ValueError("material displacement requires observed values")
+        return {
+            key: _finite(number, f"material displacement {key}")
+            for key, number in sorted(value.items())
+        }
+
+    @model_validator(mode="after")
+    def bind_record(self) -> Self:
+        if self.selected_candidate_id == self.displaced_candidate_id:
+            raise ValueError("material displacement requires two candidates")
+        payload = self.model_dump(mode="json", exclude={"record_fingerprint"})
+        expected = _fingerprint(payload)
+        if self.record_fingerprint and self.record_fingerprint != expected:
+            raise ValueError("material displacement fingerprint is stale")
+        object.__setattr__(self, "record_fingerprint", expected)
+        return self
+
+
 class PreferredStrategicAlignment(BaseModel):
     """A candidate-set-bound result; not Reference SATN authority."""
 
@@ -1730,6 +1877,7 @@ class PreferredStrategicAlignment(BaseModel):
     admitted_loser_ids: tuple[str, ...] = ()
     precomparison_rejections: tuple[CandidateAdmission, ...] = ()
     comparison_dispositions: tuple[CandidateComparisonDisposition, ...] = ()
+    material_displacements: tuple[MaterialDisplacementRecord, ...] = ()
     active_frontier_candidate_ids: tuple[str, ...] = ()
     detected_ambiguity_triggers: tuple[AmbiguityTrigger, ...] = ()
     ambiguity_triggers: tuple[AmbiguityTrigger, ...] = ()
@@ -1879,6 +2027,12 @@ class PreferredStrategicAlignment(BaseModel):
             "active_frontier_candidate_ids",
             pattern=_CANDIDATE_ID,
         )
+        displacements = tuple(
+            sorted(
+                self.material_displacements,
+                key=lambda item: (item.displaced_candidate_id, item.selected_candidate_id),
+            )
+        )
         if (
             self.selected_candidate_id != expected_selected
             or complements != expected_complements
@@ -1891,6 +2045,7 @@ class PreferredStrategicAlignment(BaseModel):
             or self.ambiguity_triggers != derivation.blocking
             or self.change_conditions != derivation.change_conditions
             or frontier != derivation.active_frontier_candidate_ids
+            or displacements != derivation.material_displacements
         ):
             raise ValueError(
                 "Preferred Strategic Alignment is not the deterministic profile result"
@@ -1979,8 +2134,14 @@ def admit_candidate_set(
         )
     admissions = _derive_admissions(
         generated,
-        precedence_order=profile.candidate_source_precedence,
-        maximum_options=profile.ambiguity.maximum_options_per_candidate_set,
+        precedence_order=profile.candidate_source_precedence or (),
+        class_order=profile.candidate_class_order,
+        intervention_order=profile.intervention_state_order,
+        maximum_options=(
+            profile.maximum_options_per_candidate_set
+            if profile.contract == "satn-network-selection-profile/vNext"
+            else profile.ambiguity.maximum_options_per_candidate_set
+        ),
         mandatory_network_place_ids=mandatory_network_place_ids,
         mandatory_access_obligation_ids=mandatory_access_obligation_ids,
         mandatory_strategic_destination_ids=mandatory_strategic_destination_ids,
@@ -1993,8 +2154,13 @@ def admit_candidate_set(
         mandatory_strategic_destination_ids=mandatory_strategic_destination_ids,
         profile=profile,
         profile_fingerprint=profile.fingerprint,
-        candidate_source_precedence=profile.candidate_source_precedence,
-        maximum_options=profile.ambiguity.maximum_options_per_candidate_set,
+        candidate_source_precedence=profile.candidate_source_precedence or (),
+        candidate_class_order=profile.candidate_class_order,
+        maximum_options=(
+            profile.maximum_options_per_candidate_set
+            if profile.contract == "satn-network-selection-profile/vNext"
+            else profile.ambiguity.maximum_options_per_candidate_set
+        ),
         geometry_equivalence_profile=(
             generated[0].geometry.equivalence_profile
             if generated
@@ -2420,6 +2586,7 @@ class _SelectionDerivation:
     hard_gate_unknown: bool
     change_conditions: tuple[ChangeCondition, ...]
     active_frontier_candidate_ids: tuple[str, ...]
+    material_displacements: tuple[MaterialDisplacementRecord, ...] = ()
 
 
 def _empty_gap_derivation(
@@ -2438,6 +2605,143 @@ def _empty_gap_derivation(
             ChangeCondition.ROLE_COVERAGE_CHANGES,
         ),
         active_frontier_candidate_ids=(),
+    )
+
+
+def _reuse_first_sort_key(
+    profile: NetworkSelectionProfile,
+    candidate: AlignmentCandidateInput,
+) -> tuple[tuple[int, object], ...]:
+    """Build the configured vNext lexicographic key without inventing unknowns."""
+    assert profile.candidate_class_order is not None
+    assert profile.intervention_state_order is not None
+    assert profile.comparator_order is not None
+    assert candidate.reuse_class is not None
+    assert candidate.intervention_state is not None
+    class_rank = {
+        value: index for index, value in enumerate(profile.candidate_class_order)
+    }
+    intervention_rank = {
+        value: index for index, value in enumerate(profile.intervention_state_order)
+    }
+    values: dict[object, tuple[int, object]] = {
+        "mandatory-obligation-service": (0, 0),
+        "reuse-class": (0, class_rank[candidate.reuse_class]),
+        "intervention-state": (0, intervention_rank[candidate.intervention_state]),
+        "route-length": (0, candidate.directness_m),
+        "route-detour": (0, candidate.directness_m),
+        "route-effort": (
+            (1, 0.0)
+            if candidate.total_absolute_elevation_change_m is None
+            else (0, candidate.total_absolute_elevation_change_m)
+        ),
+        "transition-fragmentation-burden": (
+            (1, 0)
+            if candidate.transition_count is None or candidate.fragmentation_count is None
+            else (0, candidate.transition_count + candidate.fragmentation_count)
+        ),
+        # Constraint and traffic facts are added by their governed evidence slices.
+        # Until present, all candidates remain equally unknown rather than favourable.
+        "governed-constraints": (1, 0),
+        "traffic-challenge": (1, 0),
+        "stable-candidate-id": (0, candidate.candidate_id),
+    }
+    return tuple(values[str(dimension)] for dimension in profile.comparator_order)
+
+
+def _derive_reuse_first_selection(
+    profile: NetworkSelectionProfile,
+    considered: tuple[AlignmentCandidateInput, ...],
+    validity: dict[str, CandidateValidity],
+    *,
+    hard_gate_unknown: bool,
+) -> _SelectionDerivation:
+    winner = min(considered, key=lambda item: _reuse_first_sort_key(profile, item))
+    material_displacements: tuple[MaterialDisplacementRecord, ...] = ()
+    detour_rule = next(
+        (
+            rule
+            for rule in (profile.displacement_rules or ())
+            if rule.reason_code is DisplacementReasonCode.DETOUR_LIMIT_EXCEEDED
+            and rule.predicate == "detour-ratio-exceeds-threshold"
+            and rule.threshold is not None
+            and rule.unit == "ratio"
+        ),
+        None,
+    )
+    if detour_rule is not None:
+        assert profile.candidate_class_order is not None
+        class_rank = {
+            value: index for index, value in enumerate(profile.candidate_class_order)
+        }
+        highest_rank = min(class_rank[item.reuse_class] for item in considered)
+        highest = tuple(
+            item for item in considered if class_rank[item.reuse_class] == highest_rank
+        )
+        displaced = min(highest, key=lambda item: _reuse_first_sort_key(profile, item))
+        lower = tuple(
+            item for item in considered if class_rank[item.reuse_class] > highest_rank
+        )
+        selected_lower = min(
+            lower,
+            key=lambda item: (item.directness_m, _reuse_first_sort_key(profile, item)),
+            default=None,
+        )
+        if selected_lower is not None and selected_lower.directness_m > 0:
+            ratio = displaced.directness_m / selected_lower.directness_m
+            if ratio > float(detour_rule.threshold):
+                winner = selected_lower
+                material_displacements = (
+                    MaterialDisplacementRecord(
+                        selected_candidate_id=selected_lower.candidate_id,
+                        displaced_candidate_id=displaced.candidate_id,
+                        reason_code=detour_rule.reason_code,
+                        rule_predicate=detour_rule.predicate,
+                        observed_values={
+                            "displaced_route_length_m": displaced.directness_m,
+                            "selected_route_length_m": selected_lower.directness_m,
+                            "detour_ratio": ratio,
+                        },
+                        threshold=float(detour_rule.threshold),
+                        unit=detour_rule.unit,
+                        evidence_ids=tuple(
+                            sorted(
+                                {
+                                    *displaced.governed_evidence_ids,
+                                    *selected_lower.governed_evidence_ids,
+                                }
+                            )
+                        ),
+                        profile_fingerprint=profile.fingerprint,
+                    ),
+                )
+    triggers = (
+        (AmbiguityTrigger.MATERIAL_GREY_EVIDENCE,) if hard_gate_unknown else ()
+    )
+    conditions = {
+        ChangeCondition.EVIDENCE_CHANGES,
+        ChangeCondition.PROFILE_CHANGES,
+        ChangeCondition.WINNER_TOPOLOGY_INVALIDATED,
+        ChangeCondition.WINNER_EDUCATION_INVALIDATED,
+    }
+    if hard_gate_unknown:
+        conditions.update(
+            {
+                ChangeCondition.TOPOLOGY_REPAIRED,
+                ChangeCondition.EDUCATION_COMPLETENESS_CHANGES,
+            }
+        )
+    return _SelectionDerivation(
+        winner=winner,
+        validity=validity,
+        triggers=triggers,
+        blocking=(),
+        hard_gate_unknown=hard_gate_unknown,
+        change_conditions=tuple(sorted(conditions, key=str)),
+        active_frontier_candidate_ids=tuple(
+            sorted(item.candidate_id for item in considered)
+        ),
+        material_displacements=material_displacements,
     )
 
 
@@ -2486,7 +2790,18 @@ def _derive_selection(
             active_frontier_candidate_ids=(),
         )
     hard_gate_unknown = bool(grey)
-    considered = viable or grey
+    considered = (
+        tuple((*viable, *grey))
+        if profile.contract == "satn-network-selection-profile/vNext"
+        else (viable or grey)
+    )
+    if profile.contract == "satn-network-selection-profile/vNext":
+        return _derive_reuse_first_selection(
+            profile,
+            considered,
+            validity,
+            hard_gate_unknown=hard_gate_unknown,
+        )
 
     triggers: set[AmbiguityTrigger] = set()
     selection_grey = hard_gate_unknown
@@ -2705,6 +3020,7 @@ def select_preferred_alignment(
     winner_fields: dict[str, object] = {
         "selected_candidate_id": winner.candidate_id,
         "complementary_candidate_ids": (),
+        "material_displacements": derivation.material_displacements,
     }
     if derivation.blocking:
         return PreferredStrategicAlignment(
