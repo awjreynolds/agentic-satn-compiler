@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from typer._click._compat import strip_ansi
 from typer.testing import CliRunner
 
 import satn.proving_cli as proving_cli
@@ -151,10 +152,10 @@ def test_proving_regenerate_requires_staging_and_never_overwrites_expected(
 
 
 def test_proving_help_exposes_deep_data_gate() -> None:
-    result = RUNNER.invoke(app, ["proving", "check", "--help"], color=False)
+    result = RUNNER.invoke(app, ["proving", "check", "--help"], color=True)
 
     assert result.exit_code == 0
-    assert "--deep" in result.stdout
+    assert "--deep" in strip_ansi(result.stdout)
 
 
 def test_proving_deep_check_compiles_each_independent_vnext_manifest() -> None:
