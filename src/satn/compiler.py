@@ -72,6 +72,7 @@ from satn.reference_application import (
 from satn.reviewable_network import (
     ReviewableNetwork,
     compile_reviewable_network,
+    reviewable_network_for_optional_context_unavailable,
     terminal_reviewable_network_for_governed_error,
     terminal_reviewable_network_for_governed_evidence,
 )
@@ -253,11 +254,40 @@ def compile_network(
     decision_resolver: AgentDecisionResolver | None = None,
     heartbeat: StageHeartbeat | None = None,
     cross_spine_progress: CrossSpineProgress | None = None,
+) -> CompiledNetwork:
+    """Compile the ordinary current-input network with no Reference replay input.
+
+    This is the stable public compiler contract.  Pipeline-only governed
+    evidence and officer-decision bindings live behind
+    :func:`_compile_network_with_governed_inputs` so adding orchestration state
+    does not change the public callable surface.
+    """
+
+    return _compile_network(
+        config,
+        source,
+        runtime,
+        governed_input_fingerprint=governed_input_fingerprint,
+        decision_resolver=decision_resolver,
+        heartbeat=heartbeat,
+        cross_spine_progress=cross_spine_progress,
+    )
+
+
+def _compile_network_with_governed_inputs(
+    config: AreaConfig,
+    source: dict[str, gpd.GeoDataFrame],
+    runtime: AgentRuntimeSource,
+    *,
+    governed_input_fingerprint: str = "",
+    decision_resolver: AgentDecisionResolver | None = None,
+    heartbeat: StageHeartbeat | None = None,
+    cross_spine_progress: CrossSpineProgress | None = None,
     officer_decisions: tuple[PreloadedOfficerDecision, ...] = (),
     evidence_store: LocalEvidenceStore | None = None,
     evidence_state_fingerprint: str | None = None,
 ) -> CompiledNetwork:
-    """Compile the ordinary current-input network with no Reference replay input."""
+    """Compile with pipeline-owned governed evidence and officer bindings."""
 
     if (evidence_store is None) != (evidence_state_fingerprint is None):
         raise ValueError("evidence_store and evidence_state_fingerprint must be supplied together")
@@ -976,6 +1006,39 @@ def _compile_reviewable_network(
     if config.compilation.network_selection is None or preparation is None:
         return None
 
+    # The reviewable seam is optional for callers that provide only the
+    # ordinary network inputs (notably the compiler-only/reference fixtures).
+    # Do not turn an absent or malformed boundary into synthetic evidence, and
+    # do not let the criteria adapter raise while the authoritative network has
+    # already compiled successfully.  The ordinary compiled network remains a
+    # truthful compatibility fallback; a later governed run with a complete
+    # Area Definition can opt into the reviewable seam.
+    area_definition = source.get("boundary")
+    if not _reviewable_area_definition_available(area_definition):
+        return reviewable_network_for_optional_context_unavailable(
+            preparation,
+            officer_decisions,
+            missing_inputs=("area-definition",),
+        )
+    # Candidate preparation can run with no optional PSA evidence declarations
+    # (for example, a legacy network-selection profile).  Keep that ordinary
+    # compile path publishable; reviewable criteria are only attempted once
+    # both governed evidence declarations are present.
+    if (
+        config.source.population_reach_evidence is None
+        or config.source.school_register_evidence is None
+    ):
+        missing_inputs: list[str] = []
+        if config.source.population_reach_evidence is None:
+            missing_inputs.append("population-reach-evidence")
+        if config.source.school_register_evidence is None:
+            missing_inputs.append("education-access-evidence")
+        return reviewable_network_for_optional_context_unavailable(
+            preparation,
+            officer_decisions,
+            missing_inputs=missing_inputs,
+        )
+
     try:
         population_config = config.source.population_reach_evidence
         population_evidence = (
@@ -1023,7 +1086,7 @@ def _compile_reviewable_network(
                 preparation=preparation,
                 population_evidence=population_evidence,
                 education_evidence=education_evidence,
-                area_definition=source["boundary"],
+                area_definition=area_definition,
                 # Option-specific education evidence is optional at this
                 # boundary; the governed adapter preserves unknown findings.
                 option_education_evidence={},
@@ -1047,6 +1110,33 @@ def _compile_reviewable_network(
         preparation,
         request,
         officer_decisions=officer_decisions,
+    )
+
+
+def _reviewable_area_definition_available(
+    area_definition: object,
+) -> bool:
+    """Return whether the optional reviewable boundary is safely bindable.
+
+    Criteria assembly requires a non-empty CRS-bearing polygon frame.  The
+    ordinary compiler accepts synthetic/reference sources without that frame,
+    so the reviewable adapter must decline them rather than inventing geometry
+    or raising from an optional context.
+    """
+
+    if not isinstance(area_definition, gpd.GeoDataFrame):
+        return False
+    if area_definition.empty or area_definition.crs is None:
+        return False
+    try:
+        geometries = tuple(area_definition.geometry)
+    except Exception:
+        return False
+    return all(
+        geometry is not None
+        and not geometry.is_empty
+        and geometry.geom_type in {"Polygon", "MultiPolygon"}
+        for geometry in geometries
     )
 
 

@@ -1156,12 +1156,28 @@ def _validate_evidence_request_semantics(
 
     expected: list[ReviewableEvidenceRequest] = []
     for gap in payload["network_gaps"]:
+        candidate_set_id = gap.get("candidate_set_id")
+        # Scenario selection gaps carry the exact Candidate Set and the
+        # unsatisfied obligation evidence.  Legacy/unresolved roster gaps do
+        # not have a Candidate Set and instead target their connection ID.
         expected.append(
             ReviewableEvidenceRequest(
                 request_id="network-gap-" + str(gap["gap_id"]),
                 kind=ReviewableEvidenceRequestKind.NETWORK_GAP,
                 reason=str(gap["reason"]),
-                target_id=gap["connection_id"],
+                candidate_set_id=(
+                    str(candidate_set_id) if candidate_set_id is not None else None
+                ),
+                target_id=(
+                    None
+                    if candidate_set_id is not None
+                    else gap["connection_id"]
+                ),
+                evidence_ids=(
+                    tuple(str(item) for item in gap.get("unsatisfied_access_obligation_ids", ()))
+                    if candidate_set_id is not None
+                    else ()
+                ),
             )
         )
     for decision in payload["target_unavailable"]:
@@ -1525,6 +1541,82 @@ def terminal_reviewable_network_for_governed_evidence(
         officer_decisions=canonical_officer_decisions(officer_decisions),
         code="mandatory-evidence-invalid",
         detail=detail,
+    )
+
+
+def reviewable_network_for_optional_context_unavailable(
+    preparation: SpineAccessCandidatePreparationResult | None,
+    officer_decisions: Sequence[PreloadedOfficerDecision] = (),
+    *,
+    missing_inputs: Sequence[str],
+) -> ReviewableNetwork:
+    """Retain a typed reviewable artifact when optional criteria inputs are absent.
+
+    Candidate preparation remains inspectable, but no criteria or scenario is
+    inferred.  This compatibility result is complete as a reviewable artifact
+    and carries only deterministic diagnostics/evidence requests for the
+    missing optional context.
+    """
+
+    canonical = canonical_officer_decisions(officer_decisions)
+    # A caller may deliberately probe stale preparation handling (for
+    # example, by replacing only the fingerprint).  Do not serialize that
+    # inconsistent payload into a reviewable artifact; retain the ordinary
+    # compiler's preparation metadata while making the optional seam
+    # unavailable and explicit.
+    bound_preparation = preparation
+    missing = {str(item) for item in missing_inputs}
+    if preparation is not None and _fingerprint(preparation.canonical_payload()) != (
+        preparation.preparation_fingerprint
+    ):
+        bound_preparation = None
+        missing.add("candidate-preparation-lineage")
+    unavailable = tuple(
+        OfficerDecisionRecord(
+            decision_id=_decision_identity(item.target_id, item.route_id),
+            target_id=item.target_id,
+            route_id=item.route_id,
+            status=OfficerDecisionApplicationStatus.TARGET_UNAVAILABLE,
+        )
+        for item in canonical
+    )
+    diagnostics = {
+        "optional_review_context": {
+            "status": "unavailable",
+            "missing_inputs": sorted(missing),
+            "selection_performed": False,
+            "agent_runtime_invoked": False,
+            "network_geometry_mutated": False,
+            "publication_performed": False,
+        }
+    }
+    return ReviewableNetwork(
+        contract=_CONTRACT,
+        status=ReviewableNetworkStatus.COMPLETE,
+        preparation_fingerprint=(
+            bound_preparation.preparation_fingerprint
+            if bound_preparation is not None
+            else None
+        ),
+        profile_fingerprint=(
+            bound_preparation.profile_fingerprint if bound_preparation is not None else None
+        ),
+        preparation=bound_preparation,
+        scenario=None,
+        compiler_result=None,
+        officer_decision_input=canonical,
+        diagnostics=diagnostics,
+        evidence_requests=tuple(
+            ReviewableEvidenceRequest(
+                request_id="officer-target-" + item.decision_id,
+                kind=ReviewableEvidenceRequestKind.OFFICER_TARGET,
+                reason="officer-decision-target-unavailable",
+                target_id=item.target_id,
+            )
+            for item in unavailable
+        ),
+        officer_decisions=unavailable,
+        target_unavailable=unavailable,
     )
 
 
@@ -1897,6 +1989,7 @@ __all__ = [
     "ReviewableNetworkStatus",
     "canonical_officer_decisions",
     "compile_reviewable_network",
+    "reviewable_network_for_optional_context_unavailable",
     "terminal_reviewable_network_for_governed_error",
     "terminal_reviewable_network_for_governed_evidence",
     "validate_semantic_payload",

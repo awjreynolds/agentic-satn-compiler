@@ -28,6 +28,7 @@ from satn.atm import compare_atm, load_atm
 from satn.compilation_dependencies import CompilerPath, compilation_dependency_manifest
 from satn.compiler import (
     CompiledNetwork,
+    _compile_network_with_governed_inputs,
     _compile_network_with_reference,
     _compile_network_with_strategic_reference,
     compile_network,
@@ -676,7 +677,7 @@ def _compile(
     if heartbeat is not None:
         heartbeat.set_stage("network-compilation")
     try:
-        compiled = compile_network(
+        compiled = _compile_network_with_governed_inputs(
             council,
             source,
             runtime,
