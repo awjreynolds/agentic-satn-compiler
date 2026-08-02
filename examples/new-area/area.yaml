@@ -1,0 +1,27 @@
+# Parseable synthetic starter. Replace identity, sources and paths before a real run.
+area_id: replace-with-stable-area-id
+area_name: Replace with area name
+deployment_id: replace-with-deployment-id
+source:
+  kind: fixture
+  fixture_dir: ../fixture/source
+  snapshot_dir: work/snapshots
+  snapshot_id: replace-with-versioned-snapshot-id
+  national_elevation:
+    provider: local-geojson
+    path: ../fixture/source/elevation-evidence.geojson
+    source_id: synthetic-starter-terrain
+    effective_date: 2026-01-01
+    licence: Synthetic fixture
+    attribution: Synthetic governed starter fixture
+compilation:
+  max_connection_km: 15
+  agent:
+    provider: fake
+    response_mode: caller
+    review_statuses: [amber, red]
+publication:
+  output_dir: work/output
+  title: Replace with SATN review title
+  pdf_page_size: A3
+  audience: local
