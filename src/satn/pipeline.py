@@ -28,10 +28,10 @@ from satn.atm import compare_atm, load_atm
 from satn.compilation_dependencies import CompilerPath, compilation_dependency_manifest
 from satn.compiler import (
     CompiledNetwork,
-    _compile_network_with_governed_inputs,
     _compile_network_with_reference,
     _compile_network_with_strategic_reference,
     compile_network,
+    governed_input_binding,
 )
 from satn.constants import SCHEMA_VERSION
 from satn.content_identity import ordered_geometry_fingerprint
@@ -677,17 +677,19 @@ def _compile(
     if heartbeat is not None:
         heartbeat.set_stage("network-compilation")
     try:
-        compiled = _compile_network_with_governed_inputs(
-            council,
-            source,
-            runtime,
-            governed_input_fingerprint=governed_input_fingerprint,
-            decision_resolver=decision_resolver,
-            heartbeat=heartbeat,
+        with governed_input_binding(
             officer_decisions=officer_decisions,
             evidence_store=evidence_store,
             evidence_state_fingerprint=evidence_state_fingerprint,
-        )
+        ):
+            compiled = compile_network(
+                council,
+                source,
+                runtime,
+                governed_input_fingerprint=governed_input_fingerprint,
+                decision_resolver=decision_resolver,
+                heartbeat=heartbeat,
+            )
     except AgentDecisionRequired as required:
         return _decision_required_result(
             council,

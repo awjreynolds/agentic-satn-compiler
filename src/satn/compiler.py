@@ -7,6 +7,8 @@ import json
 import re
 import time
 from collections.abc import Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from itertools import combinations
 from numbers import Number
@@ -113,6 +115,56 @@ if TYPE_CHECKING:
     from satn.strategic_reference_publication import StrategicReferencePublicationRecord
 
 URBAN_A_ROAD_SOURCE_ALIGNMENT_TOLERANCE_M = 100.0
+
+
+@dataclass(frozen=True)
+class _GovernedInputBinding:
+    """Pipeline-owned inputs scoped to one public compiler invocation."""
+
+    officer_decisions: tuple[PreloadedOfficerDecision, ...]
+    evidence_store: LocalEvidenceStore | None
+    evidence_state_fingerprint: str | None
+
+
+_GOVERNED_INPUT_BINDING: ContextVar[_GovernedInputBinding | None] = ContextVar(
+    "satn_compiler_governed_input_binding",
+    default=None,
+)
+
+
+@contextmanager
+def governed_input_binding(
+    *,
+    officer_decisions: tuple[PreloadedOfficerDecision, ...] = (),
+    evidence_store: LocalEvidenceStore | None = None,
+    evidence_state_fingerprint: str | None = None,
+):
+    """Bind pipeline-only inputs for one public ``compile_network`` call.
+
+    Context-local state keeps the public seven-parameter API stable while
+    ensuring nested or concurrent compilations cannot leak officer or evidence
+    bindings into one another.
+    """
+
+    if (evidence_store is None) != (evidence_state_fingerprint is None):
+        raise ValueError("evidence_store and evidence_state_fingerprint must be supplied together")
+    if evidence_store is not None:
+        if not isinstance(evidence_store, LocalEvidenceStore):
+            raise TypeError("evidence_store must be a LocalEvidenceStore")
+        if re.fullmatch(r"[0-9a-f]{64}", evidence_state_fingerprint or "") is None:
+            raise ValueError("evidence_state_fingerprint must be a full lowercase SHA-256")
+        evidence_store.resolve_coverage(state_fingerprint=evidence_state_fingerprint)
+    token = _GOVERNED_INPUT_BINDING.set(
+        _GovernedInputBinding(
+            officer_decisions=tuple(officer_decisions),
+            evidence_store=evidence_store,
+            evidence_state_fingerprint=evidence_state_fingerprint,
+        )
+    )
+    try:
+        yield
+    finally:
+        _GOVERNED_INPUT_BINDING.reset(token)
 
 
 @dataclass
@@ -259,10 +311,11 @@ def compile_network(
 
     This is the stable public compiler contract.  Pipeline-only governed
     evidence and officer-decision bindings live behind
-    :func:`_compile_network_with_governed_inputs` so adding orchestration state
+    :func:`governed_input_binding` so adding orchestration state
     does not change the public callable surface.
     """
 
+    binding = _GOVERNED_INPUT_BINDING.get()
     return _compile_network(
         config,
         source,
@@ -271,44 +324,15 @@ def compile_network(
         decision_resolver=decision_resolver,
         heartbeat=heartbeat,
         cross_spine_progress=cross_spine_progress,
-    )
-
-
-def _compile_network_with_governed_inputs(
-    config: AreaConfig,
-    source: dict[str, gpd.GeoDataFrame],
-    runtime: AgentRuntimeSource,
-    *,
-    governed_input_fingerprint: str = "",
-    decision_resolver: AgentDecisionResolver | None = None,
-    heartbeat: StageHeartbeat | None = None,
-    cross_spine_progress: CrossSpineProgress | None = None,
-    officer_decisions: tuple[PreloadedOfficerDecision, ...] = (),
-    evidence_store: LocalEvidenceStore | None = None,
-    evidence_state_fingerprint: str | None = None,
-) -> CompiledNetwork:
-    """Compile with pipeline-owned governed evidence and officer bindings."""
-
-    if (evidence_store is None) != (evidence_state_fingerprint is None):
-        raise ValueError("evidence_store and evidence_state_fingerprint must be supplied together")
-    if evidence_store is not None:
-        if not isinstance(evidence_store, LocalEvidenceStore):
-            raise TypeError("evidence_store must be a LocalEvidenceStore")
-        if re.fullmatch(r"[0-9a-f]{64}", evidence_state_fingerprint or "") is None:
-            raise ValueError("evidence_state_fingerprint must be a full lowercase SHA-256")
-        evidence_store.resolve_coverage(state_fingerprint=evidence_state_fingerprint)
-
-    return _compile_network(
-        config,
-        source,
-        runtime,
-        governed_input_fingerprint=governed_input_fingerprint,
-        decision_resolver=decision_resolver,
-        heartbeat=heartbeat,
-        cross_spine_progress=cross_spine_progress,
-        officer_decisions=officer_decisions,
-        evidence_store=evidence_store,
-        evidence_state_fingerprint=evidence_state_fingerprint,
+        **(
+            {
+                "officer_decisions": binding.officer_decisions,
+                "evidence_store": binding.evidence_store,
+                "evidence_state_fingerprint": binding.evidence_state_fingerprint,
+            }
+            if binding is not None
+            else {}
+        ),
     )
 
 

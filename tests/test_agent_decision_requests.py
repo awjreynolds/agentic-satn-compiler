@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from satn import compile
+from satn.compiler import _GOVERNED_INPUT_BINDING, governed_input_binding
 from satn.models import CouncilConfig, TrafficLight
 from satn.sources import snapshot
 
@@ -145,3 +146,17 @@ def test_unexpected_compiler_failures_remain_normal_failures(
 
     with pytest.raises(RuntimeError, match="unexpected compiler defect"):
         compile(config)
+
+
+def test_governed_input_binding_is_nested_and_exception_safe() -> None:
+    assert _GOVERNED_INPUT_BINDING.get() is None
+
+    with governed_input_binding():
+        outer = _GOVERNED_INPUT_BINDING.get()
+        assert outer is not None
+        with pytest.raises(RuntimeError, match="scope probe"), governed_input_binding():
+            assert _GOVERNED_INPUT_BINDING.get() is not outer
+            raise RuntimeError("scope probe")
+        assert _GOVERNED_INPUT_BINDING.get() is outer
+
+    assert _GOVERNED_INPUT_BINDING.get() is None
