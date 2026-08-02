@@ -125,13 +125,48 @@ def test_reviewable_map_projection_keeps_rejected_routes_and_projects_assets_to_
     places = gpd.GeoDataFrame(
         [
             {"place_id": "place-a", "geometry": Point(-2.1, 51.3)},
-            {"place_id": "place-b", "geometry": Point(-2.0, 51.4)},
         ],
         crs=4326,
+    )
+    strategic_spines = gpd.GeoDataFrame(
+        [
+            {
+                "spine_id": "spine-a-road",
+                "network_role": "strategic-spine",
+                "spine_kind": "a-road",
+                "evidence_id": "a-road-evidence",
+                "source_id": "a-road-source",
+                "provenance": json.dumps(
+                    {
+                        "canonical_geometry_sha256": "a" * 64,
+                        "source_ids": ["a-road-source"],
+                    },
+                    sort_keys=True,
+                ),
+                "geometry": LineString([(370000, 170000), (370200, 170000)]),
+            },
+            {
+                "spine_id": "spine-ncn",
+                "network_role": "strategic-spine",
+                "spine_kind": "ncn",
+                "evidence_id": "ncn-evidence",
+                "source_id": "ncn-source",
+                "provenance": json.dumps(
+                    {
+                        "canonical_geometry_sha256": "b" * 64,
+                        "source_ids": ["ncn-source"],
+                    },
+                    sort_keys=True,
+                ),
+                "geometry": LineString([(370000, 170100), (370200, 170100)]),
+            },
+        ],
+        crs=27700,
     )
     compiled = SimpleNamespace(
         reviewable_network=reviewable,
         places=places,
+        strategic_spines=strategic_spines,
         asset_accounting={
             "contract": "satn-asset-accounting/v1",
             "records": [
@@ -142,7 +177,17 @@ def test_reviewable_map_projection_keeps_rejected_routes_and_projects_assets_to_
                     "alignment_bases": ["mapped-cycleway"],
                     "intervention_state": "upgrade-required",
                     "geometry": mapping(LineString([(370000, 170000), (370100, 170100)])),
-                }
+                },
+                {
+                    "asset_id": "asset-ncn",
+                    "asset_identity_sha256": "c" * 64,
+                    "asset_kind": "current-ncn",
+                    "primary_alignment_basis": "current-ncn",
+                    "alignment_bases": ["current-ncn"],
+                    "intervention_state": "existing-provision",
+                    "governed_source_identities": ["ncn-source"],
+                    "geometry": mapping(LineString([(370000, 170100), (370200, 170100)])),
+                },
             ],
         },
     )
@@ -162,10 +207,25 @@ def test_reviewable_map_projection_keeps_rejected_routes_and_projects_assets_to_
         by_type["reviewable-unselected-candidate"][0]["properties"]["admission_disposition"]
         == "rejected"
     )
-    assert by_type["reviewable-gap-endpoint"]
-    assert all(
-        feature["geometry"]["type"] == "Point"
+    gap_endpoints = {
+        feature["properties"]["endpoint_id"]: feature
         for feature in by_type["reviewable-gap-endpoint"]
+    }
+    assert set(gap_endpoints) == {"place-a", "place-b"}
+    assert gap_endpoints["place-a"]["geometry"]["type"] == "Point"
+    assert gap_endpoints["place-b"]["geometry"] is None
+    assert gap_endpoints["place-b"]["properties"]["missing_endpoint_geometry"] is True
+    selected_routes = {
+        feature["properties"]["route_id"]: feature
+        for feature in by_type["reviewable-selected-route"]
+    }
+    assert {"selected-route", "spine-a-road", "spine-ncn"} <= set(selected_routes)
+    assert selected_routes["spine-a-road"]["properties"]["display_state"] == "undetermined"
+    assert selected_routes["spine-a-road"]["properties"]["primary_alignment_basis"] == (
+        "a-road"
+    )
+    assert selected_routes["spine-ncn"]["properties"]["display_state"] == (
+        "existing-provision"
     )
     asset = by_type["asset-upgrade-required"][0]
     coordinates = asset["geometry"]["coordinates"][0]

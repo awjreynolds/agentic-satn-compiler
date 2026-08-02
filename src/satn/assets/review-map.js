@@ -1383,6 +1383,29 @@
     panel.append(heading, list);
   }
 
+  function renderReviewableFindings() {
+    const section = document.querySelector("#reviewable-findings");
+    const list = document.querySelector("#reviewable-findings-list");
+    if (!section || !list) return;
+    const findings = reviewable.features.filter(
+      (feature) => feature.properties?.feature_type === "reviewable-gap-endpoint"
+    );
+    section.hidden = findings.length === 0;
+    list.replaceChildren();
+    findings.forEach((feature) => {
+      const properties = feature.properties || {};
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "finding-button";
+      button.textContent = `${value(properties.gap_id, "Gap")} · ${value(properties.endpoint_id, "unknown endpoint")} · ${feature.geometry ? "mapped endpoint" : "endpoint geometry unavailable"}`;
+      button.addEventListener("click", () => {
+        const artifact = artifactRecord(feature, "reviewable", "reviewable-findings");
+        if (artifact) renderReviewableDetails(artifact);
+      });
+      list.append(button);
+    });
+  }
+
   function setHighlight(id) {
     state.active = id;
     document.querySelectorAll(".connection").forEach((item) => {
@@ -1773,6 +1796,12 @@
         });
         const legend = document.getElementById(`legend-${controlId.replace("layer-", "")}`);
         if (legend) legend.hidden = !control.checked;
+        if (controlId === "layer-reviewable-gaps") {
+          const findings = document.getElementById("reviewable-findings");
+          if (findings) {
+            findings.hidden = !control.checked || !findings.querySelector(".finding-button");
+          }
+        }
         if (controlId === "layer-population-display-sections") {
           const populationLegend = document.getElementById("population-display-legend");
           if (populationLegend) populationLegend.hidden = !control.checked;
@@ -1969,11 +1998,19 @@
       "greenway", "#2e7d32",
       "mapped-cycleway", "#6a1b9a",
       "cycle-track", "#7b1fa2",
+      "shared-use-path", "#00838f",
       "public-footpath", "#795548",
       "public-bridleway", "#5d4037",
+      "restricted-byway", "#6d4c41",
+      "byway-open-to-all-traffic", "#4e342e",
+      "prow-class-unknown", "#8d6e63",
       "former-railway", "#8e24aa",
+      "local-connector", "#0277bd",
       "a-road", "#c62828",
       "b-road", "#ad1457",
+      "classified-unnumbered-road", "#d81b60",
+      "unclassified-road", "#f06292",
+      "proposed-new-corridor", "#3949ab",
       "#546e7a"
     ];
     const reviewableCoreColour = [
@@ -2011,17 +2048,29 @@
     });
     map.addLayer({
       id: "reviewable-required-connections",
-      type: "line",
+      type: "symbol",
       source: "reviewable",
       filter: reviewableRequiredConnectionFilter,
-      layout: { visibility: "visible" },
+      layout: {
+        visibility: "visible",
+        "symbol-placement": "line",
+        "symbol-spacing": 520,
+        "text-field": ["match", ["get", "network_role"],
+          "community-access", "Community connection",
+          "school-access", "School connection",
+          "strategic-destination-access", "Destination connection",
+          "Required connection"
+        ],
+        "text-size": ["interpolate", ["linear"], ["zoom"], 7, 8, 13, 11],
+        "text-allow-overlap": false,
+        "text-ignore-placement": false
+      },
       paint: {
-        "line-color": "#90a4ae",
-        "line-width": ["interpolate", ["linear"], ["zoom"], 7, 7, 13, 10],
-        "line-dasharray": [1, 1],
-        "line-opacity": .22
+        "text-color": "#263238",
+        "text-halo-color": "#ffffff",
+        "text-halo-width": 2
       }
-    }, "reviewable-strategic-network-halo");
+    });
     map.addLayer({
       id: "reviewable-strategic-network-core",
       type: "line",
@@ -2031,10 +2080,10 @@
         "line-color": reviewableCoreColour,
         "line-width": ["interpolate", ["linear"], ["zoom"], 7, 3, 13, 6],
         "line-dasharray": ["match", ["get", "display_state"],
-          "existing-provision", [1, 0],
-          "upgrade-required", [1, .8],
-          "proposed-new-link", [2, 1],
-          [1, 0]
+          "existing-provision", ["literal", [1, 0]],
+          "upgrade-required", ["literal", [1, .8]],
+          "proposed-new-link", ["literal", [2, 1]],
+          ["literal", [1, 0]]
         ],
         "line-opacity": .96
       }
@@ -2054,6 +2103,7 @@
       },
       paint: { "text-color": reviewableCoreColour, "text-halo-color": "#ffffff", "text-halo-width": 2 }
     });
+    map.moveLayer("reviewable-required-connections");
     map.addLayer({
       id: "reviewable-gaps",
       type: "circle",
@@ -2090,7 +2140,10 @@
       paint: {
         "line-color": ["match", ["get", "divergence_variant"], "officer", "#6a1b9a", "#d84315"],
         "line-width": 5,
-        "line-dasharray": ["match", ["get", "divergence_variant"], "officer", [2, 1], [1, 1]]
+        "line-dasharray": ["match", ["get", "divergence_variant"],
+          "officer", ["literal", [2, 1]],
+          ["literal", [1, 1]]
+        ]
       }
     });
     map.addLayer({
@@ -2305,6 +2358,7 @@
 
   renderCards();
   bindControls();
+  renderReviewableFindings();
   updateGradientCandidate();
   renderLinearEvidence();
   ensureLayerManifest().catch((error) => {

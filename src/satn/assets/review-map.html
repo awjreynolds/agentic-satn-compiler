@@ -31,7 +31,7 @@
 
       <fieldset id="layer-controls">
         <legend>Map layers</legend>
-        <div class="layer-row"><label><input id="layer-strategic-network" type="checkbox" checked aria-describedby="legend-strategic-network"> Strategic Active Travel Network</label><button class="info-button" type="button" aria-expanded="false" aria-controls="legend-strategic-network" aria-label="About the Strategic Active Travel Network">i</button><div id="legend-strategic-network" class="layer-popover" role="note" hidden>Selected governed routes. The line core labels Existing provision, Upgrade required, Proposed new link or Undetermined; the halo identifies the primary Alignment Basis. This is a review publication, not a final design.</div></div>
+        <div class="layer-row"><label><input id="layer-strategic-network" type="checkbox" checked aria-describedby="legend-strategic-network"> Strategic Active Travel Network</label><button class="info-button" type="button" aria-expanded="false" aria-controls="legend-strategic-network" aria-label="About the Strategic Active Travel Network">i</button><div id="legend-strategic-network" class="layer-popover" role="note" hidden>Selected governed routes include A-road assumptions, current and declassified NCN routes and Greenway cycleways where selected. The line core labels Existing provision, Upgrade required, Proposed new link or Undetermined; the halo identifies the primary Alignment Basis. This is a review publication, not a final design.</div></div>
         <div class="layer-row"><label><input id="layer-required-connections" type="checkbox" checked aria-describedby="legend-required-connections"> Required connections</label><button class="info-button" type="button" aria-expanded="false" aria-controls="legend-required-connections" aria-label="About required connections">i</button><div id="legend-required-connections" class="layer-popover" role="note" hidden>Compiler-selected connections remain visible with exact governed geometry and role evidence.</div></div>
         <div class="layer-row"><label><input id="layer-reviewable-gaps" type="checkbox" checked aria-describedby="legend-reviewable-gaps"> Material endpoint gaps</label><button class="info-button" type="button" aria-expanded="false" aria-controls="legend-reviewable-gaps" aria-label="About material endpoint gaps">i</button><div id="legend-reviewable-gaps" class="layer-popover" role="note" hidden>Gap symbols mark governed endpoints only. No route geometry is invented for an unresolved gap.</div></div>
         <div class="layer-row"><label><input id="layer-officer-divergences" type="checkbox" checked aria-describedby="legend-officer-divergences"> Officer–compiler divergences</label><button class="info-button" type="button" aria-expanded="false" aria-controls="legend-officer-divergences" aria-label="About officer–compiler divergences">i</button><div id="legend-officer-divergences" class="layer-popover" role="note" hidden>Officer and compiler candidate routes are shown as a distinct, non-grey comparison. Both retain their evidence and decision identity.</div></div>
@@ -57,6 +57,12 @@
         <div class="layer-row"><label><input id="layer-atm" type="checkbox" __ATM_STATE__ aria-describedby="legend-atm"> ATM reference</label><button class="info-button" type="button" aria-expanded="false" aria-controls="legend-atm" aria-label="About ATM reference">i</button><div id="legend-atm" class="layer-popover" role="note" hidden>Governed before/after comparison evidence, never ground truth.</div></div>
         <div id="reference-options-control" class="layer-row" hidden><label><input id="layer-reference-options" type="checkbox" aria-describedby="reference-options-status legend-reference-options"> Reviewed Reference alternatives</label><button class="info-button" type="button" aria-expanded="false" aria-controls="legend-reference-options" aria-label="About reviewed Reference alternatives">i</button><div id="reference-options-status" class="reference-options-status" role="note" hidden>Red dashed linework means selected; purple dashed linework means complementary; grey dashed linework means rejected. All dashed alternative linework is review-only evidence, not the authoritative selected network.</div><div id="legend-reference-options" class="layer-popover" role="note" hidden>All dashed alternative linework is review-only evidence, not the authoritative selected network or a safe, feasible, funded, or adopted scheme.</div></div>
       </fieldset>
+
+      <section id="reviewable-findings" aria-labelledby="reviewable-findings-heading" hidden>
+        <h2 id="reviewable-findings-heading">Material gap findings</h2>
+        <p>Every governed gap endpoint remains inspectable here, including an endpoint whose map position is unavailable.</p>
+        <div id="reviewable-findings-list" class="finding-list"></div>
+      </section>
 
       <section id="reference-satn-summary" aria-labelledby="reference-satn-heading" __REFERENCE_SATN_STATE__>
         __REFERENCE_SATN_EVIDENCE__
@@ -109,8 +115,32 @@
           <summary>Map legend</summary>
           <ul>
             <li><span class="map-key line strategic-network" aria-hidden="true"></span>Strategic network route</li>
-            <li><span class="map-key line selected-core" aria-hidden="true"></span>Selected route core: Existing · Upgrade required · Proposed · Undetermined</li>
-            <li><span class="map-key line alignment-halo" aria-hidden="true"></span>Route halo: primary Alignment Basis</li>
+            <li class="legend-heading">Selected route core — intervention state</li>
+            <li><span class="map-key line core-existing" aria-hidden="true"></span>Existing provision — solid green</li>
+            <li><span class="map-key line core-upgrade" aria-hidden="true"></span>Upgrade required — short-dashed orange</li>
+            <li><span class="map-key line core-proposed" aria-hidden="true"></span>Proposed new link — long-dashed blue</li>
+            <li><span class="map-key line core-gap" aria-hidden="true"></span>Unresolved gap — red endpoint finding, no route invented</li>
+            <li><span class="map-key line core-undetermined" aria-hidden="true"></span>Undetermined — solid slate</li>
+            <li class="legend-heading">Route halo — primary Alignment Basis</li>
+            <li><span class="map-key line basis-current-ncn" aria-hidden="true"></span>Current NCN</li>
+            <li><span class="map-key line basis-ncn-link" aria-hidden="true"></span>NCN link</li>
+            <li><span class="map-key line basis-reclassified-ncn" aria-hidden="true"></span>Reclassified NCN</li>
+            <li><span class="map-key line basis-greenway" aria-hidden="true"></span>Greenway</li>
+            <li><span class="map-key line basis-mapped-cycleway" aria-hidden="true"></span>Mapped cycleway</li>
+            <li><span class="map-key line basis-cycle-track" aria-hidden="true"></span>Cycle track</li>
+            <li><span class="map-key line basis-shared-use" aria-hidden="true"></span>Shared-use path</li>
+            <li><span class="map-key line basis-footpath" aria-hidden="true"></span>Public footpath</li>
+            <li><span class="map-key line basis-bridleway" aria-hidden="true"></span>Public bridleway</li>
+            <li><span class="map-key line basis-restricted-byway" aria-hidden="true"></span>Restricted byway</li>
+            <li><span class="map-key line basis-boat" aria-hidden="true"></span>Byway open to all traffic</li>
+            <li><span class="map-key line basis-prow-unknown" aria-hidden="true"></span>PROW class unknown</li>
+            <li><span class="map-key line basis-former-railway" aria-hidden="true"></span>Former railway</li>
+            <li><span class="map-key line basis-local-connector" aria-hidden="true"></span>Local connector</li>
+            <li><span class="map-key line basis-a-road" aria-hidden="true"></span>A road</li>
+            <li><span class="map-key line basis-b-road" aria-hidden="true"></span>B road</li>
+            <li><span class="map-key line basis-classified" aria-hidden="true"></span>Classified unnumbered road</li>
+            <li><span class="map-key line basis-unclassified" aria-hidden="true"></span>Unclassified road</li>
+            <li><span class="map-key line basis-proposed" aria-hidden="true"></span>Proposed new corridor</li>
             <li><span class="map-key line access" aria-hidden="true"></span>Access connection</li>
             <li><span class="map-key line cross-spine" aria-hidden="true"></span>Cross-spine connector</li>
             <li><span class="map-key line urban" aria-hidden="true"></span>Urban through-road</li>

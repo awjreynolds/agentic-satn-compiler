@@ -1599,6 +1599,105 @@ def _reviewable_coordinate_values(value: object) -> list[float]:
     return values
 
 
+def _reviewable_strategic_spine_features(compiled: CompiledNetwork) -> list[dict[str, object]]:
+    """Carry the exact compiler-selected Strategic Spine into the legible SATN."""
+
+    frame = getattr(compiled, "strategic_spines", None)
+    if not isinstance(frame, gpd.GeoDataFrame) or frame.empty:
+        return []
+    bases = {
+        "a-road": "a-road",
+        "ncn": "current-ncn",
+        "declassified-ncn": "reclassified-ncn",
+        "greenway": "greenway",
+    }
+    accounting_records = tuple(
+        item
+        for item in compiled.asset_accounting.get("records", [])
+        if isinstance(item, dict)
+    )
+    features: list[dict[str, object]] = []
+    for _, row in frame.to_crs(4326).sort_values("spine_id").iterrows():
+        spine_kind = str(row.get("spine_kind") or "")
+        basis = bases.get(spine_kind)
+        geometry = row.geometry
+        if basis is None or geometry is None or geometry.is_empty:
+            continue
+        provenance: dict[str, object] = {}
+        raw_provenance = row.get("provenance")
+        if isinstance(raw_provenance, str):
+            try:
+                parsed = json.loads(raw_provenance)
+                if isinstance(parsed, dict):
+                    provenance = parsed
+            except json.JSONDecodeError:
+                provenance = {}
+        spine_id = str(row["spine_id"])
+        source_identities = {
+            str(item) for item in provenance.get("source_ids", []) if item
+        }
+        matched_assets = tuple(
+            item
+            for item in accounting_records
+            if source_identities
+            & {
+                str(identity)
+                for identity in item.get("governed_source_identities", [])
+                if identity
+            }
+        )
+        matched_states = {
+            str(item.get("intervention_state"))
+            for item in matched_assets
+            if basis in item.get("alignment_bases", [])
+            and item.get("intervention_state")
+            in {"existing-provision", "upgrade-required", "proposed-new-link"}
+        }
+        display_state = next(iter(matched_states)) if len(matched_states) == 1 else "undetermined"
+        intervention_evidence_state = (
+            "asset-accounting-bound"
+            if len(matched_states) == 1
+            else "conflicting"
+            if len(matched_states) > 1
+            else "unknown"
+        )
+        evidence_fingerprints = sorted(
+            {
+                str(item.get("asset_identity_sha256"))
+                for item in matched_assets
+                if item.get("asset_identity_sha256")
+            }
+        )
+        features.append(
+            {
+                "type": "Feature",
+                "id": f"reviewable-strategic-spine:{spine_id}",
+                "properties": {
+                    "feature_type": "reviewable-selected-route",
+                    "route_id": spine_id,
+                    "candidate_id": None,
+                    "candidate_set_id": None,
+                    "connection_id": None,
+                    "selection_disposition": "selected-strategic-spine",
+                    "network_role": "strategic-spine",
+                    "spine_kind": spine_kind,
+                    "display_state": display_state,
+                    "primary_alignment_basis": basis,
+                    "alignment_bases": [basis],
+                    "evidence_fingerprints": evidence_fingerprints,
+                    "intervention_evidence_state": intervention_evidence_state,
+                    "evidence_id": _json_value(row.get("evidence_id")),
+                    "source_id": _json_value(row.get("source_id")),
+                    "geometry_crs": "EPSG:4326",
+                    "source_geometry_crs": "EPSG:27700",
+                    "geometry_semantics": "exact-compiler-selected-strategic-spine",
+                },
+                "geometry": mapping(geometry),
+            }
+        )
+    return features
+
+
 def _reviewable_map_collection(compiled: CompiledNetwork) -> dict[str, object]:
     """Build the production-backed review-map layer package.
 
@@ -1618,6 +1717,7 @@ def _reviewable_map_collection(compiled: CompiledNetwork) -> dict[str, object]:
         }
     roster = _reviewable_candidate_roster(reviewable)
     selected_ids = {str(item.candidate_id) for item in reviewable.effective_selections}
+    features.extend(_reviewable_strategic_spine_features(compiled))
     for selection in reviewable.effective_selections:
         feature = _reviewable_candidate_feature(
             selection.candidate,
@@ -1726,8 +1826,6 @@ def _reviewable_map_collection(compiled: CompiledNetwork) -> dict[str, object]:
     for gap in reviewable.network_gaps:
         for endpoint_id in gap.endpoints:
             coordinate = place_points.get(str(endpoint_id))
-            if coordinate is None:
-                continue
             features.append(
                 {
                     "type": "Feature",
@@ -1741,9 +1839,14 @@ def _reviewable_map_collection(compiled: CompiledNetwork) -> dict[str, object]:
                         "network_role": str(gap.network_role) if gap.network_role else None,
                         "reason": gap.reason,
                         "display_state": str(gap.display_state),
+                        "missing_endpoint_geometry": coordinate is None,
                         "geometry_semantics": "endpoint-marker-only-no-route-geometry",
                     },
-                    "geometry": {"type": "Point", "coordinates": list(coordinate)},
+                    "geometry": (
+                        {"type": "Point", "coordinates": list(coordinate)}
+                        if coordinate is not None
+                        else None
+                    ),
                 }
             )
 
@@ -4469,10 +4572,18 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
         geometry = feature.get("geometry")
         if not isinstance(feature_id, str) or not feature_id or feature_id in reviewable_ids:
             raise ValueError("review map reviewable-network feature IDs are not stable and unique")
-        if not isinstance(properties, dict) or not isinstance(geometry, dict):
-            raise ValueError("review map reviewable-network feature lacks properties or geometry")
+        if not isinstance(properties, dict):
+            raise ValueError("review map reviewable-network feature lacks properties")
         reviewable_ids.add(feature_id)
         feature_type = properties.get("feature_type")
+        if geometry is None:
+            if feature_type != "reviewable-gap-endpoint" or properties.get(
+                "missing_endpoint_geometry"
+            ) is not True:
+                raise ValueError("review map reviewable-network feature lacks geometry")
+            continue
+        if not isinstance(geometry, dict):
+            raise ValueError("review map reviewable-network feature geometry is malformed")
         if feature_type == "reviewable-gap-endpoint" and geometry.get("type") != "Point":
             raise ValueError("reviewable network gaps must remain endpoint markers")
         if feature_type in {
@@ -4502,6 +4613,60 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
         top_level_reviewable_map = json.loads(reviewable_map_path.read_text(encoding="utf-8"))
         if top_level_reviewable_map != reviewable_map:
             raise ValueError("reviewable-network GeoJSON differs from review map")
+        expected_gap_ids = {
+            f"reviewable-gap:{gap['gap_id']}:{endpoint_id}"
+            for gap in artifact["semantic"].get("network_gaps", [])
+            for endpoint_id in gap.get("endpoints", [])
+        }
+        actual_gap_ids = {
+            str(feature["id"])
+            for feature in reviewable_features
+            if feature["properties"].get("feature_type") == "reviewable-gap-endpoint"
+        }
+        if actual_gap_ids != expected_gap_ids:
+            raise ValueError("reviewable-network gap endpoint roster is incomplete")
+        expected_spines = {
+            f"reviewable-strategic-spine:{feature['id']}": feature
+            for feature in geojson.get("features", [])
+            if feature.get("properties", {}).get("feature_type") == "strategic-spine"
+        }
+        actual_spines = {
+            str(feature["id"]): feature
+            for feature in reviewable_features
+            if feature["properties"].get("selection_disposition")
+            == "selected-strategic-spine"
+        }
+        prefixed_spine_ids = {
+            str(feature["id"])
+            for feature in reviewable_features
+            if str(feature["id"]).startswith("reviewable-strategic-spine:")
+        }
+        if set(actual_spines) != set(expected_spines) or prefixed_spine_ids != set(
+            expected_spines
+        ):
+            raise ValueError("reviewable-network strategic spine roster is incomplete")
+        basis_by_kind = {
+            "a-road": "a-road",
+            "ncn": "current-ncn",
+            "declassified-ncn": "reclassified-ncn",
+            "greenway": "greenway",
+        }
+        for feature_id, expected_feature in expected_spines.items():
+            actual_feature = actual_spines[feature_id]
+            expected_properties = expected_feature["properties"]
+            actual_properties = actual_feature["properties"]
+            if (
+                actual_feature.get("geometry") != expected_feature.get("geometry")
+                or actual_properties.get("feature_type") != "reviewable-selected-route"
+                or actual_properties.get("route_id") != str(expected_feature["id"])
+                or actual_properties.get("spine_kind")
+                != expected_properties.get("spine_kind")
+                or actual_properties.get("primary_alignment_basis")
+                != basis_by_kind.get(str(expected_properties.get("spine_kind")))
+                or actual_properties.get("geometry_semantics")
+                != "exact-compiler-selected-strategic-spine"
+            ):
+                raise ValueError("reviewable-network strategic spine projection differs")
     elif reviewable_map_path.exists():
         raise ValueError("legacy publication unexpectedly contains reviewable-network GeoJSON")
     accounting_manifest = run.get("asset_accounting", {})
