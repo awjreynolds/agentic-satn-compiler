@@ -34,6 +34,7 @@ from satn.alignment_selection import (
     ScenarioDecisionRecord,
     admit_candidate_set,
     review_frontier_fingerprint,
+    traffic_diagnostics_for_candidate,
 )
 from satn.education_access import (
     assess_education_access,
@@ -1262,11 +1263,9 @@ def test_conflicting_directional_claim_does_not_contaminate_distinct_direction()
     )
 
     diagnostics = result.diagnostics["traffic_diagnostics"]
-    assert "traffic-conflict" not in {
-        item["diagnostic_id"] for item in diagnostics
-    }
-    unknown = next(item for item in diagnostics if item["diagnostic_id"] == "traffic-unknown")
-    assert unknown["traffic_status"] == "multiple-observations-no-combined"
+    diagnostic_ids = {item["diagnostic_id"] for item in diagnostics}
+    assert "traffic-conflict" in diagnostic_ids
+    assert "traffic-high-on-carriageway-without-protected-space" in diagnostic_ids
 
 
 def test_normalized_traffic_observation_retains_direction_dates_link_identity_and_crs() -> None:
@@ -1331,6 +1330,58 @@ def test_on_carriageway_traffic_evidence_without_profile_is_explicit_unknown() -
     diagnostics = result.diagnostics["traffic_diagnostics"]
     assert diagnostics[0]["diagnostic_id"] == "traffic-unknown"
     assert diagnostics[0]["traffic_status"] == "profile-unavailable"
+
+
+def test_singular_conflicting_traffic_observation_has_typed_roster_without_profile() -> None:
+    profile_value = reuse_first_profile()
+    base = high_traffic_on_carriageway_candidate()
+    observation = base.traffic_observation
+    assert observation is not None
+    conflicting = TrafficObservation(
+        **(observation.model_dump(mode="python") | {"match_state": "conflicting"})
+    )
+    candidate_value = AlignmentCandidateInput.model_validate(
+        base.model_dump(mode="python", exclude={"candidate_id", "traffic_observation"})
+        | {"traffic_observations": (conflicting,)}
+    )
+
+    diagnostics = traffic_diagnostics_for_candidate(
+        candidate_value,
+        profile_value,
+    )
+
+    assert diagnostics[0]["diagnostic_id"] == "traffic-conflict"
+    assert diagnostics[0]["traffic_status"] == "conflicting"
+    assert diagnostics[0]["traffic_conflict_evidence"]["observation_ids"] == [
+        "traffic-observation-traffic-high",
+    ]
+    assert diagnostics[0]["traffic_conflict_evidence"]["conflicting_fields"] == [
+        "match_state",
+    ]
+
+
+def test_unapplied_traffic_freshness_is_unknown_with_configuration_diagnostic() -> None:
+    profile_value = reuse_first_profile(
+        traffic_profile={
+            "profile_id": "prepared-dft-traffic-unapplied-freshness",
+            "version": "2026-08-02",
+            "thresholds": [{"id": "high", "upper_vehicles_per_day": None}],
+            "high_traffic_challenge_band": "high",
+            "max_observation_age_years": 3,
+            "stale_value_policy": "retain-and-diagnose",
+            "missing_policy": "explicit-unknown",
+        }
+    )
+    candidate_value = high_traffic_on_carriageway_candidate()
+
+    diagnostics = traffic_diagnostics_for_candidate(candidate_value, profile_value)
+
+    assert diagnostics[0]["diagnostic_id"] == "traffic-freshness-configuration"
+    assert diagnostics[0]["traffic_status"] == "unknown"
+    assert diagnostics[0]["freshness_state"] == "unknown"
+    assert diagnostics[0]["freshness_configuration_diagnostic"] == (
+        "max-observation-age-without-as-at-year"
+    )
 
 
 def test_estimated_aadf_retains_band_and_emits_traffic_estimated() -> None:

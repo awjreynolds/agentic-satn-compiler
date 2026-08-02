@@ -109,8 +109,6 @@ class TrafficProfileConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_challenge_band(self) -> Self:
-        if self.max_observation_age_years is not None and self.as_at_year is None:
-            raise ValueError("max_observation_age_years requires as_at_year")
         if self.high_traffic_challenge_band not in {
             item.id for item in self.thresholds
         }:
@@ -145,7 +143,7 @@ class TrafficProfileConfig(BaseModel):
         # year has no reference point and must never silently use a reported
         # freshness state.
         if self.max_observation_age_years is not None and self.as_at_year is None:
-            raise ValueError("max_observation_age_years requires as_at_year")
+            return TrafficFreshnessState.UNKNOWN
         if self.as_at_year is None or self.max_observation_age_years is None:
             return reported_state
         age = self.as_at_year - observation_year
@@ -156,6 +154,14 @@ class TrafficProfileConfig(BaseModel):
             if age > self.max_observation_age_years
             else TrafficFreshnessState.FRESH
         )
+
+    @property
+    def freshness_configuration_diagnostic(self) -> str | None:
+        """Explain why a configured age policy could not be applied."""
+
+        if self.max_observation_age_years is not None and self.as_at_year is None:
+            return "max-observation-age-without-as-at-year"
+        return None
 
 
 class TrafficMatchPolicyConfig(BaseModel):

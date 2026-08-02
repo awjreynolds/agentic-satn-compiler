@@ -243,7 +243,7 @@ def test_traffic_profile_rejects_duplicate_or_unsorted_thresholds() -> None:
         )
 
 
-def test_traffic_profile_requires_declared_as_at_year_for_age_policy() -> None:
+def test_traffic_profile_without_as_at_year_retains_conservative_unknown_policy() -> None:
     traffic_profile = {
         "profile_id": "bath-dft-traffic-age-policy",
         "version": "2026-08-02",
@@ -256,8 +256,11 @@ def test_traffic_profile_requires_declared_as_at_year_for_age_policy() -> None:
     }
     payload = vnext_profile_payload() | {"traffic_profile": traffic_profile}
     payload.pop("traffic_profile_fingerprint", None)
-    with pytest.raises(ValidationError, match="as_at_year"):
-        NetworkSelectionProfile.model_validate(payload)
+    profile = NetworkSelectionProfile.model_validate(payload)
+    assert profile.traffic_profile is not None
+    assert profile.traffic_profile.freshness_configuration_diagnostic == (
+        "max-observation-age-without-as-at-year"
+    )
 
 
 def test_vnext_profile_rejects_explicit_legacy_policy_fields() -> None:

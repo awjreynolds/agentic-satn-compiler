@@ -71,16 +71,97 @@ _VALID_EVIDENCE_STATES = {
 }
 _RAW_ATTRIBUTE_FIELDS = (
     "highway",
+    "railway",
+    "route_type",
     "bicycle",
     "foot",
     "access",
+    "access_default_interpretation",
+    "default_access_interpretation",
+    "access_default_rule",
+    "default_access_rule",
     "designation",
     "prow_class",
     "right_of_way",
     "shared_use",
     "surface",
+    "smoothness",
+    "segregated",
+    "oneway",
+    "motor_vehicle",
+    "motorcar",
+    "horse",
+    "lit",
+    "width",
+    "maxspeed",
     "ref",
+    "tags",
+    "raw_tags",
+    "osm_tags",
 )
+
+# A complete export lineage is necessary but not sufficient to promote a row
+# to an authoritative claim.  The publishing role must be one that is
+# governed for the particular claim being asserted.  In particular, a
+# community-mapped observation may describe a mapped feature, but it cannot
+# establish statutory cycle-track status or a legal/physical connection.
+_AUTHORITY_ROLE_CLAIMS = {
+    "custodian": {
+        "cycling-access",
+        "continuity",
+        "current-cycling-provision",
+        "physical-connection",
+        "route-class",
+        "surface-condition",
+    },
+    "custodian-classification": {
+        "cycling-access",
+        "continuity",
+        "current-cycling-provision",
+        "physical-connection",
+        "route-class",
+        "surface-condition",
+    },
+    "highway-authority": {
+        "cycling-access",
+        "continuity",
+        "current-cycling-provision",
+        "physical-connection",
+        "route-class",
+        "surface-condition",
+    },
+    "legal-highway-record": {
+        "cycling-access",
+        "continuity",
+        "current-cycling-provision",
+        "physical-connection",
+        "route-class",
+    },
+    "asset-owner-record": {
+        "cycling-access",
+        "continuity",
+        "current-cycling-provision",
+        "physical-connection",
+        "surface-condition",
+    },
+    "scheme-delivery-record": {
+        "continuity",
+        "current-cycling-provision",
+        "physical-connection",
+        "surface-condition",
+    },
+    "authoritative-topography": {
+        "topography",
+        "surface-condition",
+    },
+}
+_CYCLEWAY_STATUS_CLAIMS = {
+    "cycling-access",
+    "continuity",
+    "current-cycling-provision",
+    "physical-connection",
+    "route-class",
+}
 
 # Classification is deliberately ordered as a governed precedence, rather than
 # inheriting the row order of a source export.  ``alignment_bases`` retains all
@@ -171,6 +252,9 @@ def _authoritative_lineage(row: pd.Series) -> bool:
     """Return whether a supported claim carries a complete source lineage."""
     source_export = row.get("source_export_sha256") or row.get("raw_bytes_sha256")
     parser_contract = row.get("ingestion_contract") or row.get("parser_contract")
+    role = (_text(row.get("source_authority_role")) or "").lower().replace("_", "-")
+    claim = (_text(row.get("claim_type")) or "").lower().replace("_", "-")
+    allowed_claims = _AUTHORITY_ROLE_CLAIMS.get(role, set())
     return bool(
         _text(row.get("source_family"))
         and _text(row.get("dataset"))
@@ -179,11 +263,16 @@ def _authoritative_lineage(row: pd.Series) -> bool:
         and (_text(row.get("effective_date")) or _text(row.get("publisher_release")))
         and _text(row.get("licence"))
         and _full_sha256(source_export)
-        and _text(row.get("claim_type"))
+        and claim in allowed_claims
         and _text(row.get("evidence_mode"))
         and _text(row.get("coverage_state"))
         and (_text(parser_contract) or _text(row.get("parser_version")))
     )
+
+
+def _authoritative_cycleway_lineage(row: pd.Series) -> bool:
+    claim = (_text(row.get("claim_type")) or "").lower().replace("_", "-")
+    return _authoritative_lineage(row) and claim in _CYCLEWAY_STATUS_CLAIMS
 
 
 def _merge_evidence_state(left: str, right: str) -> str:
@@ -239,6 +328,8 @@ def _geometry_fingerprint(geometry: object) -> str:
 def _canonical_metric_geometry(geometry: object) -> object:
     """Canonicalise BNG line coordinates at evidence-contract millimetres."""
     if isinstance(geometry, LineString):
+        if geometry.is_empty or not geometry.is_valid:
+            raise ValueError("asset evidence geometry must be nonempty and valid")
         coordinates = [
             (
                 int((Decimal(str(x)) * 1000).quantize(Decimal("1"), rounding=ROUND_HALF_EVEN)),
@@ -251,15 +342,25 @@ def _canonical_metric_geometry(geometry: object) -> object:
             for index, item in enumerate(coordinates)
             if index == 0 or item != coordinates[index - 1]
         ]
+        if len(deduplicated) < 2:
+            raise ValueError(
+                "asset evidence line collapses after millimetre canonicalisation"
+            )
         ordered = min(deduplicated, list(reversed(deduplicated)))
         return LineString([(x / 1000, y / 1000) for x, y in ordered])
     if isinstance(geometry, MultiLineString):
+        if geometry.is_empty or not geometry.is_valid:
+            raise ValueError("asset evidence geometry must be nonempty and valid")
         parts = sorted(
             (_canonical_metric_geometry(part) for part in geometry.geoms),
             key=lambda item: item.wkb,
         )
+        if not parts:
+            raise ValueError("asset evidence MultiLineString has no line members")
         return MultiLineString(parts)
-    return geometry
+    raise ValueError(
+        "asset accounting only supports LineString and MultiLineString geometry"
+    )
 
 
 def _line_geometry(frame: gpd.GeoDataFrame, index: object, row: pd.Series) -> object | None:
@@ -279,6 +380,10 @@ def _designation(row: pd.Series) -> str | None:
 
 def _context_kind(row: pd.Series) -> str | None:
     feature_type = (_text(row.get("feature_type")) or "").lower().replace("_", "-")
+    if feature_type == "cycleway":
+        # A cycleway label alone is mapped/provisional evidence.  Reserve the
+        # legal-sounding cycle-track basis for a governed authoritative claim.
+        return "cycle-track" if _authoritative_cycleway_lineage(row) else "mapped-cycleway"
     if feature_type in _CONTEXT_KINDS:
         return _CONTEXT_KINDS[feature_type]
     if "prow" in feature_type or "right-of-way" in feature_type:
@@ -306,7 +411,7 @@ def _network_kind(row: pd.Series) -> str | None:
     if highway not in _ROUTABLE_HIGHWAYS:
         return None
     if highway == "cycleway":
-        return "cycle-track" if _authoritative_lineage(row) else "mapped-cycleway"
+        return "cycle-track" if _authoritative_cycleway_lineage(row) else "mapped-cycleway"
     if highway in {"bridleway"}:
         return "public-bridleway"
     if highway in {"footway", "steps"}:
@@ -327,12 +432,6 @@ def _evidence_row(
 ) -> dict[str, object]:
     evidence_id = _text(row.get("evidence_id"))
     source_id = _text(row.get("source_id")) or _text(row.get("source_feature_id"))
-    attrs = {
-        str(key): _json_value(value)
-        for key, value in row.items()
-        if key != "geometry" and _json_value(value) is not None
-    }
-    source_sha256 = _sha256({"kind": kind, "geometry_sha256": geometry_sha256, "attributes": attrs})
     requested_state = _text(row.get("evidence_state")) or _text(row.get("observation_state"))
     observed_state = requested_state
     if observed_state not in _VALID_EVIDENCE_STATES:
@@ -344,6 +443,28 @@ def _evidence_row(
         for field in _RAW_ATTRIBUTE_FIELDS
         if _json_value(row.get(field)) is not None
     }
+    # Preserve namespaced OSM tags (for example ``access:conditional``) even
+    # when a source adapter has not promoted them to a first-class field.
+    raw_attributes.update(
+        {
+            str(field): _json_value(value)
+            for field, value in row.items()
+            if ":" in str(field)
+            and field != "geometry"
+            and _json_value(value) is not None
+        }
+    )
+    # Excluded and provisional observations remain reproducible from the raw
+    # tag interpretation, not mutable caller lineage fields.  Keep all
+    # normalized fields below for inspection, while the observation identity is
+    # deliberately tied to the governed classification and raw tag payload.
+    source_sha256 = _sha256(
+        {
+            "kind": kind,
+            "geometry_sha256": geometry_sha256,
+            "raw_attributes": raw_attributes,
+        }
+    )
     source_export_sha256 = _text(
         row.get("source_export_sha256") or row.get("raw_bytes_sha256")
     )
@@ -360,6 +481,7 @@ def _evidence_row(
         "parser_contract": _text(row.get("parser_contract")),
         "parser_version": _text(row.get("parser_version")),
         "raw_attributes": raw_attributes,
+        "raw_attributes_sha256": _sha256(raw_attributes),
         "source_family": _text(row.get("source_family")),
         "dataset": _text(row.get("dataset")),
         "publisher": _text(row.get("publisher")),
@@ -372,6 +494,9 @@ def _evidence_row(
         "coverage_state": _text(row.get("coverage_state")),
         "evidence_mode": _text(row.get("evidence_mode")),
         "observation_state": observed_state,
+        "authority_state": (
+            "authoritative" if _authoritative_lineage(row) else "unknown"
+        ),
     }
 
 
@@ -395,6 +520,102 @@ def _values(value: object) -> tuple[str, ...]:
         )
     text = _text(getattr(value, "value", value))
     return (text,) if text is not None else ()
+
+
+def _conflicting_provenance_identities(
+    provenance: Iterable[Mapping[str, object]],
+) -> set[str]:
+    """Detect contradictory rows and return their inspectable identities.
+
+    Distinct sources are allowed to contribute multiple claims to one physical
+    asset.  Reusing the same source or evidence identity for materially
+    different observations, however, is a provenance conflict and must not be
+    allowed to aggregate as ``supported``.
+    """
+
+    records = tuple(provenance)
+    positive = {"yes", "designated", "permissive", "allowed", "open", "supported"}
+    negative = {
+        "no",
+        "private",
+        "forbidden",
+        "prohibited",
+        "absent",
+        "closed",
+        "unsupported",
+        "not-applicable",
+    }
+
+    def claim_family(item: Mapping[str, object]) -> tuple[str, int]:
+        raw_claim = (_text(item.get("claim_type")) or _text(item.get("feature_type")) or "").lower()
+        claim = raw_claim.replace("_", "-")
+        for prefix in ("no-", "not-", "without-", "prohibited-"):
+            if claim.startswith(prefix):
+                return claim[len(prefix) :], -1
+        return claim, 1
+
+    # Reusing an identity for compatible atomic claims is valid.  Only
+    # contradictory polarity within the same claim family is a duplicate
+    # identity conflict; a surface claim and a cycling-access claim compose.
+    grouped: dict[tuple[str, str], list[Mapping[str, object]]] = {}
+    for item in records:
+        family, _polarity = claim_family(item)
+        for identity in (item.get("source_id"), item.get("evidence_id")):
+            value = _text(identity)
+            if value:
+                grouped.setdefault((value, family), []).append(item)
+
+    identities: set[str] = set()
+    for (identity, _family), items in grouped.items():
+        claim_polarities = {claim_family(item)[1] for item in items}
+        if len(claim_polarities) > 1:
+            identities.add(identity)
+            continue
+        for field in ("bicycle", "foot", "access", "shared_use"):
+            values = {
+                value
+                for item in items
+                if (
+                    value := _text(item.get("raw_attributes", {}).get(field))
+                ) is not None
+            }
+            normalized = {value.lower().replace("_", "-") for value in values}
+            if normalized & positive and normalized & negative:
+                identities.add(identity)
+                break
+    if identities:
+        return identities
+
+    # Distinct source identities can still make opposite raw claims about the
+    # same canonical asset.  Keep that check claim-family scoped as well, so
+    # independent atomic claims remain composable.
+    polarity_fields = (
+        "bicycle",
+        "foot",
+        "access",
+        "shared_use",
+    )
+    for family in {claim_family(item)[0] for item in records}:
+        family_records = [item for item in records if claim_family(item)[0] == family]
+        for field in polarity_fields:
+            values = {
+                value.lower().replace("_", "-")
+                for item in family_records
+                if (
+                    value := _text(item.get("raw_attributes", {}).get(field))
+                ) is not None
+            }
+            if values & positive and values & negative:
+                return {
+                    identity
+                    for item in family_records
+                    for identity in (
+                        _text(item.get("source_id")),
+                        _text(item.get("evidence_id")),
+                    )
+                    if identity
+                }
+    return set()
 
 
 def _candidate_records(compiled: object) -> Iterable[tuple[object, object]]:
@@ -529,9 +750,121 @@ def _candidate_participation_disposition(
     }
 
 
+_GEOMETRY_BINDING_TOLERANCE_M = 0.001
+
+
+def _candidate_geometry_shape(candidate: object, record: object) -> object | None:
+    geometry = _field(candidate, "geometry")
+    if geometry is None:
+        geometry = _field(record, "geometry")
+    as_shapely = getattr(geometry, "as_shapely", None)
+    if callable(as_shapely):
+        geometry = as_shapely()
+    return geometry
+
+
+def _geometry_match_distance(candidate_shape: object, asset_shape: object) -> float | None:
+    try:
+        distance = float(candidate_shape.hausdorff_distance(asset_shape))
+        length_delta = abs(float(candidate_shape.length) - float(asset_shape.length))
+    except (AttributeError, GEOSException, TypeError, ValueError):
+        return None
+    if length_delta > _GEOMETRY_BINDING_TOLERANCE_M:
+        return None
+    return distance
+
+
+def _resolve_candidate_geometry_bindings(
+    compiled: object,
+    assets: Mapping[str, Mapping[str, object]],
+    identity_counts: Mapping[str, int],
+) -> dict[tuple[str, str], frozenset[str]]:
+    """Resolve each candidate to at most one asset when identities are reused.
+
+    A nonunique source ID is only a search key.  Geometry disambiguation is
+    performed over the complete asset roster so one candidate cannot attach to
+    every nearby asset independently.
+    """
+    bindings: dict[tuple[str, str], frozenset[str]] = {}
+    for candidate_set, record in _candidate_records(compiled):
+        candidate = _field(record, "candidate")
+        candidate_set_id = _text(_field(candidate_set, "candidate_set_id"))
+        candidate_id = _text(_field(candidate, "candidate_id"))
+        if candidate is None or not candidate_set_id or not candidate_id:
+            continue
+        key = (candidate_set_id, candidate_id)
+        explicit_identities = set(
+            _values(_field(candidate, "governed_evidence_ids"))
+            + _values(_field(candidate, "provenance_ids"))
+            + _values(_field(record, "source_ids"))
+            + _values(_field(record, "evidence_ids"))
+        )
+        matching: list[tuple[str, Mapping[str, object], list[str]]] = []
+        direct_assets: set[str] = set()
+        for asset_id, asset in assets.items():
+            asset_identities = {
+                str(value)
+                for evidence in asset.get("source_provenance", ())
+                for value in (
+                    evidence.get("evidence_id"),
+                    evidence.get("source_id"),
+                )
+                if value
+            }
+            matched = sorted(asset_identities & explicit_identities)
+            if not matched:
+                continue
+            matching.append((asset_id, asset, matched))
+            if any(identity_counts.get(identity, 1) == 1 for identity in matched):
+                direct_assets.add(asset_id)
+        if direct_assets:
+            bindings[key] = frozenset(direct_assets)
+            continue
+        if not matching:
+            continue
+        candidate_shape = _candidate_geometry_shape(candidate, record)
+        if candidate_shape is None:
+            bindings[key] = frozenset()
+            continue
+        exact_assets: list[str] = []
+        distances: list[tuple[float, str]] = []
+        for asset_id, asset, _matched in matching:
+            asset_shape = asset.get("_geometry")
+            if asset_shape is None:
+                continue
+            try:
+                if candidate_shape.equals(asset_shape):
+                    exact_assets.append(asset_id)
+                    continue
+            except (AttributeError, GEOSException, TypeError, ValueError):
+                pass
+            distance = _geometry_match_distance(candidate_shape, asset_shape)
+            if distance is not None and distance <= _GEOMETRY_BINDING_TOLERANCE_M:
+                distances.append((distance, asset_id))
+        if len(exact_assets) == 1:
+            bindings[key] = frozenset(exact_assets)
+            continue
+        if len(exact_assets) > 1:
+            bindings[key] = frozenset()
+            continue
+        distances.sort()
+        if not distances:
+            bindings[key] = frozenset()
+            continue
+        if len(distances) == 1 or (
+            distances[1][0] - distances[0][0] > _GEOMETRY_BINDING_TOLERANCE_M
+        ):
+            bindings[key] = frozenset((distances[0][1],))
+        else:
+            bindings[key] = frozenset()
+    return bindings
+
+
 def _exact_candidate_participations(
     compiled: object,
     asset: Mapping[str, object],
+    identity_counts: Mapping[str, int] | None = None,
+    resolved_bindings: Mapping[tuple[str, str], frozenset[str]] | None = None,
 ) -> list[dict[str, object]]:
     """Return only candidate records carrying an explicit source/evidence binding."""
     asset_identities = {
@@ -559,6 +892,47 @@ def _exact_candidate_participations(
         candidate_id = _text(_field(candidate, "candidate_id"))
         if not candidate_set_id or not candidate_id:
             continue
+        binding_key = (candidate_set_id, candidate_id)
+        if (
+            resolved_bindings is not None
+            and binding_key in resolved_bindings
+            and str(asset.get("asset_id")) not in resolved_bindings[binding_key]
+        ):
+            continue
+        unique_identities = [
+            identity
+            for identity in matched_identities
+            if (identity_counts or {}).get(identity, 1) == 1
+        ]
+        if not unique_identities:
+            # A source identifier is not a feature identity when it is reused
+            # for several distant assets.  Permit a binding only when the
+            # candidate carries an exact governed geometry fingerprint; the
+            # conservative default is unbound/ambiguous.
+            candidate_geometry = _text(_field(candidate, "geometry_fingerprint")) or _text(
+                _field(record, "geometry_fingerprint")
+            )
+            asset_geometry = _text(asset.get("evidence_geometry_fingerprint"))
+            geometry_proof = bool(candidate_geometry and candidate_geometry == asset_geometry)
+            if not geometry_proof:
+                candidate_shape = _field(candidate, "geometry")
+                candidate_shape = (
+                    candidate_shape.as_shapely()
+                    if callable(getattr(candidate_shape, "as_shapely", None))
+                    else candidate_shape
+                )
+                asset_shape = asset.get("_geometry")
+                try:
+                    geometry_proof = bool(
+                        candidate_shape is not None
+                        and asset_shape is not None
+                        and candidate_shape.hausdorff_distance(asset_shape) <= 0.001
+                        and abs(candidate_shape.length - asset_shape.length) <= 0.001
+                    )
+                except (AttributeError, GEOSException, TypeError, ValueError):
+                    geometry_proof = False
+            if not geometry_proof:
+                continue
         role = _field(candidate_set, "network_role")
         role_value = _text(getattr(role, "value", role))
         disposition, selection_reason = _candidate_participation_disposition(
@@ -579,7 +953,7 @@ def _exact_candidate_participations(
                 "selection_disposition": disposition,
                 "selection_reason": selection_reason,
                 "binding_basis": "explicit-governed-source-identity",
-                "binding_identities": matched_identities,
+                "binding_identities": unique_identities or matched_identities,
                 "preparation_disposition": _text(
                     _field(record, "preparation_disposition")
                 ),
@@ -616,7 +990,7 @@ def build_asset_accounting(
                 if frame.crs is None:
                     raise ValueError("asset evidence geometry has no CRS")
                 identity_geometry = gpd.GeoSeries([geometry], crs=frame.crs).to_crs(27700).iloc[0]
-            except (ValueError, TypeError):
+            except (GEOSException, ValueError, TypeError):
                 excluded = _evidence_row(
                     row,
                     kind="invalid-crs-geometry",
@@ -628,6 +1002,8 @@ def build_asset_accounting(
                 excluded.update(
                     {
                         "accounting_disposition": "excluded-invalid-crs",
+                        "observation_state": "unknown",
+                        "authority_state": "unknown",
                         "reason": (
                             "source geometry CRS is missing or cannot be transformed "
                             "to EPSG:27700"
@@ -653,6 +1029,8 @@ def build_asset_accounting(
                 excluded.update(
                     {
                         "accounting_disposition": "excluded-invalid-geometry",
+                        "observation_state": "unknown",
+                        "authority_state": "unknown",
                         "reason": (
                             "source geometry cannot be represented by the governed "
                             "canonical evidence-geometry contract"
@@ -755,9 +1133,25 @@ def build_asset_accounting(
                         }
                     )
 
+    identity_counts: dict[str, int] = {}
+    for asset in assets.values():
+        asset_identities: set[str] = set()
+        for evidence in asset.get("source_provenance", ()):
+            for identity in (evidence.get("evidence_id"), evidence.get("source_id")):
+                value = _text(identity)
+                if value:
+                    asset_identities.add(value)
+        for identity in asset_identities:
+            identity_counts[identity] = identity_counts.get(identity, 0) + 1
+    resolved_bindings = _resolve_candidate_geometry_bindings(
+        _compiled,
+        assets,
+        identity_counts,
+    )
+
     records: list[dict[str, object]] = []
     for _asset_id, asset in assets.items():
-        geometry = asset.pop("_geometry")
+        geometry = asset["_geometry"]
         frame_crs = asset.pop("_crs")
         asset["alignment_bases"] = sorted(set(asset["alignment_bases"]))
         asset["asset_kind"] = _primary_alignment_basis(asset["alignment_bases"])
@@ -770,6 +1164,24 @@ def build_asset_accounting(
                 str(item.get("source_sha256")),
             ),
         )
+        conflicting_provenance_ids = _conflicting_provenance_identities(
+            asset["source_provenance"]
+        )
+        if conflicting_provenance_ids:
+            # A duplicated source/evidence identity with divergent content is
+            # itself a material contradiction.  Preserve every row, but make
+            # the aggregate fail closed even when callers marked both rows
+            # ``supported``.
+            asset["evidence_state"] = "conflicting"
+            asset["evidence_state_reasons"].append(
+                {
+                    "source_id": None,
+                    "evidence_id": None,
+                    "state": "conflicting",
+                    "reason": "conflicting-provenance-claims",
+                }
+            )
+            asset["_conflicting_provenance_ids"] = sorted(conflicting_provenance_ids)
         asset["intervention_state"] = _derive_intervention_state(
             str(asset["asset_kind"]),
             asset["source_provenance"],
@@ -779,15 +1191,15 @@ def build_asset_accounting(
             key=lambda item: (str(item.get("source_id")), str(item.get("evidence_id"))),
         )
         if asset["evidence_state"] == "conflicting":
-            asset["conflict_roster"] = sorted(
-                {
-                    identity
-                    for evidence in asset["source_provenance"]
-                    if evidence.get("observation_state") == "conflicting"
-                    for identity in (evidence.get("source_id"), evidence.get("evidence_id"))
-                    if identity
-                }
+            conflict_roster = set(asset.pop("_conflicting_provenance_ids", []))
+            conflict_roster.update(
+                identity
+                for evidence in asset["source_provenance"]
+                if evidence.get("observation_state") == "conflicting"
+                for identity in (evidence.get("source_id"), evidence.get("evidence_id"))
+                if identity
             )
+            asset["conflict_roster"] = sorted(conflict_roster)
         asset["governed_source_identities"] = sorted(
             {
                 identity
@@ -796,7 +1208,12 @@ def build_asset_accounting(
                 if identity
             }
         )
-        participations = _exact_candidate_participations(_compiled, asset)
+        participations = _exact_candidate_participations(
+            _compiled,
+            asset,
+            identity_counts,
+            resolved_bindings,
+        )
         asset["candidate_participations"] = participations
         if participations:
             asset["participation_state"] = "participating"
@@ -806,6 +1223,7 @@ def build_asset_accounting(
             asset["participation_state"] = "not-participating"
             asset["disposition"] = "not-participating"
             asset["non_participation_reason"] = "no-governed-candidate-binding"
+        asset.pop("_geometry", None)
         public_geometry = gpd.GeoSeries([geometry], crs=frame_crs).to_crs(4326).iloc[0]
         asset["geometry"] = mapping(public_geometry)
         records.append(asset)

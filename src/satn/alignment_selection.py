@@ -481,6 +481,57 @@ class CanonicalLineString(BaseModel):
         )
 
 
+class TrafficConflictEvidence(BaseModel):
+    """Typed retention of contradictory traffic observations.
+
+    Traffic conflict is optional enrichment.  It must never become a route
+    veto, but the observations and their provenance remain inspectable even
+    when the ordinary traffic status conservatively collapses to unknown.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    observation_ids: tuple[str, ...] = Field(min_length=1)
+    source_export_fingerprints: tuple[str, ...] = ()
+    row_fingerprints: tuple[str, ...] = ()
+    conflicting_fields: tuple[str, ...] = Field(min_length=1)
+    evidence_ids: tuple[str, ...] = ()
+    provenance_ids: tuple[str, ...] = ()
+
+    @field_validator("observation_ids")
+    @classmethod
+    def validate_ids(cls, value: tuple[str, ...], _info: object) -> tuple[str, ...]:
+        if any(not isinstance(item, str) or not item.strip() for item in value):
+            raise ValueError("observation_ids must contain non-blank identifiers")
+        if len(set(value)) != len(value):
+            raise ValueError("observation_ids cannot contain duplicates")
+        return tuple(sorted(value))
+
+    @field_validator("evidence_ids", "provenance_ids")
+    @classmethod
+    def validate_governed_ids(
+        cls, value: tuple[str, ...], info: object
+    ) -> tuple[str, ...]:
+        return _canonical_ids(value, getattr(info, "field_name", "identifiers"))
+
+    @field_validator("source_export_fingerprints", "row_fingerprints")
+    @classmethod
+    def validate_fingerprints(
+        cls, value: tuple[str, ...], info: object
+    ) -> tuple[str, ...]:
+        field = getattr(info, "field_name", "fingerprints")
+        if any(_SHA256.fullmatch(item) is None for item in value):
+            raise ValueError(f"{field} must contain SHA-256 fingerprints")
+        return tuple(sorted(value))
+
+    @field_validator("conflicting_fields")
+    @classmethod
+    def validate_fields(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not item or not item.replace("_", "").isalnum() for item in value):
+            raise ValueError("traffic conflict fields must be canonical names")
+        return tuple(sorted(set(value)))
+
+
 class AlignmentCandidateInput(BaseModel):
     """One compiler-generated option, including its own role obligations."""
 
@@ -538,6 +589,10 @@ class AlignmentCandidateInput(BaseModel):
     )
     traffic_observations: tuple[TrafficObservation, ...] = Field(
         default=(), exclude_if=lambda value: not value
+    )
+    traffic_conflict_evidence: TrafficConflictEvidence | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
     )
     protected_space_evidence: ProtectedSpaceEvidence | None = Field(
         default=None, exclude_if=lambda value: value is None
@@ -627,6 +682,13 @@ class AlignmentCandidateInput(BaseModel):
             ),
         )
         object.__setattr__(self, "traffic_observations", tuple(observations))
+        conflict_evidence = _derive_traffic_conflict_evidence(tuple(observations))
+        if (
+            self.traffic_conflict_evidence is not None
+            and self.traffic_conflict_evidence != conflict_evidence
+        ):
+            raise ValueError("traffic_conflict_evidence is stale for its observations")
+        object.__setattr__(self, "traffic_conflict_evidence", conflict_evidence)
         if (
             self.primary_alignment_basis is not None
             and self.primary_alignment_basis not in self.alignment_bases
@@ -664,6 +726,87 @@ class AlignmentCandidateInput(BaseModel):
         return self.geometry.equivalence_fingerprint
 
 
+def _derive_traffic_conflict_evidence(
+    observations: tuple[TrafficObservation, ...],
+) -> TrafficConflictEvidence | None:
+    """Return a canonical conflict roster without selecting an observation."""
+
+    if not observations:
+        return None
+    normalized_exclusions = {
+        "observation_id",
+        "source_export_fingerprint",
+        "row_fingerprint",
+        "evidence_ids",
+        "provenance_ids",
+    }
+    by_claim: dict[tuple[object, ...], list[TrafficObservation]] = {}
+    for item in observations:
+        by_claim.setdefault(
+            (item.count_point_id, item.observation_year, item.direction_of_travel),
+            [],
+        ).append(item)
+
+    def field_differences(group: list[TrafficObservation]) -> tuple[str, ...]:
+        if len(group) < 2:
+            return ()
+        baseline = group[0].model_dump(mode="json")
+        return tuple(
+            sorted(
+                {
+                    field
+                    for item in group[1:]
+                    for field, value in item.model_dump(mode="json").items()
+                    if field not in normalized_exclusions and value != baseline[field]
+                }
+            )
+        )
+
+    conflicting_claims = [
+        group for group in by_claim.values() if field_differences(group)
+    ]
+    explicitly_conflicting = tuple(
+        item
+        for item in observations
+        if item.match_state == TrafficMatchState.CONFLICTING
+        or item.coverage_status == TrafficCoverageStatus.CONFLICTING
+    )
+    if not explicitly_conflicting and not conflicting_claims:
+        return None
+
+    fields = {
+        field
+        for group in conflicting_claims
+        for field in field_differences(group)
+    }
+    fields.update(
+        field
+        for field in ("match_state", "coverage_status")
+        if any(
+            getattr(item, field)
+            in {TrafficMatchState.CONFLICTING, TrafficCoverageStatus.CONFLICTING}
+            for item in explicitly_conflicting
+        )
+    )
+    # Retain all observations when any conflict exists.  This is intentionally
+    # conservative for distinct directional claims: no observation is silently
+    # discarded while the caller still receives an unknown aggregate status.
+    return TrafficConflictEvidence(
+        observation_ids=tuple(item.observation_id for item in observations),
+        source_export_fingerprints=tuple(
+            item.source_export_fingerprint for item in observations
+        ),
+        row_fingerprints=tuple(item.row_fingerprint for item in observations),
+        conflicting_fields=tuple(sorted(fields)),
+        evidence_ids=tuple(
+            sorted({identifier for item in observations for identifier in item.evidence_ids})
+        ),
+        provenance_ids=tuple(
+            sorted({identifier for item in observations for identifier in item.provenance_ids})
+        ),
+    )
+
+
 def traffic_diagnostics_for_candidate(
     candidate: AlignmentCandidateInput,
     profile: NetworkSelectionProfile,
@@ -679,11 +822,12 @@ def traffic_diagnostics_for_candidate(
     if traffic_profile is None:
         if not observations:
             return ()
+        conflict = candidate.traffic_conflict_evidence
         return (
             {
                 "candidate_id": candidate.candidate_id,
-                "diagnostic_id": "traffic-unknown",
-                "traffic_status": "profile-unavailable",
+                "diagnostic_id": "traffic-conflict" if conflict is not None else "traffic-unknown",
+                "traffic_status": "conflicting" if conflict is not None else "profile-unavailable",
                 "traffic_profile_fingerprint": None,
                 "traffic_observation_ids": tuple(
                     item.observation_id for item in observations
@@ -711,6 +855,15 @@ def traffic_diagnostics_for_candidate(
                             for identifier in item.provenance_ids
                         }
                     )
+                ),
+                **(
+                    {
+                        "traffic_conflict_evidence": candidate.traffic_conflict_evidence.model_dump(
+                            mode="json"
+                        )
+                    }
+                    if candidate.traffic_conflict_evidence is not None
+                    else {}
                 ),
             },
         )
@@ -775,7 +928,11 @@ def traffic_diagnostics_for_candidate(
         len(by_claim) == 1
         and len(explicitly_conflicting_claims) == 1
     )
-    if local_explicit_conflict or conflicting_claims:
+    if (
+        candidate.traffic_conflict_evidence is not None
+        or local_explicit_conflict
+        or conflicting_claims
+    ):
         difference_fields: set[str] = set()
         for group in conflicting_claims:
             difference_fields.update(field_differences(group))
@@ -791,6 +948,8 @@ def traffic_diagnostics_for_candidate(
                 for item in explicitly_conflicting
             )
         )
+        if candidate.traffic_conflict_evidence is not None:
+            difference_fields.update(candidate.traffic_conflict_evidence.conflicting_fields)
         explicit_ids = {item.observation_id for item in explicitly_conflicting}
         claim_observations = tuple(
             item
@@ -799,6 +958,11 @@ def traffic_diagnostics_for_candidate(
             or any(item.observation_id in explicit_ids for item in group)
             for item in group
         )
+        if not claim_observations and candidate.traffic_conflict_evidence is not None:
+            typed_ids = set(candidate.traffic_conflict_evidence.observation_ids)
+            claim_observations = tuple(
+                item for item in observations if item.observation_id in typed_ids
+            )
         claim_observations = tuple(
             sorted(
                 claim_observations,
@@ -809,8 +973,7 @@ def traffic_diagnostics_for_candidate(
                 ),
             )
         )
-        return (
-            {
+        conflict_diagnostic = {
                 "candidate_id": candidate.candidate_id,
                 "diagnostic_id": "traffic-conflict",
                 "traffic_status": "conflicting",
@@ -844,8 +1007,34 @@ def traffic_diagnostics_for_candidate(
                         }
                     )
                 ),
-            },
+                **(
+                    {
+                        "traffic_conflict_evidence": candidate.traffic_conflict_evidence.model_dump(
+                            mode="json"
+                        )
+                    }
+                    if candidate.traffic_conflict_evidence is not None
+                    else {}
+                ),
+            }
+        claim_ids = {item.observation_id for item in claim_observations}
+        remaining = tuple(
+            item for item in observations if item.observation_id not in claim_ids
         )
+        if not remaining:
+            return (conflict_diagnostic,)
+        # A typed conflict is an additional diagnostic, not permission to hide
+        # a separate observation that independently drives a high-traffic
+        # challenge.  Re-run the ordinary evaluation over the non-conflicting
+        # remainder and retain deterministic conflict-first ordering.
+        reduced_candidate = candidate.model_copy(
+            update={
+                "traffic_observations": remaining,
+                "traffic_observation": None,
+                "traffic_conflict_evidence": None,
+            }
+        )
+        return (conflict_diagnostic, *traffic_diagnostics_for_candidate(reduced_candidate, profile))
     deduped: list[TrafficObservation] = []
     substantive_by_key: set[str] = set()
     for item in observations:
@@ -895,6 +1084,17 @@ def traffic_diagnostics_for_candidate(
                             }
                         )
                     ),
+                    **(
+                        {
+                            "traffic_conflict_evidence": (
+                                candidate.traffic_conflict_evidence.model_dump(
+                                    mode="json"
+                                )
+                            )
+                        }
+                        if candidate.traffic_conflict_evidence is not None
+                        else {}
+                    ),
                 },
             )
         observation = combined[0]
@@ -942,6 +1142,24 @@ def traffic_diagnostics_for_candidate(
                 }
             )
         ),
+        **(
+            {
+                "traffic_conflict_evidence": candidate.traffic_conflict_evidence.model_dump(
+                    mode="json"
+                )
+            }
+            if candidate.traffic_conflict_evidence is not None
+            else {}
+        ),
+        **(
+            {
+                "freshness_configuration_diagnostic": (
+                    traffic_profile.freshness_configuration_diagnostic
+                )
+            }
+            if traffic_profile.freshness_configuration_diagnostic is not None
+            else {}
+        ),
     }
     if (
         observation.source_layer != "aadf"
@@ -953,7 +1171,12 @@ def traffic_diagnostics_for_candidate(
         return (
             {
                 **common,
-                "diagnostic_id": "traffic-unknown",
+                "diagnostic_id": (
+                    "traffic-freshness-configuration"
+                    if traffic_profile.freshness_configuration_diagnostic is not None
+                    and freshness_state == TrafficFreshnessState.UNKNOWN
+                    else "traffic-unknown"
+                ),
                 "traffic_status": "unknown",
             },
         )
