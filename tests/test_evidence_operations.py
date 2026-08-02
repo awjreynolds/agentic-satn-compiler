@@ -140,6 +140,32 @@ def test_workspace_resolves_all_operational_paths_from_one_invocation_directory(
     ).resolve()
 
 
+def test_source_descriptor_preserves_supplied_provenance_and_adds_operational_paths(
+    tmp_path: Path,
+) -> None:
+    from satn import _evidence_operations as operations_module
+
+    descriptor = _descriptor(tmp_path)
+    payload = yaml.safe_load(descriptor.read_text(encoding="utf-8"))
+    payload["provenance"] = {
+        "acquisition_url": "local://governed-fixture",
+        "acquisition_method": "LOCAL",
+        "query_parameters": {},
+        "acquisition_page": 1,
+        "custom_receipt": "preserve-me",
+    }
+    descriptor.write_text(yaml.safe_dump(payload, sort_keys=True), encoding="utf-8")
+
+    binding = operations_module._load_source_descriptor(descriptor)
+
+    assert binding.source_export.provenance["custom_receipt"] == "preserve-me"
+    assert binding.source_export.provenance["acquisition_url"] == "local://governed-fixture"
+    assert binding.source_export.provenance["retained_path"] == str(
+        (tmp_path / "RoadLink.geojson").resolve()
+    )
+    assert binding.source_export.provenance["descriptor_path"] == str(descriptor)
+
+
 def test_missing_init_runtime_leaves_no_store_parent_or_lock_inventory(
     tmp_path: Path,
     monkeypatch,
@@ -456,16 +482,31 @@ def test_retained_refresh_maps_each_descriptor_only_to_its_attested_cells(
     new_binding = operations_module._load_source_descriptor(new_descriptor)
     old_coverage = _coverage_for(old_binding, old_descriptor, cell="ST56")
     new_coverage = _coverage_for(new_binding, new_descriptor, cell="ST66")
+    dft_key = EvidencePartitionKey("dft/aadf", "bng-10km/v1", "ST56")
+    dft_content = SimpleNamespace(
+        partition_key=dft_key,
+        availability="available",
+        ingestion_contract=old_binding.ingestion_contract,
+        features=(),
+        fingerprint="e" * 64,
+    )
+    dft_attestation = SimpleNamespace(
+        source_export=old_binding.source_export,
+        partition_content=dft_content,
+        fingerprint="f" * 64,
+    )
     coverage = SimpleNamespace(
         fingerprint="d" * 64,
         state="complete",
         attestations=(
             old_coverage.attestations[0],
             new_coverage.attestations[0],
+            dft_attestation,
         ),
         requested_partition_keys=(
             old_coverage.requested_partition_keys[0],
             new_coverage.requested_partition_keys[0],
+            dft_key,
         ),
     )
 
@@ -532,6 +573,7 @@ def test_retained_refresh_maps_each_descriptor_only_to_its_attested_cells(
         "openstreetmap/lines:ST56",
         "openstreetmap/lines:ST66",
     ]
+    assert all(not value.startswith("dft/") for value in result["missing_cells"])
 
 
 def test_retained_refresh_reports_precise_unbound_cells_before_mutation(
