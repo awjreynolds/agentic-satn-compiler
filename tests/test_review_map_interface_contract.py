@@ -90,3 +90,5 @@ def test_reviewable_network_layer_defaults_and_semantics_are_explicit() -> None:
     assert "reviewable-dft-traffic-points" in script
     assert "bounded-candidate-route-evidence-no-point" not in script
     assert "bounded candidate-route evidence" in html
+    assert '"layer-strategic-network": hasReviewableRoutes' in script
+    assert ': ["strategic-network"]' in script

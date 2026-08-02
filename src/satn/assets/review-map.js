@@ -20,6 +20,9 @@
     type: "FeatureCollection",
     features: []
   };
+  const hasReviewableRoutes = reviewable.features.some(
+    (feature) => feature.properties?.feature_type === "reviewable-selected-route"
+  );
   const places = data.places;
   const referenceRecord = data.reference_satn || null;
   const referenceOptions = data.reference_satn_options || { type: "FeatureCollection", features: [] };
@@ -1694,7 +1697,9 @@
     });
     const groups = {
       "layer-authority-boundaries": ["authority-boundaries"],
-      "layer-strategic-network": ["strategic-network", "reviewable-strategic-network-halo", "reviewable-strategic-network-core", "reviewable-route-labels"],
+      "layer-strategic-network": hasReviewableRoutes
+        ? ["reviewable-strategic-network-halo", "reviewable-strategic-network-core", "reviewable-route-labels"]
+        : ["strategic-network"],
       "layer-required-connections": ["reviewable-required-connections"],
       "layer-reviewable-gaps": ["reviewable-gaps", "reviewable-gap-labels"],
       "layer-officer-divergences": ["reviewable-divergences-halo", "reviewable-divergences"],
@@ -2202,9 +2207,6 @@
         "text-halo-width": 2
       }
     });
-    const hasReviewableRoutes = reviewable.features.some(
-      (feature) => feature.properties?.feature_type === "reviewable-selected-route"
-    );
     map.addLayer({
       id: "strategic-network",
       type: "line",
