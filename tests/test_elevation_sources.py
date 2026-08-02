@@ -34,6 +34,7 @@ from satn.ea_elevation import (
     sha256_file,
     write_sample_ledger,
 )
+from satn.filesystem_safety import publication_destination_authority
 from satn.models import (
     CouncilConfig,
     NationalElevationConfig,
@@ -1586,7 +1587,10 @@ def test_ea_fixed_point_mismatch_retains_candidate_with_exact_status_and_keeps_o
     config = copied_config(tmp_path)
     config.publication.output_dir = tmp_path / "published"
     snapshot(config)
-    compile(config)
+    compile(
+        config,
+        publication_authority=publication_destination_authority(workspace_root=tmp_path),
+    )
     published_bytes = {
         path.relative_to(config.publication.output_dir): path.read_bytes()
         for path in config.publication.output_dir.rglob("*")
@@ -1599,7 +1603,12 @@ def test_ea_fixed_point_mismatch_retains_candidate_with_exact_status_and_keeps_o
     _write_final_ea_snapshot(config, pre_elevation_network_sha256=expected)
 
     with pytest.raises(ValueError, match=rf"expected={expected}.*retained candidate="):
-        publish(config, compiled, "run-ea-candidate")
+        publish(
+            config,
+            compiled,
+            "run-ea-candidate",
+            publication_authority=publication_destination_authority(workspace_root=tmp_path),
+        )
 
     candidate = _ea_fixed_point_candidate_path(config)
     retained_network = candidate / EA_FIXED_POINT_CANDIDATE_NETWORK
@@ -1752,7 +1761,12 @@ def test_bootstrap_publication_sharing_output_parent_preserves_ea_candidate(
     bootstrap.publication.output_dir = final.publication.output_dir
     monkeypatch.setattr("satn.publisher._validate_artifacts", lambda *_args: None)
 
-    publish(bootstrap, _publication_compiled(bootstrap), "run-bootstrap-success")
+    publish(
+        bootstrap,
+        _publication_compiled(bootstrap),
+        "run-bootstrap-success",
+        publication_authority=publication_destination_authority(workspace_root=tmp_path),
+    )
 
     assert (candidate / EA_FIXED_POINT_CANDIDATE_STATUS).read_bytes() == retained_status
 
@@ -1822,7 +1836,12 @@ def test_successful_publication_clears_stale_ea_fixed_point_candidate(
     )
     monkeypatch.setattr("satn.publisher._validate_artifacts", lambda *_args: None)
 
-    publish(config, compiled, "run-fixed-point-success")
+    publish(
+        config,
+        compiled,
+        "run-fixed-point-success",
+        publication_authority=publication_destination_authority(workspace_root=tmp_path),
+    )
 
     assert not _ea_fixed_point_candidate_path(config).exists()
 
@@ -1833,7 +1852,12 @@ def test_ea_fixed_point_does_not_retain_candidates_for_unrelated_failure(tmp_pat
     compiled = _publication_compiled(config)
 
     with pytest.raises(ValueError, match=r"missing immutable snapshot\.json"):
-        publish(config, compiled, "run-unrelated-failure")
+        publish(
+            config,
+            compiled,
+            "run-unrelated-failure",
+            publication_authority=publication_destination_authority(workspace_root=tmp_path),
+        )
 
     candidate_root = config.publication.output_dir.parent / EA_FIXED_POINT_CANDIDATE_DIRECTORY
     assert not candidate_root.exists()

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from itertools import combinations
+from time import perf_counter
+
 import geopandas as gpd
 import networkx as nx
 import pytest
 from shapely.geometry import LineString, Point
 
+import satn.routing as routing
 from satn.routing import RoadGraph
 
 
@@ -41,6 +45,329 @@ def test_metric_lower_bound_uses_the_smallest_source_cost_to_geometry_ratio() ->
     assert graph.lower_bound_to_geometry_m(Point(0, 0), LineString([(1000, 0), (1000, 1)])) == (
         pytest.approx(500)
     )
+
+
+def test_road_graph_exposes_canonical_edge_ids_and_projected_nodes() -> None:
+    graph = RoadGraph(
+        gpd.GeoDataFrame(
+            [
+                {
+                    "osmid": "a-road",
+                    "u": "a",
+                    "v": "b",
+                    "length": 100,
+                    "ref": "A4",
+                    "geometry": LineString([(0, 0), (100, 0)]),
+                },
+            ],
+            geometry="geometry",
+            crs=27700,
+        )
+    )
+
+    assert graph.edge_id_attribute == "edge_id"
+    assert graph.edge_ids_for_node("a") == ("a-road",)
+    assert graph.references_for_edge_ids(("a-road", "missing")) == ("A4",)
+    assert graph.projected_node("a") == Point(0, 0)
+    assert graph.projected_node("missing") is None
+
+
+def test_batched_routes_preserve_asymmetric_one_way_and_equal_cost_options() -> None:
+    graph = RoadGraph(
+        gpd.GeoDataFrame(
+            [
+                {
+                    "osmid": "c-t",
+                    "u": "c",
+                    "v": "t",
+                    "length": 1,
+                    "geometry": LineString([(2, 0), (3, 0)]),
+                },
+                {
+                    "osmid": "d-t",
+                    "u": "d",
+                    "v": "t",
+                    "length": 2,
+                    "geometry": LineString([(1, 1), (3, 0)]),
+                },
+                {
+                    "osmid": "s-c",
+                    "u": "s",
+                    "v": "c",
+                    "length": 2,
+                    "geometry": LineString([(0, 0), (2, 0)]),
+                },
+                {
+                    "osmid": "s-d",
+                    "u": "s",
+                    "v": "d",
+                    "length": 1,
+                    "geometry": LineString([(0, 0), (1, 1)]),
+                },
+                {
+                    "osmid": "t-s-one-way",
+                    "u": "t",
+                    "v": "s",
+                    "length": 7,
+                    "geometry": LineString([(3, 0), (0, 0)]),
+                },
+            ],
+            geometry="geometry",
+            crs=27700,
+        )
+    )
+    roles = ("direct", "strategic-spine")
+    expected = {
+        role: graph.option("s", "t", role, strategic_use=True)
+        for role in roles
+    }
+
+    assert expected["direct"] is not None
+    assert expected["direct"].edge_ids == ["s-c", "c-t"]
+    assert expected["direct"].reverse_edge_ids == ["t-s-one-way"]
+
+    routed, search_count = graph.route_options_for_pairs(
+        (("s", "t"),),
+        roles=roles,
+        strategic_use=True,
+    )
+
+    # Two role/start traversals, two target-rooted tie traces, and two
+    # one-way reverse-route traversals are all reported.
+    assert search_count == 6
+    for role, option in expected.items():
+        actual = routed[("s", "t")][role]
+        assert actual is not None and option is not None
+        assert actual.edge_ids == option.edge_ids
+        assert actual.reverse_edge_ids == option.reverse_edge_ids
+        assert actual.geometry.wkb_hex == option.geometry.wkb_hex
+        assert actual.bidirectional is option.bidirectional
+
+
+def test_equal_cost_ties_count_each_unique_legacy_trace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows: list[dict[str, object]] = []
+    expected_geometries: dict[str, LineString] = {}
+    pairs: list[tuple[str, str]] = []
+    for index in range(8):
+        target = f"t-{index:02d}"
+        c_node = f"c-{index:02d}"
+        d_node = f"d-{index:02d}"
+        c_point = (2, index * 10)
+        d_point = (1, index * 10 + 1)
+        target_point = (3, index * 10)
+        expected_geometries[target] = LineString([(0, 0), c_point, target_point])
+        pairs.append(("s", target))
+        rows.extend(
+            (
+                {
+                    "osmid": f"{c_node}-{target}",
+                    "u": c_node,
+                    "v": target,
+                    "length": 1,
+                    "geometry": LineString([c_point, target_point]),
+                },
+                {
+                    "osmid": f"{target}-{c_node}",
+                    "u": target,
+                    "v": c_node,
+                    "length": 1,
+                    "geometry": LineString([target_point, c_point]),
+                },
+                {
+                    "osmid": f"{d_node}-{target}",
+                    "u": d_node,
+                    "v": target,
+                    "length": 2,
+                    "geometry": LineString([d_point, target_point]),
+                },
+                {
+                    "osmid": f"{target}-{d_node}",
+                    "u": target,
+                    "v": d_node,
+                    "length": 2,
+                    "geometry": LineString([target_point, d_point]),
+                },
+                {
+                    "osmid": f"s-{c_node}",
+                    "u": "s",
+                    "v": c_node,
+                    "length": 2,
+                    "geometry": LineString([(0, 0), c_point]),
+                },
+                {
+                    "osmid": f"{c_node}-s",
+                    "u": c_node,
+                    "v": "s",
+                    "length": 2,
+                    "geometry": LineString([c_point, (0, 0)]),
+                },
+                {
+                    "osmid": f"s-{d_node}",
+                    "u": "s",
+                    "v": d_node,
+                    "length": 1,
+                    "geometry": LineString([(0, 0), d_point]),
+                },
+                {
+                    "osmid": f"{d_node}-s",
+                    "u": d_node,
+                    "v": "s",
+                    "length": 1,
+                    "geometry": LineString([d_point, (0, 0)]),
+                },
+            )
+        )
+    graph = RoadGraph(gpd.GeoDataFrame(rows, geometry="geometry", crs=27700))
+    trace_roots: list[tuple[str, bool]] = []
+    original_trace = routing._dijkstra_trace
+
+    def counting_trace(
+        route_graph: nx.DiGraph,
+        root: str,
+        weight: object,
+        *,
+        reverse: bool,
+    ) -> tuple[routing._DijkstraTraceEvent, ...]:
+        trace_roots.append((root, reverse))
+        return original_trace(route_graph, root, weight, reverse=reverse)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(routing, "_dijkstra_trace", counting_trace)
+
+    def unexpected_single_source(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("grouped routing must not hide an uncounted NetworkX traversal")
+
+    monkeypatch.setattr(nx, "single_source_dijkstra", unexpected_single_source)
+
+    routed, search_count = graph.route_options_for_pairs(
+        pairs,
+        roles=("direct",),
+        strategic_use=True,
+    )
+
+    assert search_count == len(trace_roots) == 9
+    assert trace_roots == [
+        ("s", False),
+        *((f"t-{index:02d}", True) for index in range(8)),
+    ]
+    for _start, target in pairs:
+        option = routed[("s", target)]["direct"]
+        assert option is not None
+        assert option.edge_ids == [f"s-c-{target[-2:]}", f"c-{target[-2:]}-{target}"]
+        assert option.reverse_edge_ids == [
+            f"{target}-c-{target[-2:]}",
+            f"c-{target[-2:]}-s",
+        ]
+        assert option.geometry.equals_exact(expected_geometries[target], tolerance=0)
+
+
+def test_dense_tied_pairs_cache_traversals_by_unique_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    anchor_count = 8
+    rows: list[dict[str, object]] = []
+    for index in range(anchor_count):
+        anchor = f"a-{index:02d}"
+        anchor_point = (index * 10, 0)
+        for hub, hub_point in (("c", (0, 10)), ("d", (0, -10))):
+            rows.extend(
+                (
+                    {
+                        "osmid": f"{anchor}-{hub}",
+                        "u": anchor,
+                        "v": hub,
+                        "length": 1,
+                        "geometry": LineString([anchor_point, hub_point]),
+                    },
+                    {
+                        "osmid": f"{hub}-{anchor}",
+                        "u": hub,
+                        "v": anchor,
+                        "length": 1,
+                        "geometry": LineString([hub_point, anchor_point]),
+                    },
+                )
+            )
+    graph = RoadGraph(gpd.GeoDataFrame(rows, geometry="geometry", crs=27700))
+    anchors = tuple(f"a-{index:02d}" for index in range(anchor_count))
+    pairs = tuple(combinations(anchors, 2))
+    expected = {
+        pair: graph.option(*pair, "direct", strategic_use=True)
+        for pair in pairs
+    }
+    trace_roots: list[tuple[str, bool]] = []
+    original_trace = routing._dijkstra_trace
+
+    def counting_trace(
+        route_graph: nx.DiGraph,
+        root: str,
+        weight: object,
+        *,
+        reverse: bool,
+    ) -> tuple[routing._DijkstraTraceEvent, ...]:
+        trace_roots.append((root, reverse))
+        return original_trace(route_graph, root, weight, reverse=reverse)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(routing, "_dijkstra_trace", counting_trace)
+
+    routed, search_count = graph.route_options_for_pairs(
+        pairs,
+        roles=("direct",),
+        strategic_use=True,
+    )
+
+    assert len(pairs) == anchor_count * (anchor_count - 1) // 2
+    assert search_count == len(trace_roots) == 2 * (anchor_count - 1)
+    assert len(set(trace_roots)) == len(trace_roots)
+    for pair, legacy in expected.items():
+        actual = routed[pair]["direct"]
+        assert actual is not None and legacy is not None
+        assert actual.edge_ids == legacy.edge_ids
+        assert actual.reverse_edge_ids == legacy.reverse_edge_ids
+        assert actual.geometry.wkb_hex == legacy.geometry.wkb_hex
+
+
+@pytest.mark.parametrize("anchor_count", (10, 25, 50))
+def test_batched_anchor_benchmark_records_search_count_and_elapsed_time(
+    anchor_count: int,
+) -> None:
+    rows: list[dict[str, object]] = []
+    for index in range(anchor_count - 1):
+        rows.extend(
+            (
+                {
+                    "osmid": f"forward-{index}",
+                    "u": f"node-{index:02d}",
+                    "v": f"node-{index + 1:02d}",
+                    "length": 100,
+                    "geometry": LineString([(index * 100, 0), ((index + 1) * 100, 0)]),
+                },
+                {
+                    "osmid": f"reverse-{index}",
+                    "u": f"node-{index + 1:02d}",
+                    "v": f"node-{index:02d}",
+                    "length": 100,
+                    "geometry": LineString([((index + 1) * 100, 0), (index * 100, 0)]),
+                },
+            )
+        )
+    graph = RoadGraph(gpd.GeoDataFrame(rows, geometry="geometry", crs=27700))
+    anchors = tuple(f"node-{index:02d}" for index in range(anchor_count))
+    pairs = tuple(combinations(anchors, 2))
+
+    started_at = perf_counter()
+    options, search_count = graph.route_options_for_pairs(
+        pairs,
+        roles=("direct",),
+        strategic_use=True,
+    )
+    elapsed_seconds = perf_counter() - started_at
+
+    assert len(pairs) == anchor_count * (anchor_count - 1) // 2
+    assert search_count == anchor_count - 1
+    assert options[pairs[-1]]["direct"] is not None
+    assert elapsed_seconds >= 0
 
 
 def test_attachment_group_distance_bounds_are_exact_zero_snap_costs() -> None:

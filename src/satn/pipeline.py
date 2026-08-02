@@ -34,6 +34,7 @@ from satn.compiler import (
 from satn.constants import SCHEMA_VERSION
 from satn.content_identity import ordered_geometry_fingerprint
 from satn.ea_snapshot_recovery import load_legacy_ea_recovery_snapshot
+from satn.filesystem_safety import PublicationDestinationAuthority
 from satn.heartbeat import StageHeartbeat
 from satn.models import (
     AgentDecisionLedger,
@@ -170,6 +171,7 @@ def compile(
     config: AreaConfig | str | Path,
     *,
     decision_ledger: AgentDecisionLedger | str | Path | None = None,
+    publication_authority: PublicationDestinationAuthority | None = None,
 ) -> CompilationResult:
     """Compile into a complete publication or a non-publishing decision request."""
     council = (
@@ -185,7 +187,12 @@ def compile(
             "snapshot_id": council.source.snapshot_id,
         },
     ) as heartbeat:
-        return _compile(council, decision_ledger=decision_ledger, heartbeat=heartbeat)
+        return _compile(
+            council,
+            decision_ledger=decision_ledger,
+            publication_authority=publication_authority,
+            heartbeat=heartbeat,
+        )
 
 
 def compile_ea_recovery_candidate(config: AreaConfig | str | Path) -> Path:
@@ -352,6 +359,7 @@ def compile_strategic_reference(
     plan: StrategicReferenceApplicationPlan,
     *,
     decision_ledger: AgentDecisionLedger | str | Path | None = None,
+    publication_authority: PublicationDestinationAuthority | None = None,
 ) -> CompilationResult:
     """Freshly compile then atomically publish a strategic Reference replay.
 
@@ -409,7 +417,12 @@ def compile_strategic_reference(
         )
         run_id = "strategic-reference-" + hashlib.sha256(run_fingerprint.encode()).hexdigest()[:12]
         heartbeat.set_stage("strategic-reference-publication")
-        artifacts = publish(council, compiled, run_id)
+        artifacts = publish(
+            council,
+            compiled,
+            run_id,
+            publication_authority=publication_authority,
+        )
     return CompilationResult(
         run_id=run_id,
         status=compiled.status,
@@ -435,6 +448,7 @@ def compile_reference(
     source_preparation: SpineAccessCandidatePreparationResult,
     *,
     decision_ledger: AgentDecisionLedger | str | Path | None = None,
+    publication_authority: PublicationDestinationAuthority | None = None,
 ) -> CompilationResult:
     """Atomically publish one freshly validated, human-governed Reference SATN.
 
@@ -484,7 +498,12 @@ def compile_reference(
         )
         run_id = f"reference-{hashlib.sha256(run_fingerprint.encode()).hexdigest()[:12]}"
         heartbeat.set_stage("reference-publication")
-        artifacts = publish(council, compiled, run_id)
+        artifacts = publish(
+            council,
+            compiled,
+            run_id,
+            publication_authority=publication_authority,
+        )
     return CompilationResult(
         run_id=run_id,
         status=compiled.status,
@@ -516,6 +535,7 @@ def _compile(
     config: AreaConfig,
     *,
     decision_ledger: AgentDecisionLedger | str | Path | None = None,
+    publication_authority: PublicationDestinationAuthority | None = None,
     heartbeat: StageHeartbeat | None = None,
     compiler_path: CompilerPath = "network",
 ) -> CompilationResult:
@@ -868,7 +888,12 @@ def _compile(
     artifacts = (
         retain_ea_recovery_candidate(council, compiled, run_id)
         if recovery_candidate
-        else publish(council, compiled, run_id)
+        else publish(
+            council,
+            compiled,
+            run_id,
+            publication_authority=publication_authority,
+        )
     )
     if not recovery_candidate:
         LOGGER.info(

@@ -1,0 +1,95 @@
+{
+  "cache_state": "fresh RoadGraph per anchor count; same process; OS cache uncontrolled",
+  "command": "uv run python scripts/benchmark_strategic_corridor_routing.py --material-workloads none",
+  "commit": "ec118b5498c1b427aab351374ba4a7bd6a7a3b0a",
+  "exit_status": 0,
+  "governed_inputs": {
+    "area_definition": "not-applicable-synthetic-roadgraph",
+    "decision_fingerprint": "not-applicable-synthetic-roadgraph",
+    "snapshot": "not-applicable-synthetic-roadgraph",
+    "source_export": "not-applicable-synthetic-roadgraph",
+    "store_state": "not-applicable-synthetic-roadgraph"
+  },
+  "input_binding": {
+    "anchor_counts": [10, 25, 50],
+    "contract": "strategic-corridor-routing-synthetic-input/v1",
+    "crs": "EPSG:27700",
+    "network": "reciprocal 100 metre line with one anchor per node",
+    "roles": [
+      "direct",
+      "strategic-spine",
+      "ncn-informed",
+      "low-traffic"
+    ],
+    "strategic_use": true,
+    "synthetic_input_sha256": "0882b91aa2a4da8b1755a4376d387046674ca283b82c63508e1a1a0e37fd3422"
+  },
+  "machine": {
+    "cpu_count": 16,
+    "machine": "arm64",
+    "material_workloads": {
+      "basis": "operator observation supplied to benchmark command",
+      "observed": true,
+      "other_material_workloads": false
+    },
+    "node": "Adams-MacBook-Pro-2.local",
+    "platform": "macOS-26.5.2-arm64-arm-64bit",
+    "power_mode": {
+      "basis": "pmset -g batt and pmset -g custom",
+      "observed": true,
+      "pmset_powermode": 0,
+      "power_source": "AC Power",
+      "setting": "automatic"
+    }
+  },
+  "peak_rss_bytes": 210567168,
+  "recorded_at": "2026-08-01T23:12:07.906231+00:00",
+  "result_counts": {
+    "route_options": 6280,
+    "runs": 3
+  },
+  "roles": [
+    "direct",
+    "strategic-spine",
+    "ncn-informed",
+    "low-traffic"
+  ],
+  "runs": [
+    {
+      "anchors": 10,
+      "elapsed_seconds": 0.0851645830553025,
+      "pairs": 45,
+      "route_options": 180,
+      "route_searches": 36,
+      "semantic_fingerprint": "b39e94397ea008b4b85bbb3b4516bc92ef6f92e8cfa467a0a90b131dc02c2c31"
+    },
+    {
+      "anchors": 25,
+      "elapsed_seconds": 0.5280616669915617,
+      "pairs": 300,
+      "route_options": 1200,
+      "route_searches": 96,
+      "semantic_fingerprint": "b283b5432d67ec8cb5d3f6b8f138264b43e89ec089276242f52a2de2f6b6f689"
+    },
+    {
+      "anchors": 50,
+      "elapsed_seconds": 2.8546934160403907,
+      "pairs": 1225,
+      "route_options": 4900,
+      "route_searches": 196,
+      "semantic_fingerprint": "5e032a4fdad71a65444f74e607d39b1ed931dd883ac214caf60ac47adee0ec88"
+    }
+  ],
+  "runtime": {
+    "duckdb": "not-applicable-synthetic-roadgraph",
+    "duckdb_spatial": "not-applicable-synthetic-roadgraph",
+    "geopandas": "1.1.4",
+    "implementation": "CPython",
+    "networkx": "3.6.1",
+    "python": "3.12.13",
+    "shapely": "2.1.2"
+  },
+  "schema_version": "strategic-corridor-routing-benchmark/v2",
+  "semantic_fingerprint": "24096a0b879872d17a3ae431b25a0fd5d4fac2af82dd3828c4443bb3629017ad",
+  "wall_seconds": 3.6092561250552535
+}

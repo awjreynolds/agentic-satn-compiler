@@ -18,11 +18,12 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from itertools import combinations
 from pathlib import Path
+from time import perf_counter
 
 import geopandas as gpd
 from shapely.geometry import LineString, Point
@@ -56,6 +57,7 @@ STRATEGIC_DESTINATION_GRAPH_BINDING_CONTRACT = (
     "satn-strategic-destination-graph-binding/v1"
 )
 _ID = re.compile(r"^[a-z0-9][a-z0-9._:-]*$")
+_ROUTING_ROLES = ("direct", "strategic-spine", "ncn-informed", "low-traffic")
 
 
 def _fingerprint(value: object) -> str:
@@ -310,6 +312,7 @@ class StrategicCorridorPreparationResult:
     section_population: SectionPopulationAssessment | None
     material_population_differences: tuple[MaterialPopulationDifference, ...]
     preparation_fingerprint: str
+    phase_diagnostics: dict[str, object]
 
     @property
     def prepared(self) -> bool:
@@ -346,6 +349,7 @@ class StrategicCorridorPreparationResult:
                 if self.section_population is not None
                 else 0
             ),
+            "phase_diagnostics": self.phase_diagnostics,
             "selection_performed": False,
             "network_geometry_mutated": False,
             "publication_performed": False,
@@ -410,6 +414,7 @@ def prepare_strategic_corridors(
     RoadGraph attachment are all required before a destination route exists.
     """
 
+    started_at = perf_counter()
     profile = NetworkSelectionProfile.model_validate(profile.model_dump(mode="json"))
     missing: list[str] = []
     population = source_config.population_reach_evidence
@@ -443,13 +448,26 @@ def prepare_strategic_corridors(
         spine_access_connections,
         access_obligations=access_obligations,
     )
-    units, issues = _interurban_units(profile, road_graph, anchors, context)
+    route_pairs = _strategic_route_pairs(road_graph, anchors, context, education)
+    route_options, route_searches = road_graph.route_options_for_pairs(
+        route_pairs,
+        roles=_ROUTING_ROLES,
+        strategic_use=True,
+    )
+    units, issues = _interurban_units(
+        profile,
+        road_graph,
+        anchors,
+        context,
+        route_options,
+    )
     destination_units, destination_issues = _destination_units(
         profile,
         road_graph,
         anchors,
         context,
         education,
+        route_options,
     )
     units = tuple(sorted((*units, *destination_units), key=lambda item: item.unit_id))
     issues = tuple(sorted((*issues, *destination_issues), key=_issue_key))
@@ -480,6 +498,15 @@ def prepare_strategic_corridors(
         if section_population is not None
         else ()
     )
+    physical_alignments = _physical_alignments(units)
+    phase_diagnostics = {
+        "anchors": len(anchors),
+        "pairs": len(route_pairs),
+        "route_searches": route_searches,
+        "unique_alignments": len(physical_alignments),
+        "sections": len(section_population.sections) if section_population is not None else 0,
+        "elapsed_seconds": perf_counter() - started_at,
+    }
     lineage = _evidence_lineage(population_load, education)
     fingerprints = tuple(sorted(_lineage_fingerprints(lineage)))
     # A missing/mismatched admitted destination is a hard preparation blocker:
@@ -499,9 +526,7 @@ def prepare_strategic_corridors(
         "profile_fingerprint": profile.fingerprint,
         "status": status,
         "units": [item.canonical() for item in units],
-        "physical_alignments": [
-            item.canonical() for item in _physical_alignments(units)
-        ],
+        "physical_alignments": [item.canonical() for item in physical_alignments],
         "issues": [item.canonical() for item in issues],
         "missing_inputs": sorted(set(missing)),
         "evidence_fingerprints": list(fingerprints),
@@ -522,7 +547,7 @@ def prepare_strategic_corridors(
         profile_fingerprint=profile.fingerprint,
         status=status,
         units=units,
-        physical_alignments=_physical_alignments(units),
+        physical_alignments=physical_alignments,
         issues=issues,
         missing_inputs=tuple(sorted(set(missing))),
         evidence_fingerprints=fingerprints,
@@ -530,6 +555,7 @@ def prepare_strategic_corridors(
         section_population=section_population,
         material_population_differences=material_population_differences,
         preparation_fingerprint=_fingerprint(provisional),
+        phase_diagnostics=phase_diagnostics,
     )
 
 
@@ -552,11 +578,45 @@ def _population_alignment_frame(
     return gpd.GeoDataFrame(rows, geometry="geometry", crs=27700)
 
 
+def _strategic_route_pairs(
+    graph: RoadGraph,
+    anchors: tuple[dict[str, str], ...],
+    context: gpd.GeoDataFrame,
+    education: EducationAccessEvidenceLoad | None,
+) -> tuple[tuple[str, str], ...]:
+    """Collect every already-governed strategic route pair before routing.
+
+    This repeats only the fail-closed admission checks used by destination
+    preparation.  It creates no unit and therefore cannot make an invalid
+    destination route observable; it simply lets RoadGraph batch valid starts.
+    """
+
+    pairs = {
+        (left["routing_node"], right["routing_node"])
+        for _root_spine_id, grouped in _group_anchors(anchors)
+        for left, right in combinations(grouped, 2)
+        if left["routing_node"] != right["routing_node"]
+    }
+    if education is not None:
+        for admission in education.strategic_admission_records:
+            site = _governed_destination_site(context, admission)
+            if site is None:
+                continue
+            destination_node = _current_graph_destination_node(graph, site)
+            if destination_node is None:
+                continue
+            anchor = _nearest_anchor(graph, site["geometry"], anchors)
+            if anchor is not None and anchor["routing_node"] != destination_node:
+                pairs.add((anchor["routing_node"], destination_node))
+    return tuple(sorted(pairs))
+
+
 def _interurban_units(
     profile: NetworkSelectionProfile,
     graph: RoadGraph,
     anchors: tuple[dict[str, str], ...],
     context: gpd.GeoDataFrame,
+    route_options: Mapping[tuple[str, str], Mapping[str, RouteOption | None]],
 ) -> tuple[tuple[PreparedStrategicCorridorUnit, ...], tuple[StrategicCorridorIssue, ...]]:
     units: list[PreparedStrategicCorridorUnit] = []
     issues: list[StrategicCorridorIssue] = []
@@ -587,6 +647,7 @@ def _interurban_units(
                 evidence_ids=tuple(sorted({left["evidence_id"], right["evidence_id"]})),
                 context=context,
                 strategic_destination_id=None,
+                precomputed_options=route_options.get((start, end)),
             )
             unit_id = _stable_id(
                 "alignment-unit",
@@ -641,6 +702,7 @@ def _destination_units(
     anchors: tuple[dict[str, str], ...],
     context: gpd.GeoDataFrame,
     education: EducationAccessEvidenceLoad | None,
+    route_options: Mapping[tuple[str, str], Mapping[str, RouteOption | None]],
 ) -> tuple[tuple[PreparedStrategicCorridorUnit, ...], tuple[StrategicCorridorIssue, ...]]:
     if education is None or not education.strategic_admission_records:
         return (), ()
@@ -725,6 +787,9 @@ def _destination_units(
             evidence_ids=tuple(sorted({anchor["evidence_id"], *site["access_ids"]})),
             context=context,
             strategic_destination_id=destination_id,
+            precomputed_options=route_options.get(
+                (anchor["routing_node"], destination_node)
+            ),
         )
         unit_id = _stable_id(
             "alignment-unit",
@@ -780,12 +845,14 @@ def _candidate_set(
     evidence_ids: tuple[str, ...],
     context: gpd.GeoDataFrame,
     strategic_destination_id: str | None,
+    precomputed_options: Mapping[str, RouteOption | None] | None,
 ) -> tuple[AlignmentCandidateSet, tuple[StrategicCorridorCandidateRecord, ...]]:
     _selected, options, _rationale = choose_alignment(
         graph,
         start_node,
         end_node,
         strategic_use=True,
+        precomputed_options=precomputed_options,
     )
     strategic_destination_ids = (
         (strategic_destination_id,) if strategic_destination_id is not None else ()
@@ -1112,15 +1179,7 @@ def _current_graph_destination_node(
     node_point = graph.node_points.get(node_id)
     if node_point is None or not node_point.equals_exact(geometry, tolerance=0.0):
         return None
-    actual_edge_ids = tuple(
-        sorted(
-            {
-                str(edge.get("edge_id"))
-                for left, right, edge in graph.graph.edges(data=True)
-                if node_id in {str(left), str(right)} and _text(edge.get("edge_id"))
-            }
-        )
-    )
+    actual_edge_ids = graph.edge_ids_for_node(node_id)
     if actual_edge_ids != expected_edge_ids:
         return None
     payload = {
@@ -1146,13 +1205,12 @@ def _nearest_anchor(
     target = gpd.GeoSeries([geometry], crs=graph.crs).to_crs(27700).iloc[0]
     distances: list[tuple[float, str, dict[str, str]]] = []
     for anchor in anchors:
-        point = graph.node_points.get(anchor["routing_node"])
+        point = graph.projected_node(anchor["routing_node"])
         if point is None:
             continue
-        projected = gpd.GeoSeries([point], crs=graph.crs).to_crs(27700).iloc[0]
         distances.append(
             (
-                float(projected.distance(target)),
+                float(point.distance(target)),
                 anchor["anchor_id"],
                 anchor,
             )
@@ -1182,12 +1240,7 @@ def _source_class(
     if option.ncn_share > 0:
         return CandidateSourceClass.VERIFIED_EXISTING_ASSET
     edge_ids = set(option.edge_ids)
-    refs = {
-        ref
-        for _, _, edge in graph.graph.edges(data=True)
-        if str(edge.get("edge_id")) in edge_ids
-        for ref in edge.get("ref", ())
-    }
+    refs = set(graph.references_for_edge_ids(edge_ids))
     if any(re.fullmatch(r"A\s*\d+[A-Z]?", str(ref), re.IGNORECASE) for ref in refs):
         return CandidateSourceClass.A_ROAD_CORRIDOR
     if option.a_road_share > 0:

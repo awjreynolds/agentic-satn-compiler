@@ -12,6 +12,7 @@ from shapely.geometry import LineString, Point, Polygon
 from satn import compile
 from satn.agents import FakeAgentRuntime
 from satn.compiler import compile_network
+from satn.filesystem_safety import publication_destination_authority
 from satn.models import CouncilConfig, TopographyConfig
 from satn.publisher import publish
 from satn.sources import snapshot
@@ -438,7 +439,12 @@ def test_compiler_consumes_governed_fixture_elevation_evidence_without_rerouting
     assert set(compiled.gradient_sections["uphill_direction"]) == {"forward", "reverse"}
     assert compiled.criteria["topography"]["elevation_evidence_coverage"] == "grey"
 
-    artifacts = publish(council, compiled, "run-topography-fixture")
+    artifacts = publish(
+        council,
+        compiled,
+        "run-topography-fixture",
+        publication_authority=publication_destination_authority(workspace_root=tmp_path),
+    )
     published_profiles = gpd.read_file(artifacts["geopackage"], layer="topography_profiles")
     published_sections = gpd.read_file(artifacts["geopackage"], layer="gradient_sections")
     published_geojson = json.loads(artifacts["geojson"].read_text())

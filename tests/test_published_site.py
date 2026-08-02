@@ -11,11 +11,42 @@ import pytest
 from satn.constants import DISCLAIMER
 from satn.deployment import build_area_deployment
 from satn.deployment_provenance import generate_lock
+from satn.filesystem_safety import publication_destination_authority
 from satn.models import CouncilConfig
 from satn.pipeline import compile
 from satn.sources import snapshot
 
 PROJECT = Path(__file__).parents[1]
+
+
+def test_area_deployment_requires_explicit_authority_outside_definition_workspace(
+    tmp_path: Path,
+) -> None:
+    fixture = tmp_path / "fixture"
+    shutil.copytree(PROJECT / "examples" / "fixture", fixture)
+    definition = CouncilConfig.from_yaml(fixture / "council.yaml")
+    snapshot(definition)
+    compile(definition)
+    external = tmp_path / "external-deployment"
+
+    with pytest.raises(ValueError, match="outside the declared publication workspace"):
+        build_area_deployment(definition, external, bootstrap=True)
+
+    assert not external.exists()
+
+    authority = publication_destination_authority(
+        workspace_root=fixture,
+        approved_external_destination=external,
+    )
+    assert (
+        build_area_deployment(
+            definition,
+            external,
+            bootstrap=True,
+            publication_authority=authority,
+        )
+        == external
+    )
 
 
 def test_area_deployment_is_progressive_portable_and_not_git_path_bound(
@@ -26,13 +57,29 @@ def test_area_deployment_is_progressive_portable_and_not_git_path_bound(
     definition = CouncilConfig.from_yaml(fixture / "council.yaml")
     definition.publication.output_dir = tmp_path / "compiled"
     definition.source.snapshot_dir = tmp_path / "snapshots"
+    authority = publication_destination_authority(
+        workspace_root=fixture,
+        approved_external_destination=definition.publication.output_dir,
+    )
 
     snapshot(definition)
-    result = compile(definition)
+    result = compile(definition, publication_authority=authority)
     deployment = tmp_path / "deployments" / "tiny"
-    build_area_deployment(definition, deployment, bootstrap=True)
+    deployment_authority = publication_destination_authority(
+        workspace_root=tmp_path,
+    )
+    build_area_deployment(
+        definition,
+        deployment,
+        bootstrap=True,
+        publication_authority=deployment_authority,
+    )
     generate_lock(definition, deployment=deployment)
-    deployment = build_area_deployment(definition, deployment)
+    deployment = build_area_deployment(
+        definition,
+        deployment,
+        publication_authority=deployment_authority,
+    )
 
     publication = json.loads((deployment / "publication.json").read_text(encoding="utf-8"))
     network = json.loads((deployment / "network.geojson").read_text(encoding="utf-8"))
@@ -290,10 +337,22 @@ def test_area_deployment_rejects_stale_snapshot_and_tampered_compiler_fingerprin
     definition = CouncilConfig.from_yaml(fixture / "council.yaml")
     definition.publication.output_dir = tmp_path / "compiled"
     definition.source.snapshot_dir = tmp_path / "snapshots"
+    authority = publication_destination_authority(
+        workspace_root=fixture,
+        approved_external_destination=definition.publication.output_dir,
+    )
     snapshot(definition)
-    compile(definition)
+    compile(definition, publication_authority=authority)
     bootstrap = tmp_path / "deployments" / "bootstrap"
-    build_area_deployment(definition, bootstrap, bootstrap=True)
+    bootstrap_authority = publication_destination_authority(
+        workspace_root=tmp_path,
+    )
+    build_area_deployment(
+        definition,
+        bootstrap,
+        bootstrap=True,
+        publication_authority=bootstrap_authority,
+    )
     generate_lock(definition, deployment=bootstrap)
 
     snapshot_path = definition.source.snapshot_dir / definition.source.snapshot_id / "snapshot.json"
@@ -302,8 +361,13 @@ def test_area_deployment_rejects_stale_snapshot_and_tampered_compiler_fingerprin
         build_area_deployment(definition, tmp_path / "deployments" / "tiny")
 
     snapshot(definition)
-    compile(definition)
-    build_area_deployment(definition, bootstrap, bootstrap=True)
+    compile(definition, publication_authority=authority)
+    build_area_deployment(
+        definition,
+        bootstrap,
+        bootstrap=True,
+        publication_authority=bootstrap_authority,
+    )
     generate_lock(definition, deployment=bootstrap)
     run_path = definition.publication.output_dir / "run.json"
     run = json.loads(run_path.read_text(encoding="utf-8"))

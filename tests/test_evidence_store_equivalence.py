@@ -34,6 +34,7 @@ from satn.evidence_store_equivalence import (
     canonical_official_road_source_frame_fingerprint,
     project_official_road_source_frame,
 )
+from satn.filesystem_safety import publication_destination_authority
 from satn.local_evidence_store import EvidenceQueryResult, EvidenceQueryRow
 from satn.publisher import publish
 
@@ -571,8 +572,13 @@ def test_independent_oracle_and_projection_publish_identical_network(
         FakeAgentRuntime(),
     )
 
-    oracle_artifacts = publish(oracle_config, oracle, "equivalence")
-    store_artifacts = publish(store_config, store_backed, "equivalence")
+    authority = publication_destination_authority(workspace_root=tmp_path)
+    oracle_artifacts = publish(
+        oracle_config, oracle, "equivalence", publication_authority=authority
+    )
+    store_artifacts = publish(
+        store_config, store_backed, "equivalence", publication_authority=authority
+    )
     assert _published_network_semantics(
         oracle_artifacts["geojson"]
     ) == _published_network_semantics(

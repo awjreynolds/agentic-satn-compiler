@@ -12,6 +12,7 @@ import satn.compiler as compiler
 from satn.agents import FakeAgentRuntime
 from satn.backbone import BackboneAssembly
 from satn.compiler import compile_network
+from satn.filesystem_safety import publication_destination_authority
 from satn.models import (
     AgentRecord,
     CouncilConfig,
@@ -1277,7 +1278,12 @@ def test_compile_network_keeps_running_when_backbone_connector_needs_refinement(
     assert record.withheld_derived_features[0].finding_id == compiled.gaps.iloc[0]["connection_id"]
 
     config.publication.output_dir = tmp_path / "published"
-    artifacts = publish(config, compiled, "run-withheld-connector")
+    artifacts = publish(
+        config,
+        compiled,
+        "run-withheld-connector",
+        publication_authority=publication_destination_authority(workspace_root=tmp_path),
+    )
     assert artifacts["geojson"].is_file()
     validate_publication(config.publication.output_dir, config)
 

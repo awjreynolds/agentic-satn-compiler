@@ -14,6 +14,7 @@ from satn.agents import AgentRole, CompilationGate, FakeAgentRuntime
 from satn.backbone import assemble_backbone_outward
 from satn.compiler import compile_network
 from satn.evidence import derive_context_layers, govern_network_scope
+from satn.filesystem_safety import publication_destination_authority
 from satn.models import AgentConfig, CouncilConfig, TrafficLight
 from satn.publisher import publish
 from satn.routing import RoadGraph
@@ -632,7 +633,12 @@ def test_school_state_and_rationale_publish_to_spatial_and_accessible_map_artifa
     council.publication.output_dir = tmp_path / "output"
     compiled = compile_network(council, school_source(), FakeAgentRuntime())
 
-    artifacts = publish(council, compiled, "run-school-access")
+    artifacts = publish(
+        council,
+        compiled,
+        "run-school-access",
+        publication_authority=publication_destination_authority(workspace_root=tmp_path),
+    )
 
     network = json.loads(artifacts["geojson"].read_text())
     run = json.loads(artifacts["run"].read_text())

@@ -30,6 +30,7 @@ from satn.alignment_selection import (
 )
 from satn.compiler import compile_network
 from satn.evidence import mark_ncn_edges
+from satn.filesystem_safety import publication_destination_authority
 from satn.pipeline import compile_strategic_reference
 from satn.psa_evidence_loaders import (
     load_education_access_evidence,
@@ -346,6 +347,9 @@ def test_interurban_only_governed_plan_publishes_without_destination_access(
     result = compile_strategic_reference(
         config,
         build_strategic_reference_application_plan(reference, preparation),
+        publication_authority=publication_destination_authority(
+            workspace_root=tmp_path,
+        ),
     )
 
     assert result.output_dir.is_dir()

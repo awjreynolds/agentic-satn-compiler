@@ -6,9 +6,9 @@ import heapq
 import json
 import logging
 import math
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from itertools import pairwise
+from itertools import count, pairwise
 
 import geopandas as gpd
 import networkx as nx
@@ -39,6 +39,7 @@ MAIN_ROADS = {"motorway", "trunk", "primary", "secondary", "tertiary"}
 
 LOGGER = logging.getLogger(__name__)
 ATTACHMENT_TIE_BREAK_EPSILON = 1e-9
+_REVERSE_PATH_UNSET = object()
 
 
 @dataclass
@@ -100,7 +101,26 @@ class PointAttachment:
     attachment_point: Point
 
 
+@dataclass(frozen=True)
+class _DijkstraRelaxation:
+    node: str
+    distance: float
+    predecessor: str
+
+
+@dataclass(frozen=True)
+class _DijkstraTraceEvent:
+    node: str
+    distance: float
+    settled: bool
+    relaxations: tuple[_DijkstraRelaxation, ...]
+
+
 class RoadGraph:
+    """A deterministic routed view of governed road-edge evidence."""
+
+    edge_id_attribute = "edge_id"
+
     def __init__(
         self,
         edges: gpd.GeoDataFrame,
@@ -118,7 +138,18 @@ class RoadGraph:
         self._lower_bound_disabled_reason: str | None = "no-routable-edges"
         self._attachment_lower_bound_cost_factor = 0.0
         self._attachment_lower_bound_disabled_reason: str | None = "no-reciprocal-routable-edges"
-        for index, row in sorted(edges.iterrows(), key=_edge_row_sort_key):
+        # Project all source edge geometries in one GeoPandas operation before
+        # constructing the graph.  Projection is evidence normalisation, not
+        # a routing decision, so it must not depend on iteration order.
+        projected_lengths = gpd.GeoSeries(edges.geometry, crs=edges.crs).to_crs(27700).length
+        edge_rows = [
+            (index, row, float(projected_lengths.iloc[position]))
+            for position, (index, row) in enumerate(edges.iterrows())
+        ]
+        for index, row, projected_length_m in sorted(
+            edge_rows,
+            key=lambda item: _edge_row_sort_key((item[0], item[1])),
+        ):
             geometry = row.geometry
             if not isinstance(geometry, LineString) or len(geometry.coords) < 2:
                 continue
@@ -127,16 +158,13 @@ class RoadGraph:
             self.node_points.setdefault(u, Point(geometry.coords[0]))
             self.node_points.setdefault(v, Point(geometry.coords[-1]))
             source_length = row.get("length")
-            if _present(source_length):
-                length_m = float(source_length)
-            else:
-                projected = gpd.GeoSeries([geometry], crs=edges.crs).to_crs(27700)
-                length_m = float(projected.length.iloc[0])
-            projected_length_m = float(
-                gpd.GeoSeries([geometry], crs=edges.crs).to_crs(27700).length.iloc[0]
+            length_m = (
+                float(source_length) if _present(source_length) else projected_length_m
             )
             attrs = {
-                "edge_id": str(row.get("osmid", row.get("source_id", index))),
+                self.edge_id_attribute: str(
+                    row.get("osmid", row.get("source_id", index))
+                ),
                 "geometry": geometry,
                 "length_m": length_m,
                 "projected_length_m": projected_length_m,
@@ -150,6 +178,24 @@ class RoadGraph:
             if not _present(row.get("u")) and not attrs["oneway"]:
                 reverse = attrs | {"geometry": LineString(list(geometry.coords)[::-1])}
                 self._add_best_edge(v, u, reverse)
+        self._edge_ids_by_node: dict[str, tuple[str, ...]] = {}
+        references_by_edge_id: dict[str, set[str]] = {}
+        edge_ids_by_node: dict[str, set[str]] = {}
+        for left, right, attrs in self.graph.edges(data=True):
+            edge_id = str(attrs[self.edge_id_attribute])
+            edge_ids_by_node.setdefault(str(left), set()).add(edge_id)
+            edge_ids_by_node.setdefault(str(right), set()).add(edge_id)
+            references_by_edge_id.setdefault(edge_id, set()).update(
+                str(ref) for ref in attrs["ref"]
+            )
+        self._edge_ids_by_node = {
+            node_id: tuple(sorted(edge_ids))
+            for node_id, edge_ids in edge_ids_by_node.items()
+        }
+        self._references_by_edge_id = {
+            edge_id: tuple(sorted(references))
+            for edge_id, references in references_by_edge_id.items()
+        }
         self.route_controls = (
             RouteControlSet.model_validate(route_controls.model_dump(mode="python"))
             if route_controls is not None
@@ -200,9 +246,16 @@ class RoadGraph:
         )
         if routable_share >= 0.9:
             self._node_ids = [node for node in self._node_ids if node in dominant]
-        self._projected_nodes = gpd.GeoSeries(
-            [self.node_points[node] for node in self._node_ids], crs=self.crs
+        all_node_ids = tuple(sorted(self.node_points))
+        all_projected_nodes = gpd.GeoSeries(
+            [self.node_points[node] for node in all_node_ids], crs=self.crs
         ).to_crs(27700)
+        self._projected_node_by_id = dict(
+            zip(all_node_ids, all_projected_nodes, strict=True)
+        )
+        self._projected_nodes = gpd.GeoSeries(
+            [self._projected_node_by_id[node] for node in self._node_ids], crs=27700
+        )
         self._projected_node_index = self._projected_nodes.sindex
         edge_rows = [
             {"u": u, "v": v, "geometry": attrs["geometry"]}
@@ -215,6 +268,29 @@ class RoadGraph:
             crs=self.crs,
         ).to_crs(27700)
         self._projected_edge_index = self._projected_edges.sindex
+
+    def edge_ids_for_node(self, node_id: str) -> tuple[str, ...]:
+        """Return the canonical source edge identities incident to a graph node."""
+
+        return self._edge_ids_by_node.get(node_id, ())
+
+    def references_for_edge_ids(self, edge_ids: Iterable[str]) -> tuple[str, ...]:
+        """Return canonical road references for known source-edge identities."""
+
+        return tuple(
+            sorted(
+                {
+                    reference
+                    for edge_id in edge_ids
+                    for reference in self._references_by_edge_id.get(str(edge_id), ())
+                }
+            )
+        )
+
+    def projected_node(self, node_id: str) -> Point | None:
+        """Return the preprojected EPSG:27700 coordinate for a current graph node."""
+
+        return self._projected_node_by_id.get(node_id)
 
     def _add_best_edge(self, u: str, v: str, attrs: dict[str, object]) -> None:
         existing = self.graph.get_edge_data(u, v)
@@ -1023,12 +1099,186 @@ class RoadGraph:
             return None
         return self._option_from_nodes(nodes, role, strategic_use=strategic_use)
 
+    def route_options_for_pairs(
+        self,
+        pairs: Iterable[tuple[str, str]],
+        *,
+        roles: Iterable[str],
+        strategic_use: bool = False,
+    ) -> tuple[dict[tuple[str, str], dict[str, RouteOption | None]], int]:
+        """Route finite pairs through cached, explicitly counted Dijkstra traces.
+
+        The returned mapping retains one entry per supplied, distinct directed
+        pair and the original role order.  It is intentionally a RoadGraph
+        seam: corridor preparation supplies governed pairs, while graph
+        traversal and its deterministic accounting stay here.  Traces are
+        shared by role, governed graph, root, and traversal orientation.
+        """
+
+        unique_pairs = tuple(sorted(set(pairs)))
+        ordered_roles = tuple(dict.fromkeys(roles))
+        options = {pair: {role: None for role in ordered_roles} for pair in unique_pairs}
+        grouped: dict[tuple[str, str, bool], set[str]] = {}
+        for start, end in unique_pairs:
+            for role in ordered_roles:
+                grouped.setdefault((role, start, strategic_use), set()).add(end)
+        searches = 0
+        trace_cache: dict[
+            tuple[str, str, bool, bool],
+            tuple[_DijkstraTraceEvent, ...],
+        ] = {}
+
+        def trace_for(
+            role: str,
+            root: str,
+            role_strategic_use: bool,
+            *,
+            reverse: bool,
+        ) -> tuple[_DijkstraTraceEvent, ...]:
+            nonlocal searches
+            key = (role, root, role_strategic_use, reverse)
+            if key not in trace_cache:
+                trace_cache[key] = _dijkstra_trace(
+                    self._graph_for_role(
+                        role,
+                        strategic_use=role_strategic_use,
+                    ),
+                    root,
+                    _weight_for(role),
+                    reverse=reverse,
+                )
+                searches += 1
+            return trace_cache[key]
+
+        primary_paths: dict[tuple[tuple[str, str], str], list[str] | None] = {}
+        for (role, start, role_strategic_use), ends in sorted(grouped.items()):
+            route_graph = self._graph_for_role(
+                role,
+                strategic_use=role_strategic_use,
+            )
+            forward_trace = trace_for(
+                role,
+                start,
+                role_strategic_use,
+                reverse=False,
+            )
+            lengths, paths = _dijkstra_result(start, forward_trace)
+            tied_ends: list[str] = []
+            for end in sorted(ends):
+                nodes = paths.get(end)
+                if nodes is not None and _has_equal_cost_route_tie(
+                    route_graph,
+                    start,
+                    end,
+                    lengths,
+                    _weight_for(role),
+                ):
+                    tied_ends.append(end)
+                primary_paths[((start, end), role)] = nodes
+            if tied_ends:
+                legacy_tied_paths = _legacy_paths_from_grouped_dijkstra_traces(
+                    start,
+                    tied_ends,
+                    forward_trace,
+                    {
+                        target: trace_for(
+                            role,
+                            target,
+                            role_strategic_use,
+                            reverse=True,
+                        )
+                        for target in tied_ends
+                    },
+                )
+                for end, nodes in legacy_tied_paths.items():
+                    primary_paths[((start, end), role)] = nodes
+
+        reverse_paths: dict[tuple[tuple[str, str], str], list[str] | None] = {}
+        reverse_groups: dict[
+            tuple[str, str, bool],
+            list[tuple[tuple[tuple[str, str], str], str]],
+        ] = {}
+        for request_key, nodes in primary_paths.items():
+            pair, role = request_key
+            if nodes is None:
+                continue
+            route_graph = self._graph_for_role(role, strategic_use=strategic_use)
+            reciprocal = list(reversed(nodes))
+            if all(
+                route_graph.has_edge(left, right)
+                for left, right in pairwise(reciprocal)
+            ):
+                reverse_paths[request_key] = reciprocal
+                continue
+            reverse_groups.setdefault((role, pair[1], strategic_use), []).append(
+                (request_key, pair[0])
+            )
+
+        for (role, reverse_start, role_strategic_use), requests in sorted(
+            reverse_groups.items()
+        ):
+            route_graph = self._graph_for_role(
+                role,
+                strategic_use=role_strategic_use,
+            )
+            weight = _weight_for(role)
+            forward_trace = trace_for(
+                role,
+                reverse_start,
+                role_strategic_use,
+                reverse=False,
+            )
+            lengths, paths = _dijkstra_result(reverse_start, forward_trace)
+            tied_requests: dict[str, list[tuple[tuple[str, str], str]]] = {}
+            for request_key, reverse_end in sorted(requests):
+                nodes = paths.get(reverse_end)
+                if nodes is not None and _has_equal_cost_route_tie(
+                    route_graph,
+                    reverse_start,
+                    reverse_end,
+                    lengths,
+                    weight,
+                ):
+                    tied_requests.setdefault(reverse_end, []).append(request_key)
+                reverse_paths[request_key] = nodes
+            if tied_requests:
+                legacy_tied_paths = _legacy_paths_from_grouped_dijkstra_traces(
+                    reverse_start,
+                    tied_requests,
+                    forward_trace,
+                    {
+                        target: trace_for(
+                            role,
+                            target,
+                            role_strategic_use,
+                            reverse=True,
+                        )
+                        for target in tied_requests
+                    },
+                )
+                for reverse_end, nodes in legacy_tied_paths.items():
+                    for request_key in tied_requests[reverse_end]:
+                        reverse_paths[request_key] = nodes
+
+        for request_key, nodes in primary_paths.items():
+            if nodes is None:
+                continue
+            pair, role = request_key
+            options[pair][role] = self._option_from_nodes(
+                nodes,
+                role,
+                strategic_use=strategic_use,
+                reverse_nodes=reverse_paths.get(request_key),
+            )
+        return options, searches
+
     def _option_from_nodes(
         self,
         nodes: list[str],
         role: str,
         *,
         strategic_use: bool = False,
+        reverse_nodes: list[str] | object | None = _REVERSE_PATH_UNSET,
     ) -> RouteOption | None:
         weight = _weight_for(role)
         route_graph = self._graph_for_role(role, strategic_use=strategic_use)
@@ -1042,21 +1292,29 @@ class RoadGraph:
         a_length = sum(float(edge["length_m"]) for edge in edge_data if _is_a_road(edge["ref"]))
         ncn_length = sum(float(edge["length_m"]) for edge in edge_data if edge["ncn"])
         try:
-            reverse_nodes = list(reversed(nodes))
-            if not all(
-                route_graph.has_edge(left, right)
-                for left, right in pairwise(reverse_nodes)
-            ):
-                reverse_nodes = nx.shortest_path(
-                    route_graph,
-                    nodes[-1],
-                    nodes[0],
-                    weight=weight,
-                )
+            if reverse_nodes is _REVERSE_PATH_UNSET:
+                resolved_reverse_nodes = list(reversed(nodes))
+                if not all(
+                    route_graph.has_edge(left, right)
+                    for left, right in pairwise(resolved_reverse_nodes)
+                ):
+                    resolved_reverse_nodes = nx.shortest_path(
+                        route_graph,
+                        nodes[-1],
+                        nodes[0],
+                        weight=weight,
+                    )
+            elif reverse_nodes is None:
+                raise nx.NetworkXNoPath
+            else:
+                resolved_reverse_nodes = reverse_nodes
             reverse_edges = [
-                route_graph[left][right] for left, right in pairwise(reverse_nodes)
+                route_graph[left][right]
+                for left, right in pairwise(resolved_reverse_nodes)
             ]
-            reverse_geometry = _merge_route([edge["geometry"] for edge in reverse_edges])
+            reverse_geometry = _merge_route(
+                [edge["geometry"] for edge in reverse_edges]
+            )
         except (nx.NetworkXNoPath, nx.NodeNotFound):
             reverse_edges = []
             reverse_geometry = None
@@ -1137,32 +1395,29 @@ def choose_alignment(
     end: str,
     *,
     strategic_use: bool = False,
+    precomputed_options: Mapping[str, RouteOption | None] | None = None,
 ) -> tuple[RouteOption | None, list[RouteOption], str]:
-    direct = graph.option(
-        start,
-        end,
-        "direct",
-        strategic_use=strategic_use,
+    direct = (
+        precomputed_options.get("direct")
+        if precomputed_options is not None
+        else graph.option(start, end, "direct", strategic_use=strategic_use)
     )
     if direct is None:
         return None, [], "No continuous OSM cycling-network path exists."
-    strategic = graph.option(
-        start,
-        end,
-        "strategic-spine",
-        strategic_use=strategic_use,
+    strategic = (
+        precomputed_options.get("strategic-spine")
+        if precomputed_options is not None
+        else graph.option(start, end, "strategic-spine", strategic_use=strategic_use)
     )
-    ncn = graph.option(
-        start,
-        end,
-        "ncn-informed",
-        strategic_use=strategic_use,
+    ncn = (
+        precomputed_options.get("ncn-informed")
+        if precomputed_options is not None
+        else graph.option(start, end, "ncn-informed", strategic_use=strategic_use)
     )
-    quiet = graph.option(
-        start,
-        end,
-        "low-traffic",
-        strategic_use=strategic_use,
+    quiet = (
+        precomputed_options.get("low-traffic")
+        if precomputed_options is not None
+        else graph.option(start, end, "low-traffic", strategic_use=strategic_use)
     )
     options = _unique_options([direct, strategic, ncn, quiet])
 
@@ -1220,6 +1475,200 @@ def _weight_for(role: str) -> Callable[[str, str, dict[str, object]], float]:
         return length
 
     return weight
+
+
+def _legacy_paths_from_grouped_dijkstra_traces(
+    start: str,
+    targets: Iterable[str],
+    forward_trace: tuple[_DijkstraTraceEvent, ...],
+    reverse_traces: Mapping[str, tuple[_DijkstraTraceEvent, ...]],
+) -> dict[str, list[str]]:
+    """Replay legacy bidirectional tie choices from cached deterministic traces.
+
+    NetworkX's target-specific bidirectional Dijkstra can choose a different
+    equal-cost path from its single-source Dijkstra.  The caller caches both
+    orientations by role, governed graph, and root, so each actual traversal is
+    shared wherever possible and included in the reported search count.  Exact
+    replay needs the reverse trace: off-shortest-path queue entries affect the
+    alternating meet order, so a source predecessor DAG is not sufficient.
+    """
+
+    ordered_targets = tuple(sorted(set(targets)))
+    paths: dict[str, list[str]] = {}
+    for target in ordered_targets:
+        path = _replay_bidirectional_trace(
+            start,
+            target,
+            forward_trace,
+            reverse_traces[target],
+        )
+        if path is not None:
+            paths[target] = path
+    return paths
+
+
+def _dijkstra_result(
+    root: str,
+    trace: tuple[_DijkstraTraceEvent, ...],
+) -> tuple[dict[str, float], dict[str, list[str]]]:
+    """Recover the single-source distances and strict-relaxation paths."""
+
+    lengths: dict[str, float] = {}
+    paths: dict[str, list[str]] = {root: [root]} if trace else {}
+    for event in trace:
+        if event.settled:
+            lengths[event.node] = event.distance
+        for relaxation in event.relaxations:
+            paths[relaxation.node] = [
+                *paths[relaxation.predecessor],
+                relaxation.node,
+            ]
+    return lengths, paths
+
+
+def _dijkstra_trace(
+    graph: nx.DiGraph,
+    root: str,
+    weight: Callable[[str, str, dict[str, object]], float],
+    *,
+    reverse: bool,
+) -> tuple[_DijkstraTraceEvent, ...]:
+    """Capture deterministic Dijkstra settlement and relaxation events once."""
+
+    if root not in graph:
+        return ()
+    sequence = count()
+    fringe: list[tuple[float, int, str]] = [(0.0, next(sequence), root)]
+    seen = {root: 0.0}
+    settled: dict[str, float] = {}
+    events: list[_DijkstraTraceEvent] = []
+    while fringe:
+        distance, _order, node = heapq.heappop(fringe)
+        if node in settled:
+            events.append(_DijkstraTraceEvent(node, distance, False, ()))
+            continue
+        settled[node] = distance
+        relaxations: list[_DijkstraRelaxation] = []
+        neighbors = (
+            ((neighbor, graph[neighbor][node]) for neighbor in graph.predecessors(node))
+            if reverse
+            else graph[node].items()
+        )
+        for neighbor, edge in neighbors:
+            cost = (
+                weight(neighbor, node, edge)
+                if reverse
+                else weight(node, neighbor, edge)
+            )
+            candidate = distance + cost
+            if neighbor in settled:
+                if candidate < settled[neighbor]:
+                    raise ValueError("Contradictory paths found: negative weights?")
+            elif neighbor not in seen or candidate < seen[neighbor]:
+                seen[neighbor] = candidate
+                heapq.heappush(fringe, (candidate, next(sequence), neighbor))
+                relaxations.append(
+                    _DijkstraRelaxation(neighbor, candidate, node)
+                )
+        events.append(
+            _DijkstraTraceEvent(node, distance, True, tuple(relaxations))
+        )
+    return tuple(events)
+
+
+def _replay_bidirectional_trace(
+    source: str,
+    target: str,
+    forward_trace: tuple[_DijkstraTraceEvent, ...],
+    reverse_trace: tuple[_DijkstraTraceEvent, ...],
+) -> list[str] | None:
+    """Replay NetworkX's alternating bidirectional meet and strict tie rules."""
+
+    if source == target:
+        return [source]
+    traces = (forward_trace, reverse_trace)
+    positions = [0, 0]
+    distances: tuple[dict[str, float], dict[str, float]] = ({}, {})
+    seen: tuple[dict[str, float], dict[str, float]] = (
+        {source: 0.0},
+        {target: 0.0},
+    )
+    predecessors: tuple[dict[str, str | None], dict[str, str | None]] = (
+        {source: None},
+        {target: None},
+    )
+    final_distance: float | None = None
+    meeting_node: str | None = None
+    direction = 1
+    while positions[0] < len(traces[0]) and positions[1] < len(traces[1]):
+        direction = 1 - direction
+        event = traces[direction][positions[direction]]
+        positions[direction] += 1
+        if not event.settled:
+            continue
+        distances[direction][event.node] = event.distance
+        if event.node in distances[1 - direction]:
+            if meeting_node is None:
+                return None
+            forward_path: list[str] = []
+            node: str | None = meeting_node
+            while node is not None:
+                forward_path.append(node)
+                node = predecessors[0][node]
+            forward_path.reverse()
+            reverse_path: list[str] = []
+            node = predecessors[1][meeting_node]
+            while node is not None:
+                reverse_path.append(node)
+                node = predecessors[1][node]
+            return [*forward_path, *reverse_path]
+        for relaxation in event.relaxations:
+            seen[direction][relaxation.node] = relaxation.distance
+            predecessors[direction][relaxation.node] = relaxation.predecessor
+            if relaxation.node in seen[1 - direction]:
+                candidate = (
+                    relaxation.distance + seen[1 - direction][relaxation.node]
+                )
+                if final_distance is None or final_distance > candidate:
+                    final_distance = candidate
+                    meeting_node = relaxation.node
+    return None
+
+
+def _has_equal_cost_route_tie(
+    graph: nx.DiGraph,
+    start: str,
+    end: str,
+    distances: Mapping[str, float],
+    weight: Callable[[str, str, dict[str, object]], float],
+) -> bool:
+    """Return whether the shortest-route ancestry contains a real cost tie."""
+
+    if end not in distances:
+        return False
+    pending = [end]
+    visited: set[str] = set()
+    while pending:
+        node = pending.pop()
+        if node == start or node in visited:
+            continue
+        visited.add(node)
+        predecessors = [
+            predecessor
+            for predecessor in graph.predecessors(node)
+            if predecessor in distances
+            and math.isclose(
+                float(distances[predecessor])
+                + weight(predecessor, node, graph[predecessor][node]),
+                float(distances[node]),
+                rel_tol=1e-12,
+                abs_tol=1e-9,
+            )
+        ]
+        if len(predecessors) > 1:
+            return True
+        pending.extend(predecessors)
+    return False
 
 
 def _is_b_road(refs: object) -> bool:
