@@ -1,0 +1,23 @@
+{
+  "contract": "satn-reuse-first-proving-manifest/v1",
+  "scenario_id": "deep-gap-proposed",
+  "expected_result": "expected/deep-gap-proposed.expected.json",
+  "area_id": "deep-gap-area",
+  "profile": {
+    "contract": "satn-network-selection-profile/vNext",
+    "profile_id": "deep-gap-profile",
+    "version": "2026-08-02",
+    "candidate_class_order": ["existing-cycle-provision", "upgradeable-off-carriageway", "low-traffic-non-a-road", "a-road-major-protected-infrastructure"],
+    "intervention_state_order": ["existing-provision", "upgrade-required", "proposed-new-link"],
+    "comparator_order": ["mandatory-obligation-service", "reuse-class", "intervention-state", "route-length", "route-detour", "route-effort", "transition-fragmentation-burden", "governed-constraints", "traffic-challenge", "stable-candidate-id"],
+    "material_difference_rules": [], "displacement_rules": [],
+    "unknown_value_policy": "retain-and-request-evidence", "deterministic_tie_break": "stable-candidate-id", "agent_call_bound": 0, "maximum_options_per_candidate_set": 5, "maximum_hybrid_candidates_per_set": 2, "maximum_transitions_per_candidate": 2
+  },
+  "candidate_sets": [
+    {"case_id": "independent-gap", "network_role": "community-access", "endpoints": ["deep-gap-west", "deep-gap-east"], "candidates": []},
+    {"case_id": "independent-proposed", "network_role": "community-access", "endpoints": ["deep-new-west", "deep-new-east"], "candidates": [{"route_id": "deep-proposed-route", "coordinates": [[0, 500], [900, 500]], "reuse_class": "low-traffic-non-a-road", "intervention_state": "proposed-new-link", "alignment_bases": ["proposed-new-corridor"], "primary_alignment_basis": "proposed-new-corridor", "directness_m": 900, "governed_evidence_ids": ["deep-proposed-route"], "maximum_gradient_pct": 2, "elevation_change_m": 3}]}
+  ],
+  "assets": [],
+  "traffic_observations": [],
+  "officer_inputs": []
+}

@@ -1,0 +1,20 @@
+{
+  "contract": "satn-reuse-first-proving-manifest/v1",
+  "scenario_id": "deep-conflicting-evidence",
+  "expected_result": "expected/deep-conflicting-evidence.expected.json",
+  "area_id": "deep-conflict-area",
+  "profile": {
+    "contract": "satn-network-selection-profile/vNext",
+    "profile_id": "deep-conflict-profile",
+    "version": "2026-08-02",
+    "candidate_class_order": ["existing-cycle-provision", "upgradeable-off-carriageway", "low-traffic-non-a-road", "a-road-major-protected-infrastructure"],
+    "intervention_state_order": ["existing-provision", "upgrade-required", "proposed-new-link"],
+    "comparator_order": ["mandatory-obligation-service", "reuse-class", "intervention-state", "route-length", "route-detour", "route-effort", "transition-fragmentation-burden", "governed-constraints", "traffic-challenge", "stable-candidate-id"],
+    "material_difference_rules": [], "displacement_rules": [],
+    "unknown_value_policy": "retain-and-request-evidence", "deterministic_tie_break": "stable-candidate-id", "agent_call_bound": 0, "maximum_options_per_candidate_set": 5, "maximum_hybrid_candidates_per_set": 2, "maximum_transitions_per_candidate": 2
+  },
+  "candidate_sets": [{"case_id": "conflicting-source", "network_role": "community-access", "endpoints": ["deep-conflict-west", "deep-conflict-east"], "candidates": [{"route_id": "deep-conflict-route", "coordinates": [[0, 0], [800, 0]], "reuse_class": "existing-cycle-provision", "intervention_state": "existing-provision", "alignment_bases": ["cycle-track"], "primary_alignment_basis": "cycle-track", "directness_m": 800, "governed_evidence_ids": ["deep-conflict-a", "deep-conflict-b"], "maximum_gradient_pct": 2, "elevation_change_m": 4}]}],
+  "assets": [{"asset_id": "deep-conflict-asset-a", "asset_kind": "cycle-track", "feature_type": "cycleway", "claim_type": "current-cycling-provision", "bicycle": "designated", "evidence_state": "supported", "governed_evidence_ids": ["deep-conflict-a"], "coordinates": [[0, 0], [800, 0]]}, {"asset_id": "deep-conflict-asset-b", "asset_kind": "cycle-track", "feature_type": "cycleway", "claim_type": "current-cycling-provision", "bicycle": "designated", "evidence_state": "conflicting", "governed_evidence_ids": ["deep-conflict-b"], "coordinates": [[0, 0], [800, 0]]}],
+  "traffic_observations": [],
+  "officer_inputs": []
+}
