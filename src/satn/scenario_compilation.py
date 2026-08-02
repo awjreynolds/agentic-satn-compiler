@@ -375,7 +375,7 @@ def compile_prepared_scenario(
         for item in preparation.connection_roster
         if item.disposition == "unresolved-gap"
     )
-    if preparation.status != "prepared" or unresolved_roster_ids:
+    if preparation.status != "prepared":
         missing = {
             *preparation.missing_inputs,
             *(f"unresolved-preparation:{item}" for item in unresolved_roster_ids),
@@ -483,7 +483,10 @@ def compile_prepared_scenario(
         selections_tuple,
         decision_record,
     )
-    needs_review = not scenario.publishable
+    # An unresolved sibling remains an explicit downstream Network Gap.  It
+    # must not hide valid prepared candidate sets, but it does keep the
+    # scenario in review-required status until that endpoint lineage is fixed.
+    needs_review = not scenario.publishable or bool(unresolved_roster_ids)
     review = (
         orchestrate_scenario_review(
             scenario,
@@ -518,7 +521,14 @@ def compile_prepared_scenario(
         preparation=preparation,
         scenario=scenario,
         review=review,
-        missing=(),
+        missing=tuple(
+            sorted(
+                {
+                    *preparation.missing_inputs,
+                    *(f"unresolved-preparation:{item}" for item in unresolved_roster_ids),
+                }
+            )
+        ),
         diagnostics={
             **_roster_diagnostics(preparation, reason=None),
             "selection_performed": True,

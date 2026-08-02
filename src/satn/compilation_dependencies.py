@@ -88,6 +88,10 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
         "module",
         "frozen Network Selection Profile validation and fingerprinting",
     ),
+    "satn/reviewable_network.py": (
+        "module",
+        "complete reviewable selections, endpoint gaps, and officer divergence",
+    ),
     "satn/traffic_evidence.py": (
         "module",
         "optional DfT traffic and protected-space evidence annotations",
@@ -274,6 +278,7 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     "satn/parallel_reduction_corpus_cli.py": (
         "explicit synthetic acceptance-reference command adapter"
     ),
+    "satn/proving_cli.py": "read-only proving and explicit reference-promotion command adapter",
     "satn/parallel_reduction_evidence.py": (
         "post-compile governed parallel evidence adapter without CompiledNetwork mutation"
     ),
