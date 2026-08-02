@@ -93,6 +93,9 @@ def test_missing_point_geometry_is_unknown_and_raw_counts_are_not_allowed() -> N
     )
     assert result.match_state is TrafficMatchState.UNKNOWN
     assert result.observations == ()
+    assert match_dft_traffic((_observation("row-2", "CP2"),), policy=_policy()).match_state is (
+        TrafficMatchState.UNKNOWN
+    )
 
     with pytest.raises(ValueError, match="source_layers"):
         TrafficMatchPolicy(
