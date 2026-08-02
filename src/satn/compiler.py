@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -40,6 +41,7 @@ from satn.evidence import (
 )
 from satn.heartbeat import StageHeartbeat
 from satn.identifiers import stable_id as _stable_id
+from satn.local_evidence_store import LocalEvidenceStore
 from satn.models import (
     AccessPointStatus,
     AccessServiceStatus,
@@ -155,6 +157,8 @@ class CompiledNetwork:
     snapshot_manifest_sha256: str = ""
     area_definition_sha256: str = ""
     compilation_dependency_manifest: dict[str, object] = field(default_factory=dict)
+    evidence_state_fingerprint: str | None = None
+    traffic_match_policy_fingerprint: str | None = None
     decision_contract: str = "agent-decision-menu/v1"
     population_display_sections: gpd.GeoDataFrame = field(
         default_factory=lambda: gpd.GeoDataFrame(
@@ -250,8 +254,19 @@ def compile_network(
     heartbeat: StageHeartbeat | None = None,
     cross_spine_progress: CrossSpineProgress | None = None,
     officer_decisions: tuple[PreloadedOfficerDecision, ...] = (),
+    evidence_store: LocalEvidenceStore | None = None,
+    evidence_state_fingerprint: str | None = None,
 ) -> CompiledNetwork:
     """Compile the ordinary current-input network with no Reference replay input."""
+
+    if (evidence_store is None) != (evidence_state_fingerprint is None):
+        raise ValueError("evidence_store and evidence_state_fingerprint must be supplied together")
+    if evidence_store is not None:
+        if not isinstance(evidence_store, LocalEvidenceStore):
+            raise TypeError("evidence_store must be a LocalEvidenceStore")
+        if re.fullmatch(r"[0-9a-f]{64}", evidence_state_fingerprint or "") is None:
+            raise ValueError("evidence_state_fingerprint must be a full lowercase SHA-256")
+        evidence_store.resolve_coverage(state_fingerprint=evidence_state_fingerprint)
 
     return _compile_network(
         config,
@@ -262,6 +277,8 @@ def compile_network(
         heartbeat=heartbeat,
         cross_spine_progress=cross_spine_progress,
         officer_decisions=officer_decisions,
+        evidence_store=evidence_store,
+        evidence_state_fingerprint=evidence_state_fingerprint,
     )
 
 
@@ -327,6 +344,8 @@ def _compile_network(
     reference_application_plan: ReferenceApplicationPlan | None = None,
     validated_strategic_replay: ValidatedStrategicReferenceReplay | None = None,
     officer_decisions: tuple[PreloadedOfficerDecision, ...] = (),
+    evidence_store: LocalEvidenceStore | None = None,
+    evidence_state_fingerprint: str | None = None,
 ) -> CompiledNetwork:
     places = source["places"].copy().sort_values("place_id").reset_index(drop=True)
     context = source.get("context", empty_context(source["network"].crs)).copy()
@@ -580,6 +599,8 @@ def _compile_network(
             official_road_classification=official_road_classification,
             source_config=config.source,
             config_directory=config.config_path.parent,
+            evidence_store=evidence_store,
+            evidence_state_fingerprint=evidence_state_fingerprint,
         )
         # Direct-to-spine rows retain their existing out-of-scope Spine Access
         # disposition.  The sibling module derives finite strategic units from
@@ -855,6 +876,12 @@ def _compile_network(
             ),
         },
         spine_access_candidate_preparation=spine_access_candidate_preparation,
+        evidence_state_fingerprint=evidence_state_fingerprint,
+        traffic_match_policy_fingerprint=(
+            spine_access_candidate_preparation.traffic_match_policy_fingerprint
+            if spine_access_candidate_preparation is not None
+            else None
+        ),
         strategic_corridor_preparation=strategic_corridor_preparation,
         network_selection_preparation=network_selection_preparation,
         population_display_sections=(

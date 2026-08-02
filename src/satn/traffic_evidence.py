@@ -107,6 +107,8 @@ class TrafficObservation(BaseModel):
     freshness_state: TrafficFreshnessState = TrafficFreshnessState.UNKNOWN
     match_state: TrafficMatchState = TrafficMatchState.UNKNOWN
     coverage_status: TrafficCoverageStatus = TrafficCoverageStatus.UNKNOWN
+    match_proof: dict[str, object] | None = None
+    match_state_fingerprint: str | None = Field(default=None, pattern=_SHA256.pattern)
     row_fingerprint: str = Field(pattern=_SHA256.pattern)
     evidence_ids: tuple[str, ...] = ()
     provenance_ids: tuple[str, ...] = ()

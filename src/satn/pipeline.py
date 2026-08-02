@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -36,6 +37,7 @@ from satn.content_identity import ordered_geometry_fingerprint
 from satn.ea_snapshot_recovery import load_legacy_ea_recovery_snapshot
 from satn.filesystem_safety import PublicationDestinationAuthority
 from satn.heartbeat import StageHeartbeat
+from satn.local_evidence_store import LocalEvidenceStore
 from satn.models import (
     AgentDecisionLedger,
     AgentDecisionRequest,
@@ -49,6 +51,7 @@ from satn.models import (
     canonical_decision_ledger_payload,
 )
 from satn.parallel_reduction import PreloadedOfficerDecision
+from satn.psa_evidence_loaders import GovernedEvidenceLoadError
 from satn.publisher import (
     publication_artifacts,
     publish,
@@ -62,6 +65,7 @@ from satn.reference_application import (
 from satn.reviewable_network import (
     ReviewableNetwork,
     canonical_officer_decisions,
+    terminal_reviewable_network_for_governed_evidence,
 )
 from satn.runtime_governance import incomplete_runtime_governance
 from satn.sources import load_snapshot
@@ -73,6 +77,23 @@ from satn.strategic_reference_publication import (
 from satn.strategic_reference_replay import validate_fresh_replay
 
 LOGGER = logging.getLogger(__name__)
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _validate_evidence_binding(
+    evidence_store: LocalEvidenceStore | None,
+    evidence_state: str | None,
+) -> None:
+    """Require the Python opt-in to name one typed store and exact state."""
+
+    if (evidence_store is None) != (evidence_state is None):
+        raise ValueError("evidence_store and evidence_state must be supplied together")
+    if evidence_store is None:
+        return
+    if not isinstance(evidence_store, LocalEvidenceStore):
+        raise TypeError("evidence_store must be a LocalEvidenceStore")
+    if evidence_state is None or _SHA256_PATTERN.fullmatch(evidence_state) is None:
+        raise ValueError("evidence_state must be a full lowercase SHA-256")
 
 
 @dataclass(frozen=True)
@@ -178,6 +199,8 @@ def compile(
     decision_ledger: AgentDecisionLedger | str | Path | None = None,
     officer_decisions: tuple[PreloadedOfficerDecision, ...] = (),
     publication_authority: PublicationDestinationAuthority | None = None,
+    evidence_store: LocalEvidenceStore | None = None,
+    evidence_state: str | None = None,
 ) -> CompilationResult:
     """Compile into a complete publication or a non-publishing decision request."""
     council = (
@@ -185,6 +208,15 @@ def compile(
         if isinstance(config, (AreaDefinition, CouncilConfig))
         else AreaDefinition.from_yaml(config)
     )
+    try:
+        _validate_evidence_binding(evidence_store, evidence_state)
+    except GovernedEvidenceLoadError as error:
+        reviewable = terminal_reviewable_network_for_governed_evidence(
+            None,
+            (),
+            detail=str(error),
+        )
+        return _reviewable_terminal_result(council, "", reviewable)
     with StageHeartbeat(
         LOGGER,
         "publication-reuse-check",
@@ -198,6 +230,8 @@ def compile(
             decision_ledger=decision_ledger,
             officer_decisions=officer_decisions,
             publication_authority=publication_authority,
+            evidence_store=evidence_store,
+            evidence_state_fingerprint=evidence_state,
             heartbeat=heartbeat,
         )
 
@@ -546,6 +580,8 @@ def _compile(
     publication_authority: PublicationDestinationAuthority | None = None,
     heartbeat: StageHeartbeat | None = None,
     compiler_path: CompilerPath = "network",
+    evidence_store: LocalEvidenceStore | None = None,
+    evidence_state_fingerprint: str | None = None,
 ) -> CompilationResult:
     """Compile a parsed area definition, reporting its current long-running stage."""
     if compiler_path not in {"network", "ea-recovery"}:
@@ -562,12 +598,37 @@ def _compile(
     governed_input_fingerprint = compilation_governed_input_fingerprint(
         council,
         dependency_manifest=dependency_manifest,
+        evidence_state_fingerprint=evidence_state_fingerprint,
+        traffic_match_policy_fingerprint=(
+            council.compilation.network_selection.traffic_match_policy_fingerprint
+            if council.compilation.network_selection is not None
+            else None
+        ),
     )
     input_fingerprint = decision_ledger_input_fingerprint(
         governed_input_fingerprint,
         ledger,
         officer_decisions=officer_decisions,
     )
+    if evidence_store is not None:
+        try:
+            coverage = evidence_store.resolve_coverage(
+                state_fingerprint=evidence_state_fingerprint or ""
+            )
+            if coverage.fingerprint != evidence_state_fingerprint:
+                raise ValueError(
+                    "resolved coverage state fingerprint does not match evidence_state"
+                )
+        except Exception as error:
+            reviewable = terminal_reviewable_network_for_governed_evidence(
+                None,
+                officer_decisions,
+                detail=(
+                    "DfT Local Evidence Store coverage state could not be verified: "
+                    + str(error)
+                ),
+            )
+            return _reviewable_terminal_result(council, input_fingerprint, reviewable)
     decision_resolver = AgentDecisionResolver(ledger, governed_input_fingerprint)
     LOGGER.info(
         "Compilation started council=%s snapshot=%s schema=%s",
@@ -623,6 +684,8 @@ def _compile(
             decision_resolver=decision_resolver,
             heartbeat=heartbeat,
             officer_decisions=officer_decisions,
+            evidence_store=evidence_store,
+            evidence_state_fingerprint=evidence_state_fingerprint,
         )
     except AgentDecisionRequired as required:
         return _decision_required_result(
@@ -636,6 +699,13 @@ def _compile(
         )
     except AgentCompilationTerminated as terminated:
         return _terminated_result(council, input_fingerprint, terminated)
+    except GovernedEvidenceLoadError as error:
+        reviewable = terminal_reviewable_network_for_governed_evidence(
+            None,
+            officer_decisions,
+            detail=str(error),
+        )
+        return _reviewable_terminal_result(council, input_fingerprint, reviewable)
     reviewable = compiled.reviewable_network
     if reviewable is not None and reviewable.status.value == "terminal-failure":
         return _reviewable_terminal_result(council, input_fingerprint, reviewable)
@@ -717,6 +787,10 @@ def _compile(
             "schema_version": SCHEMA_VERSION,
             "criteria_version": council.compilation.criteria_version,
             "compilation_input_fingerprint": input_fingerprint,
+            "dft_traffic_evidence_state_fingerprint": evidence_state_fingerprint,
+            "dft_traffic_match_policy_fingerprint": (
+                compiled.traffic_match_policy_fingerprint
+            ),
             "spine_access_candidate_preparation_fingerprint": (
                 compiled.spine_access_candidate_preparation.preparation_fingerprint
                 if compiled.spine_access_candidate_preparation is not None
@@ -947,6 +1021,10 @@ def _compile(
         metadata={
             "network_model": "backbone-outward",
             "compilation_input_fingerprint": input_fingerprint,
+            "dft_traffic_evidence_state_fingerprint": evidence_state_fingerprint,
+            "dft_traffic_match_policy_fingerprint": (
+                compiled.traffic_match_policy_fingerprint
+            ),
             "compilation_diagnostics": compiled.compilation_diagnostics,
             **(
                 {"reviewable_network": reviewable.metadata}
@@ -1355,6 +1433,8 @@ def compilation_governed_input_fingerprint(
     council: AreaConfig,
     *,
     dependency_manifest: dict[str, object] | None = None,
+    evidence_state_fingerprint: str | None = None,
+    traffic_match_policy_fingerprint: str | None = None,
 ) -> str:
     """Fingerprint every governed input required for safe whole-publication reuse."""
     config_payload = _canonical_configuration_payload(council)
@@ -1404,6 +1484,8 @@ def compilation_governed_input_fingerprint(
         "compiler_dependency_manifest": manifest,
         # Retain the compact field for release contracts and benchmark evidence.
         "compiler_sha256": manifest["sha256"],
+        "dft_traffic_evidence_state_fingerprint": evidence_state_fingerprint,
+        "dft_traffic_match_policy_fingerprint": traffic_match_policy_fingerprint,
     }
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()

@@ -158,6 +158,54 @@ class TrafficProfileConfig(BaseModel):
         )
 
 
+class TrafficMatchPolicyConfig(BaseModel):
+    """Versioned DfT count-point-to-candidate matching policy."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    policy_id: str = Field(min_length=1)
+    version: str = Field(min_length=1)
+    # A matching tolerance is part of the governed policy and must be
+    # explicitly supplied; the compiler does not invent a geometric default.
+    route_buffer_m: float = Field(ge=0, strict=True)
+    source_layers: tuple[str, ...] = ("aadf", "aadf-by-direction")
+    contract: Literal["satn-dft-traffic-matching/v1"] = (
+        "satn-dft-traffic-matching/v1"
+    )
+
+    @field_validator("route_buffer_m")
+    @classmethod
+    def validate_route_buffer(cls, value: float) -> float:
+        import math
+
+        if not math.isfinite(value):
+            raise ValueError("route_buffer_m must be finite")
+        return 0.0 if value == 0 else value
+
+    @field_validator("source_layers")
+    @classmethod
+    def validate_source_layers(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        allowed = {"aadf", "aadf-by-direction"}
+        if not value or any(item not in allowed for item in value):
+            raise ValueError("source_layers must use supported DfT traffic layers")
+        if len(set(value)) != len(value):
+            raise ValueError("source_layers cannot contain duplicates")
+        return tuple(sorted(value))
+
+    @property
+    def fingerprint(self) -> str:
+        return hashlib.sha256(self.canonical_json().encode("utf-8")).hexdigest()
+
+    def canonical_json(self) -> str:
+        return json.dumps(
+            self.model_dump(mode="json"),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+
+
 class InterventionState(StrEnum):
     """Delivery state of a routable selected or complementary section."""
 
@@ -448,6 +496,10 @@ class NetworkSelectionProfile(BaseModel):
     unknown_value_policy: Literal["retain-and-request-evidence"] | None = None
     traffic_profile: TrafficProfileConfig | None = None
     traffic_profile_fingerprint: str | None = Field(default=None, pattern=_SHA256_PATTERN)
+    traffic_match_policy: TrafficMatchPolicyConfig | None = None
+    traffic_match_policy_fingerprint: str | None = Field(
+        default=None, pattern=_SHA256_PATTERN
+    )
     deterministic_tie_break: Literal["stable-candidate-id"] | None = None
     agent_call_bound: int | None = Field(default=None, ge=0, strict=True)
     maximum_options_per_candidate_set: int | None = Field(default=None, ge=1, strict=True)
@@ -583,6 +635,20 @@ class NetworkSelectionProfile(BaseModel):
                 "traffic_profile_fingerprint",
                 expected_traffic_fingerprint,
             )
+        if self.traffic_match_policy is not None:
+            expected_match_fingerprint = self.traffic_match_policy.fingerprint
+            if (
+                self.traffic_match_policy_fingerprint is not None
+                and self.traffic_match_policy_fingerprint != expected_match_fingerprint
+            ):
+                raise ValueError(
+                    "traffic_match_policy_fingerprint is stale for traffic_match_policy"
+                )
+            object.__setattr__(
+                self,
+                "traffic_match_policy_fingerprint",
+                expected_match_fingerprint,
+            )
         is_vnext = self.contract == "satn-network-selection-profile/vNext"
         if is_vnext:
             legacy_fields = frozenset(
@@ -683,6 +749,13 @@ class NetworkSelectionProfile(BaseModel):
             }
             if self.traffic_profile is not None:
                 payload["traffic_profile"] = self.traffic_profile.model_dump(mode="json")
+            if self.traffic_match_policy is not None:
+                payload["traffic_match_policy"] = self.traffic_match_policy.model_dump(
+                    mode="json"
+                )
+                payload["traffic_match_policy_fingerprint"] = (
+                    self.traffic_match_policy_fingerprint
+                )
             return payload
         payload = handler(self)
         for field in (
@@ -703,6 +776,11 @@ class NetworkSelectionProfile(BaseModel):
             "maximum_transitions_per_candidate",
         ):
             payload.pop(field, None)
+        if self.traffic_match_policy is not None:
+            payload["traffic_match_policy"] = self.traffic_match_policy.model_dump(mode="json")
+            payload["traffic_match_policy_fingerprint"] = (
+                self.traffic_match_policy_fingerprint
+            )
         return payload
 
     def canonical_json(self) -> str:

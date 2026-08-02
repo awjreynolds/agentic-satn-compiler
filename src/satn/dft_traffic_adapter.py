@@ -74,6 +74,8 @@ _ATTRIBUTES: Final[tuple[str, ...]] = (
     "freshness_state",
     "match_state",
     "coverage_status",
+    "match_proof_json",
+    "match_state_fingerprint",
     "row_fingerprint",
     "traffic_observation_json",
     "source_row_json",
@@ -561,6 +563,14 @@ def _normalise_row(
         "freshness_state": observation.freshness_state.value,
         "match_state": observation.match_state.value,
         "coverage_status": observation.coverage_status.value,
+        "match_proof_json": json.dumps(
+            observation.match_proof,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        if observation.match_proof is not None
+        else None,
+        "match_state_fingerprint": observation.match_state_fingerprint,
         "row_fingerprint": row_fingerprint,
         "traffic_observation_json": json.dumps(
             observation.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
