@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import zipfile
 from dataclasses import replace
 
 import geopandas as gpd
@@ -301,6 +302,56 @@ def test_bath_strategic_reference_publishes_typed_sibling_and_semantic_map(tmp_p
     (result.output_dir / "run.json").write_text(json.dumps(run))
     with pytest.raises(ValueError, match="fingerprint is stale"):
         _validate_artifacts(result.output_dir, config)
+
+
+def test_reviewable_strategic_spine_semantics_tampering_is_rejected(tmp_path) -> None:
+    _, _, reference, preparation = _resolved_reference_inputs(tmp_path)
+    config = configured_bath_saltford(tmp_path)
+    result = compile_strategic_reference(
+        config,
+        build_strategic_reference_application_plan(reference, preparation),
+        publication_authority=publication_destination_authority(workspace_root=tmp_path),
+    )
+    target = tmp_path / "tampered-reviewable-spine"
+    shutil.copytree(result.output_dir, target)
+
+    def tamper(payload: dict[str, object]) -> None:
+        for feature in payload.get("features", []):
+            if not isinstance(feature, dict):
+                continue
+            properties = feature.get("properties")
+            if not isinstance(properties, dict):
+                continue
+            if properties.get("selection_disposition") == "selected-strategic-spine":
+                properties["display_state"] = "existing-provision"
+                properties["intervention_evidence_state"] = "asset-accounting-bound"
+                return
+        raise AssertionError("selected strategic spine not found")
+
+    for path in (
+        target / "reviewable-network.geojson",
+        target / "review-map" / "reviewable-network.geojson",
+    ):
+        payload = json.loads(path.read_text())
+        tamper(payload)
+        path.write_text(json.dumps(payload))
+
+    archive_path = target / "review-map.zip"
+    rebuilt_archive = target / "review-map.zip.rebuilt"
+    with zipfile.ZipFile(archive_path) as source, zipfile.ZipFile(
+        rebuilt_archive, "w", compression=zipfile.ZIP_DEFLATED
+    ) as rebuilt:
+        for info in source.infolist():
+            content = source.read(info)
+            if info.filename == "review-map/reviewable-network.geojson":
+                payload = json.loads(content)
+                tamper(payload)
+                content = json.dumps(payload).encode()
+            rebuilt.writestr(info, content)
+    rebuilt_archive.replace(archive_path)
+
+    with pytest.raises(ValueError, match="strategic spine projection differs"):
+        _validate_artifacts(target, config)
 
 
 def test_strategic_data_composite_tamper_is_rejected(tmp_path) -> None:

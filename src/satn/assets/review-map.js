@@ -2007,6 +2007,7 @@
       "former-railway", "#8e24aa",
       "local-connector", "#0277bd",
       "a-road", "#c62828",
+      "strategic-reference", "#5e35b1",
       "b-road", "#ad1457",
       "classified-unnumbered-road", "#d81b60",
       "unclassified-road", "#f06292",

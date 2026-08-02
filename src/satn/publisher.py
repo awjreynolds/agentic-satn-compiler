@@ -1599,18 +1599,100 @@ def _reviewable_coordinate_values(value: object) -> list[float]:
     return values
 
 
+def _reviewable_strategic_spine_projection_properties(
+    spine_properties: dict[str, object],
+    accounting_records: tuple[dict[str, object], ...],
+) -> dict[str, object] | None:
+    """Derive the governed semantic projection for one selected spine.
+
+    This pure projection contract is shared by publication and validation. It
+    derives intervention state only from matching Asset Accounting records;
+    Strategic Reference alignments therefore remain ``undetermined``/``unknown``
+    when no governed asset evidence binds to them.
+    """
+
+    spine_kind = str(spine_properties.get("spine_kind") or "")
+    bases = {
+        "a-road": "a-road",
+        "ncn": "current-ncn",
+        "declassified-ncn": "reclassified-ncn",
+        "greenway": "greenway",
+        "selected-interurban-reference": "strategic-reference",
+    }
+    basis = bases.get(spine_kind)
+    spine_id = spine_properties.get("spine_id")
+    if basis is None or spine_id is None:
+        return None
+    provenance: dict[str, object] = {}
+    raw_provenance = spine_properties.get("provenance")
+    if isinstance(raw_provenance, str):
+        try:
+            parsed = json.loads(raw_provenance)
+            if isinstance(parsed, dict):
+                provenance = parsed
+        except json.JSONDecodeError:
+            provenance = {}
+    source_identities = {str(item) for item in provenance.get("source_ids", []) if item}
+    matched_assets = tuple(
+        item
+        for item in accounting_records
+        if source_identities
+        & {
+            str(identity)
+            for identity in item.get("governed_source_identities", [])
+            if identity
+        }
+    )
+    matched_states = {
+        str(item.get("intervention_state"))
+        for item in matched_assets
+        if basis in item.get("alignment_bases", [])
+        and item.get("intervention_state")
+        in {"existing-provision", "upgrade-required", "proposed-new-link"}
+    }
+    display_state = next(iter(matched_states)) if len(matched_states) == 1 else "undetermined"
+    intervention_evidence_state = (
+        "asset-accounting-bound"
+        if len(matched_states) == 1
+        else "conflicting"
+        if len(matched_states) > 1
+        else "unknown"
+    )
+    evidence_fingerprints = sorted(
+        {
+            str(item.get("asset_identity_sha256"))
+            for item in matched_assets
+            if item.get("asset_identity_sha256")
+        }
+    )
+    return {
+        "feature_type": "reviewable-selected-route",
+        "route_id": str(spine_id),
+        "candidate_id": None,
+        "candidate_set_id": None,
+        "connection_id": None,
+        "selection_disposition": "selected-strategic-spine",
+        "network_role": "strategic-spine",
+        "spine_kind": spine_kind,
+        "display_state": display_state,
+        "primary_alignment_basis": basis,
+        "alignment_bases": [basis],
+        "evidence_fingerprints": evidence_fingerprints,
+        "intervention_evidence_state": intervention_evidence_state,
+        "evidence_id": _json_value(spine_properties.get("evidence_id")),
+        "source_id": _json_value(spine_properties.get("source_id")),
+        "geometry_crs": "EPSG:4326",
+        "source_geometry_crs": "EPSG:27700",
+        "geometry_semantics": "exact-compiler-selected-strategic-spine",
+    }
+
+
 def _reviewable_strategic_spine_features(compiled: CompiledNetwork) -> list[dict[str, object]]:
     """Carry the exact compiler-selected Strategic Spine into the legible SATN."""
 
     frame = getattr(compiled, "strategic_spines", None)
     if not isinstance(frame, gpd.GeoDataFrame) or frame.empty:
         return []
-    bases = {
-        "a-road": "a-road",
-        "ncn": "current-ncn",
-        "declassified-ncn": "reclassified-ncn",
-        "greenway": "greenway",
-    }
     accounting_records = tuple(
         item
         for item in compiled.asset_accounting.get("records", [])
@@ -1618,80 +1700,25 @@ def _reviewable_strategic_spine_features(compiled: CompiledNetwork) -> list[dict
     )
     features: list[dict[str, object]] = []
     for _, row in frame.to_crs(4326).sort_values("spine_id").iterrows():
-        spine_kind = str(row.get("spine_kind") or "")
-        basis = bases.get(spine_kind)
         geometry = row.geometry
-        if basis is None or geometry is None or geometry.is_empty:
+        if geometry is None or geometry.is_empty:
             continue
-        provenance: dict[str, object] = {}
-        raw_provenance = row.get("provenance")
-        if isinstance(raw_provenance, str):
-            try:
-                parsed = json.loads(raw_provenance)
-                if isinstance(parsed, dict):
-                    provenance = parsed
-            except json.JSONDecodeError:
-                provenance = {}
-        spine_id = str(row["spine_id"])
-        source_identities = {
-            str(item) for item in provenance.get("source_ids", []) if item
+        spine_properties = {
+            str(key): _json_value(value)
+            for key, value in row.items()
+            if key != "geometry"
         }
-        matched_assets = tuple(
-            item
-            for item in accounting_records
-            if source_identities
-            & {
-                str(identity)
-                for identity in item.get("governed_source_identities", [])
-                if identity
-            }
+        projected_properties = _reviewable_strategic_spine_projection_properties(
+            spine_properties,
+            accounting_records,
         )
-        matched_states = {
-            str(item.get("intervention_state"))
-            for item in matched_assets
-            if basis in item.get("alignment_bases", [])
-            and item.get("intervention_state")
-            in {"existing-provision", "upgrade-required", "proposed-new-link"}
-        }
-        display_state = next(iter(matched_states)) if len(matched_states) == 1 else "undetermined"
-        intervention_evidence_state = (
-            "asset-accounting-bound"
-            if len(matched_states) == 1
-            else "conflicting"
-            if len(matched_states) > 1
-            else "unknown"
-        )
-        evidence_fingerprints = sorted(
-            {
-                str(item.get("asset_identity_sha256"))
-                for item in matched_assets
-                if item.get("asset_identity_sha256")
-            }
-        )
+        if projected_properties is None:
+            continue
         features.append(
             {
                 "type": "Feature",
-                "id": f"reviewable-strategic-spine:{spine_id}",
-                "properties": {
-                    "feature_type": "reviewable-selected-route",
-                    "route_id": spine_id,
-                    "candidate_id": None,
-                    "candidate_set_id": None,
-                    "connection_id": None,
-                    "selection_disposition": "selected-strategic-spine",
-                    "network_role": "strategic-spine",
-                    "spine_kind": spine_kind,
-                    "display_state": display_state,
-                    "primary_alignment_basis": basis,
-                    "alignment_bases": [basis],
-                    "evidence_fingerprints": evidence_fingerprints,
-                    "intervention_evidence_state": intervention_evidence_state,
-                    "evidence_id": _json_value(row.get("evidence_id")),
-                    "source_id": _json_value(row.get("source_id")),
-                    "geometry_crs": "EPSG:4326",
-                    "source_geometry_crs": "EPSG:27700",
-                    "geometry_semantics": "exact-compiler-selected-strategic-spine",
-                },
+                "id": f"reviewable-strategic-spine:{projected_properties['route_id']}",
+                "properties": projected_properties,
                 "geometry": mapping(geometry),
             }
         )
@@ -4645,26 +4672,23 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
             expected_spines
         ):
             raise ValueError("reviewable-network strategic spine roster is incomplete")
-        basis_by_kind = {
-            "a-road": "a-road",
-            "ncn": "current-ncn",
-            "declassified-ncn": "reclassified-ncn",
-            "greenway": "greenway",
-        }
+        accounting_records = tuple(
+            item for item in accounting.get("records", []) if isinstance(item, dict)
+        )
         for feature_id, expected_feature in expected_spines.items():
             actual_feature = actual_spines[feature_id]
             expected_properties = expected_feature["properties"]
             actual_properties = actual_feature["properties"]
+            if not isinstance(expected_properties, dict):
+                raise ValueError("strategic spine source feature properties are malformed")
+            expected_projection = _reviewable_strategic_spine_projection_properties(
+                expected_properties,
+                accounting_records,
+            )
             if (
-                actual_feature.get("geometry") != expected_feature.get("geometry")
-                or actual_properties.get("feature_type") != "reviewable-selected-route"
-                or actual_properties.get("route_id") != str(expected_feature["id"])
-                or actual_properties.get("spine_kind")
-                != expected_properties.get("spine_kind")
-                or actual_properties.get("primary_alignment_basis")
-                != basis_by_kind.get(str(expected_properties.get("spine_kind")))
-                or actual_properties.get("geometry_semantics")
-                != "exact-compiler-selected-strategic-spine"
+                expected_projection is None
+                or actual_feature.get("geometry") != expected_feature.get("geometry")
+                or actual_properties != expected_projection
             ):
                 raise ValueError("reviewable-network strategic spine projection differs")
     elif reviewable_map_path.exists():

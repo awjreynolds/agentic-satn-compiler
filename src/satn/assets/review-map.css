@@ -187,6 +187,7 @@ nav { display: flex; flex-wrap: wrap; gap: .4rem; font-size: .78rem; }
 .map-key.basis-former-railway { border-color: #8e24aa; }
 .map-key.basis-local-connector { border-color: #0277bd; }
 .map-key.basis-a-road { border-color: #c62828; }
+.map-key.basis-strategic-reference { border-color: #5e35b1; }
 .map-key.basis-b-road { border-color: #ad1457; }
 .map-key.basis-classified { border-color: #d81b60; }
 .map-key.basis-unclassified { border-color: #f06292; }

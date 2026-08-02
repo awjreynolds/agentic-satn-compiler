@@ -59,6 +59,7 @@ def test_gradient_inspection_interface_contract() -> None:
 def test_reviewable_network_layer_defaults_and_semantics_are_explicit() -> None:
     html = (ASSETS / "review-map.html").read_text(encoding="utf-8")
     script = (ASSETS / "review-map.js").read_text(encoding="utf-8")
+    css = (ASSETS / "review-map.css").read_text(encoding="utf-8")
     for control_id in (
         "layer-strategic-network",
         "layer-required-connections",
@@ -87,6 +88,8 @@ def test_reviewable_network_layer_defaults_and_semantics_are_explicit() -> None:
     assert '"text-field": [' in script
     assert script.count('["literal", [') >= 7
     assert "primary_alignment_basis" in script
+    assert '"strategic-reference", "#5e35b1"' in script
+    assert ".map-key.basis-strategic-reference" in css
     assert "display_state" in script
     assert "reviewable-gap-endpoint" in script
     assert "reviewable-dft-traffic-points" in script
@@ -118,6 +121,7 @@ def test_reviewable_network_layer_defaults_and_semantics_are_explicit() -> None:
         "Former railway",
         "Local connector",
         "A road",
+        "Adopted governed Strategic Reference alignment",
         "B road",
         "Classified unnumbered road",
         "Unclassified road",
