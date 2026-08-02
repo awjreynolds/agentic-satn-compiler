@@ -394,12 +394,20 @@ def compile_prepared_scenario(
             ),
         )
     if not prepared:
+        missing = (
+            tuple(
+                f"unresolved-preparation:{item}"
+                for item in unresolved_roster_ids
+            )
+            if unresolved_roster_ids
+            else ("eligible-chained-community-connection",)
+        )
         return _result(
             status="incomplete",
             preparation=preparation,
             scenario=None,
             review=None,
-            missing=("eligible-chained-community-connection",),
+            missing=missing,
             diagnostics=_roster_diagnostics(
                 preparation,
                 reason="no-eligible-chained-community-connections",
@@ -572,8 +580,17 @@ def _validate_preparation_identity(
         sorted(preparation.connection_roster, key=lambda item: item.access_connection_id)
     )
     roster_ids = tuple(item.access_connection_id for item in roster)
-    if not roster or len(set(roster_ids)) != len(roster_ids):
+    if len(set(roster_ids)) != len(roster_ids):
         raise ValueError("prepared status requires one exhaustive unique connection roster")
+    if not roster and (
+        preparation.prepared_spine_access_connections
+        or preparation.generation_issues
+        or preparation.diagnostics.get("expected_connection_roster_count") != 0
+    ):
+        raise ValueError(
+            "prepared status requires one exhaustive unique connection roster; "
+            "empty roster contradicts its governed inputs"
+        )
     prepared_ids = {
         item.access_connection_id for item in preparation.prepared_spine_access_connections
     }

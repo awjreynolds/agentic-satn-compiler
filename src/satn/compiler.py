@@ -53,11 +53,28 @@ from satn.models import (
     TrafficLight,
     UrbanClassificationStatus,
 )
+from satn.parallel_reduction import PreloadedOfficerDecision
+from satn.psa_criteria_assembly import (
+    CriteriaAssemblyInput,
+    assemble_prepared_candidate_criteria,
+)
+from satn.psa_evidence_loaders import (
+    GovernedEvidenceLoadError,
+    load_education_access_evidence,
+    load_population_reach_evidence,
+)
 from satn.reference_application import (
     ReferenceApplicationPlan,
     ReferenceSATNPublicationRecord,
 )
+from satn.reviewable_network import (
+    ReviewableNetwork,
+    compile_reviewable_network,
+    terminal_reviewable_network_for_governed_error,
+    terminal_reviewable_network_for_governed_evidence,
+)
 from satn.routing import RoadGraph
+from satn.scenario_compilation import PreparedScenarioCompilationInput
 from satn.school_street import assess_school_street_candidates
 from satn.settlement import (
     assess_community_urban_eligibility,
@@ -191,6 +208,9 @@ class CompiledNetwork:
     # Strategic publication provenance is intentionally a sibling of the
     # replay frames.  It is absent from ordinary and community paths.
     strategic_reference_publication: StrategicReferencePublicationRecord | None = None
+    # Immutable candidate-selection seam. It is absent for legacy compilations
+    # so their route and publication contracts remain unchanged.
+    reviewable_network: ReviewableNetwork | None = None
 
     @property
     def connection_count(self) -> int:
@@ -207,6 +227,11 @@ class CompiledNetwork:
 
     @property
     def status(self) -> str:
+        if self.reviewable_network is not None and (
+            self.reviewable_network.status.value != "complete"
+            or self.reviewable_network.network_gaps
+        ):
+            return "reviewable"
         has_red = any(
             status == TrafficLight.RED
             for section in self.criteria.values()
@@ -224,6 +249,7 @@ def compile_network(
     decision_resolver: AgentDecisionResolver | None = None,
     heartbeat: StageHeartbeat | None = None,
     cross_spine_progress: CrossSpineProgress | None = None,
+    officer_decisions: tuple[PreloadedOfficerDecision, ...] = (),
 ) -> CompiledNetwork:
     """Compile the ordinary current-input network with no Reference replay input."""
 
@@ -235,6 +261,7 @@ def compile_network(
         decision_resolver=decision_resolver,
         heartbeat=heartbeat,
         cross_spine_progress=cross_spine_progress,
+        officer_decisions=officer_decisions,
     )
 
 
@@ -299,6 +326,7 @@ def _compile_network(
     cross_spine_progress: CrossSpineProgress | None = None,
     reference_application_plan: ReferenceApplicationPlan | None = None,
     validated_strategic_replay: ValidatedStrategicReferenceReplay | None = None,
+    officer_decisions: tuple[PreloadedOfficerDecision, ...] = (),
 ) -> CompiledNetwork:
     places = source["places"].copy().sort_values("place_id").reset_index(drop=True)
     context = source.get("context", empty_context(source["network"].crs)).copy()
@@ -877,6 +905,12 @@ def _compile_network(
         ),
     )
     compiled.asset_accounting = build_asset_accounting(asset_context, source["network"], compiled)
+    compiled.reviewable_network = _compile_reviewable_network(
+        config,
+        source,
+        compiled,
+        officer_decisions=officer_decisions,
+    )
     # ``compile_network`` is also a supported public entry point.  Its output
     # must therefore carry the same exact decision wire contract as the
     # pipeline path, rather than relying on dataclass defaults which would
@@ -894,6 +928,99 @@ def _compile_network(
         }
     ).model_dump(mode="json")["responses"]
     return compiled
+
+
+def _compile_reviewable_network(
+    config: AreaConfig,
+    source: dict[str, gpd.GeoDataFrame],
+    compiled: CompiledNetwork,
+    *,
+    officer_decisions: tuple[PreloadedOfficerDecision, ...] = (),
+) -> ReviewableNetwork | None:
+    """Derive the immutable reviewable seam from the actual public preparation.
+
+    The ordinary network geometry is already complete at this point.  This
+    adapter only reloads the exact governed evidence declarations used by
+    candidate preparation, assembles criterion packets, and hands those
+    packets to the reviewable wrapper.  It never alters a compiled frame.
+    """
+
+    preparation = compiled.spine_access_candidate_preparation
+    if config.compilation.network_selection is None or preparation is None:
+        return None
+
+    try:
+        population_config = config.source.population_reach_evidence
+        population_evidence = (
+            load_population_reach_evidence(
+                population_config,
+                base_directory=config.config_path.parent,
+                pwc_outside_tolerance_m=0,
+            )
+            if population_config is not None
+            else None
+        )
+        school_config = config.source.school_register_evidence
+        education_evidence = None
+        if school_config is not None:
+            if config.source.network_selection_as_at is None:
+                raise GovernedEvidenceLoadError(
+                    "network selection education evidence requires an as-at date"
+                )
+            if config.source.network_selection_school_register_max_age_days is None:
+                raise GovernedEvidenceLoadError(
+                    "network selection education evidence requires a freshness bound"
+                )
+            education_evidence = load_education_access_evidence(
+                school_config,
+                config.source.strategic_education_destination_admissions,
+                base_directory=config.config_path.parent,
+                as_at=config.source.network_selection_as_at,
+                school_register_max_age_days=(
+                    config.source.network_selection_school_register_max_age_days
+                ),
+                strategic_admissions_max_age_days=(
+                    config.source.network_selection_strategic_admissions_max_age_days
+                ),
+            )
+    except GovernedEvidenceLoadError as error:
+        return terminal_reviewable_network_for_governed_evidence(
+            preparation,
+            officer_decisions,
+            detail=str(error),
+        )
+
+    try:
+        assembly = assemble_prepared_candidate_criteria(
+            CriteriaAssemblyInput(
+                preparation=preparation,
+                population_evidence=population_evidence,
+                education_evidence=education_evidence,
+                area_definition=source["boundary"],
+                # Option-specific education evidence is optional at this
+                # boundary; the governed adapter preserves unknown findings.
+                option_education_evidence={},
+            )
+        )
+    except ValueError as error:
+        return terminal_reviewable_network_for_governed_error(
+            preparation,
+            officer_decisions,
+            error=error,
+        )
+    area_fingerprint = compiled.area_definition_sha256
+    if not area_fingerprint:
+        area_fingerprint = hashlib.sha256(config.config_path.read_bytes()).hexdigest()
+    request = PreparedScenarioCompilationInput(
+        area_fingerprint=area_fingerprint,
+        criteria=assembly.packets,
+        review_run_instance_id=f"public-compile-{config.area_id}",
+    )
+    return compile_reviewable_network(
+        preparation,
+        request,
+        officer_decisions=officer_decisions,
+    )
 
 
 def _cross_spine_progress_observer(

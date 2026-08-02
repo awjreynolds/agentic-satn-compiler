@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import replace
 
 import pytest
@@ -21,7 +22,44 @@ from test_prepared_scenario_compilation import (
 
 from satn import reviewable_network
 from satn.parallel_reduction import PreloadedOfficerDecision
-from satn.reviewable_network import compile_reviewable_network
+from satn.reviewable_network import compile_reviewable_network, validate_semantic_payload
+
+
+def _fingerprint(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _rehash_semantic(payload: dict[str, object]) -> None:
+    fingerprint_payload = dict(payload)
+    fingerprint_payload.pop("result_fingerprint")
+    payload["result_fingerprint"] = _fingerprint(fingerprint_payload)
+
+
+def _evidence_request(
+    *,
+    request_id: str,
+    kind: str,
+    reason: str,
+    candidate_set_id: str | None = None,
+    target_id: str | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "request_id": request_id,
+        "kind": kind,
+        "reason": reason,
+        "candidate_set_id": candidate_set_id,
+        "target_id": target_id,
+        "evidence_ids": [],
+    }
+    return payload | {"fingerprint": _fingerprint(payload)}
 
 
 def test_valid_compilation_is_a_complete_reviewable_network() -> None:
@@ -39,6 +77,237 @@ def test_valid_compilation_is_a_complete_reviewable_network() -> None:
         result.scenario.selections[0].selected_candidate_id
     )
     assert result.network_gaps == ()
+
+
+def test_reviewable_network_has_one_json_semantic_payload_with_full_compiler_sections() -> None:
+    prepared = connection("semantic")
+    source = preparation(prepared)
+    result = compile_reviewable_network(
+        source,
+        request((packet(prepared, bound_criteria(prepared), source_preparation=source),)),
+    )
+
+    payload = result.semantic_payload
+    json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    assert payload["scenario"]["scenario_fingerprint"] == result.scenario.scenario_fingerprint
+    assert payload["compiler_result"]["result_fingerprint"] == (
+        result.compiler_result.result_fingerprint
+    )
+    assert payload["candidate_sets"]
+    assert payload["selections"]
+    assert payload["criteria"]
+    assert payload["candidate_sets"][0]["admissions"]
+    assert payload["effective_selections"][0]["candidate"]["candidate_id"] == (
+        result.effective_selections[0].candidate_id
+    )
+    validate_semantic_payload(payload)
+    tampered = json.loads(json.dumps(payload))
+    tampered["candidate_sets"][0]["candidates"][0]["directness_m"] += 1
+    with pytest.raises(ValueError, match=r"Candidate Set|fingerprint"):
+        validate_semantic_payload(tampered)
+
+
+def test_semantic_validation_rejects_fabricated_officer_state_with_fresh_outer_hash() -> None:
+    prepared = connection("fabricated-officer")
+    source = preparation(prepared)
+    result = compile_reviewable_network(
+        source,
+        request((packet(prepared, bound_criteria(prepared), source_preparation=source),)),
+    )
+    payload = json.loads(json.dumps(result.semantic_payload))
+    payload["officer_decisions"].append(
+        {
+            "decision_id": "officer-decision-invented",
+            "target_id": prepared.candidate_set.connection_id,
+            "route_id": result.effective_selections[0].candidate_id,
+            "status": "applied",
+            "candidate_set_id": prepared.candidate_set.candidate_set_id,
+            "candidate_id": result.effective_selections[0].candidate_id,
+        }
+    )
+    _rehash_semantic(payload)
+
+    with pytest.raises(ValueError, match="officer"):
+        validate_semantic_payload(payload)
+
+
+def test_semantic_validation_requires_every_selected_route_to_remain_effective() -> None:
+    prepared = connection("missing-effective")
+    source = preparation(prepared)
+    result = compile_reviewable_network(
+        source,
+        request((packet(prepared, bound_criteria(prepared), source_preparation=source),)),
+    )
+    payload = json.loads(json.dumps(result.semantic_payload))
+    payload["effective_selections"] = []
+    _rehash_semantic(payload)
+
+    with pytest.raises(ValueError, match="effective selection roster is incomplete"):
+        validate_semantic_payload(payload)
+
+
+def test_semantic_validation_binds_unavailable_officer_output_to_exact_input() -> None:
+    prepared = connection("foreign-unavailable")
+    source = preparation(prepared)
+    result = compile_reviewable_network(
+        source,
+        request((packet(prepared, bound_criteria(prepared), source_preparation=source),)),
+    )
+    payload = json.loads(json.dumps(result.semantic_payload))
+    target_id = "invented-target"
+    route_id = "invented-route"
+    decision_id = "officer-decision-" + _fingerprint(
+        {"target_id": target_id, "route_id": route_id}
+    )[:20]
+    decision = {
+        "decision_id": decision_id,
+        "target_id": target_id,
+        "route_id": route_id,
+        "status": "target-unavailable",
+        "candidate_set_id": None,
+        "candidate_id": None,
+    }
+    payload["officer_decisions"].append(decision)
+    payload["target_unavailable"].append(decision)
+    payload["evidence_requests"].append(
+        _evidence_request(
+            request_id="officer-target-" + decision_id,
+            kind="officer-target",
+            reason="officer-decision-target-unavailable",
+            target_id=target_id,
+        )
+    )
+    _rehash_semantic(payload)
+
+    with pytest.raises(ValueError, match="governed input"):
+        validate_semantic_payload(payload)
+
+
+def test_semantic_validation_rejects_gap_foreign_to_preparation() -> None:
+    prepared = connection("foreign-gap")
+    source = preparation(prepared)
+    result = compile_reviewable_network(
+        source,
+        request((packet(prepared, bound_criteria(prepared), source_preparation=source),)),
+    )
+    payload = json.loads(json.dumps(result.semantic_payload))
+    connection_id = "invented-connection"
+    endpoints = ["invented-a", "invented-b"]
+    reason = "invented-gap"
+    gap_id = "network-gap-" + _fingerprint(
+        {
+            "connection_id": connection_id,
+            "endpoints": endpoints,
+            "reason": reason,
+        }
+    )[:20]
+    payload["network_gaps"].append(
+        {
+            "gap_id": gap_id,
+            "candidate_set_id": None,
+            "connection_id": connection_id,
+            "network_role": None,
+            "endpoints": endpoints,
+            "reason": reason,
+            "unsatisfied_network_place_ids": endpoints,
+            "unsatisfied_access_obligation_ids": [],
+            "unsatisfied_strategic_destination_ids": [],
+            "display_state": "unresolved-gap",
+        }
+    )
+    payload["evidence_requests"].append(
+        _evidence_request(
+            request_id="network-gap-" + gap_id,
+            kind="network-gap",
+            reason=reason,
+            target_id=connection_id,
+        )
+    )
+    _rehash_semantic(payload)
+
+    with pytest.raises(ValueError, match="foreign to preparation"):
+        validate_semantic_payload(payload)
+
+
+def test_semantic_validation_rejects_hash_consistent_malformed_preparation() -> None:
+    prepared = connection("forged-preparation")
+    source = preparation(prepared)
+    result = compile_reviewable_network(
+        source,
+        request((packet(prepared, bound_criteria(prepared), source_preparation=source),)),
+    )
+    payload = json.loads(json.dumps(result.semantic_payload))
+    payload["preparation"]["connection_roster"].append(
+        {
+            "access_connection_id": "invented-unresolved",
+            "obligation_kind": "community",
+            "parent_role": "spine-access-connection",
+            "community_id": "invented-a",
+            "place_id": "invented-a",
+            "parent_place_id": "invented-b",
+            "disposition": "unresolved-gap",
+            "reason": "invented-gap",
+        }
+    )
+    forged_preparation_fingerprint = _fingerprint(payload["preparation"])
+    payload["preparation_fingerprint"] = forged_preparation_fingerprint
+    payload["fingerprints"]["preparation"] = forged_preparation_fingerprint
+    _rehash_semantic(payload)
+
+    with pytest.raises(ValueError, match="unresolved roster connection"):
+        validate_semantic_payload(payload)
+
+
+def test_semantic_validation_rejects_unknown_preparation_disposition() -> None:
+    prepared = connection("forged-disposition")
+    source = preparation(prepared)
+    result = compile_reviewable_network(
+        source,
+        request((packet(prepared, bound_criteria(prepared), source_preparation=source),)),
+    )
+    payload = json.loads(json.dumps(result.semantic_payload))
+    payload["preparation"]["connection_roster"].append(
+        {
+            "access_connection_id": "invented-disposition-row",
+            "obligation_kind": "community",
+            "parent_role": "spine-access-connection",
+            "community_id": "invented-a",
+            "place_id": "invented-a",
+            "parent_place_id": "invented-b",
+            "disposition": "invented-disposition",
+            "reason": None,
+        }
+    )
+    payload["preparation"]["diagnostics"]["expected_connection_roster_count"] += 1
+    forged_preparation_fingerprint = _fingerprint(payload["preparation"])
+    payload["preparation_fingerprint"] = forged_preparation_fingerprint
+    payload["fingerprints"]["preparation"] = forged_preparation_fingerprint
+    _rehash_semantic(payload)
+
+    with pytest.raises(ValueError, match="disposition"):
+        validate_semantic_payload(payload)
+
+
+def test_semantic_validation_recomputes_optional_request_roster() -> None:
+    prepared = connection("invented-request")
+    source = preparation(prepared)
+    result = compile_reviewable_network(
+        source,
+        request((packet(prepared, bound_criteria(prepared), source_preparation=source),)),
+    )
+    payload = json.loads(json.dumps(result.semantic_payload))
+    payload["evidence_requests"].append(
+        _evidence_request(
+            request_id="evidence-request-invented",
+            kind="optional-evidence",
+            reason="invented-optional-evidence",
+            candidate_set_id=prepared.candidate_set.candidate_set_id,
+        )
+    )
+    _rehash_semantic(payload)
+
+    with pytest.raises(ValueError, match="evidence-request roster mismatch"):
+        validate_semantic_payload(payload)
 
 
 def test_unresolved_preparation_row_is_a_known_endpoint_gap_not_terminal_failure() -> None:
@@ -162,6 +431,8 @@ def test_unknown_optional_traffic_is_a_diagnostic_and_does_not_stop_completion()
         item for item in result.evidence_requests if item.kind == "optional-evidence"
     )
     assert traffic_request.candidate_set_id == prepared.candidate_set.candidate_set_id
+    assert isinstance(result.semantic_payload["evidence_requests"][0], dict)
+    json.dumps(result.semantic_payload)
 
 
 def test_officer_decision_applies_exact_route_and_records_divergence() -> None:
@@ -193,6 +464,9 @@ def test_officer_decision_applies_exact_route_and_records_divergence() -> None:
     assert result.effective_selections[0].compiler_candidate_id != officer_route
     assert len(result.divergences) == 1
     assert result.officer_decisions[0].status == "applied"
+    assert isinstance(result.semantic_payload["divergences"][0], dict)
+    assert isinstance(result.semantic_payload["officer_decisions"][0], dict)
+    json.dumps(result.semantic_payload)
 
 
 def test_officer_target_is_unavailable_without_remapping_or_expiry() -> None:

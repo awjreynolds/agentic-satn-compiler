@@ -48,6 +48,7 @@ from satn.models import (
     TrafficLight,
     canonical_decision_ledger_payload,
 )
+from satn.parallel_reduction import PreloadedOfficerDecision
 from satn.publisher import (
     publication_artifacts,
     publish,
@@ -57,6 +58,10 @@ from satn.publisher import (
 from satn.reference_application import (
     _build_reference_application_plan_for_current_baseline,
     build_reference_satn_publication_record,
+)
+from satn.reviewable_network import (
+    ReviewableNetwork,
+    canonical_officer_decisions,
 )
 from satn.runtime_governance import incomplete_runtime_governance
 from satn.sources import load_snapshot
@@ -171,6 +176,7 @@ def compile(
     config: AreaConfig | str | Path,
     *,
     decision_ledger: AgentDecisionLedger | str | Path | None = None,
+    officer_decisions: tuple[PreloadedOfficerDecision, ...] = (),
     publication_authority: PublicationDestinationAuthority | None = None,
 ) -> CompilationResult:
     """Compile into a complete publication or a non-publishing decision request."""
@@ -190,6 +196,7 @@ def compile(
         return _compile(
             council,
             decision_ledger=decision_ledger,
+            officer_decisions=officer_decisions,
             publication_authority=publication_authority,
             heartbeat=heartbeat,
         )
@@ -535,6 +542,7 @@ def _compile(
     config: AreaConfig,
     *,
     decision_ledger: AgentDecisionLedger | str | Path | None = None,
+    officer_decisions: tuple[PreloadedOfficerDecision, ...] = (),
     publication_authority: PublicationDestinationAuthority | None = None,
     heartbeat: StageHeartbeat | None = None,
     compiler_path: CompilerPath = "network",
@@ -545,6 +553,7 @@ def _compile(
     recovery_candidate = compiler_path == "ea-recovery"
     started = time.perf_counter()
     council = config
+    officer_decisions = canonical_officer_decisions(officer_decisions)
     ledger = _load_decision_ledger(decision_ledger)
     dependency_manifest = compilation_dependency_manifest(
         council,
@@ -557,6 +566,7 @@ def _compile(
     input_fingerprint = decision_ledger_input_fingerprint(
         governed_input_fingerprint,
         ledger,
+        officer_decisions=officer_decisions,
     )
     decision_resolver = AgentDecisionResolver(ledger, governed_input_fingerprint)
     LOGGER.info(
@@ -573,6 +583,7 @@ def _compile(
             governed_input_fingerprint,
             input_fingerprint,
             dependency_manifest,
+            officer_decisions=officer_decisions,
         )
     )
     if reused is not None:
@@ -611,6 +622,7 @@ def _compile(
             governed_input_fingerprint=governed_input_fingerprint,
             decision_resolver=decision_resolver,
             heartbeat=heartbeat,
+            officer_decisions=officer_decisions,
         )
     except AgentDecisionRequired as required:
         return _decision_required_result(
@@ -624,6 +636,9 @@ def _compile(
         )
     except AgentCompilationTerminated as terminated:
         return _terminated_result(council, input_fingerprint, terminated)
+    reviewable = compiled.reviewable_network
+    if reviewable is not None and reviewable.status.value == "terminal-failure":
+        return _reviewable_terminal_result(council, input_fingerprint, reviewable)
     compiled.compilation_input_fingerprint = input_fingerprint
     compiled.governed_input_fingerprint = governed_input_fingerprint
     compiled.snapshot_manifest_sha256 = snapshot_manifest_sha256(council)
@@ -914,12 +929,17 @@ def _compile(
             sorted(artifacts),
             time.perf_counter() - started,
         )
+    public_status = compiled.status
+    if reviewable is not None and (
+        reviewable.status.value != "complete" or reviewable.network_gaps
+    ):
+        public_status = "reviewable"
     return CompilationResult(
         run_id=run_id,
-        status=compiled.status,
+        status=public_status,
         output_dir=council.publication.output_dir,
         connections=compiled.connection_count,
-        gaps=len(compiled.gaps),
+        gaps=len(compiled.gaps) + (len(reviewable.network_gaps) if reviewable else 0),
         artifacts=artifacts,
         criteria=compiled.criteria,
         agent_records=compiled.agent_records,
@@ -928,6 +948,11 @@ def _compile(
             "network_model": "backbone-outward",
             "compilation_input_fingerprint": input_fingerprint,
             "compilation_diagnostics": compiled.compilation_diagnostics,
+            **(
+                {"reviewable_network": reviewable.metadata}
+                if reviewable is not None
+                else {}
+            ),
             "human_intervention_requests": [
                 request.model_dump(mode="json") for request in compiled.human_intervention_requests
             ],
@@ -1265,6 +1290,30 @@ def _terminated_result(
     )
 
 
+def _reviewable_terminal_result(
+    council: AreaConfig,
+    input_fingerprint: str,
+    reviewable: ReviewableNetwork,
+) -> CompilationResult:
+    """Stop before publication when governed reviewable input is terminal."""
+
+    return CompilationResult(
+        run_id=f"terminated-reviewable-{reviewable.result_fingerprint[:12]}",
+        status="terminated",
+        output_dir=council.publication.output_dir,
+        connections=0,
+        gaps=0,
+        artifacts={},
+        criteria={},
+        agent_records=[],
+        metadata={
+            "compilation_input_fingerprint": input_fingerprint,
+            "reviewable_network": reviewable.metadata,
+            "publication_action": "retain-previous-valid-publication",
+        },
+    )
+
+
 def _load_decision_ledger(
     value: AgentDecisionLedger | str | Path | None,
 ) -> AgentDecisionLedger:
@@ -1282,13 +1331,20 @@ def _load_decision_ledger(
 def decision_ledger_input_fingerprint(
     governed_input_fingerprint: str,
     ledger: AgentDecisionLedger,
+    *,
+    officer_decisions: tuple[PreloadedOfficerDecision, ...] = (),
 ) -> str:
+    payload: dict[str, object] = {
+        "governed_input_fingerprint": governed_input_fingerprint,
+        "decision_ledger": ledger.model_dump(mode="json"),
+    }
+    if officer_decisions:
+        payload["officer_decisions"] = [
+            item.model_dump(mode="json") for item in officer_decisions
+        ]
     return hashlib.sha256(
         json.dumps(
-            {
-                "governed_input_fingerprint": governed_input_fingerprint,
-                "decision_ledger": ledger.model_dump(mode="json"),
-            },
+            payload,
             sort_keys=True,
             separators=(",", ":"),
         ).encode()
@@ -1478,6 +1534,8 @@ def _reuse_validated_publication(
     governed_input_fingerprint: str,
     input_fingerprint: str,
     dependency_manifest: dict[str, object],
+    *,
+    officer_decisions: tuple[PreloadedOfficerDecision, ...] = (),
 ) -> CompilationResult | None:
     if council.compilation.full:
         LOGGER.info("Validated publication reuse disabled by --full")
@@ -1506,9 +1564,19 @@ def _reuse_validated_publication(
         # fingerprint before comparing it to the current caller's ledger, so a
         # canonical-looking but altered persisted input cannot borrow the old
         # run fingerprint and be reused.
+        persisted_payload = run.get("officer_decision_input", [])
+        if not isinstance(persisted_payload, list):
+            return None
+        persisted_officer_decisions = canonical_officer_decisions(
+            tuple(
+                PreloadedOfficerDecision.model_validate(item)
+                for item in persisted_payload
+            )
+        )
         persisted_input_fingerprint = decision_ledger_input_fingerprint(
             governed_input_fingerprint,
             input_ledger,
+            officer_decisions=persisted_officer_decisions,
         )
         if run.get("governed_input_fingerprint") != governed_input_fingerprint:
             LOGGER.info("Existing publication governed inputs differ; recompiling")

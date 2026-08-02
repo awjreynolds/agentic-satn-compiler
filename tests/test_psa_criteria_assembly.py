@@ -302,7 +302,7 @@ def test_foreign_education_option_and_incomplete_preparation_are_honest(tmp_path
     )
     result = assemble_prepared_candidate_criteria(_request(incomplete, population, education))
     assert result.status == "incomplete"
-    assert result.packets == ()
+    assert len(result.packets) == 1
     assert "candidate-preparation-not-ready" in result.missing_inputs
 
 

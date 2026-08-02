@@ -66,6 +66,10 @@ from satn.reference_application import (
     ReferenceApplicationPlan,
     ReferenceSATNPublicationRecord,
 )
+from satn.reviewable_network import (
+    ReviewableNetwork,
+    validate_semantic_payload,
+)
 from satn.runtime_governance import classify_runtime_governance, validate_runtime_governance
 from satn.sources import (
     EA_LIDAR_WECA_ACQUISITION_CONTRACT,
@@ -166,7 +170,7 @@ def _strategic_binding_identity(value: object, *, application_plan: bool = False
 
 def publication_artifacts(output: Path) -> dict[str, Path]:
     """Return the stable artifact contract for a validated publication directory."""
-    return {
+    artifacts = {
         "geopackage": output / "network.gpkg",
         "geojson": output / "network.geojson",
         "asset_accounting": output / "asset-accounting.json",
@@ -180,6 +184,10 @@ def publication_artifacts(output: Path) -> dict[str, Path]:
         "review_zip": output / "review-map.zip",
         "pdf": output / "network-map.pdf",
     }
+    reviewable = output / "reviewable-network.json"
+    if reviewable.is_file():
+        artifacts["reviewable_network"] = reviewable
+    return artifacts
 
 
 def published_artifact_reference(
@@ -347,6 +355,11 @@ def publish(
             temporary / "asset-accounting.geojson",
             compiled,
         )
+        if compiled.reviewable_network is not None:
+            _write_reviewable_network(
+                temporary / "reviewable-network.json",
+                compiled.reviewable_network,
+            )
         try:
             _validate_ea_elevation_fixed_point(config, temporary / "network.geojson")
         except EAFixedPointMismatchError as error:
@@ -1512,6 +1525,80 @@ def _layer_counts(compiled: CompiledNetwork) -> dict[str, int]:
     }
 
 
+def _write_reviewable_network(path: Path, reviewable: ReviewableNetwork) -> None:
+    """Persist the immutable reviewable payload with a recomputable identity."""
+
+    semantic = reviewable.semantic_payload
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "disclaimer": DISCLAIMER,
+        "contract": reviewable.contract,
+        "status": reviewable.status.value,
+        "result_fingerprint": reviewable.result_fingerprint,
+        "semantic": semantic,
+        "metadata": reviewable.metadata,
+    }
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _validate_reviewable_network_artifact(path: Path) -> dict[str, object]:
+    """Parse and deep-check one reviewable artifact before reuse/publication."""
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError("reviewable-network artifact is not valid JSON") from error
+    if not isinstance(payload, dict):
+        raise ValueError("reviewable-network artifact must be an object")
+    if payload.get("disclaimer") != DISCLAIMER:
+        raise ValueError("reviewable-network disclaimer mismatch")
+    if payload.get("contract") != "satn-reviewable-network/v1":
+        raise ValueError("reviewable-network contract mismatch")
+    semantic = payload.get("semantic")
+    result_fingerprint = payload.get("result_fingerprint")
+    if not isinstance(semantic, dict) or not isinstance(result_fingerprint, str):
+        raise ValueError("reviewable-network semantic payload is malformed")
+    validate_semantic_payload(semantic)
+    expected = semantic.get("result_fingerprint")
+    if expected != result_fingerprint:
+        raise ValueError("reviewable-network result fingerprint mismatch")
+    metadata = payload.get("metadata")
+    if not isinstance(metadata, dict) or metadata.get("result_fingerprint") != result_fingerprint:
+        raise ValueError("reviewable-network metadata fingerprint mismatch")
+    if metadata.get("contract") != payload.get("contract"):
+        raise ValueError("reviewable-network metadata contract mismatch")
+    if metadata.get("status") != payload.get("status"):
+        raise ValueError("reviewable-network metadata status mismatch")
+    expected_metadata = {
+        "contract": semantic["contract"],
+        "status": semantic["status"],
+        "preparation_fingerprint": semantic["preparation_fingerprint"],
+        "profile_fingerprint": semantic["profile_fingerprint"],
+        "scenario_fingerprint": semantic["fingerprints"]["scenario"],
+        "effective_selection_ids": [
+            item["candidate_id"] for item in semantic["effective_selections"]
+        ],
+        "network_gap_ids": [item["gap_id"] for item in semantic["network_gaps"]],
+        "evidence_request_ids": [
+            item["request_id"] for item in semantic["evidence_requests"]
+        ],
+        "officer_decision_ids": [
+            item["decision_id"] for item in semantic["officer_decisions"]
+        ],
+        "divergence_ids": [
+            item["candidate_set_id"] for item in semantic["divergences"]
+        ],
+        "target_unavailable_ids": [
+            item["decision_id"] for item in semantic["target_unavailable"]
+        ],
+        "failure_code": semantic["failure_code"],
+        "result_fingerprint": result_fingerprint,
+    }
+    if metadata != expected_metadata:
+        raise ValueError("reviewable-network metadata is not derived from semantic payload")
+    return payload
+
+
 def _write_json_records(
     output: Path,
     config: AreaConfig,
@@ -1626,6 +1713,17 @@ def _write_json_records(
         run["strategic_reference"] = _strategic_publication_view(
             compiled, strategic_reference_publication
         )
+    if compiled.reviewable_network is not None:
+        run["reviewable_network"] = compiled.reviewable_network.metadata
+        run["officer_decision_input"] = [
+            {
+                "target_id": item["target_id"],
+                "route_id": item["route_id"],
+            }
+            for item in compiled.reviewable_network.semantic_payload[
+                "officer_decision_input"
+            ]
+        ]
     (output / "run.json").write_text(json.dumps(run, indent=2), encoding="utf-8")
     records = {
         "schema_version": SCHEMA_VERSION,
@@ -3904,6 +4002,8 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
         "review-map.zip",
         "network-map.pdf",
     )
+    if config.compilation.network_selection is not None:
+        required = (*required, "reviewable-network.json")
     missing = [name for name in required if not (output / name).exists()]
     if missing:
         raise ValueError(f"publication incomplete: {', '.join(missing)}")
@@ -3949,6 +4049,18 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
     run = json.loads((output / "run.json").read_text(encoding="utf-8"))
     if run.get("disclaimer") != DISCLAIMER or run.get("network_model") != "backbone-outward":
         raise ValueError("run manifest does not describe the current publication")
+    reviewable_path = output / "reviewable-network.json"
+    if config.compilation.network_selection is not None:
+        artifact = _validate_reviewable_network_artifact(reviewable_path)
+        manifest = run.get("reviewable_network")
+        if not isinstance(manifest, dict) or manifest != artifact.get("metadata"):
+            raise ValueError("run manifest reviewable-network identity mismatch")
+        if run.get("officer_decision_input") != artifact["semantic"].get(
+            "officer_decision_input"
+        ):
+            raise ValueError("run manifest officer input differs from reviewable network")
+    elif reviewable_path.exists():
+        raise ValueError("legacy publication unexpectedly contains reviewable-network artifact")
     accounting_manifest = run.get("asset_accounting", {})
     if accounting_manifest.get("asset_count") != len(accounting_ids) or accounting_manifest.get(
         "excluded_observation_count"
