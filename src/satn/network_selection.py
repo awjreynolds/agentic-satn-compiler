@@ -13,7 +13,7 @@ import re
 from datetime import date
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal, Self
+from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -28,6 +28,112 @@ class CandidateSourceClass(StrEnum):
     A_ROAD_CORRIDOR = "a-road-corridor"
     B_ROAD_CORRIDOR = "b-road-corridor"
     OTHER_ROUTABLE = "other-routable"
+
+
+class ReuseFirstCandidateClass(StrEnum):
+    """Evidence-derived candidate classes for a reuse-first profile."""
+
+    EXISTING_CYCLE_PROVISION = "existing-cycle-provision"
+    UPGRADEABLE_OFF_CARRIAGEWAY = "upgradeable-off-carriageway"
+    LOW_TRAFFIC_NON_A_ROAD = "low-traffic-non-a-road"
+    A_ROAD_MAJOR_PROTECTED_INFRASTRUCTURE = "a-road-major-protected-infrastructure"
+
+
+class InterventionState(StrEnum):
+    """Delivery state of a routable selected or complementary section."""
+
+    EXISTING_PROVISION = "existing-provision"
+    UPGRADE_REQUIRED = "upgrade-required"
+    PROPOSED_NEW_LINK = "proposed-new-link"
+
+
+class ComparatorDimension(StrEnum):
+    """Finite dimensions permitted in a profile's lexicographic comparator."""
+
+    MANDATORY_OBLIGATION_SERVICE = "mandatory-obligation-service"
+    REUSE_CLASS = "reuse-class"
+    INTERVENTION_STATE = "intervention-state"
+    ROUTE_LENGTH = "route-length"
+    ROUTE_DETOUR = "route-detour"
+    ROUTE_EFFORT = "route-effort"
+    TRANSITION_FRAGMENTATION_BURDEN = "transition-fragmentation-burden"
+    GOVERNED_CONSTRAINTS = "governed-constraints"
+    TRAFFIC_CHALLENGE = "traffic-challenge"
+    STABLE_CANDIDATE_ID = "stable-candidate-id"
+
+
+class DisplacementReasonCode(StrEnum):
+    """Closed reason vocabulary for a lower-ranked candidate displacement."""
+
+    FAILED_MANDATORY_OBLIGATION = "failed-mandatory-obligation"
+    KNOWN_TOPOLOGY_DISCONTINUITY = "known-topology-discontinuity"
+    KNOWN_ACCESS_PROHIBITION = "known-access-prohibition"
+    DETOUR_LIMIT_EXCEEDED = "detour-limit-exceeded"
+    ROUTE_EFFORT_LIMIT_EXCEEDED = "route-effort-limit-exceeded"
+    TRANSITION_OR_FRAGMENTATION_LIMIT_EXCEEDED = (
+        "transition-or-fragmentation-limit-exceeded"
+    )
+    KNOWN_MATERIAL_CONSTRAINT = "known-material-constraint"
+    OFFICER_DECISION_APPLIED = "officer-decision-applied"
+    HIGHER_RANKED_CANDIDATE_INELIGIBLE = "higher-ranked-candidate-ineligible"
+
+
+class MaterialDifferenceRule(BaseModel):
+    """Typed threshold used when comparing two otherwise eligible candidates."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    dimension: ComparatorDimension
+    threshold: float | int | None = Field(default=None, ge=0)
+    unit: str | None = Field(default=None, min_length=1)
+    comparison: Literal["absolute", "relative", "ratio"] = "absolute"
+
+    @field_validator("threshold", mode="before")
+    @classmethod
+    def require_numeric_threshold(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("material difference threshold must be numeric")
+        return value
+
+    @model_validator(mode="after")
+    def require_threshold_and_unit(self) -> Self:
+        if self.threshold is None:
+            raise ValueError("material difference rule requires a threshold")
+        if self.unit is None:
+            raise ValueError("material difference rule requires a unit")
+        return self
+
+
+class DisplacementRule(BaseModel):
+    """Typed displacement predicate bound to the closed reason-code vocabulary."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    reason_code: DisplacementReasonCode
+    predicate: str = Field(min_length=1)
+    threshold: float | int | None = Field(default=None, ge=0)
+    unit: str | None = Field(default=None, min_length=1)
+    evidence_requirements: tuple[str, ...] = ()
+
+    @field_validator("threshold", mode="before")
+    @classmethod
+    def require_numeric_threshold(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("displacement threshold must be numeric")
+        return value
+
+    @field_validator("evidence_requirements")
+    @classmethod
+    def reject_duplicate_evidence_requirements(
+        cls, value: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        if len(set(value)) != len(value):
+            raise ValueError("displacement evidence requirements cannot contain duplicates")
+        return value
 
 
 class AlignmentSelectionObjective(StrEnum):
@@ -211,8 +317,19 @@ class NetworkSelectionProfile(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     profile_id: str = Field(min_length=1)
+    contract: Literal["satn-network-selection-profile/vNext"] | None = None
+    version: str | None = Field(default=None, min_length=1)
     method_version: Literal["satn-alignment-selection/v1"] = "satn-alignment-selection/v1"
-    candidate_source_precedence: tuple[CandidateSourceClass, ...]
+    candidate_source_precedence: tuple[CandidateSourceClass, ...] | None = None
+    candidate_class_order: tuple[ReuseFirstCandidateClass, ...] | None = None
+    intervention_state_order: tuple[InterventionState, ...] | None = None
+    comparator_order: tuple[ComparatorDimension, ...] | None = None
+    material_difference_rules: tuple[MaterialDifferenceRule, ...] | None = None
+    displacement_rules: tuple[DisplacementRule, ...] | None = None
+    unknown_value_policy: Literal["retain-and-request-evidence"] | None = None
+    traffic_profile_fingerprint: str | None = Field(default=None, pattern=_SHA256_PATTERN)
+    deterministic_tie_break: Literal["stable-candidate-id"] | None = None
+    agent_call_bound: int | None = Field(default=None, ge=0, strict=True)
     primary_objective: AlignmentSelectionObjective = AlignmentSelectionObjective.POPULATION_REACH
     population: PopulationReachProfileConfig = Field(default_factory=PopulationReachProfileConfig)
     section_population: SectionPopulationCaptureProfileConfig = Field(
@@ -237,8 +354,10 @@ class NetworkSelectionProfile(BaseModel):
     @field_validator("candidate_source_precedence")
     @classmethod
     def validate_candidate_precedence(
-        cls, value: tuple[CandidateSourceClass, ...]
-    ) -> tuple[CandidateSourceClass, ...]:
+        cls, value: tuple[CandidateSourceClass, ...] | None
+    ) -> tuple[CandidateSourceClass, ...] | None:
+        if value is None:
+            return None
         if len(set(value)) != len(value):
             raise ValueError("candidate_source_precedence cannot contain duplicates")
         required = {
@@ -257,8 +376,161 @@ class NetworkSelectionProfile(BaseModel):
             raise ValueError("candidate_source_precedence contains an unsupported candidate class")
         return value
 
+    @field_validator("candidate_class_order")
+    @classmethod
+    def validate_candidate_class_order(
+        cls, value: tuple[ReuseFirstCandidateClass, ...] | None
+    ) -> tuple[ReuseFirstCandidateClass, ...] | None:
+        if value is None:
+            return None
+        if len(set(value)) != len(value):
+            raise ValueError("candidate_class_order cannot contain duplicates")
+        required = frozenset(ReuseFirstCandidateClass)
+        if frozenset(value) != required:
+            raise ValueError(
+                "candidate_class_order must contain every supported reuse-first class exactly once"
+            )
+        return value
+
+    @field_validator("intervention_state_order")
+    @classmethod
+    def validate_intervention_state_order(
+        cls, value: tuple[InterventionState, ...] | None
+    ) -> tuple[InterventionState, ...] | None:
+        if value is None:
+            return None
+        if len(set(value)) != len(value) or frozenset(value) != frozenset(InterventionState):
+            raise ValueError(
+                "intervention_state_order must contain every supported intervention state "
+                "exactly once"
+            )
+        return value
+
+    @field_validator("comparator_order")
+    @classmethod
+    def validate_comparator_order(
+        cls, value: tuple[ComparatorDimension, ...] | None
+    ) -> tuple[ComparatorDimension, ...] | None:
+        if value is None:
+            return None
+        if len(set(value)) != len(value):
+            raise ValueError("comparator_order cannot contain duplicates")
+        if value.count(ComparatorDimension.STABLE_CANDIDATE_ID) != 1:
+            raise ValueError("comparator_order must contain stable-candidate-id exactly once")
+        if value[-1] != ComparatorDimension.STABLE_CANDIDATE_ID:
+            raise ValueError("stable-candidate-id must be the final comparator dimension")
+        return value
+
+    @field_validator("material_difference_rules")
+    @classmethod
+    def reject_duplicate_material_difference_dimensions(
+        cls, value: tuple[MaterialDifferenceRule, ...] | None
+    ) -> tuple[MaterialDifferenceRule, ...] | None:
+        if value is not None and len({rule.dimension for rule in value}) != len(value):
+            raise ValueError("material_difference_rules cannot contain duplicate dimensions")
+        return value
+
+    @field_validator("displacement_rules")
+    @classmethod
+    def reject_duplicate_displacement_reason_codes(
+        cls, value: tuple[DisplacementRule, ...] | None
+    ) -> tuple[DisplacementRule, ...] | None:
+        if value is not None and len({rule.reason_code for rule in value}) != len(value):
+            raise ValueError("displacement_rules cannot contain duplicate reason_code values")
+        return value
+
+    @field_validator("traffic_profile_fingerprint")
+    @classmethod
+    def validate_traffic_profile_fingerprint(cls, value: str | None) -> str | None:
+        if value is not None and not isinstance(value, str):
+            raise ValueError("traffic_profile_fingerprint must be a SHA-256 string")
+        return value
+
+    @model_validator(mode="after")
+    def validate_contract(self) -> Self:
+        is_vnext = self.contract == "satn-network-selection-profile/vNext"
+        if is_vnext:
+            legacy_fields = frozenset(
+                {
+                    "method_version",
+                    "primary_objective",
+                    "population",
+                    "section_population",
+                    "education",
+                    "existing_alignment",
+                    "ambiguity",
+                    "publication",
+                }
+            )
+            supplied_legacy_fields = legacy_fields & self.__pydantic_fields_set__
+            if supplied_legacy_fields:
+                names = ", ".join(sorted(supplied_legacy_fields))
+                raise ValueError(f"vNext profiles cannot supply legacy policy fields: {names}")
+            required = {
+                "version": self.version,
+                "candidate_class_order": self.candidate_class_order,
+                "intervention_state_order": self.intervention_state_order,
+                "comparator_order": self.comparator_order,
+                "material_difference_rules": self.material_difference_rules,
+                "displacement_rules": self.displacement_rules,
+                "unknown_value_policy": self.unknown_value_policy,
+                "deterministic_tie_break": self.deterministic_tie_break,
+                "agent_call_bound": self.agent_call_bound,
+            }
+            missing = [name for name, value in required.items() if value is None]
+            if missing:
+                raise ValueError(
+                    "satn-network-selection-profile/vNext requires " + ", ".join(missing)
+                )
+            if self.candidate_source_precedence is not None:
+                raise ValueError(
+                    "vNext profiles must declare candidate_class_order, not legacy "
+                    "candidate_source_precedence"
+                )
+            return self
+
+        if any(
+            value is not None
+            for value in (
+                self.version,
+                self.candidate_class_order,
+                self.intervention_state_order,
+                self.comparator_order,
+                self.material_difference_rules,
+                self.displacement_rules,
+                self.unknown_value_policy,
+                self.traffic_profile_fingerprint,
+                self.deterministic_tie_break,
+                self.agent_call_bound,
+            )
+        ):
+            raise ValueError("vNext fields require contract satn-network-selection-profile/vNext")
+        if self.candidate_source_precedence is None:
+            raise ValueError("legacy v1 profiles require candidate_source_precedence")
+        return self
+
     def canonical_payload(self) -> dict[str, object]:
         """Return the exact JSON-safe payload used for immutable profile identity."""
+        if self.contract == "satn-network-selection-profile/vNext":
+            return {
+                "contract": self.contract,
+                "profile_id": self.profile_id,
+                "version": self.version,
+                "candidate_class_order": list(self.candidate_class_order or ()),
+                "intervention_state_order": list(self.intervention_state_order or ()),
+                "comparator_order": list(self.comparator_order or ()),
+                "material_difference_rules": [
+                    rule.model_dump(mode="json")
+                    for rule in (self.material_difference_rules or ())
+                ],
+                "displacement_rules": [
+                    rule.model_dump(mode="json") for rule in (self.displacement_rules or ())
+                ],
+                "unknown_value_policy": self.unknown_value_policy,
+                "traffic_profile_fingerprint": self.traffic_profile_fingerprint,
+                "deterministic_tie_break": self.deterministic_tie_break,
+                "agent_call_bound": self.agent_call_bound,
+            }
         return self.model_dump(mode="json")
 
     def canonical_json(self) -> str:
