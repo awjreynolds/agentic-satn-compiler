@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import geopandas as gpd
 from shapely.geometry import LineString
 
@@ -153,3 +155,99 @@ def test_configured_freshness_cannot_be_applied_without_an_as_at_year() -> None:
         assert "as_at_year" in str(error)
     else:  # pragma: no cover - assertion keeps the contract explicit
         raise AssertionError("unbound freshness policy was silently applied")
+
+
+def test_candidate_participation_uses_final_reviewable_selection_dispositions() -> None:
+    geometry = LineString([(-2.5, 51.4), (-2.49, 51.4)])
+    context = _frame(
+        [
+            {
+                "source_id": "asset-x",
+                "feature_type": "greenway-cycleway",
+                "geometry": geometry,
+            }
+        ]
+    )
+
+    def candidate(candidate_id: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            candidate_id=candidate_id,
+            topology_state="satisfied",
+            governed_evidence_ids=("asset-x",),
+            provenance_ids=(),
+            network_role="community-access",
+        )
+
+    selected = candidate("candidate-selected")
+    complementary = candidate("candidate-complementary")
+    unselected = candidate("candidate-unselected")
+    candidate_set = SimpleNamespace(
+        candidate_set_id="candidate-set-1",
+        candidate_set_fingerprint="a" * 64,
+        network_role="community-access",
+        admissions=tuple(
+            SimpleNamespace(candidate_id=item.candidate_id, disposition="admitted")
+            for item in (selected, complementary, unselected)
+        ),
+    )
+    records = tuple(
+        SimpleNamespace(
+            candidate=item,
+            source_ids=(),
+            evidence_ids=(),
+            preparation_disposition="retained-representative",
+        )
+        for item in (selected, complementary, unselected)
+    )
+    reviewable = SimpleNamespace(
+        result_fingerprint="b" * 64,
+        effective_selections=(
+            SimpleNamespace(
+                candidate_set_id="candidate-set-1",
+                candidate_id="candidate-selected",
+                officer_decision_id="officer-1",
+            ),
+        ),
+        scenario=SimpleNamespace(
+            scenario_fingerprint="c" * 64,
+            complementary_candidate_ids=("candidate-complementary",),
+            selections=(),
+        ),
+    )
+    compiled = SimpleNamespace(
+        reviewable_network=reviewable,
+        spine_access_candidate_preparation=SimpleNamespace(
+            prepared_spine_access_connections=(
+                SimpleNamespace(candidate_set=candidate_set, candidate_records=records),
+            )
+        ),
+        strategic_corridor_preparation=None,
+    )
+
+    accounting = build_asset_accounting(context, _frame([]), compiled)
+
+    participations = {
+        item["candidate_id"]: item
+        for item in accounting["records"][0]["candidate_participations"]
+    }
+    assert participations["candidate-selected"]["selection_disposition"] == "selected"
+    assert participations["candidate-selected"]["selection_reason"] == {
+        "code": "effective-reviewable-selection",
+        "officer_decision_id": "officer-1",
+        "reviewable_result_fingerprint": "b" * 64,
+    }
+    assert (
+        participations["candidate-complementary"]["selection_disposition"]
+        == "complementary"
+    )
+    assert participations["candidate-complementary"]["selection_reason"] == {
+        "code": "scenario-complementary-selection",
+        "scenario_fingerprint": "c" * 64,
+    }
+    assert (
+        participations["candidate-unselected"]["selection_disposition"]
+        == "eligible-not-selected"
+    )
+    assert participations["candidate-unselected"]["selection_reason"]["code"] == (
+        "eligible-candidate-not-selected"
+    )

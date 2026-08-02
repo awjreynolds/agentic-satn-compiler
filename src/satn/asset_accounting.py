@@ -419,15 +419,19 @@ def _candidate_records(compiled: object) -> Iterable[tuple[object, object]]:
 
 
 def _candidate_participation_disposition(
+    compiled: object,
     candidate_set: object,
     candidate: object,
     record: object,
-) -> str:
+) -> tuple[str, dict[str, object]]:
     """Map preparation facts to the bounded accounting disposition vocabulary."""
     topology = _field(candidate, "topology_state")
     topology_state = _text(getattr(topology, "value", topology))
     if topology_state == "unsatisfied":
-        return "topology-unconnected"
+        return "topology-unconnected", {
+            "code": "candidate-topology-unsatisfied",
+            "topology_state": topology_state,
+        }
     candidate_id = _text(_field(candidate, "candidate_id"))
     admissions = _field(candidate_set, "admissions", ())
     admission = next(
@@ -440,15 +444,89 @@ def _candidate_participation_disposition(
     )
     admission_value = _field(admission, "disposition")
     admission_disposition = _text(getattr(admission_value, "value", admission_value))
-    preparation_disposition = _text(_field(record, "preparation_disposition"))
+    preparation_disposition = _text(_field(record, "preparation_disposition")) or ""
+    if preparation_disposition == "officer-excluded":
+        return "officer-excluded", {
+            "code": "governed-officer-exclusion",
+            "preparation_disposition": preparation_disposition,
+        }
+    if preparation_disposition in {
+        "rejected-topology-unknown-review-required",
+        "incomplete-evidence",
+    }:
+        return "incomplete-evidence", {
+            "code": "candidate-evidence-incomplete",
+            "preparation_disposition": preparation_disposition,
+        }
     if admission_disposition != "admitted" or preparation_disposition in {
         "rejected",
         "excluded",
-    }:
-        return "ineligible"
-    # Candidate preparation is explicitly non-selecting.  A future selected
-    # disposition can flow through this seam, but is never inferred here.
-    return "eligible-not-selected"
+    } or preparation_disposition.startswith("rejected-"):
+        rationale = _json_value(_field(admission, "rationale"))
+        return "ineligible", {
+            "code": "candidate-failed-admission-or-preparation",
+            "admission_disposition": admission_disposition or None,
+            "failed_rule": rationale or preparation_disposition or None,
+            "preparation_disposition": preparation_disposition or None,
+        }
+
+    reviewable = _field(compiled, "reviewable_network")
+    for selection in _field(reviewable, "effective_selections", ()) or ():
+        if (
+            _text(_field(selection, "candidate_set_id"))
+            == _text(_field(candidate_set, "candidate_set_id"))
+            and _text(_field(selection, "candidate_id")) == candidate_id
+        ):
+            reason: dict[str, object] = {
+                "code": "effective-reviewable-selection",
+                "reviewable_result_fingerprint": _text(
+                    _field(reviewable, "result_fingerprint")
+                ),
+            }
+            officer_decision_id = _text(_field(selection, "officer_decision_id"))
+            if officer_decision_id:
+                reason["officer_decision_id"] = officer_decision_id
+            return "selected", reason
+
+    scenario = _field(reviewable, "scenario")
+    complementary_ids = {
+        _text(value)
+        for value in (_field(scenario, "complementary_candidate_ids", ()) or ())
+    }
+    if candidate_id in complementary_ids:
+        return "complementary", {
+            "code": "scenario-complementary-selection",
+            "scenario_fingerprint": _text(_field(scenario, "scenario_fingerprint")),
+        }
+
+    comparison_reason: object = None
+    for selection in _field(scenario, "selections", ()) or ():
+        if _text(_field(selection, "candidate_set_id")) != _text(
+            _field(candidate_set, "candidate_set_id")
+        ):
+            continue
+        comparison = next(
+            (
+                item
+                for item in (_field(selection, "comparison_dispositions", ()) or ())
+                if _text(_field(item, "candidate_id")) == candidate_id
+            ),
+            None,
+        )
+        if comparison is not None:
+            model_dump = getattr(comparison, "model_dump", None)
+            comparison_reason = (
+                model_dump(mode="json") if callable(model_dump) else _json_value(comparison)
+            )
+        break
+    return "eligible-not-selected", {
+        "code": "eligible-candidate-not-selected",
+        "comparison_disposition": comparison_reason,
+        "reviewable_result_fingerprint": _text(
+            _field(reviewable, "result_fingerprint")
+        )
+        or None,
+    }
 
 
 def _exact_candidate_participations(
@@ -483,7 +561,8 @@ def _exact_candidate_participations(
             continue
         role = _field(candidate_set, "network_role")
         role_value = _text(getattr(role, "value", role))
-        disposition = _candidate_participation_disposition(
+        disposition, selection_reason = _candidate_participation_disposition(
+            compiled,
             candidate_set,
             candidate,
             record,
@@ -498,6 +577,7 @@ def _exact_candidate_participations(
                 "candidate_role": role_value,
                 "participation_state": "participating",
                 "selection_disposition": disposition,
+                "selection_reason": selection_reason,
                 "binding_basis": "explicit-governed-source-identity",
                 "binding_identities": matched_identities,
                 "preparation_disposition": _text(

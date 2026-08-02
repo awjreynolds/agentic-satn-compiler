@@ -195,3 +195,30 @@ def test_public_compile_returns_typed_terminal_result_for_dft_store_failure(tmp_
         "mandatory-evidence-invalid"
     )
     assert result.metadata["reviewable_network"]["officer_decision_ids"]
+
+
+def test_public_compile_accounts_assets_after_final_reviewable_selection(
+    tmp_path, monkeypatch
+) -> None:
+    import satn.compiler as compiler_module
+
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    original = compiler_module.build_asset_accounting
+    observed = False
+
+    def account(context, network, compiled):
+        nonlocal observed
+        observed = True
+        assert compiled.reviewable_network is not None
+        return original(context, network, compiled)
+
+    monkeypatch.setattr(compiler_module, "build_asset_accounting", account)
+
+    result = compile(
+        config,
+        publication_authority=publication_destination_authority(workspace_root=tmp_path),
+    )
+
+    assert observed is True
+    assert result.status in {"complete", "reviewable"}

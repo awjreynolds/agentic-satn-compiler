@@ -931,13 +931,13 @@ def _compile_network(
             else {}
         ),
     )
-    compiled.asset_accounting = build_asset_accounting(asset_context, source["network"], compiled)
     compiled.reviewable_network = _compile_reviewable_network(
         config,
         source,
         compiled,
         officer_decisions=officer_decisions,
     )
+    compiled.asset_accounting = build_asset_accounting(asset_context, source["network"], compiled)
     # ``compile_network`` is also a supported public entry point.  Its output
     # must therefore carry the same exact decision wire contract as the
     # pipeline path, rather than relying on dataclass defaults which would
