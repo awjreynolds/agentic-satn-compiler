@@ -1143,8 +1143,16 @@
   function artifactAt(point) {
     const layers = selectableArtifactLayers();
     if (!layers.length) return null;
-    const rendered = map.queryRenderedFeatures(point, { layers })[0];
-    return rendered ? resolveRenderedArtifact(rendered) : null;
+    const rendered = map.queryRenderedFeatures(point, { layers });
+    const unavailableTopography = rendered.find((feature) =>
+      feature.layer?.id === "topography-unavailable" ||
+      (
+        feature.properties?.feature_type === "topography-profile" &&
+        feature.properties?.evidence_status === "evidence-unavailable"
+      )
+    );
+    const selected = unavailableTopography || rendered[0];
+    return selected ? resolveRenderedArtifact(selected) : null;
   }
 
   function renderEmptyArtifactPanel() {
