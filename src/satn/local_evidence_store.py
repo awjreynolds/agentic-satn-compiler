@@ -18,6 +18,22 @@ from shapely import from_geojson, from_wkb, to_wkb
 from shapely.geometry import box
 from shapely.geometry.base import BaseGeometry
 
+from satn.dft_traffic_adapter import (
+    ATTRIBUTES as _DFT_TRAFFIC_ATTRIBUTES,
+)
+from satn.dft_traffic_adapter import (
+    LAYERS as _DFT_TRAFFIC_LAYERS,
+)
+from satn.dft_traffic_adapter import SOURCE_FAMILY as _DFT_SOURCE_FAMILY
+from satn.dft_traffic_adapter import (
+    contract_payload as _dft_contract_payload,
+)
+from satn.dft_traffic_adapter import (
+    read_partition as _read_dft_traffic_partition,
+)
+from satn.dft_traffic_adapter import (
+    validate_export as _validate_dft_traffic_export,
+)
 from satn.ea_raster_evidence import (
     EA_RASTER_EXPECTED_COLUMNS,
     EA_RASTER_REQUIRED_CONSTRAINTS,
@@ -1201,6 +1217,61 @@ class LocalEvidenceStore:
         finally:
             connection.close()
 
+    def query_traffic(
+        self,
+        *,
+        state_fingerprint: str | None = None,
+        source_layer: str,
+        selector: BaseGeometry | None = None,
+        bbox: tuple[object, object, object, object] | None = None,
+        predicate: QueryPredicate = "intersects",
+        filters: Mapping[str, object] | None = None,
+    ) -> tuple[object, ...]:
+        """Return typed DfT observations through a bounded pure conversion seam."""
+
+        if not source_layer.startswith("dft/"):
+            raise ValueError("query_traffic requires a dft/<layer> source layer")
+        from satn.dft_traffic_adapter import (
+            observation_from_query_row,
+            traffic_claim_signature,
+        )
+
+        result = self.query(
+            state_fingerprint=state_fingerprint,
+            source_layer=source_layer,
+            selector=selector,
+            bbox=bbox,
+            predicate=predicate,
+            filters=filters,
+            projection=_DFT_TRAFFIC_ATTRIBUTES,
+        )
+        observations = [observation_from_query_row(row) for row in result.rows]
+        claims: dict[tuple[object, ...], list[object]] = {}
+        for observation in observations:
+            claims.setdefault(
+                (
+                    observation.source_layer,
+                    observation.count_point_id,
+                    observation.observation_year,
+                    observation.direction_of_travel,
+                ),
+                [],
+            ).append(observation)
+        from satn.traffic_evidence import TrafficMatchState
+
+        for group in claims.values():
+            signatures = {
+                traffic_claim_signature(item.model_dump(mode="python"))
+                for item in group
+            }
+            if len(signatures) > 1:
+                for index, item in enumerate(observations):
+                    if item in group:
+                        observations[index] = item.model_copy(
+                            update={"match_state": TrafficMatchState.CONFLICTING}
+                        )
+        return tuple(observations)
+
     def status(self, *, verify: bool = False) -> EvidenceStoreStatus:
         """Return the current immutable coverage and optionally revalidate it."""
 
@@ -1260,7 +1331,7 @@ class LocalEvidenceStore:
             existing = observations.setdefault(key, feature_fingerprint)
             if existing != feature_fingerprint:
                 raise ValueError(
-                    "one source-export RoadLink id has conflicting feature content"
+                    "one source-export logical evidence key has conflicting feature content"
                 )
 
     @staticmethod
@@ -1379,8 +1450,75 @@ class LocalEvidenceStore:
                 incline VARCHAR,
                 PRIMARY KEY (attestation_fingerprint, feature_content_fingerprint)
             );
+            CREATE TABLE IF NOT EXISTS dft_traffic_aadf (
+                attestation_fingerprint VARCHAR NOT NULL,
+                source_export_fingerprint VARCHAR NOT NULL,
+                feature_content_fingerprint VARCHAR NOT NULL,
+                logical_key VARCHAR NOT NULL,
+                geometry_fingerprint VARCHAR NOT NULL,
+                canonical_geometry_json VARCHAR NOT NULL,
+                crs VARCHAR NOT NULL CHECK (crs = 'EPSG:27700'),
+                geometry GEOMETRY NOT NULL,
+                count_point_id VARCHAR NOT NULL,
+                observation_year VARCHAR NOT NULL,
+                count_date VARCHAR,
+                direction_of_travel VARCHAR,
+                road_name VARCHAR,
+                road_category VARCHAR,
+                road_type VARCHAR,
+                start_junction_road_name VARCHAR,
+                end_junction_road_name VARCHAR,
+                latitude VARCHAR,
+                longitude VARCHAR,
+                easting VARCHAR,
+                northing VARCHAR,
+                declared_crs VARCHAR NOT NULL,
+                link_length_km VARCHAR,
+                all_motor_vehicles VARCHAR NOT NULL,
+                estimation_method VARCHAR,
+                estimation_method_detailed VARCHAR,
+                freshness_state VARCHAR,
+                match_state VARCHAR,
+                coverage_status VARCHAR,
+                row_fingerprint VARCHAR NOT NULL,
+                traffic_observation_json VARCHAR NOT NULL,
+                source_row_json VARCHAR NOT NULL,
+                PRIMARY KEY (attestation_fingerprint, feature_content_fingerprint)
+            );
+            CREATE TABLE IF NOT EXISTS dft_traffic_aadf_by_direction
+                AS SELECT * FROM dft_traffic_aadf WHERE false;
+            CREATE TABLE IF NOT EXISTS dft_traffic_raw_counts
+                AS SELECT * FROM dft_traffic_aadf WHERE false;
             """
         )
+        for table in ("dft_traffic_aadf_by_direction", "dft_traffic_raw_counts"):
+            connection.execute(
+                f"ALTER TABLE {table} ALTER COLUMN all_motor_vehicles DROP NOT NULL"
+            )
+            for column in (
+                "attestation_fingerprint",
+                "source_export_fingerprint",
+                "feature_content_fingerprint",
+                "logical_key",
+                "geometry_fingerprint",
+                "canonical_geometry_json",
+                "crs",
+                "geometry",
+                "count_point_id",
+                "observation_year",
+                "declared_crs",
+                "row_fingerprint",
+                "traffic_observation_json",
+                "source_row_json",
+            ):
+                connection.execute(
+                    f"ALTER TABLE {table} ALTER COLUMN {column} SET NOT NULL"
+                )
+        for table in ("dft_traffic_aadf_by_direction", "dft_traffic_raw_counts"):
+            connection.execute(
+                f"CREATE INDEX IF NOT EXISTS {table}_geometry_rtree "
+                f"ON {table} USING RTREE (geometry)"
+            )
         create_ea_raster_schema(connection)
         create_edge_enrichment_schema(connection)
         for table in _LAYER_TABLES.values():
@@ -1628,6 +1766,8 @@ class LocalEvidenceStore:
             return _validate_open_roads_export(source_export, ingestion_contract)
         if ingestion_contract.source_layer == _OSM_NETWORK_SOURCE_LAYER:
             return _validate_osm_network_export(source_export, ingestion_contract)
+        if ingestion_contract.source_layer.startswith(f"{_DFT_SOURCE_FAMILY}/"):
+            return _validate_dft_traffic_export(source_export, ingestion_contract)
         raise ValueError(
             f"unsupported Local Evidence source layer: {ingestion_contract.source_layer}"
         )
@@ -1656,8 +1796,43 @@ class LocalEvidenceStore:
                 ingestion_contract,
                 missing_keys,
             )
+        if ingestion_contract.source_layer.startswith(f"{_DFT_SOURCE_FAMILY}/"):
+            return tuple(
+                self._read_dft_traffic_partition(
+                    source_path,
+                    source_export,
+                    ingestion_contract,
+                    partition_key,
+                )
+                for partition_key in missing_keys
+            )
         raise ValueError(
             f"unsupported Local Evidence source layer: {ingestion_contract.source_layer}"
+        )
+
+    @staticmethod
+    def _read_dft_traffic_partition(
+        source_path: Path,
+        source_export: SourceExport,
+        ingestion_contract: IngestionContract,
+        partition_key: EvidencePartitionKey,
+    ) -> _EvidencePartitionInput:
+        source_partition = _read_dft_traffic_partition(
+            source_path, source_export, ingestion_contract, partition_key
+        )
+        return _EvidencePartitionInput(
+            source_export=source_export,
+            ingestion_contract=ingestion_contract,
+            partition_key=source_partition.partition_key,
+            availability="available" if source_partition.features else "no-data",
+            features=tuple(
+                _EvidenceFeature(
+                    logical_key=feature.logical_key,
+                    geometry=feature.geometry,
+                    attributes=feature.attributes,
+                )
+                for feature in source_partition.features
+            ),
         )
 
     @staticmethod
@@ -2411,6 +2586,9 @@ def _expected_contract_payload(source_layer: str, declared_crs: str) -> dict[str
         return _open_roads_contract_payload(declared_crs)
     if source_layer == _OSM_NETWORK_SOURCE_LAYER:
         return _osm_network_contract_payload()
+    if source_layer.startswith(f"{_DFT_SOURCE_FAMILY}/"):
+        layer = source_layer.split("/", 1)[1]
+        return _dft_contract_payload(layer, declared_crs)
     raise _schema_error(f"unsupported Local Evidence source layer: {source_layer}")
 
 
@@ -2493,6 +2671,38 @@ _EXPECTED_COLUMNS = {
         ("ele", "VARCHAR", "YES"),
         ("incline", "VARCHAR", "YES"),
     ),
+    **{
+        f"dft_traffic_{layer.replace('-', '_')}": (
+            ("attestation_fingerprint", "VARCHAR", "NO"),
+            ("source_export_fingerprint", "VARCHAR", "NO"),
+            ("feature_content_fingerprint", "VARCHAR", "NO"),
+            ("logical_key", "VARCHAR", "NO"),
+            ("geometry_fingerprint", "VARCHAR", "NO"),
+            ("canonical_geometry_json", "VARCHAR", "NO"),
+            ("crs", "VARCHAR", "NO"),
+            ("geometry", "GEOMETRY", "NO"),
+            *tuple(
+                (
+                    name,
+                    "VARCHAR",
+                    "NO"
+                    if name
+                    in {
+                        "count_point_id",
+                        "observation_year",
+                        "declared_crs",
+                        "row_fingerprint",
+                        "traffic_observation_json",
+                        "source_row_json",
+                    }
+                    or (name == "all_motor_vehicles" and layer != "raw-counts")
+                    else "YES",
+                )
+                for name in _DFT_TRAFFIC_ATTRIBUTES
+            ),
+        )
+        for layer in _DFT_TRAFFIC_LAYERS
+    },
     "partition_attestation_registry": (
         ("fingerprint", "VARCHAR", "NO"),
         ("partition_content_fingerprint", "VARCHAR", "NO"),
@@ -2531,11 +2741,16 @@ _EXPECTED_COLUMNS = {
 _LAYER_TABLES = {
     _OPEN_ROADS_SOURCE_LAYER: "open_roads_roadlink",
     _OSM_NETWORK_SOURCE_LAYER: "openstreetmap_network_lines",
+    **{
+        f"{_DFT_SOURCE_FAMILY}/{layer}": f"dft_traffic_{layer.replace('-', '_')}"
+        for layer in _DFT_TRAFFIC_LAYERS
+    },
 }
 
 _LAYER_ATTRIBUTES = {
     _OPEN_ROADS_SOURCE_LAYER: _OPEN_ROADS_ATTRIBUTES,
     _OSM_NETWORK_SOURCE_LAYER: _OSM_NETWORK_ATTRIBUTES,
+    **{f"{_DFT_SOURCE_FAMILY}/{layer}": _DFT_TRAFFIC_ATTRIBUTES for layer in _DFT_TRAFFIC_LAYERS},
 }
 
 _LAYER_FIELD_TYPES = {
@@ -2547,6 +2762,25 @@ _LAYER_FIELD_TYPES = {
     },
     _OSM_NETWORK_SOURCE_LAYER: {
         name: ("string|null", True) for name in _OSM_NETWORK_ATTRIBUTES
+    },
+    **{
+        f"{_DFT_SOURCE_FAMILY}/{layer}": {
+            name: (
+                "string|null",
+                name
+                not in {
+                    "count_point_id",
+                    "observation_year",
+                    "declared_crs",
+                    "row_fingerprint",
+                    "traffic_observation_json",
+                    "source_row_json",
+                }
+                and not (name == "all_motor_vehicles" and layer != "raw-counts")
+            )
+            for name in _DFT_TRAFFIC_ATTRIBUTES
+        }
+        for layer in _DFT_TRAFFIC_LAYERS
     },
 }
 

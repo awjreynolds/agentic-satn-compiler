@@ -661,12 +661,27 @@ def _load_source_descriptor(path: Path) -> SourceBinding:
     }
     if not all(isinstance(value, str) and value for value in source_fields.values()):
         raise ValueError("Source Export descriptor identity fields are incomplete")
+    supplied_provenance = source_payload.get("provenance", payload.get("provenance", {}))
+    if supplied_provenance is None:
+        supplied_provenance = {}
+    if not isinstance(supplied_provenance, dict):
+        raise ValueError("Source Export descriptor provenance must be a mapping")
+    provenance = dict(supplied_provenance)
+    retained_text = str(raw_path)
+    declared_retained = provenance.get("retained_path")
+    if declared_retained is not None and declared_retained != retained_text:
+        raise ValueError("Source Export descriptor retained_path differs from descriptor path")
+    declared_descriptor = provenance.get("descriptor_path")
+    descriptor_text = str(path)
+    if declared_descriptor is not None and declared_descriptor != descriptor_text:
+        raise ValueError(
+            "Source Export descriptor descriptor_path differs from descriptor location"
+        )
+    provenance["retained_path"] = retained_text
+    provenance["descriptor_path"] = descriptor_text
     source = SourceExport(
         **source_fields,  # type: ignore[arg-type]
-        provenance={
-            "retained_path": str(raw_path),
-            "descriptor_path": str(path),
-        },
+        provenance=provenance,
     )
     contract_payload = payload.get("ingestion_contract")
     if contract_payload is None:
@@ -713,9 +728,13 @@ def _retained_refresh_plan(
 
     status = store.status(verify=True)
     coverage = status.current_coverage
+    # DfT traffic is optional enrichment.  Ordinary retained refreshes plan the
+    # two historical network layers only; existing DfT attestations stay in the
+    # immutable coverage and are not expanded to new selector cells.
+    required_layers = {"os-open-roads/RoadLink", "openstreetmap/lines"}
     desired = {
         (source_layer, key.cell): key
-        for source_layer in supported_evidence_layers()
+        for source_layer in sorted(required_layers)
         for key in evidence_partition_keys(source_layer, selector)
     }
     if coverage is None:

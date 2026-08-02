@@ -48,6 +48,10 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
         "module",
         "exhaustive governed reusable-asset accounting",
     ),
+    "satn/dft_traffic_adapter.py": (
+        "module",
+        "pinned DfT motor-traffic Source Export normalization",
+    ),
     "satn/backbone.py": ("module", "Backbone-and-Access assembly"),
     "satn/compilation_dependencies.py": (
         "module",
