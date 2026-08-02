@@ -1,5 +1,5 @@
 {
-  "accepted_decisions_sha256": "5e6e933535c3a2a35352add1e4f376f1188f445f677bb1665157519a09ff9617",
+  "accepted_decisions_sha256": "b836eac97b25dc31a0dce508f1809c89a78f99007f107579eec6069242045984",
   "area_definition_sha256": "6fba4006fcee54480de25194b810b337d450239ca01fb80df45a2815db12dffb",
   "area_id": "oxfordshire",
   "area_name": "Oxfordshire",
@@ -17,7 +17,7 @@
       "size_bytes": 184
     },
     "agent-records.json": {
-      "sha256": "9f2186b0a4b04697a997f64a05f8d0ca0e4cb07e9d57f2963ebb9501da686bbe",
+      "sha256": "18e9f675d146fd7b219848ce7ce2303b63d5c806b33cd85987ecb65041242a20",
       "size_bytes": 1168241
     },
     "assets/MAPLIBRE-LICENSE.txt": {
@@ -32,33 +32,33 @@
       "sha256": "b5a34e6930ff937dbbb9eec8892cffb80ba473cce88ae5ca8c4654432f5f0ebc",
       "size_bytes": 939308
     },
-    "assets/review-map.90a4e4be80bd.css": {
-      "sha256": "90a4e4be80bd0f1eaf8d5d187eff28867d1e98d3f3fb3f68660e94c6b0bd0191",
-      "size_bytes": 10331
+    "assets/review-map.13c3bf84bf45.css": {
+      "sha256": "13c3bf84bf458985f1fa4343febefaa17f6ab18a789c1f52b5ce08a2248927c0",
+      "size_bytes": 12434
     },
-    "assets/review-map.b0c059579b6c.js": {
-      "sha256": "b0c059579b6cfe81e161e8772cb56464f87cbb04322bb972db72c41bf4a1a30a",
-      "size_bytes": 105798
+    "assets/review-map.a1515b18fb26.js": {
+      "sha256": "a1515b18fb26aa5b64e120684132cb6145528f834f475748958bf4c4c6e1051f",
+      "size_bytes": 118882
     },
     "assets/review-map.css": {
-      "sha256": "90a4e4be80bd0f1eaf8d5d187eff28867d1e98d3f3fb3f68660e94c6b0bd0191",
-      "size_bytes": 10331
+      "sha256": "13c3bf84bf458985f1fa4343febefaa17f6ab18a789c1f52b5ce08a2248927c0",
+      "size_bytes": 12434
     },
     "assets/review-map.js": {
-      "sha256": "b0c059579b6cfe81e161e8772cb56464f87cbb04322bb972db72c41bf4a1a30a",
-      "size_bytes": 105798
+      "sha256": "a1515b18fb26aa5b64e120684132cb6145528f834f475748958bf4c4c6e1051f",
+      "size_bytes": 118882
     },
     "backbone-comparison.json": {
       "sha256": "02f2c5a8c79d3fe95ab8b8a64aa410490c8ce4ea7af977fd4cf89164e53685f5",
       "size_bytes": 1747
     },
     "compiler-run.json": {
-      "sha256": "a9deb13be845b46dc998ce9d7d47a119e5c4aff19c79d49952882232f2acce4a",
-      "size_bytes": 847752
+      "sha256": "a148d25d536188d71f2ccb11063d97cc37b9da6806fddcab5c0884f50df5c91e",
+      "size_bytes": 849306
     },
     "data.js": {
-      "sha256": "03aa26388b0bb887ebefac36488377a1e15ca89d41a36757f1240affccf9ec8b",
-      "size_bytes": 614099
+      "sha256": "ad06c150e70ad97c9efab64eaba1f157da2f00b3fdc52dfbe8644012d9fe51fd",
+      "size_bytes": 614495
     },
     "divergence-records.json": {
       "sha256": "de0d6326acf13734774a77465c9e26a6098aaa696a67e5ed7a492f2f91626afa",
@@ -89,8 +89,8 @@
       "size_bytes": 115
     },
     "index.html": {
-      "sha256": "176f14cd8048b262366905592d5f862c4484d4e5fa28b653b2de612f754da5c1",
-      "size_bytes": 16931
+      "sha256": "4286ed49ed770a8806a564c3a481dd55b12f020f9e6af26d711d20db0521b1cb",
+      "size_bytes": 24966
     },
     "layer-manifest.json": {
       "sha256": "d882ddeb4289f5a005f88dc23e831f7eb59a69ab32190853daf73be8fc0fc90d",
@@ -729,19 +729,19 @@
       "size_bytes": 103801
     },
     "network-map.pdf": {
-      "sha256": "a456ffb9f22ea2db7533171b1d0f050fc36f64cbf8e8d3eecaebb8611b096b27",
-      "size_bytes": 5084010
+      "sha256": "f198788ffca01c05654cd09de795ab53c0ca3138e4f4ced4dc9ee3b0ddf64ddb",
+      "size_bytes": 5084009
     },
     "network.geojson": {
       "sha256": "0fb1ba67cdf1b3881a380f6f00246f4f44e7b6e5a9b90ffeb49da7a422166904",
       "size_bytes": 14644975
     },
     "publication.json": {
-      "sha256": "5b1c0909dacb3c61a7e35c2a667baf8b35c06beb962e4e724cc40413e2fffe2e",
+      "sha256": "2a47b200f83145172139c0289d5850df8f439b3c1a624b00e42ccc31ef1c260a",
       "size_bytes": 627781
     },
     "service-worker.js": {
-      "sha256": "208d1281f060f13ae6bc78b1c52260de93b3a846386eb4d66a84a6689b600225",
+      "sha256": "2ee8bb3d4ed5cd7da8f6079beb189f3cd6773f879135e3747fea0d3d316c711d",
       "size_bytes": 1689
     },
     "topography-manifest.json": {
@@ -1217,7 +1217,7 @@
       "size_bytes": 72702
     }
   },
-  "compilation_input_fingerprint": "0abec49fc269da48c0461c7af4ce377997cd7d9965f102a55edad08f667160c8",
+  "compilation_input_fingerprint": "a28e75d87d2975f8878278e170fd07040fe6f72d3331d052895870ce43f318db",
   "connection_count": 405,
   "criteria": {
     "atm_comparison": {
@@ -1277,7 +1277,7 @@
   "decision_ledger_input_sha256": "67779ed4c174e52fe6267892a335d34d6acb63c7fcbca50b7a61d1c48596c9c9",
   "deployment_id": "oxfordshire",
   "gap_count": 552,
-  "governed_input_fingerprint": "8b70f4bf1bba993a55cf2ba5a443e10cb501925a47b675d9a05d1f47a78626ca",
+  "governed_input_fingerprint": "650a603ab554d57265e258ecc336ccfb6c7d5af5fbe8140cd8e73aadd853da23",
   "layer_counts": {
     "a_road_spines": 7428,
     "access_obligations": 897,
@@ -1302,8 +1302,8 @@
     "urban_classification_unknowns": 0,
     "urban_spines": 0
   },
-  "run_id": "run-f4d330bbf31a",
-  "runtime_governance_sha256": "3371db009f6ef05dbef954c7a6f71024af8d9e835d354e56a9ac6adf6077f808",
+  "run_id": "run-d4a59aedc246",
+  "runtime_governance_sha256": "8c87d800eb6b2ccb3eda3cb76fc12f2213b40f87c28cd76e244e062f0b4daac4",
   "schema_version": "satn-deployment-provenance-lock/v2",
   "scope": {
     "area_id": "oxfordshire",

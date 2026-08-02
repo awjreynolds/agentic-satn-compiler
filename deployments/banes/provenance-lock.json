@@ -1,5 +1,5 @@
 {
-  "accepted_decisions_sha256": "666fa8c17b78eca08abd610d863401ec4a8c76c74da9658c2c92e7c32cd805fd",
+  "accepted_decisions_sha256": "45dea50347b1beb1b94421eb876e7b8ea257dd3f189494f1609d6bc54053d1b8",
   "area_definition_sha256": "908a61be74d850ce2200701d61c6268e9777d58fdd6a6a17ed9492b3e4bfad66",
   "area_id": "bath-and-north-east-somerset",
   "area_name": "Bath and North East Somerset",
@@ -17,7 +17,7 @@
       "size_bytes": 184
     },
     "agent-records.json": {
-      "sha256": "fa9bdd4ff0a0a133f34702b25889bec350769b14b8f82f453e96fd64da7dd19d",
+      "sha256": "ffd59412d85570f61dd2f00e618820efcb16dd0159bdd9f7112813e994f06002",
       "size_bytes": 298237
     },
     "assets/MAPLIBRE-LICENSE.txt": {
@@ -32,33 +32,33 @@
       "sha256": "b5a34e6930ff937dbbb9eec8892cffb80ba473cce88ae5ca8c4654432f5f0ebc",
       "size_bytes": 939308
     },
-    "assets/review-map.90a4e4be80bd.css": {
-      "sha256": "90a4e4be80bd0f1eaf8d5d187eff28867d1e98d3f3fb3f68660e94c6b0bd0191",
-      "size_bytes": 10331
+    "assets/review-map.13c3bf84bf45.css": {
+      "sha256": "13c3bf84bf458985f1fa4343febefaa17f6ab18a789c1f52b5ce08a2248927c0",
+      "size_bytes": 12434
     },
-    "assets/review-map.b0c059579b6c.js": {
-      "sha256": "b0c059579b6cfe81e161e8772cb56464f87cbb04322bb972db72c41bf4a1a30a",
-      "size_bytes": 105798
+    "assets/review-map.a1515b18fb26.js": {
+      "sha256": "a1515b18fb26aa5b64e120684132cb6145528f834f475748958bf4c4c6e1051f",
+      "size_bytes": 118882
     },
     "assets/review-map.css": {
-      "sha256": "90a4e4be80bd0f1eaf8d5d187eff28867d1e98d3f3fb3f68660e94c6b0bd0191",
-      "size_bytes": 10331
+      "sha256": "13c3bf84bf458985f1fa4343febefaa17f6ab18a789c1f52b5ce08a2248927c0",
+      "size_bytes": 12434
     },
     "assets/review-map.js": {
-      "sha256": "b0c059579b6cfe81e161e8772cb56464f87cbb04322bb972db72c41bf4a1a30a",
-      "size_bytes": 105798
+      "sha256": "a1515b18fb26aa5b64e120684132cb6145528f834f475748958bf4c4c6e1051f",
+      "size_bytes": 118882
     },
     "backbone-comparison.json": {
       "sha256": "90d8b1fb391d3d2a3371b261cc6046a688f028509e8a8c44184fce694256d6f9",
       "size_bytes": 1639
     },
     "compiler-run.json": {
-      "sha256": "3e6c543e1a9aa92f16a7c188b892a8ab4cc5a1eeed19ec77fd80e4f91009bfd2",
-      "size_bytes": 14684444
+      "sha256": "e1f287669852700162fc471c3cd8792d4d8f4cd614ed488d6552a6f1c26b86c2",
+      "size_bytes": 14693236
     },
     "data.js": {
-      "sha256": "1274b8f700eaa090a3aa442c6f5ecf64f95e3fa3b7886303c58ff6d1c9d3aa0a",
-      "size_bytes": 135140
+      "sha256": "f5b2ab6454ca7c348e4df3128d00b7a3d12018699019850ecd1b7303f3607921",
+      "size_bytes": 22749986
     },
     "divergence-records.json": {
       "sha256": "de0d6326acf13734774a77465c9e26a6098aaa696a67e5ed7a492f2f91626afa",
@@ -97,8 +97,8 @@
       "size_bytes": 115
     },
     "index.html": {
-      "sha256": "f1a2b0d4b36536ce99aa87cc73cbbe13b39810d2a0801b60f09991af92cacf05",
-      "size_bytes": 16927
+      "sha256": "0308a972a1051985c3ffd94864804afb89be28a03720843d22f8cf001280cf6a",
+      "size_bytes": 24962
     },
     "layer-manifest.json": {
       "sha256": "c7d28e4d932984915662bb82c12e8f308883953e20090eac5cca673f698722c2",
@@ -357,7 +357,7 @@
       "size_bytes": 57782
     },
     "network-map.pdf": {
-      "sha256": "91f2802cb40c868c97359dd2addff54aafaa410eb38218ccd66f11faa7c7b0df",
+      "sha256": "3c8dfcc103053605bcc96193aa8eb77ce84ee64202fb0a022fd50ba4c9a3d781",
       "size_bytes": 1320811
     },
     "network.geojson": {
@@ -365,11 +365,11 @@
       "size_bytes": 7999217
     },
     "publication.json": {
-      "sha256": "aa1f9dcb539202cbfff67815f3519588a0e2e1562f55056f47df24852f29881a",
-      "size_bytes": 14627701
+      "sha256": "80be5ba10716e10392d6b9eda37cc8e2caa289bf665b0f761a16c2ca4c92ffcd",
+      "size_bytes": 14633952
     },
     "service-worker.js": {
-      "sha256": "7c9ddcbaf678957e7dd8b2e355be1d8eaf4e5c61da42e5d7b5cf09447a860a52",
+      "sha256": "f3ea90a31a0b9dbf10f398ffa335dd2d0c3163d2da0bd952ac1f7f35d2e7b3cf",
       "size_bytes": 1677
     },
     "topography-manifest.json": {
@@ -561,7 +561,7 @@
       "size_bytes": 92547
     }
   },
-  "compilation_input_fingerprint": "1ca0b4b0e43a070ec11a1e98ec45faa16fe02185a3ad6e62978374f481eae1bf",
+  "compilation_input_fingerprint": "3a631c277da6137fa016b9267949fe6114b96541924c03865d21ff8bd36eb5ce",
   "connection_count": 56,
   "criteria": {
     "atm_comparison": {
@@ -621,7 +621,7 @@
   "decision_ledger_input_sha256": "67779ed4c174e52fe6267892a335d34d6acb63c7fcbca50b7a61d1c48596c9c9",
   "deployment_id": "banes",
   "gap_count": 93,
-  "governed_input_fingerprint": "d33f4e2ecbf476d2e0d2967ad32b0fba71e12d35b3f6010a7a5e9056d79e7a4a",
+  "governed_input_fingerprint": "f5784a7604b2066c5775b0ff87ac2de14d86f16b6d19e86359dc757b18525b95",
   "layer_counts": {
     "a_road_spines": 971,
     "access_obligations": 210,
@@ -646,8 +646,8 @@
     "urban_classification_unknowns": 1943,
     "urban_spines": 1218
   },
-  "run_id": "run-1f251b7328aa",
-  "runtime_governance_sha256": "87e98b9f1a50c823e593264d71604cdff5a89975fb80dba5929e51ef146ee7ef",
+  "run_id": "run-167ddad2678e",
+  "runtime_governance_sha256": "1220e898caeea831d8368aac8f073d7232f12cec60045714134ba39ee96b4b50",
   "schema_version": "satn-deployment-provenance-lock/v2",
   "scope": {
     "area_id": "bath-and-north-east-somerset",
