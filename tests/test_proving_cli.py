@@ -151,7 +151,7 @@ def test_proving_regenerate_requires_staging_and_never_overwrites_expected(
 
 
 def test_proving_help_exposes_deep_data_gate() -> None:
-    result = RUNNER.invoke(app, ["proving", "check", "--help"])
+    result = RUNNER.invoke(app, ["proving", "check", "--help"], color=False)
 
     assert result.exit_code == 0
     assert "--deep" in result.stdout
