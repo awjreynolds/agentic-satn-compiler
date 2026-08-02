@@ -35,6 +35,13 @@ DEFERRED_GROUPS = {
     "schools": {"school", "school-street-assessment"},
     "amenities": {"retail-centre", "healthcare"},
 }
+_AREA_DEPLOYMENT_REDUNDANT_AUDITS = frozenset(
+    {
+        "asset-accounting.json",
+        "asset-accounting.geojson",
+        "reviewable-network.geojson",
+    }
+)
 
 
 def _arguments() -> argparse.Namespace:
@@ -342,7 +349,20 @@ def build_area_deployment(
     )
     temporary = staging.temporary
     try:
-        shutil.copytree(review_map, temporary, dirs_exist_ok=True)
+        def ignore_redundant_audits(source: str, names: list[str]) -> set[str]:
+            # The compiler publication and review-map ZIP retain the complete
+            # audit files.  The Area Deployment adapter only needs to omit the
+            # standalone copies because data.js embeds the reviewable payload.
+            if Path(source).resolve() != review_map.resolve():
+                return set()
+            return set(names).intersection(_AREA_DEPLOYMENT_REDUNDANT_AUDITS)
+
+        shutil.copytree(
+            review_map,
+            temporary,
+            dirs_exist_ok=True,
+            ignore=ignore_redundant_audits,
+        )
         content = temporary
         shutil.copy2(run_path, content / "compiler-run.json")
         if lock is not None:

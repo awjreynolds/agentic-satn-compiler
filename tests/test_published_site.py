@@ -329,6 +329,57 @@ console.log(JSON.stringify({ calls, replies, clientBody, cachedBody }));
     }
 
 
+def test_area_deployment_omits_redundant_standalone_audits_but_keeps_embedded_reviewable_data(
+    tmp_path: Path,
+) -> None:
+    fixture = tmp_path / "fixture"
+    shutil.copytree(PROJECT / "examples" / "fixture", fixture)
+    definition = CouncilConfig.from_yaml(fixture / "council.yaml")
+    definition.publication.output_dir = tmp_path / "compiled"
+    definition.source.snapshot_dir = tmp_path / "snapshots"
+    compiler_authority = publication_destination_authority(
+        workspace_root=fixture,
+        approved_external_destination=definition.publication.output_dir,
+    )
+    snapshot(definition)
+    compile(definition, publication_authority=compiler_authority)
+
+    deployment = tmp_path / "deployments" / "tiny"
+    deployment_authority = publication_destination_authority(workspace_root=tmp_path)
+    build_area_deployment(
+        definition,
+        deployment,
+        bootstrap=True,
+        publication_authority=deployment_authority,
+    )
+
+    for filename in (
+        "asset-accounting.json",
+        "asset-accounting.geojson",
+        "reviewable-network.geojson",
+    ):
+        assert not (deployment / filename).exists()
+
+    data = json.loads(
+        (deployment / "data.js")
+        .read_text(encoding="utf-8")
+        .removeprefix("window.SATN_DATA = ")
+        .removesuffix(";\n")
+    )
+    assert "reviewable_network" in data
+    assert (deployment / "network.geojson").is_file()
+    assert (deployment / "compiler-run.json").is_file()
+    assert (deployment / "publication.json").is_file()
+
+    generate_lock(definition, deployment=deployment)
+    build_area_deployment(
+        definition,
+        deployment,
+        publication_authority=deployment_authority,
+    )
+    assert (deployment / "provenance-lock.json").is_file()
+
+
 def test_area_deployment_rejects_stale_snapshot_and_tampered_compiler_fingerprint(
     tmp_path: Path,
 ) -> None:
