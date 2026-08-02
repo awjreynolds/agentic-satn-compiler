@@ -22,7 +22,12 @@ from test_prepared_scenario_compilation import (
 
 from satn import reviewable_network
 from satn.parallel_reduction import PreloadedOfficerDecision
-from satn.reviewable_network import compile_reviewable_network, validate_semantic_payload
+from satn.reviewable_network import (
+    compile_reviewable_network,
+    reviewable_network_for_optional_context_unavailable,
+    terminal_reviewable_network_for_governed_error,
+    validate_semantic_payload,
+)
 
 
 def _fingerprint(value: object) -> str:
@@ -367,6 +372,40 @@ def test_unresolved_preparation_row_without_endpoints_remains_explicit_gap() -> 
     validate_semantic_payload(result.semantic_payload)
 
 
+def test_optional_context_unavailable_retains_unresolved_preparation_gap() -> None:
+    roster = PreparedConnectionRosterRecord(
+        access_connection_id="optional-context-gap",
+        obligation_kind="community",
+        parent_role="spine-access-connection",
+        community_id="community-optional-context",
+        place_id=None,
+        parent_place_id=None,
+        disposition="unresolved-gap",
+        reason="missing-optional-context-endpoints",
+    )
+    issue = CandidatePreparationIssue(
+        access_connection_id="optional-context-gap",
+        reason="missing-optional-context-endpoints",
+        detail="Optional context was unavailable before endpoint derivation.",
+    )
+    source = preparation(roster=(roster,), issues=(issue,))
+
+    result = reviewable_network_for_optional_context_unavailable(
+        source,
+        missing_inputs=("area-definition",),
+        officer_decisions=(
+            PreloadedOfficerDecision(target_id="optional-officer", route_id="route"),
+        ),
+    )
+
+    assert result.status == "complete"
+    assert len(result.network_gaps) == 1
+    assert result.network_gaps[0].connection_id == "optional-context-gap"
+    assert result.network_gaps[0].endpoints == ()
+    assert result.target_unavailable[0].target_id == "optional-officer"
+    validate_semantic_payload(result.semantic_payload)
+
+
 def test_valid_prepared_subset_survives_an_unresolved_sibling_row() -> None:
     prepared = connection("mixed")
     unresolved = PreparedConnectionRosterRecord(
@@ -569,6 +608,36 @@ def test_malformed_mandatory_lineage_is_terminal_and_repeat_identity_is_stable()
     assert first.scenario is None
     assert first.network_gaps == ()
     assert first.result_fingerprint == second.result_fingerprint
+
+
+def test_terminal_result_retains_unresolved_preparation_gap() -> None:
+    roster = PreparedConnectionRosterRecord(
+        access_connection_id="terminal-unresolved",
+        obligation_kind="community",
+        parent_role="spine-access-connection",
+        community_id=None,
+        place_id=None,
+        parent_place_id=None,
+        disposition="unresolved-gap",
+        reason="terminal-missing-endpoints",
+    )
+    issue = CandidatePreparationIssue(
+        access_connection_id="terminal-unresolved",
+        reason="terminal-missing-endpoints",
+        detail="The governed preparation is terminal before endpoint derivation.",
+    )
+    source = preparation(roster=(roster,), issues=(issue,))
+
+    result = terminal_reviewable_network_for_governed_error(
+        source,
+        (),
+        error=ValueError("candidate preparation fingerprint is stale"),
+    )
+
+    assert result.status == "terminal-failure"
+    assert len(result.network_gaps) == 1
+    assert result.network_gaps[0].connection_id == "terminal-unresolved"
+    validate_semantic_payload(result.semantic_payload)
 
 
 def test_legacy_route_without_intervention_state_is_undetermined() -> None:

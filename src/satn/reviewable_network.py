@@ -1355,6 +1355,37 @@ def _gap_from_roster(item: object, reason: str) -> ReviewableNetworkGap | None:
     )
 
 
+def _preparation_gaps(
+    preparation: SpineAccessCandidatePreparationResult | None,
+    *,
+    reason: str = "unresolved-preparation",
+) -> tuple[ReviewableNetworkGap, ...]:
+    """Project every unresolved preparation row into a stable gap roster."""
+
+    gaps = tuple(
+        gap
+        for item in (preparation.connection_roster if preparation is not None else ())
+        if getattr(item, "disposition", None) == "unresolved-gap"
+        for gap in (_gap_from_roster(item, reason),)
+        if gap is not None
+    )
+    return tuple(sorted(gaps, key=lambda item: item.gap_id))
+
+
+def _preparation_gap_requests(
+    gaps: Sequence[ReviewableNetworkGap],
+) -> tuple[ReviewableEvidenceRequest, ...]:
+    return tuple(
+        ReviewableEvidenceRequest(
+            request_id="network-gap-" + gap.gap_id,
+            kind=ReviewableEvidenceRequestKind.NETWORK_GAP,
+            reason=gap.reason,
+            target_id=gap.connection_id,
+        )
+        for gap in gaps
+    )
+
+
 def _traffic_requests(
     compiler_result: PreparedScenarioCompilationResult,
     scenario: ScenarioCompilation,
@@ -1430,6 +1461,13 @@ def _terminal_result(
         )
         for item in unavailable
     )
+    preparation_gaps = _preparation_gaps(preparation)
+    gap_requests = _preparation_gap_requests(preparation_gaps)
+    mandatory_request = ReviewableEvidenceRequest(
+        request_id="mandatory-lineage-" + _fingerprint(diagnostics)[:20],
+        kind=ReviewableEvidenceRequestKind.MANDATORY_LINEAGE,
+        reason=code,
+    )
     return ReviewableNetwork(
         contract=_CONTRACT,
         status=ReviewableNetworkStatus.TERMINAL_FAILURE,
@@ -1441,14 +1479,13 @@ def _terminal_result(
         scenario=None,
         compiler_result=compiler_result,
         officer_decision_input=tuple(officer_decisions),
+        network_gaps=preparation_gaps,
         diagnostics=diagnostics,
-        evidence_requests=(
-            ReviewableEvidenceRequest(
-                request_id="mandatory-lineage-" + _fingerprint(diagnostics)[:20],
-                kind=ReviewableEvidenceRequestKind.MANDATORY_LINEAGE,
-                reason=code,
-            ),
-            *requests,
+        evidence_requests=tuple(
+            sorted(
+                (mandatory_request, *gap_requests, *requests),
+                key=lambda item: item.request_id,
+            )
         ),
         officer_decisions=unavailable,
         target_unavailable=unavailable,
@@ -1598,6 +1635,17 @@ def reviewable_network_for_optional_context_unavailable(
             "publication_performed": False,
         }
     }
+    preparation_gaps = _preparation_gaps(bound_preparation)
+    gap_requests = _preparation_gap_requests(preparation_gaps)
+    officer_requests = tuple(
+        ReviewableEvidenceRequest(
+            request_id="officer-target-" + item.decision_id,
+            kind=ReviewableEvidenceRequestKind.OFFICER_TARGET,
+            reason="officer-decision-target-unavailable",
+            target_id=item.target_id,
+        )
+        for item in unavailable
+    )
     return ReviewableNetwork(
         contract=_CONTRACT,
         status=ReviewableNetworkStatus.COMPLETE,
@@ -1614,14 +1662,9 @@ def reviewable_network_for_optional_context_unavailable(
         compiler_result=None,
         officer_decision_input=canonical,
         diagnostics=diagnostics,
+        network_gaps=preparation_gaps,
         evidence_requests=tuple(
-            ReviewableEvidenceRequest(
-                request_id="officer-target-" + item.decision_id,
-                kind=ReviewableEvidenceRequestKind.OFFICER_TARGET,
-                reason="officer-decision-target-unavailable",
-                target_id=item.target_id,
-            )
-            for item in unavailable
+            sorted(gap_requests + officer_requests, key=lambda item: item.request_id)
         ),
         officer_decisions=unavailable,
         target_unavailable=unavailable,
