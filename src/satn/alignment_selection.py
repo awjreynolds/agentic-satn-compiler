@@ -83,6 +83,7 @@ _ALIGNMENT_BASIS_VOCABULARY = frozenset(
         "current-ncn",
         "ncn-link",
         "greenway",
+        "mapped-cycleway",
         "cycle-track",
         "shared-use-path",
         "reclassified-ncn",
@@ -593,6 +594,11 @@ class AlignmentCandidateInput(BaseModel):
     def validate_primary_alignment_basis(cls, value: str | None) -> str | None:
         if value is not None and _ID.fullmatch(value) is None:
             raise ValueError("primary_alignment_basis must be a canonical identifier")
+        if value is not None and value not in _ALIGNMENT_BASIS_VOCABULARY:
+            raise ValueError(
+                "primary_alignment_basis contains unsupported Alignment Basis value: "
+                + value
+            )
         return value
 
     @field_validator(
@@ -755,12 +761,53 @@ def traffic_diagnostics_for_candidate(
         for group in by_claim.values()
         if field_differences(group)
     ]
-    if conflicting_claims:
+    explicitly_conflicting = tuple(
+        item
+        for item in observation_roster
+        if item.match_state == TrafficMatchState.CONFLICTING
+        or item.coverage_status == TrafficCoverageStatus.CONFLICTING
+    )
+    explicitly_conflicting_claims = {
+        (item.count_point_id, item.observation_year, item.direction_of_travel)
+        for item in explicitly_conflicting
+    }
+    local_explicit_conflict = bool(explicitly_conflicting) and (
+        len(by_claim) == 1
+        and len(explicitly_conflicting_claims) == 1
+    )
+    if local_explicit_conflict or conflicting_claims:
         difference_fields: set[str] = set()
         for group in conflicting_claims:
             difference_fields.update(field_differences(group))
+        difference_fields.update(
+            field
+            for field in ("match_state", "coverage_status")
+            if any(
+                getattr(item, field)
+                in {
+                    TrafficMatchState.CONFLICTING,
+                    TrafficCoverageStatus.CONFLICTING,
+                }
+                for item in explicitly_conflicting
+            )
+        )
+        explicit_ids = {item.observation_id for item in explicitly_conflicting}
         claim_observations = tuple(
-            item for group in conflicting_claims for item in group
+            item
+            for group in by_claim.values()
+            if field_differences(group)
+            or any(item.observation_id in explicit_ids for item in group)
+            for item in group
+        )
+        claim_observations = tuple(
+            sorted(
+                claim_observations,
+                key=lambda item: (
+                    item.observation_id,
+                    item.source_export_fingerprint,
+                    item.row_fingerprint,
+                ),
+            )
         )
         return (
             {

@@ -140,6 +140,12 @@ class TrafficProfileConfig(BaseModel):
     ) -> TrafficFreshnessState:
         """Derive freshness from the declared as-at year when configured."""
 
+        # Keep the method fail-closed even for model_construct() values that
+        # bypass the normal model validator: an age policy without an as-at
+        # year has no reference point and must never silently use a reported
+        # freshness state.
+        if self.max_observation_age_years is not None and self.as_at_year is None:
+            raise ValueError("max_observation_age_years requires as_at_year")
         if self.as_at_year is None or self.max_observation_age_years is None:
             return reported_state
         age = self.as_at_year - observation_year

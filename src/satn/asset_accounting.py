@@ -18,6 +18,7 @@ from decimal import ROUND_HALF_EVEN, Decimal
 
 import geopandas as gpd
 import pandas as pd
+from shapely.errors import GEOSException
 from shapely.geometry import LineString, MultiLineString, mapping
 
 from satn.constants import DISCLAIMER, SCHEMA_VERSION
@@ -90,6 +91,7 @@ _ASSET_KIND_PRECEDENCE = (
     "ncn-link",
     "reclassified-ncn",
     "greenway",
+    "mapped-cycleway",
     "cycle-track",
     "shared-use-path",
     "public-footpath",
@@ -115,6 +117,11 @@ def _json_value(value: object) -> object:
         return {str(key): _json_value(item) for key, item in value.items()}
     if isinstance(value, (list, tuple, set)):
         return [_json_value(item) for item in value]
+    if hasattr(value, "tolist"):
+        with suppress(AttributeError, TypeError, ValueError):
+            converted = value.tolist()
+            if converted is not value:
+                return _json_value(converted)
     if value is None:
         return None
     if isinstance(value, (date, datetime)):
@@ -163,18 +170,19 @@ def _full_sha256(value: object) -> bool:
 def _authoritative_lineage(row: pd.Series) -> bool:
     """Return whether a supported claim carries a complete source lineage."""
     source_export = row.get("source_export_sha256") or row.get("raw_bytes_sha256")
-    authority = row.get("publisher") or row.get("source_authority_role")
+    parser_contract = row.get("ingestion_contract") or row.get("parser_contract")
     return bool(
         _text(row.get("source_family"))
         and _text(row.get("dataset"))
-        and _text(authority)
+        and _text(row.get("publisher"))
+        and _text(row.get("source_authority_role"))
         and (_text(row.get("effective_date")) or _text(row.get("publisher_release")))
         and _text(row.get("licence"))
         and _full_sha256(source_export)
         and _text(row.get("claim_type"))
         and _text(row.get("evidence_mode"))
         and _text(row.get("coverage_state"))
-        and (_text(row.get("ingestion_contract")) or _text(row.get("parser_version")))
+        and (_text(parser_contract) or _text(row.get("parser_version")))
     )
 
 
@@ -298,7 +306,7 @@ def _network_kind(row: pd.Series) -> str | None:
     if highway not in _ROUTABLE_HIGHWAYS:
         return None
     if highway == "cycleway":
-        return "cycle-track"
+        return "cycle-track" if _authoritative_lineage(row) else "mapped-cycleway"
     if highway in {"bridleway"}:
         return "public-bridleway"
     if highway in {"footway", "steps"}:
@@ -314,7 +322,7 @@ def _evidence_row(
     row: pd.Series,
     *,
     kind: str,
-    geometry_sha256: str,
+    geometry_sha256: str | None,
     evidence_geometry_fingerprint_value: str | None,
 ) -> dict[str, object]:
     evidence_id = _text(row.get("evidence_id"))
@@ -349,6 +357,7 @@ def _evidence_row(
         "feature_type": _text(row.get("feature_type")),
         "claim_type": _text(row.get("claim_type")),
         "ingestion_contract": _text(row.get("ingestion_contract")),
+        "parser_contract": _text(row.get("parser_contract")),
         "parser_version": _text(row.get("parser_version")),
         "raw_attributes": raw_attributes,
         "source_family": _text(row.get("source_family")),
@@ -527,12 +536,13 @@ def build_asset_accounting(
                 if frame.crs is None:
                     raise ValueError("asset evidence geometry has no CRS")
                 identity_geometry = gpd.GeoSeries([geometry], crs=frame.crs).to_crs(27700).iloc[0]
-                identity_geometry = _canonical_metric_geometry(identity_geometry)
             except (ValueError, TypeError):
                 excluded = _evidence_row(
                     row,
                     kind="invalid-crs-geometry",
-                    geometry_sha256=_geometry_fingerprint(geometry),
+                    # Do not derive an identity from raw geometry when the
+                    # governed CRS/canonicalisation contract has failed.
+                    geometry_sha256=None,
                     evidence_geometry_fingerprint_value=None,
                 )
                 excluded.update(
@@ -546,16 +556,36 @@ def build_asset_accounting(
                 )
                 excluded_observations.append(excluded)
                 continue
-            geometry_sha256 = _geometry_fingerprint(identity_geometry)
-            evidence_geometry_identity = evidence_geometry_fingerprint(
-                identity_geometry,
-                27700,
-            )
+            try:
+                identity_geometry = _canonical_metric_geometry(identity_geometry)
+                geometry_sha256 = _geometry_fingerprint(identity_geometry)
+                evidence_geometry_identity = evidence_geometry_fingerprint(
+                    identity_geometry,
+                    27700,
+                )
+            except (GEOSException, TypeError, ValueError):
+                excluded = _evidence_row(
+                    row,
+                    kind="invalid-canonical-geometry",
+                    geometry_sha256=None,
+                    evidence_geometry_fingerprint_value=None,
+                )
+                excluded.update(
+                    {
+                        "accounting_disposition": "excluded-invalid-geometry",
+                        "reason": (
+                            "source geometry cannot be represented by the governed "
+                            "canonical evidence-geometry contract"
+                        ),
+                    }
+                )
+                excluded_observations.append(excluded)
+                continue
             if kind is None:
                 highway = (_text(row.get("highway")) or "").lower()
                 designation = _designation(row)
                 bare_reusable_tag = origin == "network" and (
-                    highway in {"footway", "path", "track"}
+                    highway in {"cycleway", "footway", "path", "track"}
                     or designation in {"local_connector", "local-connector"}
                 )
                 excluded = _evidence_row(
@@ -668,6 +698,16 @@ def build_asset_accounting(
             asset["evidence_state_reasons"],
             key=lambda item: (str(item.get("source_id")), str(item.get("evidence_id"))),
         )
+        if asset["evidence_state"] == "conflicting":
+            asset["conflict_roster"] = sorted(
+                {
+                    identity
+                    for evidence in asset["source_provenance"]
+                    if evidence.get("observation_state") == "conflicting"
+                    for identity in (evidence.get("source_id"), evidence.get("evidence_id"))
+                    if identity
+                }
+            )
         asset["governed_source_identities"] = sorted(
             {
                 identity

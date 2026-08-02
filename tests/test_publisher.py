@@ -311,6 +311,18 @@ def test_public_compile_accounts_reusable_source_classes_and_canonical_geometry(
                         {
                             "source_id": "cycleway",
                             "highway": "cycleway",
+                            "evidence_state": "supported",
+                            "claim_type": "cycling-access",
+                            "source_family": "governed-cycleway",
+                            "dataset": "cycleway-register",
+                            "publisher": "Example authority",
+                            "source_authority_role": "custodian_classification",
+                            "effective_date": "2026-08-01",
+                            "licence": "Open Government Licence v3.0",
+                            "source_export_sha256": "a" * 64,
+                            "evidence_mode": "observed",
+                            "coverage_state": "complete",
+                            "ingestion_contract": "satn-cycleway/v1",
                             "geometry": LineString([(-2.50, 51.407), (-2.49, 51.408)]),
                         },
                         {
