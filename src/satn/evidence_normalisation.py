@@ -209,19 +209,30 @@ def normalise_source_export(
     return tuple(sorted(observations, key=lambda item: item.fingerprint))
 
 
+@dataclass(frozen=True)
 class EvidenceObservationCollection:
     """An immutable, input-order-independent collection that retains competing claims."""
 
-    contract = "satn-evidence-observation-collection/v1"
+    observations: tuple[EvidenceObservation, ...]
+    fingerprint: str = ""
 
-    def __init__(self, observations: tuple[EvidenceObservation, ...]) -> None:
-        if not all(isinstance(item, EvidenceObservation) for item in observations):
+    contract: str = field(init=False, default="satn-evidence-observation-collection/v1")
+
+    def __post_init__(self) -> None:
+        if not all(isinstance(item, EvidenceObservation) for item in self.observations):
             raise ValueError("observation collection requires EvidenceObservation records")
-        fingerprints = [item.fingerprint for item in observations]
+        fingerprints = [item.fingerprint for item in self.observations]
         if len(fingerprints) != len(set(fingerprints)):
             raise ValueError("observation collection cannot contain duplicates")
-        self.observations = tuple(sorted(observations, key=lambda item: item.fingerprint))
-        self.fingerprint = evidence_fingerprint(self.canonical_payload())
+        object.__setattr__(
+            self,
+            "observations",
+            tuple(sorted(self.observations, key=lambda item: item.fingerprint)),
+        )
+        expected = evidence_fingerprint(self.canonical_payload())
+        if self.fingerprint and self.fingerprint != expected:
+            raise ValueError("observation collection fingerprint is stale or collides")
+        object.__setattr__(self, "fingerprint", expected)
 
     def observations_for(
         self,

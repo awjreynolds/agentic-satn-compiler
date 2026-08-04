@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError
+
 import pytest
 
 from satn.evidence_contracts import IngestionContract, SourceExport
@@ -265,3 +267,26 @@ def test_resolution_rejects_a_false_complete_state_for_missing_coverage() -> Non
             missing_cells=("ST56",),
             state="complete",
         )
+
+
+def test_normalised_observation_collection_is_immutable() -> None:
+    observations = normalise_source_export(
+        source_export=source_export("england-demand", content="a"),
+        ingestion_contract=ingestion_contract("england-demand", implementation="c"),
+        drafts=(
+            EvidenceObservationDraft(
+                observation_id="england-flow-1",
+                subject_id="corridor-1",
+                claim="daily-demand-flow",
+                value={"trips_per_day": 120},
+                coverage_cells=("ST56",),
+                observed_at="2026-01-31",
+            ),
+        ),
+    )
+    collection = EvidenceObservationCollection(observations)
+
+    with pytest.raises(FrozenInstanceError):
+        collection.observations = ()
+    with pytest.raises(FrozenInstanceError):
+        collection.fingerprint = "f" * 64
