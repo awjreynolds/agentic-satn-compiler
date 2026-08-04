@@ -104,6 +104,10 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
         "module",
         "frozen Network Selection Profile validation and fingerprinting",
     ),
+    "satn/planning_graph.py": (
+        "module",
+        "edge-identity-preserving planning graph snapshot",
+    ),
     "satn/reviewable_network.py": (
         "module",
         "complete reviewable selections, endpoint gaps, and officer divergence",
@@ -188,6 +192,7 @@ OPTIONAL_COMPONENT_GROUPS: Final[dict[str, frozenset[str]]] = {
             "satn/existing_alignment.py",
             "satn/local_evidence_store.py",
             "satn/network_selection.py",
+            "satn/planning_graph.py",
             "satn/traffic_evidence.py",
             "satn/population_reach.py",
             "satn/section_population.py",
