@@ -25,6 +25,7 @@ from satn.publisher import (
     _strategic_candidate_evidence_html,
     _validate_artifacts,
     _validated_strategic_reference_publication,
+    validate_publication,
 )
 from satn.strategic_reference_application import build_strategic_reference_application_plan
 from satn.strategic_reference_publication import (
@@ -304,7 +305,7 @@ def test_bath_strategic_reference_publishes_typed_sibling_and_semantic_map(tmp_p
         _validate_artifacts(result.output_dir, config)
 
 
-def test_reviewable_strategic_spine_semantics_tampering_is_rejected(tmp_path) -> None:
+def test_effective_strategic_projection_tampering_is_rejected(tmp_path) -> None:
     _, _, reference, preparation = _resolved_reference_inputs(tmp_path)
     config = configured_bath_saltford(tmp_path)
     result = compile_strategic_reference(
@@ -322,11 +323,10 @@ def test_reviewable_strategic_spine_semantics_tampering_is_rejected(tmp_path) ->
             properties = feature.get("properties")
             if not isinstance(properties, dict):
                 continue
-            if properties.get("selection_disposition") == "selected-strategic-spine":
+            if properties.get("feature_type") == "asset-upgrade-required":
                 properties["display_state"] = "existing-provision"
-                properties["intervention_evidence_state"] = "asset-accounting-bound"
                 return
-        raise AssertionError("selected strategic spine not found")
+        raise AssertionError("effective strategic feature not found")
 
     for path in (
         target / "reviewable-network.geojson",
@@ -350,8 +350,11 @@ def test_reviewable_strategic_spine_semantics_tampering_is_rejected(tmp_path) ->
             rebuilt.writestr(info, content)
     rebuilt_archive.replace(archive_path)
 
-    with pytest.raises(ValueError, match="strategic spine projection differs"):
-        _validate_artifacts(target, config)
+    with pytest.raises(
+        ValueError,
+        match="effective strategic-network sidecar differs from review map",
+    ):
+        validate_publication(target, config)
 
 
 def test_strategic_data_composite_tamper_is_rejected(tmp_path) -> None:

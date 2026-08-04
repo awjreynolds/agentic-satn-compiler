@@ -394,6 +394,7 @@ def publish(
     run_id: str,
     *,
     publication_authority: PublicationDestinationAuthority | None = None,
+    compilation_metadata: dict[str, object] | None = None,
 ) -> dict[str, Path]:
     reference_publication = _validated_reference_publication(
         compiled.reference_satn_publication,
@@ -452,6 +453,7 @@ def publish(
             run_id,
             reference_publication,
             strategic_reference_publication,
+            compilation_metadata,
         )
         _write_backbone_comparison(
             temporary / "backbone-comparison.json",
@@ -461,7 +463,12 @@ def publish(
         review = temporary / "review-map"
         review.mkdir()
         _write_review_map(
-            review, config, compiled, reference_publication, strategic_reference_publication
+            review,
+            config,
+            compiled,
+            reference_publication,
+            strategic_reference_publication,
+            compilation_metadata,
         )
         reviewable_map = _reviewable_map_collection(compiled)
         (review / "reviewable-network.geojson").write_text(
@@ -2219,6 +2226,7 @@ def _write_json_records(
     run_id: str,
     reference_publication: _ValidatedReferencePublication | None = None,
     strategic_reference_publication: _ValidatedStrategicReferencePublication | None = None,
+    compilation_metadata: dict[str, object] | None = None,
 ) -> None:
     if compiled.reference_satn_publication is not None and reference_publication is None:
         raise ValueError(
@@ -2320,6 +2328,8 @@ def _write_json_records(
         "atm_geometry_included": compiled.atm_reference is not None,
         "disclaimer": DISCLAIMER,
     }
+    if compilation_metadata is not None:
+        run["compilation_metadata"] = dict(compilation_metadata)
     if reference_publication is not None:
         run["reference_satn"] = reference_publication.payload()
     if strategic_reference_publication is not None:
@@ -3606,6 +3616,7 @@ def _write_review_map(
     compiled: CompiledNetwork,
     reference_publication: _ValidatedReferencePublication | None = None,
     strategic_reference_publication: _ValidatedStrategicReferencePublication | None = None,
+    compilation_metadata: dict[str, object] | None = None,
 ) -> None:
     if compiled.reference_satn_publication is not None and reference_publication is None:
         raise ValueError("Reference map serialization requires compiler-bound publication evidence")
@@ -3715,6 +3726,8 @@ def _write_review_map(
         "disclaimer": DISCLAIMER,
         "layer_counts": _layer_counts(compiled),
     }
+    if compilation_metadata is not None:
+        data["compilation_metadata"] = dict(compilation_metadata)
     if compiled.strategic_network_planning is not None:
         data["strategic_result_fingerprint"] = compiled.strategic_network_planning.fingerprint
         data["strategic_network"] = {

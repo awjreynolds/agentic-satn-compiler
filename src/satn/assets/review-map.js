@@ -1,6 +1,37 @@
 (async () => {
   "use strict";
   const data = window.SATN_DATA;
+
+  function formatCompilerDuration(value) {
+    const seconds = Number(value);
+    if (!Number.isFinite(seconds) || seconds < 0) return null;
+    if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 2 : 1)}s`;
+    const totalSeconds = Math.round(seconds);
+    const minutes = Math.floor(totalSeconds / 60);
+    const remainder = totalSeconds % 60;
+    if (minutes < 60) return `${minutes}m ${remainder}s`;
+    const hours = Math.floor(minutes / 60);
+    return `${hours}h ${minutes % 60}m`;
+  }
+
+  function renderCompilationStatus() {
+    const status = document.querySelector("#compilation-status");
+    const metadata = data && data.compilation_metadata;
+    if (!status || !metadata || typeof metadata !== "object") return;
+    const completed = metadata.completed_at_utc;
+    const duration = formatCompilerDuration(metadata.duration_seconds);
+    if (
+      typeof completed !== "string" ||
+      !completed.endsWith("Z") ||
+      !Number.isFinite(Date.parse(completed)) ||
+      !duration
+    ) {
+      return;
+    }
+    status.textContent = `Compiled ${completed} · compiler time ${duration}`;
+  }
+
+  renderCompilationStatus();
   const isProgressiveDeployment = Boolean(
     data.area_id && data.network_url && data.layer_manifest_url && data.topography_manifest_url
   );

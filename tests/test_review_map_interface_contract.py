@@ -9,6 +9,7 @@ def test_gradient_inspection_interface_contract() -> None:
     for identifier in (
         "layer-rail",
         "deployment-context",
+        "compilation-status",
         "deployment-status",
         "layer-authority-boundaries",
         "gradient-path-start",
@@ -49,6 +50,8 @@ def test_gradient_inspection_interface_contract() -> None:
     assert "isProgressiveDeployment" in script
     assert 'status.setAttribute("aria-live", "polite")' in script
     assert "Desktop is recommended" in html
+    assert "Compiler timing unavailable." in html
+    assert "Compiled ${completed} · compiler time ${duration}" in script
     assert "This legacy review map bundles its available evidence" in script
     assert "MapToolkit" not in script
     assert (
