@@ -12,24 +12,6 @@ deployments:
       review_map: index.html
       network_map_pdf: network-map.pdf
       review_map_zip: review-map.zip
-  - deployment_id: oxfordshire
-    area_id: oxfordshire
-    area_name: Oxfordshire
-    area_definition: oxfordshire/area.yaml
-    deployment_path: deployments/oxfordshire/
-    artifacts:
-      review_map: index.html
-      network_map_pdf: network-map.pdf
-      review_map_zip: review-map.zip
-  - deployment_id: torbay-south-devon
-    area_id: torbay-south-devon
-    area_name: Torbay and South Devon (Torbay, Teignbridge and South Hams)
-    area_definition: torbay-south-devon/area.yaml
-    deployment_path: deployments/torbay-south-devon/
-    artifacts:
-      review_map: index.html
-      network_map_pdf: network-map.pdf
-      review_map_zip: review-map.zip
   - deployment_id: weca
     area_id: west-of-england
     area_name: West of England Combined Authority area
