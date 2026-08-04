@@ -72,6 +72,10 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
         "module",
         "finite demand-led corridor obligation derivation",
     ),
+    "satn/strategic_network_planning.py": (
+        "module",
+        "immutable strategic candidate selection and network application",
+    ),
     "satn/backbone.py": ("module", "Backbone-and-Access assembly"),
     "satn/compilation_dependencies.py": (
         "module",
@@ -210,6 +214,7 @@ OPTIONAL_COMPONENT_GROUPS: Final[dict[str, frozenset[str]]] = {
             "satn/line_evidence_matching.py",
             "satn/candidate_discovery.py",
             "satn/corridor_obligations.py",
+            "satn/strategic_network_planning.py",
             "satn/network_selection.py",
             "satn/planning_graph.py",
             "satn/traffic_evidence.py",

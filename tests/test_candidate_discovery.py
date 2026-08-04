@@ -189,6 +189,21 @@ def test_trial_discovery_exposes_all_connected_alternatives_and_facts() -> None:
     assert result.evidence_requests
 
 
+def test_route_length_fact_is_bound_to_each_candidate_path() -> None:
+    result = discover_candidate_sets(request(fixture_graph()))
+    expected_lengths = {
+        ("a-road",): 100.0,
+        ("cycle-ab", "cycle-bd"): 170.0,
+        ("quiet-aq", "quiet-qd"): 130.0,
+    }
+    for edge_ids, expected in expected_lengths.items():
+        record = next(item for item in result.candidate_records if item.edge_ids == edge_ids)
+        assert record.length_m == expected
+        assert record.directness_m == expected
+        assert record.candidate_input is not None
+        assert record.candidate_input.directness_m == expected
+
+
 def test_discovery_is_permutation_stable_and_facts_ignore_generating_strategy() -> None:
     graph = fixture_graph()
     first = discover_candidate_sets(request(graph))

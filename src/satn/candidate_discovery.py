@@ -1098,7 +1098,7 @@ def _materialise_candidate(
         served_access_obligation_ids=()
         if prohibited
         else (_canonical_identifier(obligation_id, prefix="obligation"),),
-        directness_m=float(direct_distance),
+        directness_m=float(path.length_m),
         reuse_class=reuse,
         intervention_state=intervention,
         alignment_bases=canonical_basis,
@@ -1298,7 +1298,7 @@ def _materialise_candidate(
         reverse_edge_ids=tuple(reversed(path.edge_ids)),
         geometry_wkt=str(payload["geometry_wkt"]),
         length_m=path.length_m,
-        directness_m=direct_distance,
+        directness_m=path.length_m,
         reuse_class=reuse,
         intervention_state=intervention,
         alignment_bases=bases,
