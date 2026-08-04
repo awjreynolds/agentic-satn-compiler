@@ -272,6 +272,9 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     "satn/evidence_store_equivalence.py": (
         "additive Local Evidence equivalence gate; not a compiler input before cutover"
     ),
+    "satn/external_analysis.py": (
+        "governed external planning-analysis sidecar; not a compiler input before an active profile"
+    ),
     "satn/_evidence_operations.py": (
         "private Local Evidence Store operations; "
         "not a compiler input before equivalence cutover"
