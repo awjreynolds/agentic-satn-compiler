@@ -46,6 +46,7 @@ class ReuseFirstCandidateClass(StrEnum):
     UPGRADEABLE_OFF_CARRIAGEWAY = "upgradeable-off-carriageway"
     LOW_TRAFFIC_NON_A_ROAD = "low-traffic-non-a-road"
     A_ROAD_MAJOR_PROTECTED_INFRASTRUCTURE = "a-road-major-protected-infrastructure"
+    UNKNOWN_OR_CONFLICTING = "unknown-or-conflicting"
 
 
 class TrafficBandConfig(BaseModel):
@@ -218,6 +219,7 @@ class InterventionState(StrEnum):
     EXISTING_PROVISION = "existing-provision"
     UPGRADE_REQUIRED = "upgrade-required"
     PROPOSED_NEW_LINK = "proposed-new-link"
+    UNDETERMINED = "undetermined"
 
 
 class ComparatorDimension(StrEnum):
@@ -566,10 +568,19 @@ class NetworkSelectionProfile(BaseModel):
             return None
         if len(set(value)) != len(value):
             raise ValueError("candidate_class_order cannot contain duplicates")
-        required = frozenset(ReuseFirstCandidateClass)
-        if frozenset(value) != required:
+        legacy = frozenset(
+            {
+                ReuseFirstCandidateClass.EXISTING_CYCLE_PROVISION,
+                ReuseFirstCandidateClass.UPGRADEABLE_OFF_CARRIAGEWAY,
+                ReuseFirstCandidateClass.LOW_TRAFFIC_NON_A_ROAD,
+                ReuseFirstCandidateClass.A_ROAD_MAJOR_PROTECTED_INFRASTRUCTURE,
+            }
+        )
+        extended = legacy | {ReuseFirstCandidateClass.UNKNOWN_OR_CONFLICTING}
+        if frozenset(value) not in {legacy, extended}:
             raise ValueError(
-                "candidate_class_order must contain every supported reuse-first class exactly once"
+                "candidate_class_order must contain the legacy or complete "
+                "reuse-first class vocabulary"
             )
         return value
 
@@ -580,10 +591,18 @@ class NetworkSelectionProfile(BaseModel):
     ) -> tuple[InterventionState, ...] | None:
         if value is None:
             return None
-        if len(set(value)) != len(value) or frozenset(value) != frozenset(InterventionState):
+        legacy = frozenset(
+            {
+                InterventionState.EXISTING_PROVISION,
+                InterventionState.UPGRADE_REQUIRED,
+                InterventionState.PROPOSED_NEW_LINK,
+            }
+        )
+        extended = legacy | {InterventionState.UNDETERMINED}
+        if len(set(value)) != len(value) or frozenset(value) not in {legacy, extended}:
             raise ValueError(
-                "intervention_state_order must contain every supported intervention state "
-                "exactly once"
+                "intervention_state_order must contain the legacy or complete "
+                "intervention state vocabulary"
             )
         return value
 

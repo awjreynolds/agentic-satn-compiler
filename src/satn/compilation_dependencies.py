@@ -64,6 +64,10 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
         "module",
         "provider-neutral governed line matching and aggregation",
     ),
+    "satn/candidate_discovery.py": (
+        "module",
+        "finite evidence-bound candidate discovery and section assessment",
+    ),
     "satn/backbone.py": ("module", "Backbone-and-Access assembly"),
     "satn/compilation_dependencies.py": (
         "module",
@@ -200,6 +204,7 @@ OPTIONAL_COMPONENT_GROUPS: Final[dict[str, frozenset[str]]] = {
             "satn/existing_alignment.py",
             "satn/local_evidence_store.py",
             "satn/line_evidence_matching.py",
+            "satn/candidate_discovery.py",
             "satn/network_selection.py",
             "satn/planning_graph.py",
             "satn/traffic_evidence.py",
