@@ -172,6 +172,18 @@ _Avoid_: freehand route, uncited officer note, automatic network edge
 A structured, queued request for a missing or conflicted claim, naming its affected asset/candidate, required evidence kind and deterministic consequence. Requests are handled outside compilation; they never cause a valid-input compile to wait or an agent to fetch raw facts.
 _Avoid_: interactive blocker, agent web search, missing-is-zero
 
+**Governed External Analysis Run**:
+An immutable evidence-producing execution of a named external analytical engine against pinned source exports and a declared profile or scenario. Its record retains the engine version and licence, every input identity and content hash, configuration, deterministic or seeded execution details, result schema and hash, coverage and limitations. The compiler may admit its result as Evidence Observations, but never calls the engine live during compilation or treats its route, accessibility, assignment or simulation output as canonical geometry or policy.
+_Avoid_: live analysis dependency, external route authority, opaque model score, agent tool call
+
+**Officer Scenario Authoring**:
+A review interaction in which an officer assembles compiler-authored sections, candidates or offered actions into a named scenario and exports a typed Officer Decision Ledger for a fresh compilation. It cannot create authoritative freehand geometry, silently remap stale identities or mutate the published baseline; the compiler validates and applies every choice and retains any officer–compiler divergence.
+_Avoid_: map editing, adopted network, mutable compiler state, free-form route override
+
+**Network Diagnostic Profile**:
+A frozen, fingerprinted configuration for deterministic graph and route diagnostics such as connectivity, degree, dangles, circuity, directness, mesh, reachability or severance. Diagnostics explain topology, gaps and option consequences without repairing geometry, establishing legal access or becoming an unexplained route score; unavailable inputs remain explicit limitations or Evidence Requests.
+_Avoid_: route policy, automatic topology repair, legal-access inference, hidden network score
+
 **Alignment Choice Point**:
 A governed topological point that bounds a real corridor choice: an Alignment Option endpoint, a usable divergence or rejoining point, or a connector or crossing where a continuous selected alignment could switch between alternatives. An ordinary intermediate RoadGraph node, evidence change or access attachment is not a choice point unless it changes that switchability.
 _Avoid_: every graph node, visual crossing, evidence-section boundary
