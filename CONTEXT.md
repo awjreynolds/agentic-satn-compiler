@@ -144,6 +144,14 @@ _Avoid_: unconstrained route search, alternative network
 One atomic, claim-specific statement from a governed Source Export, retaining publisher, source family, stable publisher key where governed, observation/effective dates, licence, coverage, raw-content SHA-256, canonical evidence-geometry fingerprint and explicit missing, stale or conflict state. An observation supports only the claim it names.
 _Avoid_: dataset confidence score, uncited tag, inferred condition, mutable fact
 
+**Evidence Source Catalogue**:
+The deterministic governed register of provider capabilities, source families, spatial coverage, effective dates, licences, acquisition and normalisation contracts, permitted uses and configured authority ranks. It selects eligible sources for an Area Evidence Scope but does not download evidence, let an agent admit a source or treat catalogue order as authority.
+_Avoid_: live source search, deployment-specific adapter list, latest-data lookup, agent-selected evidence
+
+**Area Evidence Scope**:
+The stable spatial-partition set resolved from an Area Definition boundary for evidence-source selection. It may cross administrative or national boundaries; applicable sources are matched by capability and coverage, while uncovered partitions create Evidence Requests without preventing compilation.
+_Avoid_: council name, jurisdiction switch, source footprint, compilation failure boundary
+
 **Governed Asset Record**:
 The stable compiler record for one physical reusable asset assembled from Evidence Observations under a configured claim-specific authority hierarchy. Conflicting observations remain attached; they are not collapsed into an unsupported best answer, and unavailable optional evidence never removes the asset.
 _Avoid_: source feature copy, verified condition, globally preferred dataset
