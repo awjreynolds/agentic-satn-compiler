@@ -108,6 +108,10 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
         "module",
         "frozen Network Selection Profile validation and fingerprinting",
     ),
+    "satn/review_assistance.py": (
+        "module",
+        "bounded cited review assistance with deterministic fallback",
+    ),
     "satn/planning_graph.py": (
         "module",
         "edge-identity-preserving planning graph snapshot",
@@ -206,6 +210,7 @@ OPTIONAL_COMPONENT_GROUPS: Final[dict[str, frozenset[str]]] = {
             "satn/strategic_corridors.py",
         }
     ),
+    "review-assistance": frozenset({"satn/review_assistance.py"}),
     "strategic-reference": frozenset({"satn/strategic_reference_replay.py"}),
 }
 _OPTIONAL_COMPONENT_PATHS: Final = frozenset().union(
