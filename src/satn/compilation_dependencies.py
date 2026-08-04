@@ -60,6 +60,10 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
         "module",
         "typed pinned Local Evidence Store query seam for governed DfT matching",
     ),
+    "satn/line_evidence_matching.py": (
+        "module",
+        "provider-neutral governed line matching and aggregation",
+    ),
     "satn/backbone.py": ("module", "Backbone-and-Access assembly"),
     "satn/compilation_dependencies.py": (
         "module",
@@ -191,6 +195,7 @@ OPTIONAL_COMPONENT_GROUPS: Final[dict[str, frozenset[str]]] = {
             "satn/dft_traffic_matching.py",
             "satn/existing_alignment.py",
             "satn/local_evidence_store.py",
+            "satn/line_evidence_matching.py",
             "satn/network_selection.py",
             "satn/planning_graph.py",
             "satn/traffic_evidence.py",
