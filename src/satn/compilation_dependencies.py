@@ -86,6 +86,14 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
         "module",
         "immutable Local Evidence identity contracts",
     ),
+    "satn/evidence_normalisation.py": (
+        "module",
+        "provider-neutral evidence observation normalisation and provenance",
+    ),
+    "satn/evidence_source_catalogue.py": (
+        "module",
+        "area-aware evidence source resolution and coverage requests",
+    ),
     "satn/existing_alignment.py": (
         "module",
         "Existing-Alignment Advantage evidence derivation and tie-break records",

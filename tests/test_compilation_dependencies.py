@@ -37,6 +37,8 @@ def test_manifest_is_explicit_complete_and_records_component_digests() -> None:
         "satn/models.py",
         "satn/education_access.py",
         "satn/ea_elevation.py",
+        "satn/evidence_normalisation.py",
+        "satn/evidence_source_catalogue.py",
         "satn/population_reach.py",
         "satn/section_population.py",
         "satn/alignment_selection.py",
