@@ -1,0 +1,13 @@
+{
+  "crs": "EPSG:27700",
+  "rows": [
+    {"source_edge_id": "ab-a-road", "u": "A", "v": "B", "geometry": [[0, 0], [100, 0]], "highway": "primary", "ref": "A1", "oneway": false},
+    {"source_edge_id": "ab-a-road", "u": "B", "v": "A", "geometry": [[100, 0], [0, 0]], "highway": "primary", "ref": "A1", "oneway": false},
+    {"source_edge_id": "ab-cycleway", "u": "A", "v": "B", "geometry": [[0, 0], [100, 10]], "highway": "cycleway", "oneway": false},
+    {"source_edge_id": "ab-cycleway", "u": "B", "v": "A", "geometry": [[100, 10], [0, 0]], "highway": "cycleway", "oneway": false},
+    {"source_edge_id": "bc-forward", "u": "B", "v": "C", "geometry": [[100, 0], [200, 0]], "highway": "secondary", "oneway": false},
+    {"source_edge_id": "bc-reverse", "u": "C", "v": "B", "geometry": [[200, 0], [100, 0]], "highway": "secondary", "oneway": false},
+    {"source_edge_id": "cd-oneway", "u": "C", "v": "D", "geometry": [[200, 0], [300, 0]], "highway": "tertiary", "oneway": true},
+    {"source_edge_id": "ef-cycleway", "u": "E", "v": "F", "geometry": [[0, 100], [100, 100]], "highway": "cycleway", "oneway": false}
+  ]
+}
