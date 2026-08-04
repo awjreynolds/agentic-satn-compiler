@@ -275,6 +275,9 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     "satn/external_analysis.py": (
         "governed external planning-analysis sidecar; not a compiler input before an active profile"
     ),
+    "satn/network_diagnostics.py": (
+        "additive graph/reachability diagnostics; not a compiler input before an active profile"
+    ),
     "satn/_evidence_operations.py": (
         "private Local Evidence Store operations; "
         "not a compiler input before equivalence cutover"
