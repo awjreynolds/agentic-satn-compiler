@@ -14,8 +14,10 @@ from pathlib import Path
 
 import geopandas as gpd
 import networkx as nx
+from shapely.errors import ShapelyError
 from shapely.geometry import LineString
 
+from satn.alignment_selection import admit_candidate_set
 from satn.candidate_discovery import (
     AssessedCandidateRecord,
     CandidateDiscoveryResult,
@@ -341,6 +343,28 @@ def _facts(candidate: object, graph: PlanningGraphSnapshot, edge_ids: tuple[str,
     return reuse, intervention, tuple(sorted(bases)), bases[0]
 
 
+def _rebuild_candidate_set(candidate_set, candidates):
+    """Re-admit only candidates whose prepared route materialised cleanly.
+
+    Preparation is an evidence-bound input, not an execution guarantee.  A
+    malformed route must not abort the whole area compile; rebuilding the set
+    gives the remaining candidates a fresh, deterministic admission roster and
+    a new identity that accurately describes what can be reviewed.
+    """
+
+    return admit_candidate_set(
+        candidate_set.profile,
+        network_role=candidate_set.network_role,
+        endpoints=tuple(candidate_set.endpoints),
+        candidates=tuple(candidates),
+        mandatory_network_place_ids=tuple(candidate_set.mandatory_network_place_ids),
+        mandatory_access_obligation_ids=tuple(candidate_set.mandatory_access_obligation_ids),
+        mandatory_strategic_destination_ids=tuple(
+            candidate_set.mandatory_strategic_destination_ids
+        ),
+    )
+
+
 def discovery_from_preparation(
     preparation: StrategicCorridorPreparationResult,
     graph: PlanningGraphSnapshot,
@@ -350,18 +374,62 @@ def discovery_from_preparation(
     diagnostics: list[CandidateSearchDiagnostic] = []
     gaps: list[CandidateSetGapEvidence] = []
     requests: list[EvidenceRequest] = []
+    candidate_sets = []
     for unit in preparation.units:
-        dispositions.append(
-            CorridorObligationDisposition(
-                unit.unit_id,
-                "candidates" if unit.candidate_set.admitted_candidates else "gap",
-                unit.candidate_set.candidate_set_id,
-                "prepared strategic corridor candidates retained",
-            )
-        )
+        valid_candidates = []
         for prepared in unit.candidate_records:
             candidate = prepared.candidate
-            geometry = _route_geometry(graph, prepared.routing_edge_ids)
+            try:
+                geometry = _route_geometry(graph, prepared.routing_edge_ids)
+            except (KeyError, ShapelyError, TypeError, ValueError) as error:
+                # A single stale or malformed prepared route is a governed
+                # evidence problem, not a reason to lose every other route in
+                # the area.  Keep the diagnostic and candidate identity stable
+                # while allowing the valid alternatives to continue.
+                reason = (
+                    "prepared candidate route is unusable: "
+                    f"{type(error).__name__}: {error}"
+                )
+                diagnostic_payload = (
+                    unit.unit_id,
+                    candidate.candidate_id,
+                    prepared.routing_edge_ids,
+                    reason,
+                )
+                diagnostic_id = (
+                    "strategic-prepared-route-"
+                    f"{_fingerprint(diagnostic_payload)[:20]}"
+                )
+                diagnostics.append(
+                    CandidateSearchDiagnostic(
+                        code="malformed-prepared-route",
+                        obligation_id=unit.unit_id,
+                        message=reason,
+                        candidate_id=candidate.candidate_id,
+                        edge_ids=tuple(prepared.routing_edge_ids),
+                    )
+                )
+                gaps.append(
+                    CandidateSetGapEvidence(
+                        obligation_id=unit.unit_id,
+                        endpoints=tuple(unit.candidate_set.endpoints),
+                        reason=reason,
+                        search_diagnostic_ids=(diagnostic_id,),
+                    )
+                )
+                requests.append(
+                    EvidenceRequest(
+                        request_id=(
+                            "evidence-request-"
+                            f"{_fingerprint((unit.unit_id, candidate.candidate_id, reason))[:20]}"
+                        ),
+                        obligation_id=unit.unit_id,
+                        claim="route-continuity",
+                        reason=reason,
+                        candidate_id=candidate.candidate_id,
+                    )
+                )
+                continue
             reuse, intervention, bases, primary = _facts(
                 candidate, graph, prepared.routing_edge_ids
             )
@@ -410,6 +478,19 @@ def discovery_from_preparation(
                     candidate_input=candidate,
                 )
             )
+            valid_candidates.append(candidate)
+        rebuilt_set = _rebuild_candidate_set(unit.candidate_set, tuple(valid_candidates))
+        candidate_sets.append(rebuilt_set)
+        dispositions.append(
+            CorridorObligationDisposition(
+                unit.unit_id,
+                "candidates" if rebuilt_set.admitted_candidates else "gap",
+                rebuilt_set.candidate_set_id,
+                "prepared strategic corridor candidates retained"
+                if rebuilt_set.admitted_candidates
+                else "all prepared strategic corridor candidates were unusable",
+            )
+        )
     for index, issue in enumerate(preparation.issues):
         obligation_id = issue.strategic_destination_id or issue.site_id or f"issue-{index + 1}"
         diagnostic_id = f"strategic-preparation-{_fingerprint(issue.canonical())[:20]}"
@@ -439,12 +520,12 @@ def discovery_from_preparation(
     payload = {
         "preparation": preparation.preparation_fingerprint,
         "graph": graph.graph_fingerprint,
-        "candidate_sets": tuple(item.candidate_set.candidate_set_id for item in preparation.units),
+        "candidate_sets": tuple(item.candidate_set_id for item in candidate_sets),
         "records": tuple(item.candidate_id for item in records),
         "gaps": gaps,
     }
     return CandidateDiscoveryResult(
-        candidate_sets=tuple(item.candidate_set for item in preparation.units),
+        candidate_sets=tuple(candidate_sets),
         candidate_records=tuple(sorted(records, key=lambda item: item.candidate_id)),
         obligation_dispositions=tuple(sorted(dispositions, key=lambda item: item.obligation_id)),
         search_diagnostics=tuple(diagnostics),
@@ -458,10 +539,13 @@ def discovery_from_preparation(
     )
 
 
-def _compiler_preferences(preparation: StrategicCorridorPreparationResult):
+def _compiler_preferences(
+    preparation: StrategicCorridorPreparationResult,
+    candidate_sets=(),
+):
     preferences: list[tuple[str, str]] = []
-    for unit in preparation.units:
-        candidate_set = unit.candidate_set
+    sets = tuple(candidate_sets) or tuple(unit.candidate_set for unit in preparation.units)
+    for candidate_set in sets:
         admitted = tuple(candidate_set.admitted_candidates)
         if not admitted:
             continue
@@ -485,16 +569,18 @@ def _compiler_preferences(preparation: StrategicCorridorPreparationResult):
 def _officer_choices(
     preparation: StrategicCorridorPreparationResult,
     decisions: tuple[object, ...],
+    candidate_sets=(),
 ):
     choices: list[tuple[str, str]] = []
+    sets = tuple(candidate_sets) or tuple(unit.candidate_set for unit in preparation.units)
     for decision in decisions:
         target_id = getattr(decision, "target_id", None)
         route_id = getattr(decision, "route_id", None)
-        for unit in preparation.units:
+        for unit, candidate_set in zip(preparation.units, sets, strict=True):
             aliases = {
                 unit.unit_id,
-                unit.candidate_set.candidate_set_id,
-                unit.candidate_set.connection_id,
+                candidate_set.candidate_set_id,
+                candidate_set.connection_id,
                 *unit.anchor_connection_ids,
                 *unit.anchor_obligation_ids,
             }
@@ -503,7 +589,10 @@ def _officer_choices(
             matches = [
                 record.candidate.candidate_id
                 for record in unit.candidate_records
-                if route_id in {record.candidate.candidate_id, record.physical_alignment_id}
+                if record.candidate.candidate_id in {
+                    item.candidate_id for item in candidate_set.candidates
+                }
+                and route_id in {record.candidate.candidate_id, record.physical_alignment_id}
             ]
             if len(matches) == 1:
                 choices.append((matches[0], f"preloaded-officer:{target_id}:{route_id}"))
@@ -528,6 +617,7 @@ def compile_prepared_strategic_network(
         routable_network, source_export_fingerprint=source_fingerprint
     )
     discovery = discovery_from_preparation(preparation, graph)
+    prepared_candidate_sets = discovery.candidate_sets
     request = StrategicNetworkPlanningRequest(
         graph=graph,
         discovery=discovery,
@@ -536,15 +626,19 @@ def compile_prepared_strategic_network(
         selection_profile=(
             preparation.units[0].candidate_set.profile if preparation.units else None
         ),
-        compiler_preferred_candidate_ids=_compiler_preferences(preparation),
+        compiler_preferred_candidate_ids=_compiler_preferences(
+            preparation, prepared_candidate_sets
+        ),
         routing_endpoint_bindings=tuple(
             (
-                unit.candidate_set.candidate_set_id,
+                candidate_set.candidate_set_id,
                 (unit.routing_start_node_id, unit.routing_end_node_id),
             )
-            for unit in preparation.units
+            for unit, candidate_set in zip(preparation.units, prepared_candidate_sets, strict=True)
         ),
-        officer_candidate_choices=_officer_choices(preparation, officer_decisions),
+        officer_candidate_choices=_officer_choices(
+            preparation, officer_decisions, prepared_candidate_sets
+        ),
     )
     return compile_strategic_network(request)
 
