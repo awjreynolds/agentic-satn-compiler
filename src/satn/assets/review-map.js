@@ -20,6 +20,7 @@
     type: "FeatureCollection",
     features: []
   };
+  const hasEffectiveStrategicNetwork = Boolean(data.strategic_result_fingerprint);
   const hasReviewableRoutes = reviewable.features.some(
     (feature) => feature.properties?.feature_type === "reviewable-selected-route"
   );
@@ -2032,9 +2033,13 @@
       "undetermined", "#455a64",
       "#455a64"
     ];
-    const reviewableLineFilter = ["in", ["get", "feature_type"], ["literal", [
+    const reviewableSelectedRouteFilter = ["in", ["get", "feature_type"], ["literal", [
       "reviewable-selected-route"
     ]]];
+    const reviewableLineFilter = hasEffectiveStrategicNetwork
+      ? ["all", reviewableSelectedRouteFilter,
+        ["!=", ["get", "selection_disposition"], "selected-strategic-spine"]]
+      : reviewableSelectedRouteFilter;
     const reviewableRequiredConnectionFilter = ["all",
       reviewableLineFilter,
       ["in", ["get", "network_role"], ["literal", [

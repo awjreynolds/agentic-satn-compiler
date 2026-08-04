@@ -94,6 +94,7 @@ from satn.strategic_corridors import (
     StrategicCorridorPreparationResult,
     prepare_strategic_corridors,
 )
+from satn.strategic_network_adapter import compile_prepared_strategic_network
 from satn.strategic_reference_replay import (
     StrategicReferenceReplayMaterialisation,
     ValidatedStrategicReferenceReplay,
@@ -112,6 +113,7 @@ from satn.urban_community import assess_urban_community_access, urban_community_
 from satn.urban_school import assess_urban_school_access
 
 if TYPE_CHECKING:
+    from satn.strategic_network_planning import StrategicNetworkPlanningResult
     from satn.strategic_reference_publication import StrategicReferencePublicationRecord
 
 URBAN_A_ROAD_SOURCE_ALIGNMENT_TOLERANCE_M = 100.0
@@ -268,6 +270,10 @@ class CompiledNetwork:
     # Immutable candidate-selection seam. It is absent for legacy compilations
     # so their route and publication contracts remain unchanged.
     reviewable_network: ReviewableNetwork | None = None
+    # Effective strategic authority compiled from the exact prepared corridor
+    # units. It is absent only when the governed snapshot identity is not
+    # available (for example, direct in-memory legacy tests).
+    strategic_network_planning: StrategicNetworkPlanningResult | None = None
 
     @property
     def connection_count(self) -> int:
@@ -277,9 +283,8 @@ class CompiledNetwork:
     @property
     def strategic_reference_connection_count(self) -> int:
         """Number of first-class connections materialised by strategic replay."""
-        return (
-            len(self.strategic_interurban_connections)
-            + len(self.strategic_destination_access_connections)
+        return len(self.strategic_interurban_connections) + len(
+            self.strategic_destination_access_connections
         )
 
     @property
@@ -917,12 +922,8 @@ def _compile_network(
             ),
             **(
                 {
-                    "strategic_corridor_preparation": (
-                        strategic_corridor_preparation.metadata()
-                    ),
-                    "network_selection_preparation": (
-                        network_selection_preparation.metadata()
-                    ),
+                    "strategic_corridor_preparation": (strategic_corridor_preparation.metadata()),
+                    "network_selection_preparation": (network_selection_preparation.metadata()),
                 }
                 if strategic_corridor_preparation is not None
                 and network_selection_preparation is not None
@@ -973,9 +974,7 @@ def _compile_network(
             strategic_replay.diagnostics
             | {
                 "backbone_rural_community_count_before": len(rural_communities),
-                "backbone_rural_community_count_after": len(
-                    backbone_rural_communities
-                ),
+                "backbone_rural_community_count_after": len(backbone_rural_communities),
                 "filtered_backbone_network_place_ids": list(
                     strategic_replay.served_endpoint_place_ids
                 ),
@@ -991,6 +990,16 @@ def _compile_network(
         compiled,
         officer_decisions=officer_decisions,
     )
+    if compiled.strategic_corridor_preparation is not None:
+        compiled.strategic_network_planning = compile_prepared_strategic_network(
+            routable_network=routable_network,
+            preparation=compiled.strategic_corridor_preparation,
+            snapshot_manifest_path=(
+                config.source.snapshot_dir / config.source.snapshot_id / "snapshot.json"
+            ),
+            area_definition_path=config.config_path,
+            officer_decisions=officer_decisions,
+        )
     compiled.asset_accounting = build_asset_accounting(asset_context, source["network"], compiled)
     # ``compile_network`` is also a supported public entry point.  Its output
     # must therefore carry the same exact decision wire contract as the
@@ -1594,9 +1603,7 @@ def _population_urban_extent(
             crs=27700,
         )
     geometry = (
-        urban_communities.to_crs(27700)
-        .geometry.buffer(urban_scope_buffer_km * 1000)
-        .union_all()
+        urban_communities.to_crs(27700).geometry.buffer(urban_scope_buffer_km * 1000).union_all()
     )
     return gpd.GeoDataFrame(
         {"geometry": [geometry]},
@@ -2007,9 +2014,7 @@ def _strategic_spines(context: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
                                 "source_ids": source_ids,
                                 "source_feature_type": feature_type,
                                 "network_scope": NetworkScope.RURAL.value,
-                                "canonical_geometry_contract": (
-                                    CANONICAL_GEOMETRY_VERSION
-                                ),
+                                "canonical_geometry_contract": (CANONICAL_GEOMETRY_VERSION),
                                 "canonical_geometry_sha256": segment_fingerprint,
                             },
                             sort_keys=True,
@@ -2023,13 +2028,12 @@ def _strategic_spines(context: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         geometry="geometry",
         crs=context.crs,
     )
-    duplicate_ids = strategic_spines[
-        strategic_spines["spine_id"].duplicated(keep=False)
-    ]["spine_id"].astype(str)
+    duplicate_ids = strategic_spines[strategic_spines["spine_id"].duplicated(keep=False)][
+        "spine_id"
+    ].astype(str)
     if not duplicate_ids.empty:
         raise ValueError(
-            "Strategic Spine canonical identifier collision: "
-            f"{sorted(duplicate_ids)[0]}"
+            f"Strategic Spine canonical identifier collision: {sorted(duplicate_ids)[0]}"
         )
     return strategic_spines
 

@@ -9,6 +9,7 @@ from satn.candidate_discovery import (
     CandidateDiscoveryProfile,
     CandidateDiscoveryRequest,
     CandidateDiscoveryResult,
+    CandidateSetGapEvidence,
     CorridorObligation,
     discover_candidate_sets,
 )
@@ -152,6 +153,7 @@ def request(
     reference_routes=(),
     fallback_profile=None,
     selection_profile=None,
+    compiler_preferred_candidate_ids=(),
 ):
     return StrategicNetworkPlanningRequest(
         area_fingerprint="a" * 64,
@@ -161,7 +163,50 @@ def request(
         reference_routes=reference_routes,
         fallback_profile=fallback_profile or StrategicPlanningFallbackProfile(),
         selection_profile=selection_profile,
+        compiler_preferred_candidate_ids=compiler_preferred_candidate_ids,
     )
+
+
+def test_governed_compiler_preference_is_applied_without_reordering_candidates() -> None:
+    graph = fixture_graph()
+    discovered = discovery(graph, CorridorObligation("corridor-a-d", "A", "D"))
+    road_id = next(
+        item.candidate_id for item in discovered.candidate_records if item.edge_ids == ("a-road",)
+    )
+    candidate_set_id = discovered.candidate_sets[0].candidate_set_id
+
+    result = compile_strategic_network(
+        request(
+            graph,
+            discovered,
+            compiler_preferred_candidate_ids=((candidate_set_id, road_id),),
+        )
+    )
+
+    assert result.selections[0].compiler_candidate_id == road_id
+    assert result.effective_network.sections[0].routing_edge_ids == ("a-road",)
+
+
+def test_candidate_discovery_gaps_survive_into_reviewable_network() -> None:
+    graph = fixture_graph()
+    discovered = discovery(graph, CorridorObligation("corridor-a-d", "A", "D"))
+    discovered = replace(
+        discovered,
+        gaps=(
+            CandidateSetGapEvidence(
+                obligation_id="destination-gap",
+                endpoints=("D", "hospital"),
+                reason="destination access evidence unavailable",
+                search_diagnostic_ids=("diagnostic-destination",),
+            ),
+        ),
+    )
+
+    result = compile_strategic_network(request(graph, discovered))
+
+    assert result.status == "complete-with-gaps"
+    assert any(item.obligation_id == "destination-gap" for item in result.gaps)
+    assert any(item.obligation_id == "destination-gap" for item in result.evidence_requests)
 
 
 def test_cycleway_is_effective_and_a_road_remains_inspectable() -> None:

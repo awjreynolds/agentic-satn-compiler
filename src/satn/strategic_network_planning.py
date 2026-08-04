@@ -124,6 +124,9 @@ class StrategicNetworkPlanningRequest:
     officer_decisions: object | None = None
     fallback_profile: StrategicPlanningFallbackProfile = StrategicPlanningFallbackProfile()
     selection_profile: object | None = None
+    compiler_preferred_candidate_ids: tuple[tuple[str, str], ...] = ()
+    routing_endpoint_bindings: tuple[tuple[str, tuple[str, str]], ...] = ()
+    officer_candidate_choices: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.graph, PlanningGraphSnapshot):
@@ -149,7 +152,53 @@ class StrategicNetworkPlanningRequest:
                 raise ValueError(
                     "strategic planning selection profile does not match Candidate Discovery"
                 )
+        preferences = tuple(
+            sorted(
+                (
+                    (
+                        _text(candidate_set_id, "preferred Candidate Set id"),
+                        _text(candidate_id, "preferred candidate id"),
+                    )
+                    for candidate_set_id, candidate_id in self.compiler_preferred_candidate_ids
+                ),
+                key=lambda item: item[0],
+            )
+        )
+        if len({item[0] for item in preferences}) != len(preferences):
+            raise ValueError("compiler preferences must name each Candidate Set at most once")
+        endpoint_bindings = tuple(
+            sorted(
+                (
+                    (
+                        _text(candidate_set_id, "routing endpoint Candidate Set id"),
+                        (
+                            _text(endpoints[0], "routing start node id"),
+                            _text(endpoints[1], "routing end node id"),
+                        ),
+                    )
+                    for candidate_set_id, endpoints in self.routing_endpoint_bindings
+                ),
+                key=lambda item: item[0],
+            )
+        )
+        if len({item[0] for item in endpoint_bindings}) != len(endpoint_bindings):
+            raise ValueError("routing endpoint bindings must name each Candidate Set once")
+        officer_choices = tuple(
+            sorted(
+                (
+                    (
+                        _text(candidate_id, "officer candidate id"),
+                        _text(decision_id, "officer decision id"),
+                    )
+                    for candidate_id, decision_id in self.officer_candidate_choices
+                ),
+                key=lambda item: (item[0], item[1]),
+            )
+        )
         object.__setattr__(self, "reference_routes", routes)
+        object.__setattr__(self, "compiler_preferred_candidate_ids", preferences)
+        object.__setattr__(self, "routing_endpoint_bindings", endpoint_bindings)
+        object.__setattr__(self, "officer_candidate_choices", officer_choices)
 
     @property
     def fingerprint(self) -> str:
@@ -173,6 +222,9 @@ class StrategicNetworkPlanningRequest:
                 ),
                 "fallback_profile": self.fallback_profile.fingerprint,
                 "selection_profile": getattr(self.selection_profile, "fingerprint", None),
+                "compiler_preferred_candidate_ids": self.compiler_preferred_candidate_ids,
+                "routing_endpoint_bindings": self.routing_endpoint_bindings,
+                "officer_candidate_choices": self.officer_candidate_choices,
             }
         )
 
@@ -420,10 +472,17 @@ def _candidate_record_map(result: CandidateDiscoveryResult) -> dict[str, object]
     return {item.candidate_id: item for item in result.candidate_records}
 
 
-def _preferred_candidate(candidate_set: object) -> object | None:
+def _preferred_candidate(
+    candidate_set: object, governed_candidate_id: str | None = None
+) -> object | None:
     candidates = tuple(candidate_set.admitted_candidates)
     if not candidates:
         return None
+    if governed_candidate_id is not None:
+        return next(
+            (item for item in candidates if item.candidate_id == governed_candidate_id),
+            None,
+        )
     return min(candidates, key=lambda item: _reuse_first_sort_key(candidate_set.profile, item))
 
 
@@ -468,6 +527,26 @@ def compile_strategic_network(
     diagnostics: list[PlanningDiagnostic] = []
     gaps: list[ReviewableNetworkGap] = []
     requests: list[EvidenceRequest] = []
+    for gap in sorted(discovery.gaps, key=lambda item: item.obligation_id):
+        role = str(getattr(gap, "network_role", "unresolved-strategic-alignment"))
+        reviewable_gap = ReviewableNetworkGap(
+            gap.obligation_id,
+            role,
+            tuple(gap.endpoints),
+            gap.reason,
+        )
+        gaps.append(reviewable_gap)
+        requests.append(
+            EvidenceRequest(
+                _stable_id(
+                    "evidence-request",
+                    (gap.obligation_id, gap.reason, tuple(gap.search_diagnostic_ids)),
+                ),
+                gap.obligation_id,
+                "candidate-set",
+                gap.reason,
+            )
+        )
     raw_candidate_sets = tuple(
         sorted(discovery.candidate_sets, key=lambda item: getattr(item, "candidate_set_id", ""))
     )
@@ -693,7 +772,16 @@ def compile_strategic_network(
                     "reference route names an obligation absent from Candidate Discovery",
                 )
             )
-    officer_choices = _active_officer_choices(request.officer_decisions)
+    officer_choices = tuple(
+        sorted(
+            (
+                *_active_officer_choices(request.officer_decisions),
+                *request.officer_candidate_choices,
+            )
+        )
+    )
+    preferred_by_set = dict(request.compiler_preferred_candidate_ids)
+    routing_endpoints_by_set = dict(request.routing_endpoint_bindings)
     officer_by_candidate: dict[str, tuple[str, ...]] = {}
     for candidate_id, decision_id in officer_choices:
         officer_by_candidate[candidate_id] = (
@@ -733,7 +821,19 @@ def compile_strategic_network(
         binding_valid = set_id not in binding_invalid_sets
         role = getattr(candidate_set.network_role, "value", candidate_set.network_role)
         endpoints = tuple(candidate_set.endpoints)
-        compiler = _preferred_candidate(candidate_set) if binding_valid else None
+        routing_endpoints = routing_endpoints_by_set.get(set_id, endpoints)
+        governed_preference = preferred_by_set.get(set_id)
+        compiler = (
+            _preferred_candidate(candidate_set, governed_preference) if binding_valid else None
+        )
+        if governed_preference is not None and compiler is None:
+            diagnostics.append(
+                PlanningDiagnostic(
+                    "invalid-compiler-preference",
+                    set_id,
+                    "governed compiler preference is not an admitted candidate",
+                )
+            )
         compiler_id = None if compiler is None else compiler.candidate_id
         set_candidate_ids = {item.candidate_id for item in candidate_set.candidates}
         officer_ids = tuple(
@@ -790,7 +890,7 @@ def compile_strategic_network(
                 ):
                     raise ValueError("reference route graph fingerprint is stale")
                 reference_geometry = _edge_geometry(
-                    graph, reference.routing_edge_ids, endpoints=endpoints
+                    graph, reference.routing_edge_ids, endpoints=routing_endpoints
                 )
             except ValueError as error:
                 diagnostics.append(
@@ -888,9 +988,9 @@ def compile_strategic_network(
                 if record is None:
                     raise ValueError("Candidate Discovery record is missing for selected candidate")
                 edge_ids = tuple(record.edge_ids)
-                geometry = _edge_geometry(graph, edge_ids, endpoints=endpoints)
+                geometry = _edge_geometry(graph, edge_ids, endpoints=routing_endpoints)
                 reverse_ids = tuple(record.reverse_edge_ids)
-                _reverse_edge_chain(graph, edge_ids, reverse_ids, endpoints)
+                _reverse_edge_chain(graph, edge_ids, reverse_ids, routing_endpoints)
                 if not _geometry_matches(record.geometry_wkt, geometry):
                     raise ValueError(
                         "candidate geometry does not match materialized Planning Graph geometry"

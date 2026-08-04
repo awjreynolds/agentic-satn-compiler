@@ -51,22 +51,24 @@ def test_gradient_inspection_interface_contract() -> None:
     assert "Desktop is recommended" in html
     assert "This legacy review map bundles its available evidence" in script
     assert "MapToolkit" not in script
-    assert '"cross-spine-connector"' not in script.split(
-        "const gradientPathTypes", maxsplit=1
-    )[1].split("]);", maxsplit=1)[0]
+    assert (
+        '"cross-spine-connector"'
+        not in script.split("const gradientPathTypes", maxsplit=1)[1].split("]);", maxsplit=1)[0]
+    )
 
 
 def test_reviewable_network_layer_defaults_and_semantics_are_explicit() -> None:
     html = (ASSETS / "review-map.html").read_text(encoding="utf-8")
     script = (ASSETS / "review-map.js").read_text(encoding="utf-8")
     css = (ASSETS / "review-map.css").read_text(encoding="utf-8")
+    for control_id in ("layer-strategic-network", "layer-places"):
+        assert f'id="{control_id}" type="checkbox" checked' in html
     for control_id in (
-        "layer-strategic-network",
         "layer-required-connections",
         "layer-reviewable-gaps",
         "layer-officer-divergences",
     ):
-        assert f'id="{control_id}" type="checkbox" checked' in html
+        assert f'id="{control_id}" type="checkbox" checked' not in html
     for control_id in (
         "layer-existing-assets",
         "layer-upgradeable-assets",
