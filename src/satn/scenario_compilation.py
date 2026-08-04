@@ -42,6 +42,7 @@ from satn.alignment_selection import (
     traffic_diagnostics_for_candidate,
 )
 from satn.education_access import EducationAccessSourceSnapshot
+from satn.evidence_source_catalogue import EvidenceSourceResolution
 from satn.spine_access_candidate_preparation import (
     PreparedSpineAccessConnection,
     SpineAccessCandidatePreparationResult,
@@ -187,6 +188,7 @@ class PreparedScenarioCompilationInput:
     decision_record: ScenarioDecisionRecord | None = None
     review_run_instance_id: str = "prepared-scenario-review"
     prior_orchestration: ScenarioReviewOrchestration | None = None
+    evidence_source_resolutions: tuple[EvidenceSourceResolution, ...] = ()
 
     def __post_init__(self) -> None:
         if _SHA256.fullmatch(self.area_fingerprint) is None:
@@ -212,6 +214,19 @@ class PreparedScenarioCompilationInput:
         if len({item.access_connection_id for item in criteria}) != len(criteria):
             raise ValueError("at most one criteria record is allowed per connection")
         object.__setattr__(self, "criteria", criteria)
+        if not all(
+            isinstance(item, EvidenceSourceResolution)
+            for item in self.evidence_source_resolutions
+        ):
+            raise ValueError(
+                "evidence_source_resolutions must contain EvidenceSourceResolution records"
+            )
+        resolutions = tuple(
+            sorted(self.evidence_source_resolutions, key=lambda item: item.fingerprint)
+        )
+        if len({item.fingerprint for item in resolutions}) != len(resolutions):
+            raise ValueError("evidence_source_resolutions cannot contain duplicates")
+        object.__setattr__(self, "evidence_source_resolutions", resolutions)
         if self.decision_record is not None:
             object.__setattr__(
                 self,
@@ -345,6 +360,7 @@ def compile_prepared_scenario(
         decision_record=request.decision_record,
         review_run_instance_id=request.review_run_instance_id,
         prior_orchestration=request.prior_orchestration,
+        evidence_source_resolutions=request.evidence_source_resolutions,
     )
     if preparation is None:
         return _result(
@@ -358,6 +374,7 @@ def compile_prepared_scenario(
                 "agent_runtime_constructed": False,
                 "reason": "network-selection-profile-disabled",
             },
+            source_resolutions=request.evidence_source_resolutions,
         )
 
     _validate_preparation_identity(preparation)
@@ -392,6 +409,7 @@ def compile_prepared_scenario(
                 preparation,
                 reason="prepared-candidate-evidence-or-roster-incomplete",
             ),
+            source_resolutions=request.evidence_source_resolutions,
         )
     if not prepared:
         missing = (
@@ -412,6 +430,7 @@ def compile_prepared_scenario(
                 preparation,
                 reason="no-eligible-chained-community-connections",
             ),
+            source_resolutions=request.evidence_source_resolutions,
         )
 
     prepared_by_id = {item.access_connection_id: item for item in prepared}
@@ -438,6 +457,7 @@ def compile_prepared_scenario(
                 preparation,
                 reason="governed-criterion-input-missing",
             ),
+            source_resolutions=request.evidence_source_resolutions,
         )
 
     _validate_promoted_candidate_sets(preparation)
@@ -553,6 +573,7 @@ def compile_prepared_scenario(
             "replay_directive": "recompile-whole-network-on-ledger-change",
             **traffic_payload,
         },
+        source_resolutions=request.evidence_source_resolutions,
     )
 
 
@@ -1022,11 +1043,22 @@ def _result(
     review: ScenarioReviewOrchestration | None,
     missing: tuple[str, ...],
     diagnostics: Mapping[str, object],
+    source_resolutions: tuple[EvidenceSourceResolution, ...] = (),
 ) -> PreparedScenarioCompilationResult:
     preparation_fingerprint = (
         preparation.preparation_fingerprint if preparation is not None else None
     )
-    frozen = _freeze(diagnostics)
+    diagnostic_payload = dict(diagnostics)
+    if source_resolutions:
+        diagnostic_payload["evidence_source_resolutions"] = tuple(
+            item.canonical_payload() for item in source_resolutions
+        )
+        diagnostic_payload["evidence_requests"] = tuple(
+            request.canonical_payload()
+            for resolution in source_resolutions
+            for request in resolution.evidence_requests
+        )
+    frozen = _freeze(diagnostic_payload)
     assert isinstance(frozen, Mapping)
     payload = {
         "contract": _CONTRACT,
