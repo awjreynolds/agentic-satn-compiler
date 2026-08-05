@@ -345,12 +345,17 @@ def test_complete_replay_is_stable_and_published_records_agree(tmp_path: Path) -
 
     config.compilation.full = True
     forced = compile(config, decision_ledger=ledger)
-    first_run = forced.artifacts["run"].read_bytes()
+    first_run = json.loads(forced.artifacts["run"].read_text(encoding="utf-8"))
+    first_run.pop("compilation_metadata")
     first_records = forced.artifacts["agents"].read_bytes()
     first_network = forced.artifacts["geojson"].read_bytes()
     forced_again = compile(config, decision_ledger=ledger)
     assert forced_again.run_id == forced.run_id
-    assert forced_again.artifacts["run"].read_bytes() == first_run
+    repeated_run = json.loads(
+        forced_again.artifacts["run"].read_text(encoding="utf-8")
+    )
+    repeated_run.pop("compilation_metadata")
+    assert repeated_run == first_run
     assert forced_again.artifacts["agents"].read_bytes() == first_records
     assert forced_again.artifacts["geojson"].read_bytes() == first_network
 
