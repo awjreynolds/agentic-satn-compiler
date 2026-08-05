@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, fields, replace
 from enum import Enum
+from types import MappingProxyType
 
 import geopandas as gpd
 import pandas as pd
@@ -218,6 +220,43 @@ def test_bundle_rejects_unsupported_fields_by_name() -> None:
             dependency_identity=SHA_C,
             upstream_artifact_ids=(),
         )
+
+
+@dataclass(frozen=True)
+class _MappingFixture:
+    values: Mapping[str, object]
+
+    def __post_init__(self) -> None:
+        def freeze(value: object) -> object:
+            if isinstance(value, Mapping):
+                return MappingProxyType({key: freeze(item) for key, item in value.items()})
+            return value
+
+        object.__setattr__(self, "values", freeze(self.values))
+
+
+def test_bundle_round_trips_mappingproxy_fields_and_nested_mappings() -> None:
+    fixture = _MappingFixture(
+        MappingProxyType(
+            {
+                "nested": MappingProxyType({"enabled": True, "label": "cycleway"}),
+                "count": 2,
+            }
+        )
+    )
+    encoded = encode_compiled_network_bundle(
+        fixture,
+        area_identity=SHA_A,
+        input_identity=SHA_B,
+        dependency_identity=SHA_C,
+        upstream_artifact_ids=(),
+    )
+
+    decoded = decode_compiled_network_bundle(encoded, _MappingFixture)
+
+    assert decoded == fixture
+    assert isinstance(decoded.values, MappingProxyType)
+    assert isinstance(decoded.values["nested"], MappingProxyType)
 
 
 @pytest.mark.parametrize("wrong_encoding", ["typed-string", "geodataframe"])

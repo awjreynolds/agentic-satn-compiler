@@ -14,6 +14,7 @@ import math
 import re
 import sys
 import types
+from collections.abc import Mapping
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import date, datetime
 from enum import Enum
@@ -160,7 +161,7 @@ def _wire_value(value: object) -> dict[str, object]:
         return {"type": "tuple", "items": [_wire_value(item) for item in value]}
     if isinstance(value, list):
         return {"type": "list", "items": [_wire_value(item) for item in value]}
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         if not all(isinstance(key, str) for key in value):
             raise BundleCodecError("canonical mappings require string keys")
         return {
@@ -754,9 +755,9 @@ def _restore_expected(value: object, annotation: object, model_name: str | None 
         return tuple(
             _restore_expected(item, subtype) for item, subtype in zip(value, args, strict=True)
         )
-    if origin is dict:
+    if origin in {dict, Mapping}:
         if type(value) is not dict:
-            raise BundleCodecError("value does not match dict annotation")
+            raise BundleCodecError("value does not match mapping annotation")
         key_type, item_type = args if args else (object, object)
         return {
             _restore_expected(key, key_type): _restore_expected(item, item_type)
