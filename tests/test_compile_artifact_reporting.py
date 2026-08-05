@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 import satn.pipeline as pipeline
 from satn.models import AreaDefinition, CompilationResult
 from satn.retained_artifacts import RetainedArtifactStore
@@ -50,12 +52,12 @@ def test_compile_records_incremental_controls_and_publication_outcome(
     result = pipeline.compile(
         council,
         artifact_root=artifact_root,
-        rebuild_stages=("area-extraction",),
+        rebuild_stages=("edge-enrichments",),
         workers=3,
         explain_reuse=True,
     )
 
-    assert observed["rebuild_stages"] == ("area-extraction",)
+    assert observed["rebuild_stages"] == ("edge-enrichments",)
     report_path = Path(result.metadata["compilation_run_report"])
     assert report_path.parent == artifact_root / "runs"
     report = RetainedArtifactStore(artifact_root).read_run_report(report_path.stem)
@@ -79,6 +81,26 @@ def test_compile_records_incremental_controls_and_publication_outcome(
     assert result.metadata["reuse_explanation"] == [
         event.payload() for event in report.artifact_events
     ]
+
+
+@pytest.mark.parametrize(
+    "stage,command",
+    [
+        ("source-export", "satn snapshot"),
+        ("evidence-refresh", "satn evidence refresh"),
+        ("area-extraction", "satn snapshot"),
+        ("canonical-network", "satn snapshot"),
+    ],
+)
+def test_removed_input_stages_fail_with_actionable_command_hint(
+    tmp_path: Path,
+    stage: str,
+    command: str,
+) -> None:
+    council = _area(tmp_path)
+
+    with pytest.raises(ValueError, match=rf"{stage}.*{command}"):
+        pipeline.compile(council, rebuild_stages=(stage,))
 
 
 def test_compile_defaults_to_the_caller_workspace_artifact_store(

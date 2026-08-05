@@ -118,10 +118,6 @@ LOGGER = logging.getLogger(__name__)
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _INCREMENTAL_STAGE_NAMES = frozenset(
     {
-        "source-export",
-        "evidence-refresh",
-        "area-extraction",
-        "canonical-network",
         "edge-enrichments",
         "routing-assembly",
         "scenario-selection",
@@ -131,20 +127,12 @@ _INCREMENTAL_STAGE_NAMES = frozenset(
 )
 _ROUTING_BYPASS_STAGES = frozenset(
     {
-        "source-export",
-        "evidence-refresh",
-        "area-extraction",
-        "canonical-network",
         "edge-enrichments",
         "routing-assembly",
     }
 )
 _EDGE_ENRICHMENT_BYPASS_STAGES = frozenset(
     {
-        "source-export",
-        "evidence-refresh",
-        "area-extraction",
-        "canonical-network",
         "edge-enrichments",
     }
 )
@@ -296,6 +284,24 @@ def compile(
     rebuild_stages = tuple(dict.fromkeys(rebuild_stages))
     unknown_stages = sorted(set(rebuild_stages).difference(_INCREMENTAL_STAGE_NAMES))
     if unknown_stages:
+        retired_input_stages = {
+            "source-export": "satn snapshot",
+            "evidence-refresh": "satn evidence refresh",
+            "area-extraction": "satn snapshot",
+            "canonical-network": "satn snapshot",
+        }
+        retired = [stage for stage in unknown_stages if stage in retired_input_stages]
+        if retired:
+            hints = "; ".join(
+                f"{stage}: run `{retired_input_stages[stage]}`"
+                for stage in retired
+            )
+            raise ValueError(
+                "retained input stages are not compile rebuild targets ("
+                + hints
+                + "); use compile --rebuild-stage only for edge-enrichments, "
+                "routing-assembly, scenario-selection, presentation, or publication"
+            )
         raise ValueError("unknown retained compilation stage: " + ", ".join(unknown_stages))
     if workers != "auto" and (
         not isinstance(workers, int) or isinstance(workers, bool) or workers < 1
@@ -377,6 +383,7 @@ def _record_compilation_run(
     reused = publication_reused or semantic_reused
     published = result.status in {"complete", "reviewable"}
     presentation_republished = bool(result.metadata.get("presentation_republished"))
+    retained_publication_context = publication_reused or presentation_republished
     semantic_bundle_disposition = result.metadata.get("semantic_bundle_disposition")
     semantic_bundle_artifact_id = result.metadata.get("semantic_bundle_artifact_id")
     if semantic_bundle_disposition not in {"hit", "build", "unavailable"}:
@@ -407,6 +414,8 @@ def _record_compilation_run(
     routing_skipped_reason = (
         "publication-reused-routing-skipped"
         if publication_reused
+        else "presentation-republish-routing-skipped"
+        if presentation_republished
         else "routing-retention-unavailable"
     )
     events = (
@@ -415,7 +424,7 @@ def _record_compilation_run(
             scope=council.area_id,
             disposition=(
                 "skipped"
-                if publication_reused
+                if retained_publication_context
                 else edge_enrichment_disposition
                 if edge_enrichment_disposition in {"hit", "build"}
                 else "skipped"
@@ -423,6 +432,8 @@ def _record_compilation_run(
             reason=(
                 "publication-reused-edge-enrichment-skipped"
                 if publication_reused
+                else "presentation-republish-edge-enrichment-skipped"
+                if presentation_republished
                 else str(result.metadata.get("edge_enrichment_reason"))
                 if result.metadata.get("edge_enrichment_reason") is not None
                 else "edge-enrichment-retention-unavailable"
@@ -435,14 +446,14 @@ def _record_compilation_run(
             scope=council.area_id,
             disposition=(
                 "skipped"
-                if publication_reused
+                if retained_publication_context
                 else routing_bundle_disposition
                 if routing_bundle_disposition in {"hit", "build"}
                 else "skipped"
             ),
             reason=(
                 routing_skipped_reason
-                if publication_reused or routing_bundle_disposition is None
+                if retained_publication_context or routing_bundle_disposition is None
                 else str(result.metadata.get("routing_bundle_reason"))
             ),
             artifact_id=routing_bundle_artifact_id,
@@ -488,7 +499,8 @@ def _record_compilation_run(
                 "semantic-compilation-incomplete"
                 if not published
                 else "forced-stage"
-                if presentation_republished and "presentation" in rebuild_stages
+                if presentation_republished
+                and set(rebuild_stages).intersection({"presentation", "publication"})
                 else "presentation-dependencies-changed"
                 if presentation_republished
                 else "generated-from-semantic-publication"
@@ -1952,8 +1964,13 @@ def _compile(
         council.source.snapshot_id,
         SCHEMA_VERSION,
     )
-    presentation_only_rebuild = set(rebuild_stages) == {"presentation"}
-    semantic_rebuild = bool(rebuild_stages) and not presentation_only_rebuild
+    downstream_only_rebuild = bool(rebuild_stages) and set(rebuild_stages).issubset(
+        {"presentation", "publication"}
+    )
+    semantic_rebuild = bool(rebuild_stages) and not downstream_only_rebuild
+    force_presentation_republish = bool(
+        set(rebuild_stages).intersection({"presentation", "publication"})
+    )
     reused = (
         None
         if recovery_candidate or semantic_rebuild
@@ -1964,7 +1981,7 @@ def _compile(
             dependency_manifest,
             officer_decisions=officer_decisions,
             publication_authority=publication_authority,
-            force_presentation_republish=presentation_only_rebuild,
+            force_presentation_republish=force_presentation_republish,
         )
     )
     if semantic_rebuild:
@@ -2271,7 +2288,11 @@ def _compile(
                 if edge_enrichment_frame is None:
                     raise ValueError("new edge enrichment failed validation")
                 edge_enrichment_disposition = "build"
-                edge_enrichment_reason = "compiled-from-governed-network-context"
+                edge_enrichment_reason = (
+                    "forced-stage"
+                    if "edge-enrichments" in rebuild_stages
+                    else "compiled-from-governed-network-context"
+                )
                 if routing_specification is None:
                     routing_specification, specified_input = _routing_bundle_specification(
                         council,
@@ -2338,7 +2359,12 @@ def _compile(
                         routing_input_identity=routing_input_fingerprint,
                     )
                 routing_bundle_disposition = "build"
-                routing_bundle_reason = "compiled-from-governed-routing-inputs"
+                routing_bundle_reason = (
+                    "forced-stage"
+                    if "edge-enrichments" in rebuild_stages
+                    or "routing-assembly" in rebuild_stages
+                    else "compiled-from-governed-routing-inputs"
+                )
             except (OSError, TypeError, ValueError) as error:
                 routing_bundle_artifact = None
                 routing_bundle_disposition = "unavailable"
