@@ -72,6 +72,18 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
         "module",
         "finite demand-led corridor obligation derivation",
     ),
+    "satn/strategic_network_planning.py": (
+        "module",
+        "immutable strategic candidate selection and network application",
+    ),
+    "satn/strategic_network_adapter.py": (
+        "module",
+        "exact prepared-corridor adaptation to effective strategic planning",
+    ),
+    "satn/strategic_network_publication.py": (
+        "module",
+        "projection of effective strategic planning into review artifacts",
+    ),
     "satn/backbone.py": ("module", "Backbone-and-Access assembly"),
     "satn/compilation_dependencies.py": (
         "module",
@@ -210,6 +222,9 @@ OPTIONAL_COMPONENT_GROUPS: Final[dict[str, frozenset[str]]] = {
             "satn/line_evidence_matching.py",
             "satn/candidate_discovery.py",
             "satn/corridor_obligations.py",
+            "satn/strategic_network_planning.py",
+            "satn/strategic_network_adapter.py",
+            "satn/strategic_network_publication.py",
             "satn/network_selection.py",
             "satn/planning_graph.py",
             "satn/traffic_evidence.py",
@@ -223,9 +238,7 @@ OPTIONAL_COMPONENT_GROUPS: Final[dict[str, frozenset[str]]] = {
     "review-assistance": frozenset({"satn/review_assistance.py"}),
     "strategic-reference": frozenset({"satn/strategic_reference_replay.py"}),
 }
-_OPTIONAL_COMPONENT_PATHS: Final = frozenset().union(
-    *OPTIONAL_COMPONENT_GROUPS.values()
-)
+_OPTIONAL_COMPONENT_PATHS: Final = frozenset().union(*OPTIONAL_COMPONENT_GROUPS.values())
 CORE_COMPILATION_COMPONENTS: Final = frozenset(COMPILATION_COMPONENTS).difference(
     _OPTIONAL_COMPONENT_PATHS
 )
@@ -260,9 +273,7 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     "satn/deployment_catalogue.py": "deployment catalogue assembly",
     "satn/deployment_provenance.py": "deployment lock validation",
     "satn/deployment_scenario_cli.py": "post-compile officer-scenario command adapter",
-    "satn/deployment_scenarios.py": (
-        "post-compile clean-baseline and officer-scenario assembly"
-    ),
+    "satn/deployment_scenarios.py": ("post-compile clean-baseline and officer-scenario assembly"),
     "satn/ea_raster_evidence.py": (
         "additive Environment Agency raster evidence sidecar; "
         "not a compiler input before equivalence cutover"
@@ -289,8 +300,7 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
         "additive graph/reachability diagnostics; not a compiler input before an active profile"
     ),
     "satn/_evidence_operations.py": (
-        "private Local Evidence Store operations; "
-        "not a compiler input before equivalence cutover"
+        "private Local Evidence Store operations; not a compiler input before equivalence cutover"
     ),
     "satn/evidence_cli.py": (
         "additive Local Evidence Store command adapter; "
@@ -311,9 +321,7 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
         "additive OpenStreetMap Local Evidence source adapter; "
         "not a compiler input before equivalence cutover"
     ),
-    "satn/officer_decisions.py": (
-        "post-compile human decision ledger and scenario translation"
-    ),
+    "satn/officer_decisions.py": ("post-compile human decision ledger and scenario translation"),
     "satn/pages_packaging.py": "Pages release packaging",
     "satn/parallel_reduction.py": (
         "post-compile parallel-alignment Scenario seam without CompiledNetwork mutation"
@@ -361,8 +369,7 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
         "publication-only strategic Reference provenance record; no compiler authority"
     ),
     "satn/visual_survey.py": (
-        "governed external visual-survey evidence contract; "
-        "not an automatic compiler input"
+        "governed external visual-survey evidence contract; not an automatic compiler input"
     ),
 }
 
@@ -604,9 +611,7 @@ def _runtime_component_records(
                 "kind": "runtime-distribution",
                 "reason": reason,
                 "version": version,
-                "sha256": hashlib.sha256(
-                    f"{canonical_name}\0{version}".encode()
-                ).hexdigest(),
+                "sha256": hashlib.sha256(f"{canonical_name}\0{version}".encode()).hexdigest(),
             }
         )
     return records
@@ -661,9 +666,7 @@ def compilation_dependency_manifest(
         "compiler_path": compiler_path,
         "configuration_sensitive": config is not None,
         "active_groups": ["core", *sorted(active_groups)],
-        "component_paths": [
-            str(component["path"]) for component in component_records
-        ],
+        "component_paths": [str(component["path"]) for component in component_records],
     }
     digest_payload = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
@@ -675,9 +678,7 @@ def compilation_dependency_manifest(
         {
             "path": path,
             "groups": sorted(
-                group
-                for group, paths in OPTIONAL_COMPONENT_GROUPS.items()
-                if path in paths
+                group for group, paths in OPTIONAL_COMPONENT_GROUPS.items() if path in paths
             ),
             "reason": "registered optional compiler bundle is inactive",
         }
@@ -740,8 +741,7 @@ def validate_compilation_dependency_manifest(
         *OPTIONAL_RUNTIME_DISTRIBUTION_GROUPS,
     }
     if (
-        compiler_path
-        not in {"network", "reference", "strategic-reference", "ea-recovery"}
+        compiler_path not in {"network", "reference", "strategic-reference", "ea-recovery"}
         or not isinstance(configuration_sensitive, bool)
         or not isinstance(active_groups, list)
         or not active_groups
@@ -773,9 +773,7 @@ def validate_compilation_dependency_manifest(
             or re.fullmatch(r"[0-9a-f]{64}", sha256) is None
         ):
             raise ValueError("compilation dependency manifest component is malformed")
-        if kind == "runtime-distribution" and not isinstance(
-            component.get("version"), str
-        ):
+        if kind == "runtime-distribution" and not isinstance(component.get("version"), str):
             raise ValueError("compilation dependency manifest runtime is malformed")
         record_paths.append(path)
 

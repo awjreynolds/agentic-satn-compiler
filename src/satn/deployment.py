@@ -615,6 +615,8 @@ def build_area_deployment(
             "topography_profile_evidence_index": "topography-profile-evidence.json",
             "disclaimer": DISCLAIMER,
         }
+        if "compilation_metadata" in run:
+            publication["compilation_metadata"] = run["compilation_metadata"]
         (content / "publication.json").write_text(
             json.dumps(publication, indent=2), encoding="utf-8"
         )
@@ -638,6 +640,8 @@ def build_area_deployment(
             "disclaimer",
         ):
             data[field] = publication[field]
+        if "compilation_metadata" in publication:
+            data["compilation_metadata"] = publication["compilation_metadata"]
         data["provenance_lock"] = {
             "schema_version": SCHEMA_VERSION,
             "deployment_id": definition.deployment_slug,

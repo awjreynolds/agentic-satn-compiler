@@ -25,6 +25,7 @@ def test_catalogue_builds_a_small_root_selector_with_stable_area_links(tmp_path:
     assert publication["schema_version"] == "satn-deployment-catalogue/v1"
     assert publication["title"] == "Agentic SATN Compiler deployments"
     published = {entry["deployment_id"]: entry for entry in publication["deployments"]}
+    assert set(published) == {"banes", "weca"}
     assert published["banes"] == {
             "deployment_id": "banes",
             "area_id": "bath-and-north-east-somerset",

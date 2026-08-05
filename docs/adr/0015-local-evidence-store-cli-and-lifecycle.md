@@ -215,11 +215,11 @@ $ satn evidence --format json refresh deployments/banes/area.yaml \
     --source-export data/governed/open-roads-2026-04.yaml --dry-run
 {"ok":true,"command":"refresh","dry_run":true,"missing_cells":[...],"state":"<sha256>"}
 
-$ satn evidence refresh deployments/oxfordshire/area.yaml \
+$ satn evidence refresh path/to/area.yaml \
     --source-export data/governed/open-roads-2026-04.yaml
 refreshed: 18 missing cells; reused: 7; state: <sha256>
 
-$ satn evidence status --area deployments/oxfordshire/area.yaml --provenance
+$ satn evidence status --area path/to/area.yaml --provenance
 coverage: complete (18 present, 0 missing, 0 stale); state: <sha256>
 
 $ satn evidence query os-open-roads/RoadLink --area deployments/banes/area.yaml \

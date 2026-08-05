@@ -9,8 +9,9 @@ from bath_saltford_fixture import configured_bath_saltford
 from shapely.affinity import translate
 
 from satn.agents import FakeAgentRuntime
-from satn.compiler import compile_network
+from satn.compiler import compile_network, governed_input_binding
 from satn.evidence import mark_ncn_edges
+from satn.parallel_reduction import PreloadedOfficerDecision
 from satn.population_reach import compile_population_reach
 from satn.psa_evidence_loaders import load_population_reach_evidence
 from satn.routing import RoadGraph
@@ -32,12 +33,8 @@ def _compiled(tmp_path: Path):
 
 def test_compound_external_edge_ids_have_stable_canonical_provenance_ids() -> None:
     assert _provenance_id("source-edge-1") == "source-edge-1"
-    assert _provenance_id("[1001848710, 33175860]") == (
-        "source-reference-4cea4d0a166e52d52240"
-    )
-    assert _provenance_id("[1001848710, 33175860]") == _provenance_id(
-        "[1001848710, 33175860]"
-    )
+    assert _provenance_id("[1001848710, 33175860]") == ("source-reference-4cea4d0a166e52d52240")
+    assert _provenance_id("[1001848710, 33175860]") == _provenance_id("[1001848710, 33175860]")
 
 
 def test_bath_prepares_separate_interurban_and_destination_units(tmp_path: Path) -> None:
@@ -49,17 +46,31 @@ def test_bath_prepares_separate_interurban_and_destination_units(tmp_path: Path)
     assert legacy is not None
     assert not legacy.prepared_spine_access_connections
     assert not legacy.connection_roster
-    saltford_obligation = compiled.access_obligations.set_index("place_id").loc[
-        "saltford"
-    ]
+    saltford_obligation = compiled.access_obligations.set_index("place_id").loc["saltford"]
     assert saltford_obligation["service_status"] == "served"
     assert saltford_obligation["access_connection_id"] is None
-    assert not (
-        compiled.spine_access_connections["place_id"] == "saltford"
-    ).any()
+    assert not (compiled.spine_access_connections["place_id"] == "saltford").any()
 
     prepared = compiled.strategic_corridor_preparation
     assert prepared is not None and prepared.prepared
+    strategic = compiled.strategic_network_planning
+    assert strategic is not None
+    assert strategic.status == "complete"
+    assert {item.network_role for item in strategic.selections} == {
+        "interurban-spine",
+        "strategic-destination-access",
+    }
+    interurban_selection = next(
+        item for item in strategic.selections if item.network_role == "interurban-spine"
+    )
+    assert interurban_selection.authority.value == "compiler"
+    selected = next(
+        candidate
+        for candidate_set in strategic.candidate_sets
+        for candidate in candidate_set.candidates
+        if candidate.candidate_id == interurban_selection.effective_candidate_id
+    )
+    assert selected.source_class.value == "verified-existing-asset"
     assert compiled.network_selection_preparation is not None
     assert len(compiled.network_selection_preparation.alignment_units) == 2
     units = {item.unit_role: item for item in prepared.units}
@@ -103,18 +114,12 @@ def test_bath_prepares_separate_interurban_and_destination_units(tmp_path: Path)
     destination = units[StrategicCorridorUnitRole.STRATEGIC_DESTINATION_ACCESS]
     assert destination.strategic_destination_id == "bath-spa-university"
     assert destination.site_id == "bath-spa-university"
-    assert destination.access_point_evidence_ids == (
-        "bath-spa-university-synthetic-entrance",
-    )
-    assert destination.candidate_set.mandatory_strategic_destination_ids == (
-        "bath-spa-university",
-    )
+    assert destination.access_point_evidence_ids == ("bath-spa-university-synthetic-entrance",)
+    assert destination.candidate_set.mandatory_strategic_destination_ids == ("bath-spa-university",)
     assert not destination.candidate_set.mandatory_network_place_ids
     assert not destination.candidate_set.mandatory_access_obligation_ids
     assert destination.endpoint_binding.network_place_ids == ("bath-edge",)
-    assert destination.endpoint_binding.strategic_destination_ids == (
-        "bath-spa-university",
-    )
+    assert destination.endpoint_binding.strategic_destination_ids == ("bath-spa-university",)
     assert destination.endpoint_binding.candidate_endpoints == (
         "bath-edge",
         "destination-endpoint-7d2d19a5e22cba8479fe",
@@ -124,8 +129,7 @@ def test_bath_prepares_separate_interurban_and_destination_units(tmp_path: Path)
         for candidate in destination.candidate_set.candidates
     )
     assert all(
-        not candidate.served_network_place_ids
-        for candidate in destination.candidate_set.candidates
+        not candidate.served_network_place_ids for candidate in destination.candidate_set.candidates
     )
     assert len(destination.candidate_set.candidates) == 1
     assert {candidate.source_class.value for candidate in destination.candidate_set.candidates} == {
@@ -159,9 +163,7 @@ def test_bath_prepares_separate_interurban_and_destination_units(tmp_path: Path)
     assert section_population.profile.urban_capture_radius_m == 250
     assert section_population.profile.rural_capture_radius_m == 750
     assert section_population.sections
-    assert len(compiled.population_display_sections) == len(
-        section_population.sections
-    )
+    assert len(compiled.population_display_sections) == len(section_population.sections)
     assert set(compiled.population_display_sections["network_scope"]) <= {
         "urban",
         "rural",
@@ -189,12 +191,10 @@ def test_bath_prepares_separate_interurban_and_destination_units(tmp_path: Path)
     routes = gpd.GeoDataFrame(
         {
             "option_id": [
-                item.candidate_id
-                for item in interurban.candidate_set.admitted_candidates
+                item.candidate_id for item in interurban.candidate_set.admitted_candidates
             ],
             "geometry": [
-                item.geometry.as_shapely()
-                for item in interurban.candidate_set.admitted_candidates
+                item.geometry.as_shapely() for item in interurban.candidate_set.admitted_candidates
             ],
         },
         geometry="geometry",
@@ -208,6 +208,40 @@ def test_bath_prepares_separate_interurban_and_destination_units(tmp_path: Path)
         columns=evidence.columns,
     )
     assert {item.corridor_distance_m for item in reach.summaries} == {500.0, 1000.0}
+
+
+def test_preloaded_officer_route_is_applied_and_divergence_remains_visible(
+    tmp_path: Path,
+) -> None:
+    config, source, baseline = _compiled(tmp_path)
+    prepared = baseline.strategic_corridor_preparation
+    assert prepared is not None
+    interurban = next(
+        item
+        for item in prepared.units
+        if item.unit_role is StrategicCorridorUnitRole.INTERURBAN_SPINE
+    )
+    road = next(
+        item
+        for item in interurban.candidate_records
+        if item.candidate.source_class.value == "a-road-corridor"
+    )
+    decision = PreloadedOfficerDecision(
+        target_id=interurban.unit_id,
+        route_id=road.physical_alignment_id,
+    )
+
+    with governed_input_binding(officer_decisions=(decision,)):
+        compiled = compile_network(config, source, FakeAgentRuntime())
+
+    strategic = compiled.strategic_network_planning
+    assert strategic is not None
+    selection = next(
+        item for item in strategic.selections if item.obligation_id == interurban.unit_id
+    )
+    assert selection.authority.value == "officer"
+    assert selection.effective_candidate_id == road.candidate.candidate_id
+    assert strategic.divergences[0].officer_candidate_id == road.candidate.candidate_id
 
 
 def test_missing_governed_destination_geometry_is_an_explicit_incomplete_issue(
@@ -244,10 +278,14 @@ def test_destination_access_point_seven_metre_offset_is_not_attached(
     context = source["context"].copy()
     destination_mask = context["site_id"].eq("bath-spa-university")
     point = context.loc[destination_mask].to_crs(27700).geometry.iloc[0]
-    shifted = gpd.GeoSeries(
-        [translate(point, xoff=7.0)],
-        crs="EPSG:27700",
-    ).to_crs(context.crs).iloc[0]
+    shifted = (
+        gpd.GeoSeries(
+            [translate(point, xoff=7.0)],
+            crs="EPSG:27700",
+        )
+        .to_crs(context.crs)
+        .iloc[0]
+    )
     context.loc[destination_mask, "geometry"] = shifted
 
     result = prepare_strategic_corridors(
@@ -265,8 +303,7 @@ def test_destination_access_point_seven_metre_offset_is_not_attached(
         "destination-access-geometry-not-exactly-bound-to-current-road-graph"
     ]
     assert all(
-        unit.unit_role is StrategicCorridorUnitRole.INTERURBAN_SPINE
-        for unit in result.units
+        unit.unit_role is StrategicCorridorUnitRole.INTERURBAN_SPINE for unit in result.units
     )
 
 

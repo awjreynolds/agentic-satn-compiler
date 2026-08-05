@@ -80,6 +80,10 @@ from satn.sources import (
     _validate_canonical_retained_ea_evidence,
     _validated_ea_snapshot_replay_inputs,
 )
+from satn.strategic_network_publication import (
+    StrategicPublicationLayer,
+    project_strategic_network,
+)
 from satn.strategic_reference_application import StrategicReferenceApplicationDisposition
 from satn.strategic_reference_publication import StrategicReferencePublicationRecord
 
@@ -190,6 +194,9 @@ def publication_artifacts(output: Path) -> dict[str, Path]:
     reviewable_geojson = output / "reviewable-network.geojson"
     if reviewable_geojson.is_file():
         artifacts["reviewable_network_geojson"] = reviewable_geojson
+    strategic_network = output / "review-map" / "strategic-network.json"
+    if strategic_network.is_file():
+        artifacts["strategic_network"] = strategic_network
     return artifacts
 
 
@@ -315,9 +322,67 @@ def _validate_published_geojson_geometry(feature: dict[object, object], feature_
         raise ValueError(f"SATN public GeoJSON feature {feature_id!r} has empty geometry")
 
 
+def _validate_effective_strategic_artifacts(output: Path) -> None:
+    """Validate the optional strategic sibling without changing legacy gates."""
+
+    sidecar_path = output / "review-map" / "strategic-network.json"
+    run = json.loads((output / "run.json").read_text(encoding="utf-8"))
+    if not sidecar_path.is_file():
+        if run.get("strategic_result_fingerprint") is not None:
+            raise ValueError("run names an effective strategic network without its sidecar")
+        return
+    try:
+        sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise ValueError("effective strategic-network sidecar is malformed") from error
+    fingerprint = sidecar.get("strategic_result_fingerprint")
+    if (
+        not isinstance(fingerprint, str)
+        or len(fingerprint) != 64
+        or sidecar.get("contract") != "satn-effective-strategic-network/v1"
+    ):
+        raise ValueError("effective strategic-network identity is malformed")
+    geojson = json.loads((output / "network.geojson").read_text(encoding="utf-8"))
+    reviewable = json.loads(
+        (output / "review-map" / "reviewable-network.geojson").read_text(encoding="utf-8")
+    )
+    if any(
+        value != fingerprint
+        for value in (
+            run.get("strategic_result_fingerprint"),
+            geojson.get("strategic_result_fingerprint"),
+            reviewable.get("strategic_result_fingerprint"),
+        )
+    ):
+        raise ValueError("effective strategic-network fingerprint differs across artifacts")
+    metadata = gpd.read_file(output / "network.gpkg", layer="metadata")
+    if "strategic_result_fingerprint" not in metadata or set(
+        metadata["strategic_result_fingerprint"].astype(str)
+    ) != {fingerprint}:
+        raise ValueError("GeoPackage effective strategic-network fingerprint mismatch")
+    if sidecar.get("feature_collection") != reviewable:
+        raise ValueError("effective strategic-network sidecar differs from review map")
+    data_text = (output / "review-map" / "data.js").read_text(encoding="utf-8")
+    prefix = "window.SATN_DATA = "
+    if not data_text.startswith(prefix) or not data_text.rstrip().endswith(";"):
+        raise ValueError("review-map data is not a SATN JSON assignment")
+    data = json.loads(data_text[len(prefix) :].strip().removesuffix(";"))
+    if data.get("strategic_result_fingerprint") != fingerprint:
+        raise ValueError("review-map data strategic fingerprint mismatch")
+    pdf_text = "".join(
+        page.extract_text() or "" for page in PdfReader(str(output / "network-map.pdf")).pages
+    )
+    if fingerprint not in pdf_text:
+        raise ValueError("PDF omits the effective strategic-network fingerprint")
+    with zipfile.ZipFile(output / "review-map.zip") as archive:
+        if "review-map/strategic-network.json" not in archive.namelist():
+            raise ValueError("review-map archive omits the strategic sidecar")
+
+
 def validate_publication(output: Path, config: AreaConfig) -> None:
     """Validate an existing publication before any whole-run reuse."""
     _validate_artifacts(output, config)
+    _validate_effective_strategic_artifacts(output)
     # Reuse must apply the current EA two-pass proof, not merely trust the
     # validation that ran when the artefacts were first published.
     _validate_ea_elevation_fixed_point(config, output / "network.geojson")
@@ -329,6 +394,7 @@ def publish(
     run_id: str,
     *,
     publication_authority: PublicationDestinationAuthority | None = None,
+    compilation_metadata: dict[str, object] | None = None,
 ) -> dict[str, Path]:
     reference_publication = _validated_reference_publication(
         compiled.reference_satn_publication,
@@ -387,6 +453,7 @@ def publish(
             run_id,
             reference_publication,
             strategic_reference_publication,
+            compilation_metadata,
         )
         _write_backbone_comparison(
             temporary / "backbone-comparison.json",
@@ -396,7 +463,12 @@ def publish(
         review = temporary / "review-map"
         review.mkdir()
         _write_review_map(
-            review, config, compiled, reference_publication, strategic_reference_publication
+            review,
+            config,
+            compiled,
+            reference_publication,
+            strategic_reference_publication,
+            compilation_metadata,
         )
         reviewable_map = _reviewable_map_collection(compiled)
         (review / "reviewable-network.geojson").write_text(
@@ -419,6 +491,8 @@ def publish(
         _zip_review_map(temporary / "review-map.zip", review)
         _write_pdf(temporary / "network-map.pdf", config, compiled)
         _validate_artifacts(temporary, config)
+        if compiled.strategic_network_planning is not None:
+            _validate_effective_strategic_artifacts(temporary)
         write_ownership_marker(
             temporary,
             owner_kind=f"compiled-network:{config.area_id}",
@@ -943,9 +1017,7 @@ def retain_ea_recovery_candidate(
     """Retain one fixed-point mismatch candidate without any publication path."""
 
     candidate = _ea_fixed_point_candidate_path(config)
-    temporary = Path(
-        tempfile.mkdtemp(prefix=f".{candidate.name}-recovery-", dir=candidate.parent)
-    )
+    temporary = Path(tempfile.mkdtemp(prefix=f".{candidate.name}-recovery-", dir=candidate.parent))
     try:
         network_path = temporary / EA_FIXED_POINT_CANDIDATE_NETWORK
         _write_geojson(network_path, compiled)
@@ -1270,7 +1342,10 @@ def _write_geopackage(path: Path, compiled: CompiledNetwork) -> None:
             _geopackage_safe(frame).to_file(path, layer=layer_name, driver="GPKG")
     if compiled.atm_reference is not None:
         _geopackage_safe(compiled.atm_reference).to_file(path, layer="atm_reference", driver="GPKG")
-    _metadata_frame(compiled.places.crs).to_file(path, layer="metadata", driver="GPKG")
+    metadata = _metadata_frame(compiled.places.crs)
+    if compiled.strategic_network_planning is not None:
+        metadata["strategic_result_fingerprint"] = compiled.strategic_network_planning.fingerprint
+    metadata.to_file(path, layer="metadata", driver="GPKG")
 
 
 def _geopackage_safe(frame: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
@@ -1418,7 +1493,7 @@ def _network_collection(compiled: CompiledNetwork) -> dict[str, object]:
     )
     school_gaps = compiled.gaps[gap_roles == "school-access-gap"]
     other_gaps = compiled.gaps[gap_roles != "school-access-gap"]
-    return {
+    collection = {
         "type": "FeatureCollection",
         "name": "SATN compiled network",
         "disclaimer": DISCLAIMER,
@@ -1478,6 +1553,10 @@ def _network_collection(compiled: CompiledNetwork) -> dict[str, object]:
             )
         ),
     }
+    strategic = getattr(compiled, "strategic_network_planning", None)
+    if strategic is not None:
+        collection["strategic_result_fingerprint"] = strategic.fingerprint
+    return collection
 
 
 def _reviewable_geometry_wgs84(candidate: object) -> dict[str, object] | None:
@@ -1512,9 +1591,7 @@ def _reviewable_candidate_properties(candidate: object) -> dict[str, object]:
             if key not in {"geometry", "traffic_observation"}
         }
     return {
-        str(key): _json_value(value)
-        for key, value in raw.items()
-        if _json_value(value) is not None
+        str(key): _json_value(value) for key, value in raw.items() if _json_value(value) is not None
     }
 
 
@@ -1540,9 +1617,7 @@ def _reviewable_candidate_feature(
             "display_state": display_state,
             "primary_alignment_basis": getattr(candidate, "primary_alignment_basis", None),
             "alignment_bases": list(getattr(candidate, "alignment_bases", ()) or ()),
-            "evidence_fingerprints": list(
-                getattr(candidate, "evidence_fingerprints", ()) or ()
-            ),
+            "evidence_fingerprints": list(getattr(candidate, "evidence_fingerprints", ()) or ()),
             "geometry_crs": "EPSG:4326",
             "source_geometry_crs": "EPSG:27700",
             "geometry_semantics": "exact-governed-candidate-line",
@@ -1637,11 +1712,7 @@ def _reviewable_strategic_spine_projection_properties(
         item
         for item in accounting_records
         if source_identities
-        & {
-            str(identity)
-            for identity in item.get("governed_source_identities", [])
-            if identity
-        }
+        & {str(identity) for identity in item.get("governed_source_identities", []) if identity}
     )
     matched_states = {
         str(item.get("intervention_state"))
@@ -1694,9 +1765,7 @@ def _reviewable_strategic_spine_features(compiled: CompiledNetwork) -> list[dict
     if not isinstance(frame, gpd.GeoDataFrame) or frame.empty:
         return []
     accounting_records = tuple(
-        item
-        for item in compiled.asset_accounting.get("records", [])
-        if isinstance(item, dict)
+        item for item in compiled.asset_accounting.get("records", []) if isinstance(item, dict)
     )
     features: list[dict[str, object]] = []
     for _, row in frame.to_crs(4326).sort_values("spine_id").iterrows():
@@ -1704,9 +1773,7 @@ def _reviewable_strategic_spine_features(compiled: CompiledNetwork) -> list[dict
         if geometry is None or geometry.is_empty:
             continue
         spine_properties = {
-            str(key): _json_value(value)
-            for key, value in row.items()
-            if key != "geometry"
+            str(key): _json_value(value) for key, value in row.items() if key != "geometry"
         }
         projected_properties = _reviewable_strategic_spine_projection_properties(
             spine_properties,
@@ -1725,7 +1792,7 @@ def _reviewable_strategic_spine_features(compiled: CompiledNetwork) -> list[dict
     return features
 
 
-def _reviewable_map_collection(compiled: CompiledNetwork) -> dict[str, object]:
+def _legacy_reviewable_map_collection(compiled: CompiledNetwork) -> dict[str, object]:
     """Build the production-backed review-map layer package.
 
     This projection is deliberately separate from the legacy ``network``
@@ -1775,9 +1842,7 @@ def _reviewable_map_collection(compiled: CompiledNetwork) -> dict[str, object]:
             ),
             None,
         )
-        admission_by_id = {
-            str(item.candidate_id): item for item in candidate_set.admissions
-        }
+        admission_by_id = {str(item.candidate_id): item for item in candidate_set.admissions}
         for candidate in candidate_set.candidates:
             if str(candidate.candidate_id) in selected_ids or candidate.candidate_id == selected_id:
                 continue
@@ -1911,9 +1976,7 @@ def _reviewable_map_collection(compiled: CompiledNetwork) -> dict[str, object]:
                 "type": "Feature",
                 "id": f"{kind}:{record.get('asset_id')}",
                 "properties": {
-                    key: _json_value(value)
-                    for key, value in record.items()
-                    if key != "geometry"
+                    key: _json_value(value) for key, value in record.items() if key != "geometry"
                 }
                 | {
                     "feature_type": kind,
@@ -1944,10 +2007,14 @@ def _reviewable_map_collection(compiled: CompiledNetwork) -> dict[str, object]:
                 }
             elif props.get("easting") is not None and props.get("northing") is not None:
                 coordinates = [float(props["easting"]), float(props["northing"])]
-                metric = gpd.GeoSeries(
-                    [shape({"type": "Point", "coordinates": coordinates})],
-                    crs=props.get("declared_crs") or "EPSG:27700",
-                ).to_crs(4326).iloc[0]
+                metric = (
+                    gpd.GeoSeries(
+                        [shape({"type": "Point", "coordinates": coordinates})],
+                        crs=props.get("declared_crs") or "EPSG:27700",
+                    )
+                    .to_crs(4326)
+                    .iloc[0]
+                )
                 point = mapping(metric)
             geometry = point or _reviewable_geometry_wgs84(candidate)
             if geometry is None:
@@ -1977,6 +2044,53 @@ def _reviewable_map_collection(compiled: CompiledNetwork) -> dict[str, object]:
         "disclaimer": DISCLAIMER,
         "reviewable_result_fingerprint": reviewable.result_fingerprint,
         "asset_accounting_contract": compiled.asset_accounting.get("contract"),
+        "features": features,
+    }
+
+
+def _reviewable_map_collection(compiled: CompiledNetwork) -> dict[str, object]:
+    """Project the effective strategic authority when available."""
+
+    result = getattr(compiled, "strategic_network_planning", None)
+    legacy = _legacy_reviewable_map_collection(compiled)
+    if result is None:
+        return legacy
+    projection = project_strategic_network(result, optional_layers=True)
+    features = [
+        feature
+        for layer_name in (
+            StrategicPublicationLayer.STRATEGIC_NETWORK.value,
+            StrategicPublicationLayer.CANDIDATES.value,
+            StrategicPublicationLayer.DIVERGENCE.value,
+            StrategicPublicationLayer.DIAGNOSTICS.value,
+        )
+        for feature in projection.layers[layer_name]["features"]
+        if feature.get("properties", {}).get("feature_type") != "reviewable-gap-endpoint"
+    ]
+    # Asset accounting and DfT observations are contextual evidence, not route
+    # authority. Reuse the established WGS84 projections for those layers.
+    features.extend(
+        feature
+        for feature in legacy["features"]
+        if feature.get("properties", {}).get("feature_type")
+        in {
+            "asset-existing-provision",
+            "asset-upgrade-required",
+            "dft-motor-traffic",
+            "reviewable-gap-endpoint",
+        }
+    )
+    features.sort(key=lambda feature: str(feature.get("id")))
+    return {
+        "type": "FeatureCollection",
+        "name": "SATN effective strategic network map",
+        "contract": "satn-reviewable-map/v1",
+        "disclaimer": DISCLAIMER,
+        "strategic_result_fingerprint": result.fingerprint,
+        "projection_fingerprint": projection.projection_fingerprint,
+        "default_layers": list(projection.default_layers),
+        "optional_layers": list(projection.optional_layers),
+        "legend": projection.legend,
         "features": features,
     }
 
@@ -2093,18 +2207,10 @@ def _validate_reviewable_network_artifact(path: Path) -> dict[str, object]:
             item["candidate_id"] for item in semantic["effective_selections"]
         ],
         "network_gap_ids": [item["gap_id"] for item in semantic["network_gaps"]],
-        "evidence_request_ids": [
-            item["request_id"] for item in semantic["evidence_requests"]
-        ],
-        "officer_decision_ids": [
-            item["decision_id"] for item in semantic["officer_decisions"]
-        ],
-        "divergence_ids": [
-            item["candidate_set_id"] for item in semantic["divergences"]
-        ],
-        "target_unavailable_ids": [
-            item["decision_id"] for item in semantic["target_unavailable"]
-        ],
+        "evidence_request_ids": [item["request_id"] for item in semantic["evidence_requests"]],
+        "officer_decision_ids": [item["decision_id"] for item in semantic["officer_decisions"]],
+        "divergence_ids": [item["candidate_set_id"] for item in semantic["divergences"]],
+        "target_unavailable_ids": [item["decision_id"] for item in semantic["target_unavailable"]],
         "failure_code": semantic["failure_code"],
         "result_fingerprint": result_fingerprint,
     }
@@ -2120,6 +2226,7 @@ def _write_json_records(
     run_id: str,
     reference_publication: _ValidatedReferencePublication | None = None,
     strategic_reference_publication: _ValidatedStrategicReferencePublication | None = None,
+    compilation_metadata: dict[str, object] | None = None,
 ) -> None:
     if compiled.reference_satn_publication is not None and reference_publication is None:
         raise ValueError(
@@ -2221,6 +2328,8 @@ def _write_json_records(
         "atm_geometry_included": compiled.atm_reference is not None,
         "disclaimer": DISCLAIMER,
     }
+    if compilation_metadata is not None:
+        run["compilation_metadata"] = dict(compilation_metadata)
     if reference_publication is not None:
         run["reference_satn"] = reference_publication.payload()
     if strategic_reference_publication is not None:
@@ -2234,10 +2343,16 @@ def _write_json_records(
                 "target_id": item["target_id"],
                 "route_id": item["route_id"],
             }
-            for item in compiled.reviewable_network.semantic_payload[
-                "officer_decision_input"
-            ]
+            for item in compiled.reviewable_network.semantic_payload["officer_decision_input"]
         ]
+    if compiled.strategic_network_planning is not None:
+        run["strategic_result_fingerprint"] = compiled.strategic_network_planning.fingerprint
+        run["effective_strategic_network"] = {
+            "status": compiled.strategic_network_planning.status,
+            "selection_count": len(compiled.strategic_network_planning.selections),
+            "gap_count": len(compiled.strategic_network_planning.gaps),
+            "divergence_count": len(compiled.strategic_network_planning.divergences),
+        }
     (output / "run.json").write_text(json.dumps(run, indent=2), encoding="utf-8")
     records = {
         "schema_version": SCHEMA_VERSION,
@@ -3501,6 +3616,7 @@ def _write_review_map(
     compiled: CompiledNetwork,
     reference_publication: _ValidatedReferencePublication | None = None,
     strategic_reference_publication: _ValidatedStrategicReferencePublication | None = None,
+    compilation_metadata: dict[str, object] | None = None,
 ) -> None:
     if compiled.reference_satn_publication is not None and reference_publication is None:
         raise ValueError("Reference map serialization requires compiler-bound publication evidence")
@@ -3610,6 +3726,17 @@ def _write_review_map(
         "disclaimer": DISCLAIMER,
         "layer_counts": _layer_counts(compiled),
     }
+    if compilation_metadata is not None:
+        data["compilation_metadata"] = dict(compilation_metadata)
+    if compiled.strategic_network_planning is not None:
+        data["strategic_result_fingerprint"] = compiled.strategic_network_planning.fingerprint
+        data["strategic_network"] = {
+            "status": compiled.strategic_network_planning.status,
+            "projection_fingerprint": reviewable_map["projection_fingerprint"],
+            "default_layers": reviewable_map["default_layers"],
+            "optional_layers": reviewable_map["optional_layers"],
+            "legend": reviewable_map["legend"],
+        }
     if reference_record is not None and reference_options is not None:
         data["reference_satn"] = reference_publication.payload()
         data["reference_satn_options"] = reference_options
@@ -3666,6 +3793,36 @@ def _write_review_map(
         review.parent / "backbone-comparison.json",
         review / "backbone-comparison.json",
     )
+    if compiled.strategic_network_planning is not None:
+        strategic = compiled.strategic_network_planning
+        (review / "strategic-network.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": SCHEMA_VERSION,
+                    "contract": "satn-effective-strategic-network/v1",
+                    "status": strategic.status,
+                    "strategic_result_fingerprint": strategic.fingerprint,
+                    "projection_fingerprint": reviewable_map["projection_fingerprint"],
+                    "default_layers": reviewable_map["default_layers"],
+                    "optional_layers": reviewable_map["optional_layers"],
+                    "legend": reviewable_map["legend"],
+                    "gaps": [
+                        {
+                            "obligation_id": gap.obligation_id,
+                            "network_role": gap.network_role,
+                            "endpoints": list(gap.endpoints),
+                            "reason": gap.reason,
+                            "candidate_set_id": gap.candidate_set_id,
+                        }
+                        for gap in strategic.gaps
+                    ],
+                    "feature_collection": reviewable_map,
+                    "disclaimer": DISCLAIMER,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
     (review / "README.txt").write_text(
         f"{DISCLAIMER}\n{OSM_ATTRIBUTION}\n{NCN_ATTRIBUTION}\n", encoding="utf-8"
     )
@@ -3696,6 +3853,13 @@ def _write_pdf(path: Path, config: AreaConfig, compiled: CompiledNetwork) -> Non
         f"Experimental backbone review | {compiled.connection_count} connections | "
         f"Compiled {datetime.now(UTC).date().isoformat()}",
     )
+    if compiled.strategic_network_planning is not None:
+        canvas.setFont("Helvetica", 5)
+        canvas.drawString(
+            42,
+            height - 61,
+            f"Strategic result fingerprint: {compiled.strategic_network_planning.fingerprint}",
+        )
     _draw_legend(canvas, width, height, compiled.atm_reference is not None)
     if not compiled.boundary.empty:
         boundary = compiled.boundary.to_crs(3857)
@@ -4573,9 +4737,7 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
         manifest = run.get("reviewable_network")
         if not isinstance(manifest, dict) or manifest != artifact.get("metadata"):
             raise ValueError("run manifest reviewable-network identity mismatch")
-        if run.get("officer_decision_input") != artifact["semantic"].get(
-            "officer_decision_input"
-        ):
+        if run.get("officer_decision_input") != artifact["semantic"].get("officer_decision_input"):
             raise ValueError("run manifest officer input differs from reviewable network")
     elif reviewable_path.exists():
         raise ValueError("legacy publication unexpectedly contains reviewable-network artifact")
@@ -4583,9 +4745,10 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
     reviewable_map = json.loads(
         (output / "review-map" / "reviewable-network.geojson").read_text(encoding="utf-8")
     )
-    if reviewable_map.get("disclaimer") != DISCLAIMER or reviewable_map.get(
-        "contract"
-    ) != "satn-reviewable-map/v1":
+    if (
+        reviewable_map.get("disclaimer") != DISCLAIMER
+        or reviewable_map.get("contract") != "satn-reviewable-map/v1"
+    ):
         raise ValueError("review map reviewable-network GeoJSON contract mismatch")
     reviewable_features = reviewable_map.get("features")
     if not isinstance(reviewable_features, list):
@@ -4604,9 +4767,10 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
         reviewable_ids.add(feature_id)
         feature_type = properties.get("feature_type")
         if geometry is None:
-            if feature_type != "reviewable-gap-endpoint" or properties.get(
-                "missing_endpoint_geometry"
-            ) is not True:
+            if (
+                feature_type != "reviewable-gap-endpoint"
+                or properties.get("missing_endpoint_geometry") is not True
+            ):
                 raise ValueError("review map reviewable-network feature lacks geometry")
             continue
         if not isinstance(geometry, dict):
@@ -4626,9 +4790,7 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
         if coordinates is None:
             raise ValueError("reviewable network feature has no coordinates")
         coordinate_values = _reviewable_coordinate_values(coordinates)
-        if not coordinate_values or any(
-            not math.isfinite(value) for value in coordinate_values
-        ):
+        if not coordinate_values or any(not math.isfinite(value) for value in coordinate_values):
             raise ValueError("reviewable network feature coordinates are invalid")
         if any(abs(value) > 180 for value in coordinate_values[0::2]) or any(
             abs(value) > 90 for value in coordinate_values[1::2]
@@ -4652,45 +4814,48 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
         }
         if actual_gap_ids != expected_gap_ids:
             raise ValueError("reviewable-network gap endpoint roster is incomplete")
-        expected_spines = {
-            f"reviewable-strategic-spine:{feature['id']}": feature
-            for feature in geojson.get("features", [])
-            if feature.get("properties", {}).get("feature_type") == "strategic-spine"
-        }
         actual_spines = {
             str(feature["id"]): feature
             for feature in reviewable_features
-            if feature["properties"].get("selection_disposition")
-            == "selected-strategic-spine"
+            if feature["properties"].get("selection_disposition") == "selected-strategic-spine"
         }
         prefixed_spine_ids = {
             str(feature["id"])
             for feature in reviewable_features
             if str(feature["id"]).startswith("reviewable-strategic-spine:")
         }
-        if set(actual_spines) != set(expected_spines) or prefixed_spine_ids != set(
-            expected_spines
-        ):
-            raise ValueError("reviewable-network strategic spine roster is incomplete")
-        accounting_records = tuple(
-            item for item in accounting.get("records", []) if isinstance(item, dict)
-        )
-        for feature_id, expected_feature in expected_spines.items():
-            actual_feature = actual_spines[feature_id]
-            expected_properties = expected_feature["properties"]
-            actual_properties = actual_feature["properties"]
-            if not isinstance(expected_properties, dict):
-                raise ValueError("strategic spine source feature properties are malformed")
-            expected_projection = _reviewable_strategic_spine_projection_properties(
-                expected_properties,
-                accounting_records,
-            )
-            if (
-                expected_projection is None
-                or actual_feature.get("geometry") != expected_feature.get("geometry")
-                or actual_properties != expected_projection
+        if reviewable_map.get("strategic_result_fingerprint") is not None:
+            if actual_spines or prefixed_spine_ids:
+                raise ValueError("effective strategic network contains legacy strategic spines")
+        else:
+            expected_spines = {
+                f"reviewable-strategic-spine:{feature['id']}": feature
+                for feature in geojson.get("features", [])
+                if feature.get("properties", {}).get("feature_type") == "strategic-spine"
+            }
+            if set(actual_spines) != set(expected_spines) or prefixed_spine_ids != set(
+                expected_spines
             ):
-                raise ValueError("reviewable-network strategic spine projection differs")
+                raise ValueError("reviewable-network strategic spine roster is incomplete")
+            accounting_records = tuple(
+                item for item in accounting.get("records", []) if isinstance(item, dict)
+            )
+            for feature_id, expected_feature in expected_spines.items():
+                actual_feature = actual_spines[feature_id]
+                expected_properties = expected_feature["properties"]
+                actual_properties = actual_feature["properties"]
+                if not isinstance(expected_properties, dict):
+                    raise ValueError("strategic spine source feature properties are malformed")
+                expected_projection = _reviewable_strategic_spine_projection_properties(
+                    expected_properties,
+                    accounting_records,
+                )
+                if (
+                    expected_projection is None
+                    or actual_feature.get("geometry") != expected_feature.get("geometry")
+                    or actual_properties != expected_projection
+                ):
+                    raise ValueError("reviewable-network strategic spine projection differs")
     elif reviewable_map_path.exists():
         raise ValueError("legacy publication unexpectedly contains reviewable-network GeoJSON")
     accounting_manifest = run.get("asset_accounting", {})
@@ -5116,9 +5281,7 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
                             f"Population Display Section {section_id} has invalid captured OA IDs"
                         ) from error
                 if not _artifact_values_equal(feature["properties"].get(field), published_value):
-                    raise ValueError(
-                        f"Population Display Section {section_id} differs for {field}"
-                    )
+                    raise ValueError(f"Population Display Section {section_id} differs for {field}")
     for filename in (
         "agent-records.json",
         "divergence-records.json",
@@ -5201,9 +5364,7 @@ def _validate_review_map_zip(archive_path: Path, review_directory: Path) -> None
                 ):
                     raise ValueError("review-map ZIP contains an unsafe member")
                 if info.file_size != expected_path.stat().st_size:
-                    raise ValueError(
-                        "review-map ZIP member size differs from static map"
-                    )
+                    raise ValueError("review-map ZIP member size differs from static map")
                 if info.file_size and (
                     info.compress_size == 0
                     or info.file_size / info.compress_size > REVIEW_MAP_ZIP_MAX_COMPRESSION_RATIO

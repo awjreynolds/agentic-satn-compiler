@@ -10,6 +10,7 @@ import re
 import time
 from collections import Counter
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 import geopandas as gpd
@@ -79,6 +80,17 @@ from satn.strategic_reference_replay import validate_fresh_replay
 
 LOGGER = logging.getLogger(__name__)
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _compilation_metadata(started: float) -> dict[str, object]:
+    """Return wall-clock completion and monotonic compiler elapsed time."""
+
+    return {
+        "completed_at_utc": datetime.now(UTC)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z"),
+        "duration_seconds": max(0.0, time.perf_counter() - started),
+    }
 
 
 def _validate_evidence_binding(
@@ -415,6 +427,7 @@ def compile_strategic_reference(
         if isinstance(config, (AreaDefinition, CouncilConfig))
         else AreaDefinition.from_yaml(config)
     )
+    started = time.perf_counter()
     with StageHeartbeat(
         LOGGER,
         "strategic-reference-publication",
@@ -459,11 +472,13 @@ def compile_strategic_reference(
         )
         run_id = "strategic-reference-" + hashlib.sha256(run_fingerprint.encode()).hexdigest()[:12]
         heartbeat.set_stage("strategic-reference-publication")
+        compilation_metadata = _compilation_metadata(started)
         artifacts = publish(
             council,
             compiled,
             run_id,
             publication_authority=publication_authority,
+            compilation_metadata=compilation_metadata,
         )
     return CompilationResult(
         run_id=run_id,
@@ -480,6 +495,7 @@ def compile_strategic_reference(
             "compilation_input_fingerprint": compiled.compilation_input_fingerprint,
             "strategic_reference": record.publication_payload(),
             "compilation_diagnostics": compiled.compilation_diagnostics,
+            "compilation_metadata": compilation_metadata,
         },
     )
 
@@ -505,6 +521,7 @@ def compile_reference(
         if isinstance(config, (AreaDefinition, CouncilConfig))
         else AreaDefinition.from_yaml(config)
     )
+    started = time.perf_counter()
     with StageHeartbeat(
         LOGGER,
         "reference-publication",
@@ -540,11 +557,13 @@ def compile_reference(
         )
         run_id = f"reference-{hashlib.sha256(run_fingerprint.encode()).hexdigest()[:12]}"
         heartbeat.set_stage("reference-publication")
+        compilation_metadata = _compilation_metadata(started)
         artifacts = publish(
             council,
             compiled,
             run_id,
             publication_authority=publication_authority,
+            compilation_metadata=compilation_metadata,
         )
     return CompilationResult(
         run_id=run_id,
@@ -561,6 +580,7 @@ def compile_reference(
             "compilation_input_fingerprint": compiled.compilation_input_fingerprint,
             "reference_satn": record.revalidated().publication_payload(),
             "compilation_diagnostics": compiled.compilation_diagnostics,
+            "compilation_metadata": compilation_metadata,
         },
     )
 
@@ -982,6 +1002,7 @@ def _compile(
         sort_keys=True,
     )
     run_id = f"run-{hashlib.sha256(run_fingerprint.encode()).hexdigest()[:12]}"
+    compilation_metadata = _compilation_metadata(started)
     if heartbeat is not None:
         heartbeat.set_stage("publication")
     artifacts = (
@@ -992,6 +1013,7 @@ def _compile(
             compiled,
             run_id,
             publication_authority=publication_authority,
+            compilation_metadata=compilation_metadata,
         )
     )
     if not recovery_candidate:
@@ -1024,6 +1046,7 @@ def _compile(
         metadata={
             "network_model": "backbone-outward",
             "compilation_input_fingerprint": input_fingerprint,
+            "compilation_metadata": compilation_metadata,
             "dft_traffic_evidence_state_fingerprint": evidence_state_fingerprint,
             "dft_traffic_match_policy_fingerprint": (
                 compiled.traffic_match_policy_fingerprint
