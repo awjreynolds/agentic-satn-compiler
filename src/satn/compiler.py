@@ -546,12 +546,12 @@ def _compile_network(
     road_graph = RoadGraph(routable_network)
     routing_resolver = AgentDecisionResolver(
         decision_resolver.ledger if decision_resolver is not None else None,
-        routing_input_fingerprint or governed_input_fingerprint,
+        governed_input_fingerprint,
     )
     gate = CompilationGate(
         runtime,
         config.compilation.agent,
-        routing_input_fingerprint or governed_input_fingerprint,
+        governed_input_fingerprint,
         routing_resolver,
     )
     downstream_resolver = decision_resolver or AgentDecisionResolver(
