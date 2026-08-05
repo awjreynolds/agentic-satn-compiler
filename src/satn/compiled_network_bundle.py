@@ -329,6 +329,11 @@ def _unwire_value(value: object) -> object:
 def _canonical_crs(crs: object) -> dict[str, object]:
     parsed = CRS.from_user_input(crs)
     authority = parsed.to_authority()
+    if authority is not None:
+        # Authority-backed representations (for example EPSG:4326's datum
+        # ensemble and its WKT1 legacy datum spelling) are one CRS identity.
+        # Rehydrate through the authority so their PROJJSON is canonical.
+        parsed = CRS.from_authority(authority[0], authority[1])
     return {
         "authority": (
             {"name": authority[0], "code": authority[1]} if authority is not None else None

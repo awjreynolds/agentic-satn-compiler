@@ -13,6 +13,7 @@ import pandas as pd
 import pytest
 from geopandas.testing import assert_geodataframe_equal
 from pydantic import BaseModel
+from pyproj import CRS
 from shapely.geometry import LineString, Point
 from test_backbone_assembly import config, parallel_spine_source
 from test_strategic_network_planning import discovery, fixture_graph, request
@@ -78,6 +79,25 @@ def test_geodataframe_wire_round_trip_is_canonical_and_exact() -> None:
     decoded = decode_geodataframe(encoded)
     expected = frame.sort_values("feature_id").reset_index(drop=True)
     assert_geodataframe_equal(decoded, expected, check_dtype=True, check_crs=True)
+
+
+def test_equivalent_authority_crs_representations_share_one_canonical_payload() -> None:
+    ensemble = CRS.from_epsg(4326)
+    legacy = CRS.from_wkt(ensemble.to_wkt(version="WKT1_GDAL"))
+    assert ensemble.to_authority() == legacy.to_authority() == ("EPSG", "4326")
+    frame = gpd.GeoDataFrame(
+        {"feature_id": ["route"], "geometry": [LineString([(-2, 51), (-1, 52)])]},
+        geometry="geometry",
+        crs=ensemble,
+    )
+    legacy_frame = frame.to_crs(legacy)
+
+    encoded = encode_geodataframe(frame)
+    legacy_encoded = encode_geodataframe(legacy_frame)
+
+    assert encoded == legacy_encoded
+    decoded = decode_geodataframe(legacy_encoded)
+    assert decoded.crs == CRS.from_epsg(4326)
 
 
 def test_geodataframe_decode_fails_closed_for_tampering() -> None:
