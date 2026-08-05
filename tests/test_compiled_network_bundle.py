@@ -15,8 +15,10 @@ from geopandas.testing import assert_geodataframe_equal
 from pydantic import BaseModel
 from shapely.geometry import LineString, Point
 from test_backbone_assembly import config, parallel_spine_source
+from test_strategic_network_planning import discovery, fixture_graph, request
 
 from satn.agents import FakeAgentRuntime
+from satn.candidate_discovery import CorridorObligation
 from satn.compiled_network_bundle import (
     BundleCodecError,
     decode_compiled_network_bundle,
@@ -25,6 +27,12 @@ from satn.compiled_network_bundle import (
     encode_geodataframe,
 )
 from satn.compiler import CompiledNetwork, compile_network
+from satn.spine_access_candidate_preparation import SpineAccessCandidatePreparationResult
+from satn.strategic_corridors import NetworkSelectionPreparationResult
+from satn.strategic_network_planning import (
+    StrategicNetworkPlanningResult,
+    compile_strategic_network,
+)
 
 SHA_A = "a" * 64
 SHA_B = "b" * 64
@@ -257,6 +265,51 @@ def test_bundle_round_trips_mappingproxy_fields_and_nested_mappings() -> None:
     assert decoded == fixture
     assert isinstance(decoded.values, MappingProxyType)
     assert isinstance(decoded.values["nested"], MappingProxyType)
+
+
+def test_bundle_round_trips_network_selection_preparation_result() -> None:
+    spine = SpineAccessCandidatePreparationResult(
+        contract="satn-spine-access-candidate-preparation/v1",
+        profile_fingerprint=SHA_A,
+        status="prepared",
+        prepared_spine_access_connections=(),
+        connection_roster=(),
+        generation_issues=(),
+        missing_inputs=(),
+        evidence_fingerprints=(),
+        evidence_lineage={},
+        preparation_fingerprint=SHA_B,
+        diagnostics={},
+    )
+    fixture = NetworkSelectionPreparationResult(spine, None)
+    encoded = encode_compiled_network_bundle(
+        fixture,
+        area_identity=SHA_A,
+        input_identity=SHA_B,
+        dependency_identity=SHA_C,
+        upstream_artifact_ids=(),
+    )
+
+    assert decode_compiled_network_bundle(encoded, NetworkSelectionPreparationResult) == fixture
+
+
+def test_bundle_round_trips_strategic_planning_candidate_sets() -> None:
+    graph = fixture_graph()
+    fixture = compile_strategic_network(
+        request(graph, discovery(graph, CorridorObligation("corridor-a-d", "A", "D")))
+    )
+    encoded = encode_compiled_network_bundle(
+        fixture,
+        area_identity=SHA_A,
+        input_identity=SHA_B,
+        dependency_identity=SHA_C,
+        upstream_artifact_ids=(),
+    )
+
+    decoded = decode_compiled_network_bundle(encoded, StrategicNetworkPlanningResult)
+
+    assert decoded == fixture
+    assert type(decoded.candidate_sets[0]) is type(fixture.candidate_sets[0])
 
 
 @pytest.mark.parametrize("wrong_encoding", ["typed-string", "geodataframe"])

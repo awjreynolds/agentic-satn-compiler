@@ -51,6 +51,7 @@ from satn.section_population import (
     compile_section_population_capture,
     derive_material_population_differences,
 )
+from satn.spine_access_candidate_preparation import SpineAccessCandidatePreparationResult
 
 STRATEGIC_CORRIDOR_PREPARATION_CONTRACT = "satn-strategic-corridor-preparation/v1"
 STRATEGIC_DESTINATION_GRAPH_BINDING_CONTRACT = (
@@ -364,7 +365,7 @@ class NetworkSelectionPreparationResult:
     that existing identifier belongs only to Spine Access preparation.
     """
 
-    spine_access_preparation: object | None
+    spine_access_preparation: SpineAccessCandidatePreparationResult | None
     strategic_corridor_preparation: StrategicCorridorPreparationResult | None
 
     @property
