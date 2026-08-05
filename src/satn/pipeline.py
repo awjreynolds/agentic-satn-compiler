@@ -1112,16 +1112,20 @@ def _routing_source_identities(
 
 
 def _edge_enrichment_implementation_fingerprint() -> str:
-    """Bind replay to the edge wire codec and compiler implementation."""
+    """Bind replay to both wire codecs and compiler implementation."""
 
     codec_path = Path(routable_edge_enrichment_codec.__file__ or "")
-    if not codec_path.is_file():
-        raise ValueError("routable edge-enrichment codec source is unavailable")
+    compiled_codec_path = Path(compiled_network_bundle_codec.__file__ or "")
+    if not codec_path.is_file() or not compiled_codec_path.is_file():
+        raise ValueError("edge-enrichment codec source is unavailable")
     return hashlib.sha256(
         json.dumps(
             {
                 "compiler": _compiler_digest(),
                 "codec": hashlib.sha256(codec_path.read_bytes()).hexdigest(),
+                "compiled_codec": hashlib.sha256(
+                    compiled_codec_path.read_bytes()
+                ).hexdigest(),
             },
             sort_keys=True,
             separators=(",", ":"),

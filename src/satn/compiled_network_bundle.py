@@ -330,16 +330,50 @@ def _canonical_crs(crs: object) -> dict[str, object]:
     parsed = CRS.from_user_input(crs)
     authority = parsed.to_authority()
     if authority is not None:
-        # Authority-backed representations (for example EPSG:4326's datum
-        # ensemble and its WKT1 legacy datum spelling) are one CRS identity.
-        # Rehydrate through the authority so their PROJJSON is canonical.
-        parsed = CRS.from_authority(authority[0], authority[1])
+        # Authority-backed representations are one CRS identity.  Keep the
+        # mutable PROJJSON definition out of the wire contract entirely.
+        return {
+            "authority": {"name": authority[0], "code": authority[1]},
+            "projjson": None,
+        }
+    projjson = parsed.to_json_dict()
+    # A local CRS identity is not resolvable by authority and therefore must
+    # not be treated as a decoder instruction.  Preserve every nested
+    # definition detail while dropping only the root identifier.
+    projjson.pop("id", None)
     return {
-        "authority": (
-            {"name": authority[0], "code": authority[1]} if authority is not None else None
-        ),
-        "projjson": parsed.to_json_dict(),
+        "authority": None,
+        "projjson": projjson,
     }
+
+
+def _decode_canonical_crs(value: object, label: str) -> CRS:
+    declared = _require_keys(value, {"authority", "projjson"}, label)
+    authority = declared["authority"]
+    if authority is None:
+        projjson = declared["projjson"]
+        if not isinstance(projjson, dict) or "id" in projjson:
+            raise BundleCodecError(f"{label} authority-free CRS must have id-free projjson")
+        try:
+            parsed = CRS.from_json_dict(projjson)
+        except Exception as exc:
+            raise BundleCodecError(f"invalid {label} PROJJSON") from exc
+        if parsed.to_authority() is not None or _canonical_crs(parsed) != declared:
+            raise BundleCodecError(f"{label} authority-free CRS is not canonical")
+        return parsed
+
+    authority_wire = _require_keys(authority, {"name", "code"}, f"{label} authority")
+    if not all(isinstance(authority_wire[key], str) for key in ("name", "code")):
+        raise BundleCodecError(f"{label} authority name and code must be strings")
+    if declared["projjson"] is not None:
+        raise BundleCodecError(f"{label} authority-backed CRS requires null projjson")
+    try:
+        parsed = CRS.from_authority(authority_wire["name"], authority_wire["code"])
+    except Exception as exc:
+        raise BundleCodecError(f"invalid {label} authority") from exc
+    if _canonical_crs(parsed) != declared:
+        raise BundleCodecError(f"{label} authority-backed CRS is not canonical")
+    return parsed
 
 
 def _bundle_crs_rule(bundle_crs: object | None) -> dict[str, object]:
@@ -362,13 +396,7 @@ def _validate_crs_rule(value: object) -> dict[str, object]:
         if rule["reference_crs"] is not None:
             raise BundleCodecError("rejecting frame CRS rule cannot have a reference CRS")
     elif rule["empty_missing_crs"] == "preserve-none":
-        reference = _require_keys(rule["reference_crs"], {"authority", "projjson"}, "reference CRS")
-        try:
-            parsed = CRS.from_json_dict(reference["projjson"])
-        except Exception as exc:
-            raise BundleCodecError("invalid reference CRS PROJJSON") from exc
-        if _canonical_crs(parsed) != reference:
-            raise BundleCodecError("reference CRS is not canonical")
+        _decode_canonical_crs(rule["reference_crs"], "reference CRS")
     else:
         raise BundleCodecError("unknown empty missing CRS rule")
     return rule
@@ -547,13 +575,7 @@ def decode_geodataframe(
             raise BundleCodecError("missing CRS metadata violates the empty-frame bundle rule")
         crs = None
     else:
-        declared_crs = _require_keys(crs_wire, {"authority", "projjson"}, "CRS metadata")
-        try:
-            crs = CRS.from_json_dict(declared_crs["projjson"])
-        except Exception as exc:
-            raise BundleCodecError("invalid CRS PROJJSON") from exc
-        if _canonical_crs(crs) != declared_crs:
-            raise BundleCodecError("CRS metadata is not canonical")
+        crs = _decode_canonical_crs(crs_wire, "CRS metadata")
 
     values: dict[str, list[object]] = {name: [] for name in names}
     for row_wire in rows:

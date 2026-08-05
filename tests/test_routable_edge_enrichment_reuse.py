@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import shutil
+from pathlib import Path
 
 import geopandas as gpd
 import numpy as np
@@ -50,6 +51,16 @@ def _identities() -> dict[str, str]:
         "implementation_identity": "e" * 64,
         "dependency_identity": "f" * 64,
     }
+
+
+def test_edge_enrichment_fingerprint_binds_compiled_network_codec(tmp_path, monkeypatch) -> None:
+    original = pipeline_module._edge_enrichment_implementation_fingerprint()
+    codec_path = Path(pipeline_module.compiled_network_bundle_codec.__file__ or "")
+    altered = tmp_path / "compiled_network_bundle.py"
+    altered.write_bytes(codec_path.read_bytes() + b"\n# codec probe\n")
+    monkeypatch.setattr(pipeline_module.compiled_network_bundle_codec, "__file__", str(altered))
+
+    assert pipeline_module._edge_enrichment_implementation_fingerprint() != original
 
 
 def test_marked_network_wire_is_canonical_and_row_order_independent() -> None:

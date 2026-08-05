@@ -55,6 +55,13 @@ def _frame() -> gpd.GeoDataFrame:
     )
 
 
+def _rehash_frame_payload(payload: dict[str, object]) -> None:
+    body = {key: value for key, value in payload.items() if key != "content_sha256"}
+    payload["content_sha256"] = hashlib.sha256(
+        json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+    ).hexdigest()
+
+
 def test_geodataframe_wire_round_trip_is_canonical_and_exact() -> None:
     frame = _frame()
 
@@ -96,8 +103,50 @@ def test_equivalent_authority_crs_representations_share_one_canonical_payload() 
     legacy_encoded = encode_geodataframe(legacy_frame)
 
     assert encoded == legacy_encoded
+    assert encoded["crs"] == {
+        "authority": {"name": "EPSG", "code": "4326"},
+        "projjson": None,
+    }
     decoded = decode_geodataframe(legacy_encoded)
     assert decoded.crs == CRS.from_epsg(4326)
+
+
+def test_crs_metadata_rejects_forged_authority_and_custom_definitions() -> None:
+    authority_payload = encode_geodataframe(_frame().set_crs("EPSG:4326", allow_override=True))
+    authority_forgery = deepcopy(authority_payload)
+    authority_forgery["crs"]["projjson"] = {}
+    _rehash_frame_payload(authority_forgery)
+    with pytest.raises(BundleCodecError, match=r"authority-backed CRS.*projjson"):
+        decode_geodataframe(authority_forgery)
+
+    custom_crs = CRS.from_user_input("+proj=longlat +a=6378137 +rf=298.257223563 +no_defs")
+    custom_frame = _frame().set_crs(custom_crs, allow_override=True)
+    custom_payload = encode_geodataframe(custom_frame)
+    assert custom_payload["crs"]["authority"] is None
+    assert isinstance(custom_payload["crs"]["projjson"], dict)
+    custom_forgery = deepcopy(custom_payload)
+    custom_forgery["crs"]["projjson"]["id"] = {"authority": "EPSG", "code": 4326}
+    _rehash_frame_payload(custom_forgery)
+    with pytest.raises(BundleCodecError, match="authority-free CRS"):
+        decode_geodataframe(custom_forgery)
+
+
+def test_custom_projected_crs_with_local_root_id_round_trips() -> None:
+    base = CRS.from_user_input(
+        "+proj=tmerc +lat_0=51 +lon_0=-2 +k=0.9996 +x_0=400000 "
+        "+y_0=-100000 +ellps=GRS80 +units=m +no_defs"
+    )
+    definition = base.to_json_dict()
+    definition["id"] = {"authority": "LOCAL", "code": "BANES-GRID"}
+    local_crs = CRS.from_json_dict(definition)
+    assert local_crs.to_authority() is None
+
+    frame = _frame().set_crs(local_crs, allow_override=True)
+    encoded = encode_geodataframe(frame)
+
+    assert encoded["crs"]["authority"] is None
+    assert "id" not in encoded["crs"]["projjson"]
+    assert decode_geodataframe(encoded).crs.to_authority() is None
 
 
 def test_geodataframe_decode_fails_closed_for_tampering() -> None:
