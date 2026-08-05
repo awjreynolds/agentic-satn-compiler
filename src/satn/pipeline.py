@@ -13,8 +13,10 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import geopandas as gpd
+import numpy as np
 
 import satn.compilation_dependencies as compilation_dependencies
 import satn.compiled_network_bundle as compiled_network_bundle_codec
@@ -33,6 +35,8 @@ from satn.compiler import (
     CompiledNetwork,
     _compile_network_with_reference,
     _compile_network_with_strategic_reference,
+    _routing_assembly_capture,
+    _routing_assembly_replay,
     compile_network,
     governed_input_binding,
 )
@@ -84,6 +88,11 @@ from satn.reviewable_network import (
     canonical_officer_decisions,
     terminal_reviewable_network_for_governed_evidence,
 )
+from satn.routing_assembly_bundle import (
+    RoutingAssemblyBundle,
+    decode_routing_assembly_bundle,
+    encode_routing_assembly_bundle,
+)
 from satn.runtime_governance import incomplete_runtime_governance
 from satn.sources import load_snapshot
 from satn.spine_access_candidate_preparation import SpineAccessCandidatePreparationResult
@@ -106,6 +115,16 @@ _INCREMENTAL_STAGE_NAMES = frozenset(
         "scenario-selection",
         "presentation",
         "publication",
+    }
+)
+_ROUTING_BYPASS_STAGES = frozenset(
+    {
+        "source-export",
+        "evidence-refresh",
+        "area-extraction",
+        "canonical-network",
+        "edge-enrichments",
+        "routing-assembly",
     }
 )
 
@@ -879,6 +898,360 @@ def _compiled_network_bundle_bytes(payload: dict[str, object]) -> bytes:
     )
 
 
+def _routing_frame_payload(
+    name: str,
+    frame: gpd.GeoDataFrame,
+) -> dict[str, object]:
+    """Return the canonical, input-order-independent source-frame wire."""
+
+    candidates = {
+        "boundary": (("boundary_id",),),
+        "places": (("place_id",),),
+        "network": (
+            ("source_id", "u", "v", "key"),
+            ("source_id", "u", "v"),
+            ("source_id",),
+        ),
+        "context": (("evidence_id",),),
+        "official_road_classification": (("official_feature_id",),),
+        "elevation_evidence": (("evidence_id",),),
+    }.get(name, ())
+    stable_keys = None
+    for keys in candidates:
+        if all(key in frame.columns for key in keys):
+            values = frame.loc[:, list(keys)]
+            if not values.isna().any(axis=None) and not values.duplicated().any():
+                stable_keys = keys
+                break
+    identity_frame = frame.copy(deep=True)
+    for column in identity_frame.columns:
+        if str(identity_frame[column].dtype) != "geometry":
+            identity_frame[column] = identity_frame[column].map(
+                _normalise_routing_identity_value
+            )
+    return compiled_network_bundle_codec.encode_geodataframe(
+        identity_frame,
+        stable_key_columns=stable_keys,
+    )
+
+
+def _normalise_routing_identity_value(value: Any) -> Any:
+    """Make array-valued source cells explicit in the canonical identity wire."""
+
+    if isinstance(value, np.ndarray):
+        return {
+            "__satn_numpy_array__": {
+                "dtype": value.dtype.str,
+                "shape": list(value.shape),
+                "values": _normalise_routing_identity_value(value.tolist()),
+            }
+        }
+    if isinstance(value, tuple):
+        return tuple(_normalise_routing_identity_value(item) for item in value)
+    if isinstance(value, list):
+        return [_normalise_routing_identity_value(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _normalise_routing_identity_value(item)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _routing_source_identities(
+    council: AreaConfig,
+    source: dict[str, gpd.GeoDataFrame],
+) -> tuple[str, str]:
+    """Bind routing reuse to the exact canonical source content it consumes."""
+
+    names = (
+        "boundary",
+        "places",
+        "network",
+        "context",
+        "official_road_classification",
+        "elevation_evidence",
+    )
+    frames = {
+        name: (
+            _routing_frame_payload(name, source[name])["content_sha256"]
+            if name in source
+            else None
+        )
+        for name in names
+    }
+    source_payload = {
+        "contract": "satn-routing-source-input/v1",
+        "frames": frames,
+    }
+    source_identity = hashlib.sha256(
+        json.dumps(
+            source_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    area_payload = {
+        "contract": "satn-routing-area-input/v1",
+        "area_id": council.area_id,
+        "boundary": frames["boundary"],
+    }
+    area_identity = hashlib.sha256(
+        json.dumps(
+            area_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    return area_identity, source_identity
+
+
+def _routing_input_identity(
+    council: AreaConfig,
+    source: dict[str, gpd.GeoDataFrame],
+    *,
+    ledger: AgentDecisionLedger,
+    dependency_manifest: dict[str, object],
+) -> tuple[str, str]:
+    """Return stage-scoped area/input identities for routing assembly reuse."""
+
+    dependency_identity = dependency_manifest.get("sha256")
+    if (
+        not isinstance(dependency_identity, str)
+        or _SHA256_PATTERN.fullmatch(dependency_identity) is None
+    ):
+        raise ValueError("compilation dependency manifest has no SHA-256 digest")
+    area_identity, source_identity = _routing_source_identities(council, source)
+    payload = {
+        "contract": "satn-routing-input/v1",
+        "schema_version": SCHEMA_VERSION,
+        "area_identity": area_identity,
+        "source_identity": source_identity,
+        "snapshot_identity": snapshot_manifest_sha256(council),
+        "source_semantics": {
+            "urban_place_types": list(council.source.urban_place_types),
+            "urban_place_source_ids": list(council.source.urban_place_source_ids),
+            "urban_settlement_form": council.source.urban_settlement_form.model_dump(
+                mode="json"
+            ),
+            "urban_scope_buffer_km": council.source.urban_scope_buffer_km,
+        },
+        "routing": {
+            "max_connection_km": council.compilation.max_connection_km,
+            "topography": council.compilation.topography.model_dump(mode="json"),
+            "agent": council.compilation.agent.model_dump(mode="json"),
+            "decision_ledger": ledger.model_dump(mode="json"),
+        },
+        "dependency_identity": dependency_identity,
+    }
+    return area_identity, hashlib.sha256(
+        json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _routing_bundle_implementation_fingerprint() -> str:
+    """Bind route reuse to both canonical codecs and compiler semantics."""
+
+    route_codec_path = compilation_dependencies._package_root() / "routing_assembly_bundle.py"
+    compiled_codec_path = Path(compiled_network_bundle_codec.__file__ or "")
+    if not route_codec_path.is_file() or not compiled_codec_path.is_file():
+        raise ValueError("routing bundle codec source is unavailable")
+    return hashlib.sha256(
+        json.dumps(
+            {
+                "compiler": _compiler_digest(),
+                "compiled_codec": hashlib.sha256(
+                    compiled_codec_path.read_bytes()
+                ).hexdigest(),
+                "routing_codec": hashlib.sha256(route_codec_path.read_bytes()).hexdigest(),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _routing_bundle_specification(
+    council: AreaConfig,
+    source: dict[str, gpd.GeoDataFrame],
+    *,
+    ledger: AgentDecisionLedger,
+    dependency_manifest: dict[str, object],
+) -> tuple[ArtifactSpecification, str]:
+    dependency_identity = dependency_manifest.get("sha256")
+    if not isinstance(dependency_identity, str):
+        raise ValueError("compilation dependency manifest has no SHA-256 digest")
+    area_identity, input_identity = _routing_input_identity(
+        council,
+        source,
+        ledger=ledger,
+        dependency_manifest=dependency_manifest,
+    )
+    snapshot_identity = snapshot_manifest_sha256(council)
+    return (
+        ArtifactSpecification(
+            kind="routing-assembly-bundle",
+            contract_version="satn-routing-assembly-bundle/v1",
+            implementation_fingerprint=_routing_bundle_implementation_fingerprint(),
+            dependency_manifest_fingerprint=dependency_identity,
+            parameters={
+                "area_identity": area_identity,
+                "input_identity": input_identity,
+                "dependency_identity": dependency_identity,
+                "snapshot_identity": snapshot_identity,
+            },
+            upstream_artifact_ids=(),
+            partition_identities=(council.area_id,),
+            coverage_identities=(snapshot_identity,),
+            validation_contract="satn-routing-assembly-bundle-strict/v1",
+            diagnostics={"compiler_path": "network", "stage": "routing-assembly"},
+        ),
+        input_identity,
+    )
+
+
+def _decode_retained_routing_bundle(
+    store: RetainedArtifactStore,
+    artifact: RetainedArtifact,
+) -> RoutingAssemblyBundle | None:
+    try:
+        payload = json.loads(artifact.read_output("routing-assembly-bundle"))
+        parameters = artifact.manifest.identity_payload().get("parameters")
+        if not isinstance(parameters, dict):
+            raise ValueError("routing artifact parameters are invalid")
+        expected_identities = {
+            "area": parameters.get("area_identity"),
+            "input": parameters.get("input_identity"),
+            "dependency": parameters.get("dependency_identity"),
+        }
+        if payload.get("identities") != expected_identities:
+            raise ValueError("routing bundle identities differ from manifest")
+        if payload.get("upstream_artifact_ids") != list(
+            artifact.manifest.upstream_artifact_ids
+        ):
+            raise ValueError("routing bundle upstream identities differ from manifest")
+        decoded = decode_routing_assembly_bundle(payload, RoutingAssemblyBundle)
+    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+        LOGGER.warning(
+            "Retained routing assembly failed semantic validation; rebuilding reason=%s",
+            error,
+        )
+        store.reject_semantic_artifact(
+            artifact.artifact_id, reason="routing-contract-invalid"
+        )
+        return None
+    return decoded
+
+
+def _prepare_routing_reuse(
+    council: AreaConfig,
+    source: dict[str, gpd.GeoDataFrame],
+    *,
+    ledger: AgentDecisionLedger,
+    dependency_manifest: dict[str, object],
+    governed_input_fingerprint: str,
+    artifact_store: RetainedArtifactStore | None,
+    rebuild_stages: tuple[str, ...],
+) -> tuple[
+    str,
+    ArtifactSpecification | None,
+    RoutingAssemblyBundle | None,
+    RetainedArtifact | None,
+    str,
+    str,
+]:
+    """Resolve a safe route hit; identity/retention failure remains a cold compile."""
+
+    try:
+        _, routing_input_fingerprint = _routing_input_identity(
+            council,
+            source,
+            ledger=ledger,
+            dependency_manifest=dependency_manifest,
+        )
+        if artifact_store is None:
+            return (
+                routing_input_fingerprint,
+                None,
+                None,
+                None,
+                "unavailable",
+                "retained-store-unavailable",
+            )
+        specification, specified_input = _routing_bundle_specification(
+            council,
+            source,
+            ledger=ledger,
+            dependency_manifest=dependency_manifest,
+        )
+        if specified_input != routing_input_fingerprint:
+            raise ValueError("routing specification input identity is inconsistent")
+        routing_forced = council.compilation.full or bool(
+            set(rebuild_stages).intersection(_ROUTING_BYPASS_STAGES)
+        )
+        if routing_forced:
+            return (
+                routing_input_fingerprint,
+                specification,
+                None,
+                None,
+                "unavailable",
+                "forced-stage",
+            )
+        resolution = artifact_store.resolve_specification(specification)
+        if resolution.artifact is None:
+            return (
+                routing_input_fingerprint,
+                specification,
+                None,
+                None,
+                "unavailable",
+                resolution.reason,
+            )
+        bundle = _decode_retained_routing_bundle(artifact_store, resolution.artifact)
+        if bundle is None:
+            return (
+                routing_input_fingerprint,
+                specification,
+                None,
+                None,
+                "unavailable",
+                "routing-contract-invalid",
+            )
+        LOGGER.info(
+            "Retained routing assembly reused artifact=%s",
+            resolution.artifact.artifact_id,
+        )
+        return (
+            routing_input_fingerprint,
+            specification,
+            bundle,
+            resolution.artifact,
+            "hit",
+            "validated-routing-assembly",
+        )
+    except (OSError, TypeError, ValueError) as error:
+        LOGGER.warning("Routing assembly reuse unavailable; compiling cold: %s", error)
+        return (
+            governed_input_fingerprint,
+            None,
+            None,
+            None,
+            "unavailable",
+            "routing-identity-unavailable",
+        )
+
+
 def _decode_retained_compiled_network(
     store: RetainedArtifactStore,
     artifact: RetainedArtifact,
@@ -1012,6 +1385,13 @@ def _compile(
     semantic_bundle_artifact = None
     semantic_bundle_disposition = "unavailable"
     semantic_bundle_reason = "retained-store-unavailable"
+    routing_specification = None
+    routing_bundle: RoutingAssemblyBundle | None = None
+    routing_bundle_artifact = None
+    routing_bundle_disposition = "unavailable"
+    routing_bundle_reason = "retained-store-unavailable"
+    routing_input_fingerprint = None
+    captured_routing: list[RoutingAssemblyBundle] | None = None
     compiled: CompiledNetwork | None = None
     if artifact_store is not None and not recovery_candidate:
         bundle_specification = _compiled_network_bundle_specification(
@@ -1056,6 +1436,23 @@ def _compile(
             len(source["network"]),
             len(source.get("context", [])),
         )
+        if not recovery_candidate:
+            (
+                routing_input_fingerprint,
+                routing_specification,
+                routing_bundle,
+                routing_bundle_artifact,
+                routing_bundle_disposition,
+                routing_bundle_reason,
+            ) = _prepare_routing_reuse(
+                council,
+                source,
+                ledger=ledger,
+                dependency_manifest=dependency_manifest,
+                governed_input_fingerprint=governed_input_fingerprint,
+                artifact_store=artifact_store,
+                rebuild_stages=rebuild_stages,
+            )
     runtime = (
         AgentRuntimeProvider(lambda: runtime_for(council.compilation.agent))
         if compiled is None
@@ -1078,15 +1475,28 @@ def _compile(
                 officer_decisions=officer_decisions,
                 evidence_store=evidence_store,
                 evidence_state_fingerprint=evidence_state_fingerprint,
+                routing_input_fingerprint=routing_input_fingerprint,
             ):
-                compiled = compile_network(
-                    council,
-                    source,
-                    runtime,
-                    governed_input_fingerprint=governed_input_fingerprint,
-                    decision_resolver=decision_resolver,
-                    heartbeat=heartbeat,
-                )
+                if routing_bundle is not None:
+                    with _routing_assembly_replay(routing_bundle):
+                        compiled = compile_network(
+                            council,
+                            source,
+                            runtime,
+                            governed_input_fingerprint=governed_input_fingerprint,
+                            decision_resolver=decision_resolver,
+                            heartbeat=heartbeat,
+                        )
+                else:
+                    with _routing_assembly_capture() as captured_routing:
+                        compiled = compile_network(
+                            council,
+                            source,
+                            runtime,
+                            governed_input_fingerprint=governed_input_fingerprint,
+                            decision_resolver=decision_resolver,
+                            heartbeat=heartbeat,
+                        )
         except AgentDecisionRequired as required:
             return _decision_required_result(
                 council,
@@ -1106,6 +1516,49 @@ def _compile(
                 detail=str(error),
             )
             return _reviewable_terminal_result(council, input_fingerprint, reviewable)
+        if (
+            routing_bundle_disposition != "hit"
+            and artifact_store is not None
+            and routing_specification is not None
+            and captured_routing is not None
+            and len(captured_routing) == 1
+        ):
+            try:
+                routing_area_identity, _ = _routing_source_identities(council, source)
+                dependency_identity = dependency_manifest.get("sha256")
+                if not isinstance(dependency_identity, str):
+                    raise ValueError("routing dependency identity is unavailable")
+                if routing_input_fingerprint is None:
+                    raise ValueError("routing input identity is unavailable")
+                routing_payload = encode_routing_assembly_bundle(
+                    captured_routing[0],
+                    area_identity=routing_area_identity,
+                    input_identity=routing_input_fingerprint,
+                    dependency_identity=dependency_identity,
+                    upstream_artifact_ids=routing_specification.upstream_artifact_ids,
+                    bundle_crs=source["network"].crs,
+                )
+                routing_bundle_artifact = artifact_store.put(
+                    routing_specification,
+                    outputs={
+                        "routing-assembly-bundle": _compiled_network_bundle_bytes(
+                            routing_payload
+                        )
+                    },
+                )
+                routing_bundle = _decode_retained_routing_bundle(
+                    artifact_store,
+                    routing_bundle_artifact,
+                )
+                if routing_bundle is None:
+                    raise ValueError("new routing assembly bundle failed validation")
+                routing_bundle_disposition = "build"
+                routing_bundle_reason = "compiled-from-governed-routing-inputs"
+            except (OSError, TypeError, ValueError) as error:
+                routing_bundle_artifact = None
+                routing_bundle_disposition = "unavailable"
+                routing_bundle_reason = "retention-failed"
+                LOGGER.warning("Routing assembly retention failed: %s", error)
     assert compiled is not None
     reviewable = compiled.reviewable_network
     if reviewable is not None and reviewable.status.value == "terminal-failure":
@@ -1472,6 +1925,14 @@ def _compile(
             **(
                 {"semantic_bundle_artifact_id": semantic_bundle_artifact.artifact_id}
                 if semantic_bundle_artifact is not None
+                else {}
+            ),
+            "routing_input_fingerprint": routing_input_fingerprint,
+            "routing_bundle_disposition": routing_bundle_disposition,
+            "routing_bundle_reason": routing_bundle_reason,
+            **(
+                {"routing_bundle_artifact_id": routing_bundle_artifact.artifact_id}
+                if routing_bundle_artifact is not None
                 else {}
             ),
             "dft_traffic_evidence_state_fingerprint": evidence_state_fingerprint,

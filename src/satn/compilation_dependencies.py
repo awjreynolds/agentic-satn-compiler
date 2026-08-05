@@ -175,6 +175,10 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
         "private deterministic strategic Reference replay materialisation",
     ),
     "satn/routing.py": ("module", "routable network and route selection"),
+    "satn/routing_assembly_bundle.py": (
+        "module",
+        "canonical retained routing assembly replay contract",
+    ),
     "satn/route_controls.py": (
         "module",
         "governed route exclusions, preferences and retained-gap constraints",
