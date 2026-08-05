@@ -59,11 +59,11 @@
         <div id="reference-options-control" class="layer-row" hidden><label><input id="layer-reference-options" type="checkbox" aria-describedby="reference-options-status legend-reference-options"> Reviewed Reference alternatives</label><button class="info-button" type="button" aria-expanded="false" aria-controls="legend-reference-options" aria-label="About reviewed Reference alternatives">i</button><div id="reference-options-status" class="reference-options-status" role="note" hidden>Red dashed linework means selected; purple dashed linework means complementary; grey dashed linework means rejected. All dashed alternative linework is review-only evidence, not the authoritative selected network.</div><div id="legend-reference-options" class="layer-popover" role="note" hidden>All dashed alternative linework is review-only evidence, not the authoritative selected network or a safe, feasible, funded, or adopted scheme.</div></div>
       </fieldset>
 
-      <section id="reviewable-findings" aria-labelledby="reviewable-findings-heading" hidden>
-        <h2 id="reviewable-findings-heading">Material gap findings</h2>
+      <details id="reviewable-findings" hidden>
+        <summary id="reviewable-findings-heading">Material gap findings</summary>
         <p>Every governed gap endpoint remains inspectable here, including an endpoint whose map position is unavailable.</p>
         <div id="reviewable-findings-list" class="finding-list"></div>
-      </section>
+      </details>
 
       <section id="reference-satn-summary" aria-labelledby="reference-satn-heading" __REFERENCE_SATN_STATE__>
         __REFERENCE_SATN_EVIDENCE__
@@ -161,29 +161,26 @@
             <li id="population-display-legend" hidden></li>
           </ul>
         </details>
-      </section>
-
-      <section id="linear-evidence-panel" aria-labelledby="evidence-panel-heading">
-        <header class="evidence-panel-header">
-          <h2 id="evidence-panel-heading">Evidence Panel</h2>
-          <p>Hover over a visible map artifact to preview its evidence. Click to pin it; click empty map space to unlock the panel.</p>
-        </header>
-        <section id="feature-details" aria-live="polite" aria-labelledby="details-heading">
-          <h3 id="details-heading">Artifact evidence</h3>
-          <p>Hover over any visible map artifact to inspect its context. Click to pin its evidence.</p>
-        </section>
-        <section id="linear-evidence-view" aria-labelledby="linear-evidence-heading" hidden>
-          <header>
-            <div>
-              <h3 id="linear-evidence-heading">Linear Evidence</h3>
-              <p id="route-summary">Build a continuous Gradient Inspection Path to compare distance-aligned evidence.</p>
-            </div>
-            <p id="evidence-disclosure">Gradient evidence comes from governed Topography Profiles. 3D terrain is contextual only.</p>
+        <aside id="review-lens" role="dialog" aria-label="Route review lens" aria-live="polite" data-state="preview" hidden>
+          <header class="review-lens-header">
+            <p id="review-lens-state">Quick view</p>
+            <button id="review-lens-close" type="button" aria-label="Close route review lens">×</button>
           </header>
-          <div id="linear-evidence-chart" aria-live="polite">
-            <p class="empty-evidence">No Gradient Inspection Path selected.</p>
-          </div>
-        </section>
+          <section id="feature-details" aria-labelledby="details-heading"></section>
+          <button id="review-gradient-details" type="button" aria-expanded="false" aria-controls="linear-evidence-view" hidden>Show gradient details</button>
+          <section id="linear-evidence-view" aria-labelledby="linear-evidence-heading" hidden>
+            <header>
+              <div>
+                <h3 id="linear-evidence-heading">Linear Evidence</h3>
+                <p id="route-summary">Build a continuous Gradient Inspection Path to compare distance-aligned evidence.</p>
+              </div>
+              <p id="evidence-disclosure">Gradient evidence comes from governed Topography Profiles. 3D terrain is contextual only.</p>
+            </header>
+            <div id="linear-evidence-chart" aria-live="polite">
+              <p class="empty-evidence">No Gradient Inspection Path selected.</p>
+            </div>
+          </section>
+        </aside>
       </section>
     </section>
   </main>

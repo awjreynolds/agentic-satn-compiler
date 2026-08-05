@@ -572,12 +572,16 @@ _Avoid_: map-tile gradient, assumed flat interval, endpoint-only slope
 An ordered, continuous selection of eligible Published Features assembled from one active endpoint for exploratory analysis. Aggregate Cross-Spine Connector geometry is excluded because its constituent edges already carry the analytical evidence.
 _Avoid_: arbitrary multi-selection, disconnected edge set, aggregate double-counting
 
-**Evidence Panel**:
-The persistent map evidence surface. It previews evidence for the visible map artifact under the pointer or keyboard focus, locks that evidence when the artifact is pinned, and returns to dynamic preview when empty map space is selected. When a Gradient Inspection Path is active, the panel also presents its specialised Linear Evidence view.
-_Avoid_: evidence split across unrelated surfaces, stale selection, fixed single-purpose panel
+**Review Lens**:
+A compact map-anchored evidence surface. Pointer hover or keyboard focus previews high-level evidence for a visible map artifact; click or touch pins it, and selecting a second comparable line segment opens an exploratory two-segment comparison with raw values and a display-only spider chart. Empty map space or the close control dismisses it. Missing evidence remains Unknown and every full record remains inspectable without turning the lens into a score or a permanent panel.
+_Avoid_: persistent evidence panel, stale selection, canvas-only popup, composite route score
+
+**Segment Comparison**:
+An exploratory comparison of two explicitly selected line segments in the Review Lens. It presents available evidence dimensions in a raw-value table and normalises only shared dimensions for a spider chart whose outward direction is consistently more favourable. The comparison does not change governed selections, and unavailable evidence is Unknown rather than zero.
+_Avoid_: automatic winner, hidden weighting, unknown-as-zero, route-selection input
 
 **Linear Evidence View**:
-A specialised shared-distance view within the Evidence Panel that appears for an active Gradient Inspection Path and aligns Micro-Gradient Intervals with road classification and future engineering evidence tracks. Reversing the path reverses directional gradient without changing the governed source evidence.
+A specialised shared-distance view opened deliberately from a pinned Review Lens when a Gradient Inspection Path is active. It aligns Micro-Gradient Intervals with road classification and future engineering evidence tracks. Reversing the path reverses directional gradient without changing the governed source evidence.
 _Avoid_: independent charts, edge-only summary, composite route score
 
 **Contextual Terrain Mode**:

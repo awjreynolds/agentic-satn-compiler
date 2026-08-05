@@ -62,6 +62,7 @@
     pinned: null,
     pinnedArtifact: null,
     active: null,
+    comparisonArtifacts: [],
     inspectionPath: [],
     inspectionVersion: 0,
     populationSectionIds: new Set()
@@ -939,16 +940,20 @@
 
   function renderLinearEvidence() {
     const view = document.querySelector("#linear-evidence-view");
+    const detailsButton = document.querySelector("#review-gradient-details");
     const chart = document.querySelector("#linear-evidence-chart");
     const summary = document.querySelector("#route-summary");
     chart.replaceChildren();
     if (!state.inspectionPath.length) {
       view.hidden = true;
+      detailsButton.hidden = true;
+      detailsButton.setAttribute("aria-expanded", "false");
       chart.innerHTML = '<p class="empty-evidence">No Gradient Inspection Path selected.</p>';
       summary.textContent = "Build a continuous Gradient Inspection Path to compare distance-aligned evidence.";
       return;
     }
-    view.hidden = false;
+    detailsButton.hidden = !state.pinnedArtifact;
+    view.hidden = detailsButton.getAttribute("aria-expanded") !== "true";
     const segments = state.inspectionPath.map((item) => {
       const profile = profileFor(item.feature);
       const distance = Number(profile?.properties?.distance_m || item.feature.properties.topography_distance_m || 0);
@@ -1188,16 +1193,47 @@
   }
 
   function renderEmptyArtifactPanel() {
+    const lens = document.querySelector("#review-lens");
     const panel = document.querySelector("#feature-details");
     panel.replaceChildren();
-    const heading = document.createElement("h3");
-    heading.id = "details-heading";
-    heading.textContent = "Artifact evidence";
-    const guidance = document.createElement("p");
-    guidance.textContent =
-      "Hover over any visible map artifact to inspect its context. Click to pin its evidence.";
-    panel.append(heading, guidance);
-    renderPopulationSelectionSummary(panel);
+    lens.hidden = true;
+    lens.dataset.state = "preview";
+    const gradientDetails = document.querySelector("#review-gradient-details");
+    gradientDetails.hidden = true;
+    gradientDetails.setAttribute("aria-expanded", "false");
+    document.querySelector("#linear-evidence-view").hidden = true;
+  }
+
+  function showReviewLens() {
+    const lens = document.querySelector("#review-lens");
+    const pinned = Boolean(state.pinnedArtifact);
+    lens.hidden = false;
+    lens.dataset.state = pinned ? "pinned" : "preview";
+    document.querySelector("#review-lens-state").textContent = pinned
+      ? "Pinned review"
+      : "Quick view";
+    document.querySelector("#review-gradient-details").hidden = !(
+      pinned && state.inspectionPath.length
+    );
+  }
+
+  function positionReviewLens(point) {
+    const lens = document.querySelector("#review-lens");
+    const shell = document.querySelector(".map-shell");
+    if (!point || !shell || lens.hidden || window.matchMedia("(max-width: 760px)").matches) return;
+    const margin = 12;
+    const offset = 18;
+    const width = lens.offsetWidth;
+    const height = lens.offsetHeight;
+    const preferredX = point.x + offset + width <= shell.clientWidth - margin
+      ? point.x + offset
+      : point.x - width - offset;
+    const preferredY = point.y + offset + height <= shell.clientHeight - margin
+      ? point.y + offset
+      : point.y - height - offset;
+    lens.style.right = "auto";
+    lens.style.left = `${Math.max(margin, Math.min(preferredX, shell.clientWidth - width - margin))}px`;
+    lens.style.top = `${Math.max(margin, Math.min(preferredY, shell.clientHeight - height - margin))}px`;
   }
 
   function appendArtifactContext(panel, artifact) {
@@ -1214,7 +1250,6 @@
       .sort(([left], [right]) => left.localeCompare(right));
     const disclosure = document.createElement("details");
     disclosure.className = "artifact-context";
-    disclosure.open = !["network", "topography"].includes(artifact.sourceId);
     const summary = document.createElement("summary");
     summary.textContent = `All contextual properties (${entries.length})`;
     const list = document.createElement("dl");
@@ -1239,8 +1274,63 @@
     );
     const list = document.createElement("dl");
     addDefinition(list, "Stable ID", artifact.id);
+    addDefinition(list, "Type", value(properties.kind, properties.feature_type || artifact.layerId));
+    if (properties.disposition || properties.status || properties.display_state) {
+      addDefinition(list, "Status", value(properties.disposition, properties.status || properties.display_state));
+    }
+    if (properties.rationale || properties.reason) {
+      addDefinition(list, "Rationale", value(properties.rationale, properties.reason));
+    }
     panel.append(heading, list);
     return panel;
+  }
+
+  function renderArtifactPreview(artifact) {
+    const properties = artifact.feature.properties || {};
+    const panel = document.querySelector("#feature-details");
+    panel.replaceChildren();
+    const heading = document.createElement("h3");
+    heading.id = "details-heading";
+    heading.textContent = value(
+      properties.name,
+      properties.route_id || properties.candidate_id || properties.section_id ||
+        properties.label || properties.title || humanLabel(
+          properties.feature_type || artifact.layerId
+        )
+    );
+    const list = document.createElement("dl");
+    addDefinition(list, "Stable ID", artifact.id);
+    const addAvailable = (label, ...candidates) => {
+      const raw = candidates.find((candidate) =>
+        candidate !== null && candidate !== undefined && candidate !== ""
+      );
+      if (raw !== undefined) addDefinition(list, label, contextualText(raw));
+    };
+    addAvailable("Type", properties.kind, properties.feature_type, artifact.layerId);
+    addAvailable("Status", properties.disposition, properties.status, properties.display_state);
+    addAvailable("Category", properties.category);
+    addAvailable("Route role", properties.network_role, properties.classification);
+    addAvailable(
+      "Intervention",
+      properties.intervention_state,
+      properties.intervention_assumption,
+      properties.intervention_archetype
+    );
+    addAvailable(
+      "Alignment Basis",
+      properties.primary_alignment_basis,
+      properties.alignment_basis
+    );
+    addAvailable("Length", properties.distance_km == null ? null : `${properties.distance_km} km`);
+    addAvailable(
+      "Material finding",
+      properties.rationale,
+      properties.reason,
+      properties.selection_reason,
+      properties.admission_rationale
+    );
+    panel.append(heading, list);
+    setHighlight(artifact.sourceId === "network" ? artifact.id : null);
   }
 
   function finiteMetric(raw, scale = 1) {
@@ -1251,16 +1341,43 @@
 
   function alignmentMetrics(feature) {
     const properties = feature.properties || {};
-    const population = properties.population?.["500m"]?.resident_count;
-    const existing = properties.existing_alignment?.reusable_asset_share;
+    const population = properties.population?.["500m"]?.resident_count ??
+      properties.resident_count ?? properties.total_residents;
+    const existing = properties.existing_alignment?.reusable_asset_share ??
+      properties.reusable_asset_share;
     const opportunity = properties.education?.independent_travel_opportunity_count;
+    const elevationVariation = properties.cumulative_elevation_variation_m ??
+      properties.total_elevation_variation_m;
     return [
       ["Population (500 m)", finiteMetric(population)],
-      ["Existing alignment", finiteMetric(existing, 100)],
+      ["Reusable alignment", finiteMetric(existing, 100)],
       ["Independent travel", finiteMetric(opportunity)],
-      ["Directness", finiteMetric(properties.directness_m)],
-      ["Gradient", finiteMetric(properties.maximum_gradient_pct)]
+      ["Route length", finiteMetric(properties.directness_m, 0.001)],
+      ["Elevation variation", finiteMetric(elevationVariation)],
+      ["Maximum gradient", finiteMetric(properties.maximum_gradient_pct)]
     ].filter(([, metric]) => metric !== null);
+  }
+
+  function metricUnit(label) {
+    return {
+      "Population (500 m)": "residents",
+      "Reusable alignment": "%",
+      "Independent travel": "opportunities",
+      "Route length": "km",
+      "Elevation variation": "m",
+      "Maximum gradient": "%"
+    }[label] || "";
+  }
+
+  function metricFraction(label, metric, values) {
+    const lowerIsBetter = new Set(["Route length", "Elevation variation", "Maximum gradient"]);
+    if (lowerIsBetter.has(label)) {
+      const minimum = Math.min(...values);
+      if (metric === 0) return 1;
+      return minimum / metric;
+    }
+    const maximum = Math.max(...values);
+    return maximum > 0 ? metric / maximum : 1;
   }
 
   function commonAlignmentAxes(members) {
@@ -1295,9 +1412,9 @@
         role: "img",
         "aria-label": `Spider comparison using shared dimensions: ${axes.join(", ")}`
       });
-      const maxima = Object.fromEntries(axes.map((axis) => [
+      const valuesByAxis = Object.fromEntries(axes.map((axis) => [
         axis,
-        Math.max(...members.map((member) => new Map(alignmentMetrics(member)).get(axis)))
+        members.map((member) => new Map(alignmentMetrics(member)).get(axis))
       ]));
       [0.25, 0.5, 0.75, 1].forEach((fraction) => {
         const points = axes.map((_, index) => radarPoint(index, axes.length, fraction).join(",")).join(" ");
@@ -1315,8 +1432,7 @@
       members.forEach((member, memberIndex) => {
         const metrics = new Map(alignmentMetrics(member));
         const points = axes.map((axis, index) => {
-          const maximum = maxima[axis];
-          const fraction = maximum > 0 ? metrics.get(axis) / maximum : 0;
+          const fraction = metricFraction(axis, metrics.get(axis), valuesByAxis[axis]);
           return radarPoint(index, axes.length, fraction).join(",");
         }).join(" ");
         svg.append(svgElement("polygon", {
@@ -1337,7 +1453,7 @@
         .filter(([label]) => axes.includes(label))
         .map(([label, metric]) => `${label}: ${Math.round(metric * 10) / 10}`)
         .join(" · ");
-      row.textContent = `${properties.disposition || "alternative"}: ${properties.candidate_id || member.id} · ${values}`;
+      row.textContent = `${properties.name || properties.route_id || properties.candidate_id || member.id} · ${values}`;
       legend.append(row);
     });
     chart.append(legend);
@@ -1367,6 +1483,109 @@
     panel.append(section);
   }
 
+  function comparisonArtifactLabel(artifact) {
+    const properties = artifact.feature.properties || {};
+    return value(
+      properties.name,
+      properties.route_id || properties.candidate_id || properties.section_id || artifact.id
+    );
+  }
+
+  function canCompareArtifact(artifact) {
+    const geometryType = artifact?.feature?.geometry?.type;
+    return ["LineString", "MultiLineString"].includes(geometryType);
+  }
+
+  function segmentComparisonValues(feature) {
+    const properties = feature.properties || {};
+    const values = alignmentMetrics(feature).map(([label, metric]) => [
+      label,
+      [metric, metricUnit(label)]
+    ]);
+    const addAvailable = (label, ...candidates) => {
+      const raw = candidates.find((candidate) =>
+        candidate !== null && candidate !== undefined && candidate !== ""
+      );
+      if (raw !== undefined) values.push([label, [contextualText(raw), ""]]);
+    };
+    addAvailable(
+      "Status",
+      properties.display_state,
+      properties.status,
+      properties.disposition
+    );
+    addAvailable("Intervention state", properties.intervention_state);
+    addAvailable(
+      "Alignment Basis",
+      properties.primary_alignment_basis,
+      properties.alignment_basis
+    );
+    addAvailable("Route role", properties.network_role);
+    return values;
+  }
+
+  function renderRawSegmentComparison(panel, artifacts) {
+    const labels = [...new Set(artifacts.flatMap(
+      (artifact) => segmentComparisonValues(artifact.feature).map(([label]) => label)
+    ))];
+    const table = document.createElement("table");
+    table.className = "segment-comparison-values";
+    table.setAttribute("aria-label", "Raw segment comparison values");
+    const head = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    ["Evidence dimension", ...artifacts.map(comparisonArtifactLabel)].forEach((text) => {
+      const cell = document.createElement("th");
+      cell.scope = "col";
+      cell.textContent = text;
+      headRow.append(cell);
+    });
+    head.append(headRow);
+    const body = document.createElement("tbody");
+    labels.forEach((label) => {
+      const row = document.createElement("tr");
+      const heading = document.createElement("th");
+      heading.scope = "row";
+      heading.textContent = label;
+      row.append(heading);
+      artifacts.forEach((artifact) => {
+        const comparison = new Map(segmentComparisonValues(artifact.feature)).get(label);
+        const cell = document.createElement("td");
+        if (!comparison) {
+          cell.textContent = "Unknown";
+        } else {
+          const [raw, unit] = comparison;
+          const displayed = typeof raw === "number"
+            ? Math.round(raw * 10) / 10
+            : raw;
+          cell.textContent = `${displayed}${unit ? ` ${unit}` : ""}`;
+        }
+        row.append(cell);
+      });
+      body.append(row);
+    });
+    table.append(head, body);
+    panel.append(table);
+  }
+
+  function renderSegmentComparison(artifacts) {
+    const panel = document.querySelector("#feature-details");
+    panel.replaceChildren();
+    const heading = document.createElement("h3");
+    heading.id = "details-heading";
+    heading.textContent = `Compare ${artifacts.length} segments`;
+    const note = document.createElement("p");
+    note.className = "comparison-note";
+    note.textContent = "A high-level visual comparison only. The spider chart is not a score or a route-selection input; unavailable evidence remains unknown.";
+    panel.append(heading, note);
+    const axes = commonAlignmentAxes(artifacts.map((artifact) => artifact.feature));
+    panel.append(renderAlignmentRadar(artifacts.map((artifact) => artifact.feature), axes));
+    renderRawSegmentComparison(panel, artifacts);
+    showReviewLens();
+    const lens = document.querySelector("#review-lens");
+    lens.dataset.state = "compare";
+    document.querySelector("#review-lens-state").textContent = "Segment comparison";
+  }
+
   function showArtifactDetails(artifact) {
     if (!artifact) return;
     const canonical = ["network", "topography"].includes(artifact.sourceId)
@@ -1374,7 +1593,9 @@
         (candidate) => stableArtifactId(candidate) === artifact.id
       )
       : null;
-    if (canonical) {
+    if (!state.pinnedArtifact) {
+      renderArtifactPreview(artifact);
+    } else if (canonical) {
       showDetails(canonical.id);
     } else if (artifact.sourceId === "reviewable") {
       renderReviewableDetails(artifact);
@@ -1385,6 +1606,7 @@
     appendArtifactContext(document.querySelector("#feature-details"), artifact);
     renderAlignmentComparison(document.querySelector("#feature-details"), artifact);
     renderPopulationSelectionSummary(document.querySelector("#feature-details"));
+    showReviewLens();
   }
 
   function renderReviewableDetails(artifact) {
@@ -1440,7 +1662,7 @@
       button.textContent = `${value(properties.gap_id, "Gap")} · ${value(properties.endpoint_id, "unknown endpoint")} · ${feature.geometry ? "mapped endpoint" : "endpoint geometry unavailable"}`;
       button.addEventListener("click", () => {
         const artifact = artifactRecord(feature, "reviewable", "reviewable-findings");
-        if (artifact) renderReviewableDetails(artifact);
+        if (artifact) toggleArtifactPin(artifact);
       });
       list.append(button);
     });
@@ -1648,9 +1870,23 @@
   }
 
   function toggleArtifactPin(artifact) {
+    const previous = state.pinnedArtifact;
     const unpin = state.pinnedArtifact?.key === artifact.key;
-    state.pinnedArtifact = unpin ? null : artifact;
-    state.pinned = !unpin && artifact.sourceId === "network" ? artifact.id : null;
+    if (unpin) {
+      closeReviewLens();
+      return;
+    }
+    if (previous && canCompareArtifact(previous) && canCompareArtifact(artifact)) {
+      state.comparisonArtifacts = [previous, artifact];
+      state.pinnedArtifact = artifact;
+      state.pinned = artifact.sourceId === "network" ? artifact.id : null;
+      renderSegmentComparison(state.comparisonArtifacts);
+      updateGradientCandidate();
+      return;
+    }
+    state.comparisonArtifacts = canCompareArtifact(artifact) ? [artifact] : [];
+    state.pinnedArtifact = artifact;
+    state.pinned = artifact.sourceId === "network" ? artifact.id : null;
     if (state.pinnedArtifact) {
       showArtifactDetails(state.pinnedArtifact);
     } else {
@@ -1658,6 +1894,23 @@
     }
     setHighlight(state.pinned || state.active);
     updateGradientCandidate();
+  }
+
+  function closeReviewLens() {
+    state.pinnedArtifact = null;
+    state.pinned = null;
+    state.comparisonArtifacts = [];
+    renderEmptyArtifactPanel();
+    setHighlight(null);
+    updateGradientCandidate();
+  }
+
+  function toggleGradientDetails() {
+    const button = document.querySelector("#review-gradient-details");
+    const view = document.querySelector("#linear-evidence-view");
+    const expanded = button.getAttribute("aria-expanded") === "true";
+    button.setAttribute("aria-expanded", String(!expanded));
+    view.hidden = expanded;
   }
 
   function togglePin(id) {
@@ -1755,6 +2008,8 @@
   }
 
   function bindControls() {
+    document.querySelector("#review-lens-close").addEventListener("click", closeReviewLens);
+    document.querySelector("#review-gradient-details").addEventListener("click", toggleGradientDetails);
     document.querySelectorAll('input[name="section"]').forEach((input) => {
       input.addEventListener("change", () => renderCriteria(input.value));
     });
@@ -1834,18 +2089,9 @@
             map.setLayoutProperty(layer, "visibility", visible ? "visible" : "none");
           }
         });
-        const legend = document.getElementById(`legend-${controlId.replace("layer-", "")}`);
-        if (legend) legend.hidden = !control.checked;
-        if (controlId === "layer-reviewable-gaps") {
-          const findings = document.getElementById("reviewable-findings");
-          if (findings) {
-            findings.hidden = !control.checked || !findings.querySelector(".finding-button");
-          }
-        }
         if (controlId === "layer-population-display-sections") {
           const populationLegend = document.getElementById("population-display-legend");
           if (populationLegend) populationLegend.hidden = !control.checked;
-          if (control.checked) document.getElementById("map-legend").open = true;
         }
       });
     });
@@ -2351,6 +2597,7 @@
       map.getCanvas().style.cursor = artifact ? "pointer" : "";
       if (artifact && !state.pinnedArtifact) {
         showArtifactDetails(artifact);
+        positionReviewLens(event.point);
       } else if (!artifact) {
         clearTransient();
       }
@@ -2363,10 +2610,7 @@
         }
         toggleArtifactPin(artifact);
       } else if (state.pinnedArtifact) {
-        state.pinnedArtifact = null;
-        state.pinned = null;
-        clearTransient();
-        updateGradientCandidate();
+        closeReviewLens();
       }
     });
     map.getCanvas().addEventListener("mouseleave", () => {
