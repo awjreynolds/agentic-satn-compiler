@@ -184,12 +184,17 @@ def test_geodataframe_decode_fails_closed_for_tampering() -> None:
         decode_geodataframe(geometry_tamper)
 
 
-def test_duplicate_rows_and_ambiguous_stable_keys_fail_closed() -> None:
+def test_duplicate_rows_are_a_canonical_multiset_but_ambiguous_stable_keys_fail_closed() -> None:
     duplicate = pd.concat([_frame().iloc[[0]], _frame().iloc[[0]]], ignore_index=True)
     duplicate = gpd.GeoDataFrame(duplicate, geometry="geometry", crs=27700)
 
-    with pytest.raises(BundleCodecError, match="duplicate rows are ambiguous"):
-        encode_geodataframe(duplicate)
+    encoded = encode_geodataframe(duplicate)
+    reversed_encoded = encode_geodataframe(duplicate.iloc[::-1].reset_index(drop=True))
+
+    assert encoded == reversed_encoded
+    decoded = decode_geodataframe(encoded)
+    assert len(decoded) == 2
+    assert decoded.iloc[0].to_dict() == decoded.iloc[1].to_dict()
     with pytest.raises(BundleCodecError, match="stable key columns are null, duplicate"):
         encode_geodataframe(duplicate, stable_key_columns=("feature_id",))
 
@@ -296,6 +301,30 @@ def test_bundle_rejects_unsupported_fields_by_name() -> None:
             input_identity=SHA_B,
             dependency_identity=SHA_C,
             upstream_artifact_ids=(),
+        )
+
+
+def test_bundle_names_the_frame_when_stable_keys_are_ambiguous() -> None:
+    duplicate = pd.concat([_frame().iloc[[0]], _frame().iloc[[0]]], ignore_index=True)
+    duplicate = gpd.GeoDataFrame(duplicate, geometry="geometry", crs=27700)
+
+    with pytest.raises(
+        BundleCodecError,
+        match=r"compiled field 'routes': stable key columns are null, duplicate",
+    ):
+        encode_compiled_network_bundle(
+            _CompiledFixture(
+                routes=duplicate,
+                area_name="B&NES",
+                diagnostics={},
+                generation=1,
+                optional_note=None,
+            ),
+            area_identity=SHA_A,
+            input_identity=SHA_B,
+            dependency_identity=SHA_C,
+            upstream_artifact_ids=(),
+            frame_stable_keys={"routes": ("feature_id",)},
         )
 
 

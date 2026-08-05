@@ -470,10 +470,6 @@ def encode_geodataframe(
         ]
     else:
         row_keys = [_canonical_bytes(row) for row in row_cells]
-        if len(row_keys) != len(set(row_keys)):
-            raise BundleCodecError(
-                "duplicate rows are ambiguous; supply stable key columns after adding a stable key"
-            )
         row_cells = [
             row
             for _, row in sorted(zip(row_keys, row_cells, strict=True), key=lambda item: item[0])
@@ -675,13 +671,17 @@ def encode_compiled_network_bundle(
     for item in fields(compiled):
         value = getattr(compiled, item.name)
         if isinstance(value, gpd.GeoDataFrame):
-            encoded_fields[item.name] = {
-                "encoding": _FRAME_CONTRACT,
-                "payload": encode_geodataframe(
+            try:
+                payload = encode_geodataframe(
                     value,
                     stable_key_columns=stable_keys.get(item.name),
                     missing_crs_rule=frame_crs_rule,
-                ),
+                )
+            except BundleCodecError as exc:
+                raise BundleCodecError(f"compiled field {item.name!r}: {exc}") from exc
+            encoded_fields[item.name] = {
+                "encoding": _FRAME_CONTRACT,
+                "payload": payload,
             }
             continue
         try:
