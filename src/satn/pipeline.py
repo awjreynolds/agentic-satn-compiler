@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -16,6 +17,7 @@ from pathlib import Path
 import geopandas as gpd
 
 import satn.compilation_dependencies as compilation_dependencies
+import satn.compiled_network_bundle as compiled_network_bundle_codec
 from satn.agents import (
     AgentCompilationTerminated,
     AgentDecisionRequired,
@@ -37,7 +39,10 @@ from satn.compiler import (
 from satn.constants import SCHEMA_VERSION
 from satn.content_identity import ordered_geometry_fingerprint
 from satn.ea_snapshot_recovery import load_legacy_ea_recovery_snapshot
-from satn.filesystem_safety import PublicationDestinationAuthority
+from satn.filesystem_safety import (
+    PublicationDestinationAuthority,
+    default_publication_destination_authority,
+)
 from satn.heartbeat import StageHeartbeat
 from satn.local_evidence_store import LocalEvidenceStore
 from satn.models import (
@@ -55,14 +60,24 @@ from satn.models import (
 from satn.parallel_reduction import PreloadedOfficerDecision
 from satn.psa_evidence_loaders import GovernedEvidenceLoadError
 from satn.publisher import (
+    presentation_dependency_manifest,
     publication_artifacts,
     publish,
+    republish_presentation,
     retain_ea_recovery_candidate,
+    validate_presentation_retention,
     validate_publication,
 )
 from satn.reference_application import (
     _build_reference_application_plan_for_current_baseline,
     build_reference_satn_publication_record,
+)
+from satn.retained_artifacts import (
+    ArtifactSpecification,
+    CompilationRunReport,
+    RetainedArtifact,
+    RetainedArtifactStore,
+    RunArtifactEvent,
 )
 from satn.reviewable_network import (
     ReviewableNetwork,
@@ -80,6 +95,19 @@ from satn.strategic_reference_replay import validate_fresh_replay
 
 LOGGER = logging.getLogger(__name__)
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_INCREMENTAL_STAGE_NAMES = frozenset(
+    {
+        "source-export",
+        "evidence-refresh",
+        "area-extraction",
+        "canonical-network",
+        "edge-enrichments",
+        "routing-assembly",
+        "scenario-selection",
+        "presentation",
+        "publication",
+    }
+)
 
 
 def _compilation_metadata(started: float) -> dict[str, object]:
@@ -214,6 +242,10 @@ def compile(
     publication_authority: PublicationDestinationAuthority | None = None,
     evidence_store: LocalEvidenceStore | None = None,
     evidence_state: str | None = None,
+    rebuild_stages: tuple[str, ...] = (),
+    artifact_root: Path | None = None,
+    workers: str | int = "auto",
+    explain_reuse: bool = False,
 ) -> CompilationResult:
     """Compile into a complete publication or a non-publishing decision request."""
     council = (
@@ -221,6 +253,24 @@ def compile(
         if isinstance(config, (AreaDefinition, CouncilConfig))
         else AreaDefinition.from_yaml(config)
     )
+    rebuild_stages = tuple(dict.fromkeys(rebuild_stages))
+    unknown_stages = sorted(set(rebuild_stages).difference(_INCREMENTAL_STAGE_NAMES))
+    if unknown_stages:
+        raise ValueError("unknown retained compilation stage: " + ", ".join(unknown_stages))
+    if workers != "auto" and (
+        not isinstance(workers, int) or isinstance(workers, bool) or workers < 1
+    ):
+        raise ValueError("workers must be auto or a positive integer")
+    authority = publication_authority or default_publication_destination_authority(
+        council.config_path
+    )
+    store = (
+        RetainedArtifactStore(artifact_root)
+        if artifact_root is not None
+        else RetainedArtifactStore.in_workspace(authority.workspace_root)
+    )
+    report_started_at = datetime.now(UTC)
+    report_started = time.perf_counter()
     try:
         _validate_evidence_binding(evidence_store, evidence_state)
     except GovernedEvidenceLoadError as error:
@@ -229,7 +279,17 @@ def compile(
             (),
             detail=str(error),
         )
-        return _reviewable_terminal_result(council, "", reviewable)
+        result = _reviewable_terminal_result(council, "", reviewable)
+        return _record_compilation_run(
+            store,
+            council,
+            result,
+            report_started_at=report_started_at,
+            elapsed_ms=int((time.perf_counter() - report_started) * 1000),
+            rebuild_stages=rebuild_stages,
+            workers=workers,
+            explain_reuse=explain_reuse,
+        )
     with StageHeartbeat(
         LOGGER,
         "publication-reuse-check",
@@ -238,7 +298,7 @@ def compile(
             "snapshot_id": council.source.snapshot_id,
         },
     ) as heartbeat:
-        return _compile(
+        result = _compile(
             council,
             decision_ledger=decision_ledger,
             officer_decisions=officer_decisions,
@@ -246,7 +306,164 @@ def compile(
             evidence_store=evidence_store,
             evidence_state_fingerprint=evidence_state,
             heartbeat=heartbeat,
+            rebuild_stages=rebuild_stages,
+            artifact_store=store,
         )
+    return _record_compilation_run(
+        store,
+        council,
+        result,
+        report_started_at=report_started_at,
+        elapsed_ms=int((time.perf_counter() - report_started) * 1000),
+        rebuild_stages=rebuild_stages,
+        workers=workers,
+        explain_reuse=explain_reuse,
+    )
+
+
+def _record_compilation_run(
+    store: RetainedArtifactStore,
+    council: AreaConfig,
+    result: CompilationResult,
+    *,
+    report_started_at: datetime,
+    elapsed_ms: int,
+    rebuild_stages: tuple[str, ...],
+    workers: str | int,
+    explain_reuse: bool,
+) -> CompilationResult:
+    publication_reused = bool(result.metadata.get("publication_reused"))
+    semantic_reused = bool(result.metadata.get("semantic_compilation_reused"))
+    reused = publication_reused or semantic_reused
+    published = result.status in {"complete", "reviewable"}
+    presentation_republished = bool(result.metadata.get("presentation_republished"))
+    semantic_bundle_disposition = result.metadata.get("semantic_bundle_disposition")
+    semantic_bundle_artifact_id = result.metadata.get("semantic_bundle_artifact_id")
+    if semantic_bundle_disposition not in {"hit", "build", "unavailable"}:
+        semantic_bundle_disposition = None
+    if (
+        not isinstance(semantic_bundle_artifact_id, str)
+        or _SHA256_PATTERN.fullmatch(semantic_bundle_artifact_id) is None
+    ):
+        semantic_bundle_artifact_id = None
+    events = (
+        RunArtifactEvent(
+            kind="semantic-compilation",
+            scope=council.area_id,
+            disposition=(
+                "failed"
+                if not published
+                else semantic_bundle_disposition
+                if semantic_bundle_disposition in {"hit", "build"}
+                else "hit"
+                if reused
+                else "build"
+            ),
+            reason=(
+                result.status
+                if not published
+                else str(result.metadata.get("semantic_bundle_reason"))
+                if semantic_bundle_disposition is not None
+                else "validated-semantic-publication"
+                if reused
+                else "compiled-from-governed-inputs"
+            ),
+            artifact_id=semantic_bundle_artifact_id,
+            elapsed_ms=max(0, elapsed_ms),
+        ),
+        RunArtifactEvent(
+            kind="presentation",
+            scope=council.area_id,
+            disposition=(
+                "skipped"
+                if not published
+                else "build"
+                if presentation_republished or not publication_reused
+                else "hit"
+            ),
+            reason=(
+                "semantic-compilation-incomplete"
+                if not published
+                else "forced-stage"
+                if presentation_republished and "presentation" in rebuild_stages
+                else "presentation-dependencies-changed"
+                if presentation_republished
+                else "generated-from-semantic-publication"
+                if not publication_reused
+                else "validated-current-presentation"
+            ),
+            artifact_id=None,
+            elapsed_ms=int(
+                max(
+                    0.0,
+                    float(result.metadata.get("presentation_elapsed_seconds", 0.0)),
+                )
+                * 1000
+            ),
+        ),
+        RunArtifactEvent(
+            kind="publication",
+            scope=council.area_id,
+            disposition="done" if published else "skipped",
+            reason=(
+                "semantic-compilation-incomplete"
+                if not published
+                else "validated-existing-publication"
+                if publication_reused and not presentation_republished
+                else "validated-atomic-replacement"
+            ),
+            artifact_id=None,
+            elapsed_ms=0,
+        ),
+    )
+    finished_at = datetime.now(UTC)
+    report_id = finished_at.strftime("%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex[:12]
+    report = CompilationRunReport(
+        run_id=report_id,
+        area_definition=str(council.config_path),
+        mode=(
+            "full"
+            if council.compilation.full
+            else "targeted"
+            if rebuild_stages
+            else "incremental"
+        ),
+        result=(
+            "failed"
+            if result.status in {"decision-required", "terminated"}
+            else "complete-with-gaps"
+            if result.gaps or result.status == "reviewable"
+            else "complete"
+        ),
+        started_at=report_started_at.isoformat().replace("+00:00", "Z"),
+        finished_at=finished_at.isoformat().replace("+00:00", "Z"),
+        workers={"requested": workers, "selected": 1},
+        artifact_events=events,
+        stitch=None,
+        publication={
+            "run_id": result.run_id,
+            "validation": "passed" if published else "none",
+            "replacement": (
+                "retained"
+                if not published
+                else "reused"
+                if publication_reused
+                else "atomic"
+            ),
+        },
+        peak_rss_bytes=0,
+    )
+    report_path = store.write_run_report(report)
+    result.metadata = {
+        **result.metadata,
+        "compilation_run_report": str(report_path),
+        **(
+            {"reuse_explanation": [event.payload() for event in events]}
+            if explain_reuse
+            else {}
+        ),
+    }
+    return result
 
 
 def compile_ea_recovery_candidate(config: AreaConfig | str | Path) -> Path:
@@ -593,6 +810,116 @@ def _copy_compilation_source(
     return {name: frame.copy(deep=True) for name, frame in source.items()}
 
 
+def _compiled_network_bundle_implementation_fingerprint() -> str:
+    """Bind reuse to both compiler semantics and the exact installed wire codec."""
+
+    codec_path = Path(compiled_network_bundle_codec.__file__ or "")
+    if not codec_path.is_file():
+        raise ValueError("compiled network bundle codec source is unavailable")
+    return hashlib.sha256(
+        json.dumps(
+            {
+                "compiler": _compiler_digest(),
+                "codec": hashlib.sha256(codec_path.read_bytes()).hexdigest(),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _compiled_network_bundle_specification(
+    council: AreaConfig,
+    *,
+    governed_input_fingerprint: str,
+    input_fingerprint: str,
+    dependency_manifest: dict[str, object],
+    evidence_state_fingerprint: str | None,
+) -> ArtifactSpecification:
+    dependency_identity = dependency_manifest.get("sha256")
+    if (
+        not isinstance(dependency_identity, str)
+        or _SHA256_PATTERN.fullmatch(dependency_identity) is None
+    ):
+        raise ValueError("compilation dependency manifest has no SHA-256 digest")
+    snapshot_identity = snapshot_manifest_sha256(council)
+    coverage = (snapshot_identity,) + (
+        (evidence_state_fingerprint,) if evidence_state_fingerprint is not None else ()
+    )
+    return ArtifactSpecification(
+        kind="compiled-network-bundle",
+        contract_version="satn-compiled-network-bundle/v1",
+        implementation_fingerprint=_compiled_network_bundle_implementation_fingerprint(),
+        dependency_manifest_fingerprint=dependency_identity,
+        parameters={
+            "area_identity": area_definition_sha256(council),
+            "input_identity": input_fingerprint,
+            "governed_input_fingerprint": governed_input_fingerprint,
+            "dependency_identity": dependency_identity,
+            "snapshot_identity": snapshot_identity,
+        },
+        upstream_artifact_ids=(),
+        partition_identities=(council.area_id,),
+        coverage_identities=coverage,
+        validation_contract="satn-compiled-network-bundle-strict/v1",
+        diagnostics={"compiler_path": "network"},
+    )
+
+
+def _compiled_network_bundle_bytes(payload: dict[str, object]) -> bytes:
+    return (
+        json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+        + b"\n"
+    )
+
+
+def _decode_retained_compiled_network(
+    store: RetainedArtifactStore,
+    artifact: RetainedArtifact,
+) -> CompiledNetwork | None:
+    try:
+        payload = json.loads(artifact.read_output("compiled-network-bundle"))
+        manifest_payload = artifact.manifest.identity_payload()
+        parameters = manifest_payload.get("parameters")
+        if not isinstance(parameters, dict):
+            raise ValueError("compiled network artifact parameters are invalid")
+        expected_identities = {
+            "area": parameters.get("area_identity"),
+            "input": parameters.get("input_identity"),
+            "dependency": parameters.get("dependency_identity"),
+        }
+        if payload.get("identities") != expected_identities:
+            raise ValueError("compiled network bundle identities differ from manifest")
+        if payload.get("upstream_artifact_ids") != list(
+            artifact.manifest.upstream_artifact_ids
+        ):
+            raise ValueError("compiled network bundle upstream identities differ from manifest")
+        decoded = compiled_network_bundle_codec.decode_compiled_network_bundle(
+            payload, CompiledNetwork
+        )
+    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+        LOGGER.warning(
+            "Retained compiled network bundle failed semantic validation; rebuilding reason=%s",
+            error,
+        )
+        store.reject_semantic_artifact(
+            artifact.artifact_id, reason="semantic-contract-invalid"
+        )
+        return None
+    if not isinstance(decoded, CompiledNetwork):
+        store.reject_semantic_artifact(
+            artifact.artifact_id, reason="semantic-contract-invalid"
+        )
+        return None
+    return decoded
+
+
 def _compile(
     config: AreaConfig,
     *,
@@ -603,6 +930,8 @@ def _compile(
     compiler_path: CompilerPath = "network",
     evidence_store: LocalEvidenceStore | None = None,
     evidence_state_fingerprint: str | None = None,
+    rebuild_stages: tuple[str, ...] = (),
+    artifact_store: RetainedArtifactStore | None = None,
 ) -> CompilationResult:
     """Compile a parsed area definition, reporting its current long-running stage."""
     if compiler_path not in {"network", "ea-recovery"}:
@@ -657,93 +986,143 @@ def _compile(
         council.source.snapshot_id,
         SCHEMA_VERSION,
     )
+    presentation_only_rebuild = set(rebuild_stages) == {"presentation"}
+    semantic_rebuild = bool(rebuild_stages) and not presentation_only_rebuild
     reused = (
         None
-        if recovery_candidate
+        if recovery_candidate or semantic_rebuild
         else _reuse_validated_publication(
             council,
             governed_input_fingerprint,
             input_fingerprint,
             dependency_manifest,
             officer_decisions=officer_decisions,
+            publication_authority=publication_authority,
+            force_presentation_republish=presentation_only_rebuild,
         )
     )
+    if semantic_rebuild:
+        LOGGER.info(
+            "Validated publication reuse disabled by targeted retained-stage rebuild stages=%s",
+            ",".join(rebuild_stages),
+        )
     if reused is not None:
         return reused
-    if heartbeat is not None:
-        heartbeat.set_stage("snapshot-load")
-    source = (
-        load_legacy_ea_recovery_snapshot(council)
-        if recovery_candidate
-        else load_snapshot(council)
-    )
-    LOGGER.info(
-        "Snapshot loaded places=%d road_edges=%d context_features=%d",
-        len(source["places"]),
-        len(source["network"]),
-        len(source.get("context", [])),
-    )
+    bundle_specification = None
+    semantic_bundle_artifact = None
+    semantic_bundle_disposition = "unavailable"
+    semantic_bundle_reason = "retained-store-unavailable"
+    compiled: CompiledNetwork | None = None
+    if (
+        artifact_store is not None
+        and not recovery_candidate
+        and not council.compilation.full
+        and not semantic_rebuild
+    ):
+        bundle_specification = _compiled_network_bundle_specification(
+            council,
+            governed_input_fingerprint=governed_input_fingerprint,
+            input_fingerprint=input_fingerprint,
+            dependency_manifest=dependency_manifest,
+            evidence_state_fingerprint=evidence_state_fingerprint,
+        )
+        bundle_resolution = artifact_store.resolve_specification(bundle_specification)
+        semantic_bundle_reason = bundle_resolution.reason
+        if bundle_resolution.artifact is not None:
+            compiled = _decode_retained_compiled_network(
+                artifact_store, bundle_resolution.artifact
+            )
+            if compiled is not None:
+                semantic_bundle_artifact = bundle_resolution.artifact
+                semantic_bundle_disposition = "hit"
+                semantic_bundle_reason = "validated-complete-compiled-network"
+                LOGGER.info(
+                    "Retained compiled network reused artifact=%s",
+                    semantic_bundle_artifact.artifact_id,
+                )
+    source = None
+    if compiled is None:
+        if heartbeat is not None:
+            heartbeat.set_stage("snapshot-load")
+        source = (
+            load_legacy_ea_recovery_snapshot(council)
+            if recovery_candidate
+            else load_snapshot(council)
+        )
+        LOGGER.info(
+            "Snapshot loaded places=%d road_edges=%d context_features=%d",
+            len(source["places"]),
+            len(source["network"]),
+            len(source.get("context", [])),
+        )
     runtime = (
         AgentRuntimeProvider(lambda: runtime_for(council.compilation.agent))
-        if council.compilation.agent.response_mode == "direct-runtime"
+        if compiled is None
+        and council.compilation.agent.response_mode == "direct-runtime"
         and council.compilation.agent.review_statuses
         else None
     )
     atm_reference = None
-    if council.atm.enabled and council.atm.mode == "seeded":
+    if compiled is None and council.atm.enabled and council.atm.mode == "seeded":
+        assert source is not None
         if heartbeat is not None:
             heartbeat.set_stage("atm-seeded-load-reprojection")
         atm_reference = load_atm(council).to_crs(source["network"].crs)
-    if heartbeat is not None:
-        heartbeat.set_stage("network-compilation")
-    try:
-        with governed_input_binding(
-            officer_decisions=officer_decisions,
-            evidence_store=evidence_store,
-            evidence_state_fingerprint=evidence_state_fingerprint,
-        ):
-            compiled = compile_network(
+    if compiled is None:
+        assert source is not None
+        if heartbeat is not None:
+            heartbeat.set_stage("network-compilation")
+        try:
+            with governed_input_binding(
+                officer_decisions=officer_decisions,
+                evidence_store=evidence_store,
+                evidence_state_fingerprint=evidence_state_fingerprint,
+            ):
+                compiled = compile_network(
+                    council,
+                    source,
+                    runtime,
+                    governed_input_fingerprint=governed_input_fingerprint,
+                    decision_resolver=decision_resolver,
+                    heartbeat=heartbeat,
+                )
+        except AgentDecisionRequired as required:
+            return _decision_required_result(
                 council,
-                source,
-                runtime,
-                governed_input_fingerprint=governed_input_fingerprint,
-                decision_resolver=decision_resolver,
-                heartbeat=heartbeat,
+                input_fingerprint,
+                required.request,
+                ledger,
+                required.applied_records,
+                required.applied_divergence_records,
+                required.validation,
             )
-    except AgentDecisionRequired as required:
-        return _decision_required_result(
-            council,
-            input_fingerprint,
-            required.request,
-            ledger,
-            required.applied_records,
-            required.applied_divergence_records,
-            required.validation,
-        )
-    except AgentCompilationTerminated as terminated:
-        return _terminated_result(council, input_fingerprint, terminated)
-    except GovernedEvidenceLoadError as error:
-        reviewable = terminal_reviewable_network_for_governed_evidence(
-            None,
-            officer_decisions,
-            detail=str(error),
-        )
-        return _reviewable_terminal_result(council, input_fingerprint, reviewable)
+        except AgentCompilationTerminated as terminated:
+            return _terminated_result(council, input_fingerprint, terminated)
+        except GovernedEvidenceLoadError as error:
+            reviewable = terminal_reviewable_network_for_governed_evidence(
+                None,
+                officer_decisions,
+                detail=str(error),
+            )
+            return _reviewable_terminal_result(council, input_fingerprint, reviewable)
+    assert compiled is not None
     reviewable = compiled.reviewable_network
     if reviewable is not None and reviewable.status.value == "terminal-failure":
         return _reviewable_terminal_result(council, input_fingerprint, reviewable)
-    compiled.compilation_input_fingerprint = input_fingerprint
-    compiled.governed_input_fingerprint = governed_input_fingerprint
-    compiled.snapshot_manifest_sha256 = snapshot_manifest_sha256(council)
-    compiled.area_definition_sha256 = area_definition_sha256(council)
-    compiled.compilation_dependency_manifest = dependency_manifest
-    LOGGER.info(
-        "Network compiled connections=%d gaps=%d status=%s",
-        compiled.connection_count,
-        len(compiled.gaps),
-        compiled.status,
-    )
-    if council.atm.enabled:
+    if semantic_bundle_disposition != "hit":
+        compiled.compilation_input_fingerprint = input_fingerprint
+        compiled.governed_input_fingerprint = governed_input_fingerprint
+        compiled.snapshot_manifest_sha256 = snapshot_manifest_sha256(council)
+        compiled.area_definition_sha256 = area_definition_sha256(council)
+        compiled.compilation_dependency_manifest = dependency_manifest
+        LOGGER.info(
+            "Network compiled connections=%d gaps=%d status=%s",
+            compiled.connection_count,
+            len(compiled.gaps),
+            compiled.status,
+        )
+    if semantic_bundle_disposition != "hit" and council.atm.enabled:
+        assert source is not None
         if council.atm.mode == "blind":
             if heartbeat is not None:
                 heartbeat.set_stage("atm-blind-load-reprojection")
@@ -777,30 +1156,69 @@ def _compile(
             "comparison_available": TrafficLight.GREEN,
             "unresolved_divergences": (TrafficLight.AMBER if unresolved else TrafficLight.GREEN),
         }
-    if heartbeat is not None:
-        heartbeat.set_stage("post-compilation-artifact-preparation")
-    unconsumed = {
-        response.request_id for response in ledger.responses
-    } - decision_resolver.consumed_request_ids
-    if unconsumed:
-        raise ValueError(
-            "decision ledger contains responses that do not belong to this compilation: "
-            + ", ".join(sorted(unconsumed))
-        )
-    compiled.decision_contract = ledger.decision_contract
-    compiled.decision_ledger_input = ledger.model_dump(mode="json")
-    # Execution order is not a durable audit order.  Persist the same canonical
-    # response order used by the ledger contract, so downstream equality checks
-    # cannot mistake a traversal-order difference for a different decision set.
-    compiled.accepted_decisions = AgentDecisionLedger.model_validate(
-        {
-            "decision_contract": ledger.decision_contract,
-            "responses": [
-                response.model_dump(mode="json")
-                for response in decision_resolver.accepted_responses
-            ],
-        }
-    ).model_dump(mode="json")["responses"]
+    if semantic_bundle_disposition != "hit":
+        if heartbeat is not None:
+            heartbeat.set_stage("post-compilation-artifact-preparation")
+        unconsumed = {
+            response.request_id for response in ledger.responses
+        } - decision_resolver.consumed_request_ids
+        if unconsumed:
+            raise ValueError(
+                "decision ledger contains responses that do not belong to this compilation: "
+                + ", ".join(sorted(unconsumed))
+            )
+        compiled.decision_contract = ledger.decision_contract
+        compiled.decision_ledger_input = ledger.model_dump(mode="json")
+        # Execution order is not a durable audit order.  Persist the same canonical
+        # response order used by the ledger contract, so downstream equality checks
+        # cannot mistake a traversal-order difference for a different decision set.
+        compiled.accepted_decisions = AgentDecisionLedger.model_validate(
+            {
+                "decision_contract": ledger.decision_contract,
+                "responses": [
+                    response.model_dump(mode="json")
+                    for response in decision_resolver.accepted_responses
+                ],
+            }
+        ).model_dump(mode="json")["responses"]
+        if artifact_store is not None and bundle_specification is not None:
+            assert source is not None
+            try:
+                bundle_payload = compiled_network_bundle_codec.encode_compiled_network_bundle(
+                    compiled,
+                    area_identity=area_definition_sha256(council),
+                    input_identity=input_fingerprint,
+                    dependency_identity=str(dependency_manifest["sha256"]),
+                    upstream_artifact_ids=bundle_specification.upstream_artifact_ids,
+                    bundle_crs=source["network"].crs,
+                )
+                semantic_bundle_artifact = artifact_store.put(
+                    bundle_specification,
+                    outputs={
+                        "compiled-network-bundle": _compiled_network_bundle_bytes(
+                            bundle_payload
+                        )
+                    },
+                )
+                canonical_compiled = _decode_retained_compiled_network(
+                    artifact_store, semantic_bundle_artifact
+                )
+                if canonical_compiled is None:
+                    raise ValueError(
+                        "newly retained compiled network bundle failed validation"
+                    )
+                # Cold and retained paths publish the same canonical, validated
+                # materialisation so byte-level publication equivalence is testable.
+                compiled = canonical_compiled
+                reviewable = compiled.reviewable_network
+                semantic_bundle_disposition = "build"
+                semantic_bundle_reason = "compiled-from-governed-inputs"
+            except (OSError, TypeError, ValueError) as error:
+                # Retention is an optimisation. A valid governed compilation must
+                # still reach the existing atomic publisher when retention fails.
+                semantic_bundle_disposition = "unavailable"
+                semantic_bundle_reason = "retention-failed"
+                LOGGER.warning("Compiled network bundle retention failed: %s", error)
     if heartbeat is not None:
         heartbeat.set_stage("publication-fingerprint")
     run_fingerprint = json.dumps(
@@ -1047,6 +1465,14 @@ def _compile(
             "network_model": "backbone-outward",
             "compilation_input_fingerprint": input_fingerprint,
             "compilation_metadata": compilation_metadata,
+            "semantic_compilation_reused": semantic_bundle_disposition == "hit",
+            "semantic_bundle_disposition": semantic_bundle_disposition,
+            "semantic_bundle_reason": semantic_bundle_reason,
+            **(
+                {"semantic_bundle_artifact_id": semantic_bundle_artifact.artifact_id}
+                if semantic_bundle_artifact is not None
+                else {}
+            ),
             "dft_traffic_evidence_state_fingerprint": evidence_state_fingerprint,
             "dft_traffic_match_policy_fingerprint": (
                 compiled.traffic_match_policy_fingerprint
@@ -1644,6 +2070,8 @@ def _reuse_validated_publication(
     dependency_manifest: dict[str, object],
     *,
     officer_decisions: tuple[PreloadedOfficerDecision, ...] = (),
+    publication_authority: PublicationDestinationAuthority | None = None,
+    force_presentation_republish: bool = False,
 ) -> CompilationResult | None:
     if council.compilation.full:
         LOGGER.info("Validated publication reuse disabled by --full")
@@ -1698,10 +2126,45 @@ def _reuse_validated_publication(
         if persisted_input_fingerprint != input_fingerprint:
             LOGGER.info("Existing publication input fingerprint differs; recompiling")
             return None
-        if not _review_map_assets_are_current(output):
-            LOGGER.info("Existing publication review-map assets differ; republishing")
-            return None
         validate_publication(output, council)
+        presentation_republished = False
+        presentation_elapsed: float | None = None
+        try:
+            presentation_input, presentation_manifest = validate_presentation_retention(run)
+        except ValueError as error:
+            LOGGER.info(
+                "Existing publication presentation retention is invalid; "
+                "recompiling reason=%s",
+                error,
+            )
+            return None
+        strategic = presentation_input["strategic_enabled"]
+        current_presentation_manifest = presentation_dependency_manifest(strategic=strategic)
+        if (
+            force_presentation_republish
+            or presentation_manifest != current_presentation_manifest
+            or run.get("presentation_dependency_fingerprint")
+            != current_presentation_manifest.get("sha256")
+            or not _review_map_assets_are_current(output)
+        ):
+            LOGGER.info("Existing publication presentation dependencies differ; republishing")
+            presentation_started = time.perf_counter()
+            try:
+                republish_presentation(
+                    council,
+                    publication_dependency_manifest=current_presentation_manifest,
+                    publication_authority=publication_authority,
+                )
+            except Exception as error:
+                # The republisher stages beside the live directory.  Surface a
+                # failed candidate rather than falling through to a fresh
+                # semantic compile that could replace the valid old publication.
+                raise RuntimeError(
+                    "presentation-only publication failed; previous publication retained"
+                ) from error
+            presentation_republished = True
+            presentation_elapsed = max(0.0, time.perf_counter() - presentation_started)
+            run = json.loads(run_path.read_text(encoding="utf-8"))
         agents_payload = json.loads((output / "agent-records.json").read_text(encoding="utf-8"))
         divergences_payload = json.loads(
             (output / "divergence-records.json").read_text(encoding="utf-8")
@@ -1715,6 +2178,19 @@ def _reuse_validated_publication(
             run["run_id"],
             output,
         )
+        metadata = dict(run)
+        # These are invocation-scoped result flags, never durable publication
+        # state.  Strip markers from older publications before ordinary reuse.
+        metadata.pop("presentation_republished", None)
+        metadata.pop("presentation_elapsed_seconds", None)
+        if presentation_republished:
+            metadata.update(
+                {
+                    "semantic_compilation_reused": True,
+                    "presentation_republished": True,
+                    "presentation_elapsed_seconds": presentation_elapsed,
+                }
+            )
         return CompilationResult(
             run_id=run["run_id"],
             status=run["status"],
@@ -1729,7 +2205,9 @@ def _reuse_validated_publication(
             divergence_records=[
                 DivergenceRecord.model_validate(record) for record in divergences_payload["records"]
             ],
-            metadata=run | {"publication_reused": True},
+            metadata=(metadata | {"publication_reused": True})
+            if not presentation_republished
+            else metadata,
         )
     except (KeyError, OSError, ValueError, json.JSONDecodeError) as error:
         LOGGER.warning(

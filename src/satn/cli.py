@@ -1,5 +1,6 @@
 """Command-line interface."""
 
+import json
 import logging
 from pathlib import Path
 from typing import Annotated
@@ -41,6 +42,22 @@ def _configure_logging(log_level: str) -> None:
     )
 
 
+def _worker_count(value: str) -> str | int:
+    if value == "auto":
+        return value
+    try:
+        workers = int(value)
+    except ValueError as error:
+        raise typer.BadParameter(
+            "expected auto or a positive integer", param_hint="--workers"
+        ) from error
+    if workers < 1:
+        raise typer.BadParameter(
+            "expected auto or a positive integer", param_hint="--workers"
+        )
+    return workers
+
+
 @app.command()
 def snapshot(
     config: Path,
@@ -77,6 +94,30 @@ def compile_command(
         False,
         "--full",
         help="Force recompilation instead of reusing an input-identical validated publication.",
+    ),
+    rebuild_stage: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--rebuild-stage",
+            help="Force this retained stage and its descendants for this invocation.",
+        ),
+    ] = None,
+    artifacts: Annotated[
+        Path | None,
+        typer.Option(
+            "--artifacts",
+            help="Override the workspace-local retained artifact root.",
+        ),
+    ] = None,
+    workers: str = typer.Option(
+        "auto",
+        "--workers",
+        help="Use auto or a positive local worker count; never changes semantic identity.",
+    ),
+    explain_reuse: bool = typer.Option(
+        False,
+        "--explain-reuse",
+        help="Print the machine-readable retained artifact run report path.",
     ),
     publication_workspace_root: Annotated[
         Path | None,
@@ -128,6 +169,10 @@ def compile_command(
             council,
             decision_ledger=decision_ledger,
             publication_authority=authority,
+            rebuild_stages=tuple(rebuild_stage or ()),
+            artifact_root=artifacts,
+            workers=_worker_count(workers),
+            explain_reuse=explain_reuse,
         )
     except Exception:
         LOGGER.exception("Compile command failed config=%s", config)
@@ -137,6 +182,13 @@ def compile_command(
         return
     typer.echo(f"{result.status}: {result.connections} connections, {result.gaps} gaps")
     typer.echo(result.output_dir)
+    if explain_reuse:
+        explanation = result.metadata.get("reuse_explanation")
+        if explanation is not None:
+            typer.echo(json.dumps(explanation, indent=2, sort_keys=True))
+        report = result.metadata.get("compilation_run_report")
+        if report is not None:
+            typer.echo(report)
 
 
 @app.command("compile-ea-recovery-candidate")
