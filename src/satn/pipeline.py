@@ -1013,12 +1013,7 @@ def _compile(
     semantic_bundle_disposition = "unavailable"
     semantic_bundle_reason = "retained-store-unavailable"
     compiled: CompiledNetwork | None = None
-    if (
-        artifact_store is not None
-        and not recovery_candidate
-        and not council.compilation.full
-        and not semantic_rebuild
-    ):
+    if artifact_store is not None and not recovery_candidate:
         bundle_specification = _compiled_network_bundle_specification(
             council,
             governed_input_fingerprint=governed_input_fingerprint,
@@ -1026,6 +1021,12 @@ def _compile(
             dependency_manifest=dependency_manifest,
             evidence_state_fingerprint=evidence_state_fingerprint,
         )
+    if (
+        artifact_store is not None
+        and bundle_specification is not None
+        and not council.compilation.full
+        and not semantic_rebuild
+    ):
         bundle_resolution = artifact_store.resolve_specification(bundle_specification)
         semantic_bundle_reason = bundle_resolution.reason
         if bundle_resolution.artifact is not None:

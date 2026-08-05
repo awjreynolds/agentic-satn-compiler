@@ -88,7 +88,7 @@ def test_full_compile_bypasses_retained_semantic_hit(
 ) -> None:  # type: ignore[no-untyped-def]
     config = prepared_config(tmp_path)
     artifact_root = tmp_path / "retained"
-    compile(config, artifact_root=artifact_root)
+    cold = compile(config, artifact_root=artifact_root)
     shutil.rmtree(config.publication.output_dir)
     config.compilation.full = True
     original = pipeline.compile_network
@@ -104,7 +104,10 @@ def test_full_compile_bypasses_retained_semantic_hit(
 
     assert calls == 1
     assert rebuilt.metadata["semantic_compilation_reused"] is False
-    assert rebuilt.metadata["semantic_bundle_disposition"] == "unavailable"
+    assert rebuilt.metadata["semantic_bundle_disposition"] == "build"
+    assert rebuilt.metadata["semantic_bundle_artifact_id"] == cold.metadata[
+        "semantic_bundle_artifact_id"
+    ]
 
 
 def test_storage_valid_bundle_with_wrong_bound_identity_is_quarantined(
