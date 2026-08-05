@@ -63,12 +63,14 @@ def test_removed_publication_is_rehydrated_from_complete_semantic_bundle(
     report = RetainedArtifactStore(artifact_root).read_run_report(
         Path(rehydrated.metadata["compilation_run_report"]).stem
     )
-    assert report.artifact_events[0].kind == "routing-assembly"
+    assert report.artifact_events[0].kind == "edge-enrichments"
     assert report.artifact_events[0].disposition == "hit"
-    semantic_event = report.artifact_events[1]
+    assert report.artifact_events[1].kind == "routing-assembly"
+    assert report.artifact_events[1].disposition == "hit"
+    semantic_event = report.artifact_events[2]
     assert semantic_event.disposition == "hit"
     assert semantic_event.artifact_id == artifact_id
-    assert report.artifact_events[2].disposition == "build"
+    assert report.artifact_events[3].disposition == "build"
     assert report.payload()["publication"]["replacement"] == "atomic"
     assert json.loads(rehydrated.artifacts["run"].read_text())["run_id"] == cold.run_id
 

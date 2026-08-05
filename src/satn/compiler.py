@@ -149,6 +149,14 @@ _ROUTING_CAPTURE: ContextVar[list[RoutingAssemblyBundle] | None] = ContextVar(
     "satn_compiler_routing_capture",
     default=None,
 )
+_EDGE_ENRICHMENT_REPLAY: ContextVar[gpd.GeoDataFrame | None] = ContextVar(
+    "satn_compiler_edge_enrichment_replay",
+    default=None,
+)
+_EDGE_ENRICHMENT_CAPTURE: ContextVar[list[gpd.GeoDataFrame] | None] = ContextVar(
+    "satn_compiler_edge_enrichment_capture",
+    default=None,
+)
 
 
 @contextmanager
@@ -174,6 +182,31 @@ def _routing_assembly_capture():
         yield captured
     finally:
         _ROUTING_CAPTURE.reset(token)
+
+
+@contextmanager
+def _routable_edge_enrichment_replay(frame: gpd.GeoDataFrame):
+    """Bind one validated marked-network frame for ordinary network replay."""
+
+    if not isinstance(frame, gpd.GeoDataFrame):
+        raise TypeError("edge-enrichment replay requires a GeoDataFrame")
+    token = _EDGE_ENRICHMENT_REPLAY.set(frame.copy(deep=True))
+    try:
+        yield
+    finally:
+        _EDGE_ENRICHMENT_REPLAY.reset(token)
+
+
+@contextmanager
+def _routable_edge_enrichment_capture():
+    """Capture the exact cold output of ``mark_ncn_edges``."""
+
+    captured: list[gpd.GeoDataFrame] = []
+    token = _EDGE_ENRICHMENT_CAPTURE.set(captured)
+    try:
+        yield captured
+    finally:
+        _EDGE_ENRICHMENT_CAPTURE.reset(token)
 
 
 @contextmanager
@@ -380,6 +413,7 @@ def compile_network(
         decision_resolver=decision_resolver,
         heartbeat=heartbeat,
         cross_spine_progress=cross_spine_progress,
+        edge_enrichment_replay_enabled=True,
         **(
             {
                 "officer_decisions": binding.officer_decisions,
@@ -415,6 +449,7 @@ def _compile_network_with_reference(
         cross_spine_progress=cross_spine_progress,
         reference_application_plan=reference_application_plan,
         routing_replay_enabled=False,
+        edge_enrichment_replay_enabled=False,
     )
 
 
@@ -441,6 +476,7 @@ def _compile_network_with_strategic_reference(
         cross_spine_progress=cross_spine_progress,
         validated_strategic_replay=validated_replay,
         routing_replay_enabled=False,
+        edge_enrichment_replay_enabled=False,
     )
 
 
@@ -460,6 +496,7 @@ def _compile_network(
     evidence_store: LocalEvidenceStore | None = None,
     evidence_state_fingerprint: str | None = None,
     routing_replay_enabled: bool = True,
+    edge_enrichment_replay_enabled: bool = True,
 ) -> CompiledNetwork:
     places = source["places"].copy().sort_values("place_id").reset_index(drop=True)
     context = source.get("context", empty_context(source["network"].crs)).copy()
@@ -498,7 +535,14 @@ def _compile_network(
         urban_scope_buffer_km=config.source.urban_scope_buffer_km,
     )
     gateways = places[places["kind"] == "cross_boundary_gateway"].copy()
-    routable_network = mark_ncn_edges(source["network"], context)
+    edge_replay = _EDGE_ENRICHMENT_REPLAY.get() if edge_enrichment_replay_enabled else None
+    if edge_replay is not None:
+        routable_network = edge_replay.copy(deep=True)
+    else:
+        routable_network = mark_ncn_edges(source["network"], context)
+        capture = _EDGE_ENRICHMENT_CAPTURE.get()
+        if capture is not None:
+            capture.append(routable_network.copy(deep=True))
     road_graph = RoadGraph(routable_network)
     routing_resolver = AgentDecisionResolver(
         decision_resolver.ledger if decision_resolver is not None else None,

@@ -179,6 +179,10 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
         "module",
         "canonical retained routing assembly replay contract",
     ),
+    "satn/routable_edge_enrichment.py": (
+        "module",
+        "canonical retained mark_ncn_edges output replay contract",
+    ),
     "satn/route_controls.py": (
         "module",
         "governed route exclusions, preferences and retained-gap constraints",

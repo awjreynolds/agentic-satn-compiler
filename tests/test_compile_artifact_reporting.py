@@ -63,12 +63,14 @@ def test_compile_records_incremental_controls_and_publication_outcome(
     assert report.result == "complete"
     assert report.payload()["workers"] == {"requested": 3, "selected": 1}
     assert [event.kind for event in report.artifact_events] == [
+        "edge-enrichments",
         "routing-assembly",
         "semantic-compilation",
         "presentation",
         "publication",
     ]
     assert [event.disposition for event in report.artifact_events] == [
+        "skipped",
         "skipped",
         "build",
         "build",
@@ -109,12 +111,14 @@ def test_compile_defaults_to_the_caller_workspace_artifact_store(
     assert report.mode == "incremental"
     assert [event.disposition for event in report.artifact_events] == [
         "skipped",
+        "skipped",
         "hit",
         "hit",
         "done",
     ]
-    assert report.artifact_events[0].reason == "publication-reused-routing-skipped"
-    assert report.artifact_events[1].reason == "validated-semantic-publication"
+    assert report.artifact_events[0].reason == "publication-reused-edge-enrichment-skipped"
+    assert report.artifact_events[1].reason == "publication-reused-routing-skipped"
+    assert report.artifact_events[2].reason == "validated-semantic-publication"
     assert "reuse_explanation" not in result.metadata
 
 
@@ -145,6 +149,7 @@ def test_nonpublishing_result_reports_failed_and_skipped_stages(
 
     assert report.result == "failed"
     assert [event.disposition for event in report.artifact_events] == [
+        "skipped",
         "skipped",
         "failed",
         "skipped",
