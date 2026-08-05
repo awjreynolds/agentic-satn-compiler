@@ -6,6 +6,8 @@ import json
 import shutil
 
 import geopandas as gpd
+import numpy as np
+import pandas as pd
 import pytest
 from shapely.geometry import LineString
 from test_recompilation import prepared_config
@@ -13,7 +15,7 @@ from test_recompilation import prepared_config
 import satn.compiler as compiler_module
 import satn.pipeline as pipeline_module
 from satn import compile
-from satn.compiled_network_bundle import BundleCodecError
+from satn.compiled_network_bundle import BundleCodecError, decode_geodataframe, encode_geodataframe
 from satn.retained_artifacts import RetainedArtifactStore
 from satn.routable_edge_enrichment import (
     decode_routable_edge_enrichment,
@@ -63,6 +65,63 @@ def test_marked_network_wire_is_canonical_and_row_order_independent() -> None:
     assert restored.geometry.to_wkb().tolist() == (
         _frame().sort_values("source_id").geometry.to_wkb().tolist()
     )
+
+
+def test_marked_network_wire_round_trips_primitive_ndarray_cells() -> None:
+    identities = _identities()
+    frame = _frame()
+    frame["highway"] = np.asarray(
+        [np.array(["cycleway"], dtype="<U8"), np.array(["track", "path"], dtype="<U5")],
+        dtype=object,
+    )
+
+    payload = encode_routable_edge_enrichment(frame, identities=identities)
+    restored = decode_routable_edge_enrichment(payload, identities=identities)
+
+    for expected, actual in zip(frame["highway"], restored["highway"], strict=True):
+        assert isinstance(actual, np.ndarray)
+        assert actual.dtype == expected.dtype
+        assert actual.shape == expected.shape
+        np.testing.assert_array_equal(actual, expected)
+    assert encode_routable_edge_enrichment(restored, identities=identities) == payload
+
+
+@pytest.mark.parametrize("dtype", [object, "<M8[ns]", "|V4", [("field", "i4")]])
+def test_marked_network_wire_rejects_unsafe_ndarray_dtypes(dtype: object) -> None:
+    frame = _frame()
+    frame["highway"] = pd.Series(
+        [np.empty(1, dtype=dtype), np.empty(1, dtype=dtype)], dtype=object
+    )
+    with pytest.raises(BundleCodecError, match="unsupported ndarray dtype"):
+        encode_routable_edge_enrichment(frame, identities=_identities())
+
+
+def test_ndarray_wire_rejects_malformed_payload() -> None:
+    frame = _frame()
+    frame["highway"] = pd.Series(
+        [np.array(["cycleway"], dtype="<U8"), np.array(["track"], dtype="<U5")], dtype=object
+    )
+    wire = encode_geodataframe(frame, stable_key_columns=("source_id", "u", "v", "key"))
+    highway_index = next(
+        index for index, column in enumerate(wire["columns"]) if column["name"] == "highway"
+    )
+    cell = wire["rows"][0]["cells"][highway_index]
+    cell["value"] = "AA=="
+    wire["rows"][0]["content_sha256"] = hashlib.sha256(
+        json.dumps(
+            wire["rows"][0]["cells"],
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode()
+    ).hexdigest()
+    body = {key: value for key, value in wire.items() if key != "content_sha256"}
+    wire["content_sha256"] = hashlib.sha256(
+        json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+    ).hexdigest()
+
+    with pytest.raises(BundleCodecError, match="byte length"):
+        decode_geodataframe(wire)
 
 
 def test_marked_network_wire_rejects_corruption_and_forged_identity() -> None:

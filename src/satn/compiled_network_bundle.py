@@ -31,6 +31,7 @@ _BUNDLE_CONTRACT = "satn-compiled-network-bundle/v1"
 _JSON_CONTRACT = "satn-canonical-typed-json/v1"
 _CRS_RULE_CONTRACT = "satn-bundle-frame-crs-rule/v1"
 _SHA256 = re.compile(r"[0-9a-f]{64}")
+_NDARRAY_KINDS = frozenset("biufcSU")
 
 
 class BundleCodecError(ValueError):
@@ -77,6 +78,30 @@ def _require_keys(value: object, expected: set[str], label: str) -> dict[str, An
     return value
 
 
+def _canonical_ndarray_dtype(value: object) -> np.dtype:
+    """Return a safe, canonical primitive dtype for the ndarray wire codec."""
+
+    if not isinstance(value, str):
+        raise BundleCodecError("ndarray dtype must be a string")
+    try:
+        dtype = np.dtype(value)
+    except (TypeError, ValueError) as exc:
+        raise BundleCodecError("invalid ndarray dtype") from exc
+    # Structured, object, subarray, datetime, and void dtypes can carry
+    # interpretation or executable-adjacent metadata that this data-only wire
+    # contract does not need.  Keep the allow-list deliberately narrow.
+    if (
+        dtype.str != value
+        or dtype.fields is not None
+        or dtype.hasobject
+        or dtype.subdtype is not None
+        or dtype.kind not in _NDARRAY_KINDS
+        or dtype.itemsize <= 0
+    ):
+        raise BundleCodecError("unsupported ndarray dtype")
+    return dtype
+
+
 def _wire_value(value: object) -> dict[str, object]:
     if value is None or value is pd.NA or (value is pd.NaT):
         return {"type": "null"}
@@ -98,6 +123,15 @@ def _wire_value(value: object) -> dict[str, object]:
         return {"type": "string", "value": value}
     if isinstance(value, bytes):
         return {"type": "bytes", "value": base64.b64encode(value).decode("ascii")}
+    if isinstance(value, np.ndarray):
+        dtype = _canonical_ndarray_dtype(value.dtype.str)
+        raw = value.tobytes(order="C")
+        return {
+            "type": "ndarray",
+            "dtype": dtype.str,
+            "shape": list(value.shape),
+            "value": base64.b64encode(raw).decode("ascii"),
+        }
     if isinstance(value, datetime):
         return {"type": "datetime", "value": value.isoformat()}
     if isinstance(value, date):
@@ -173,6 +207,40 @@ def _unwire_value(value: object) -> object:
             return base64.b64decode(item, validate=True)
         except (TypeError, ValueError) as exc:
             raise BundleCodecError("invalid canonical bytes") from exc
+    if kind == "ndarray":
+        item = _require_keys(value, {"type", "dtype", "shape", "value"}, "ndarray value")
+        dtype = _canonical_ndarray_dtype(item["dtype"])
+        shape = item["shape"]
+        if (
+            not isinstance(shape, list)
+            or any(
+                isinstance(dimension, bool) or not isinstance(dimension, int)
+                for dimension in shape
+            )
+            or any(dimension < 0 for dimension in shape)
+        ):
+            raise BundleCodecError("invalid ndarray shape")
+        encoded = item["value"]
+        if not isinstance(encoded, str):
+            raise BundleCodecError("invalid ndarray bytes")
+        try:
+            raw = base64.b64decode(encoded, validate=True)
+        except (TypeError, ValueError) as exc:
+            raise BundleCodecError("invalid ndarray bytes") from exc
+        if base64.b64encode(raw).decode("ascii") != encoded:
+            raise BundleCodecError("ndarray bytes are not canonical base64")
+        element_count = math.prod(shape, start=1)
+        expected_size = element_count * dtype.itemsize
+        if (
+            element_count > sys.maxsize
+            or expected_size > sys.maxsize
+            or expected_size != len(raw)
+        ):
+            raise BundleCodecError("ndarray byte length does not match dtype and shape")
+        try:
+            return np.frombuffer(raw, dtype=dtype, count=element_count).reshape(shape).copy()
+        except (TypeError, ValueError) as exc:
+            raise BundleCodecError("invalid ndarray payload") from exc
     if kind in {"date", "datetime"}:
         item = _require_keys(value, {"type", "value"}, f"{kind} value")["value"]
         if not isinstance(item, str):
