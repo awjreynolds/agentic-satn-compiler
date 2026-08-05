@@ -28,6 +28,24 @@ content-addressed shards, downloads and a copied provenance lock.
 identity, allowed roots, artifact hashes, manifests, publication status and package
 size before Pages can deploy it.
 
+## Reading provenance and timing
+
+`publication.json` is the deployment-level index. Its `run_id`, status, input and
+compilation fingerprints, `compilation_metadata.completed_at_utc` and
+`compilation_metadata.duration_seconds` identify when compilation finished and
+publication began, and how much monotonic compiler time elapsed before that boundary.
+`compiler-run.json` carries the criteria, authoritative
+feature roles and diagnostics; `provenance-lock.json` binds the packaged bytes and
+governed source identities. A changed snapshot, configuration, accepted decision or
+active compiler dependency produces a new compilation identity rather than silently
+reusing an old result.
+
+The interactive deployment opens the Strategic Network and Places layers. Optional
+layers include discarded candidates, existing/upgradeable assets, officer divergence,
+graph diagnostics, Candidate Low-Traffic Areas, Schools, traffic evidence and
+topography. Optional does not mean ungoverned: each layer retains its source,
+fingerprints and evidence state, including explicit unknown or unavailable values.
+
 ## Stable references
 
 Library callers should refer to artifacts and features through

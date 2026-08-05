@@ -3,6 +3,12 @@
 Build an inspectable Strategic Active Travel Network from governed evidence, explicit
 planning rules and bounded human or AI choices.
 
+The compiler's product is an **effective strategic network**: one reviewable,
+versioned Backbone-and-Access result with Strategic Spines, bounded access,
+Cross-Spine Connectors, named Places and explicit gaps. The default public map opens
+on Strategic Network + Places; evidence inventories and diagnostics are available when
+the reviewer needs them.
+
 > Experimental proof of concept — not an adopted plan, scheme design, safety audit,
 > legal-access finding or investment case.
 
@@ -18,6 +24,7 @@ or [build your first local map](docs/getting-started/agent-quickstart.md).
 | --- | --- |
 | **Reuse-first route selection** | Existing cycle provision, current and reclassified NCN, Greenways, PROWs and governed local links stay visible and can be preferred through configuration instead of hidden engine rules. |
 | **Intervention-legible network** | Route cores distinguish existing provision, upgrade required and proposed new links. Halos show the physical Alignment Basis, so the map explains both what is followed and what must change. |
+| **Network structure, not a route cloud** | Strategic Spines form the shared backbone, Communities and Schools attach through bounded access, and Cross-Spine Connectors preserve how transverse links were derived. |
 | **Alternatives remain inspectable** | Existing assets and candidates do not disappear when unselected. Officer/compiler divergence is highlighted rather than silently overwritten. |
 | **A map always comes back** | Valid inputs produce a Reviewable Network. Missing evidence and broken continuity remain explicit Network Gaps; the compiler does not invent a route or fail merely to avoid an incomplete result. |
 | **Bounded AI, deterministic authority** | An agent may investigate a typed evidence request or choose from a finite compiler-authored menu. It cannot add geometry, manufacture facts, change policy or publish. |
