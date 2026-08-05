@@ -17,15 +17,17 @@ def test_gradient_inspection_interface_contract() -> None:
         "gradient-path-remove",
         "gradient-path-reverse",
         "gradient-path-reset",
-        "linear-evidence-panel",
-        "evidence-panel-heading",
+        "review-lens",
+        "review-lens-close",
+        "review-gradient-details",
         "feature-details",
         "linear-evidence-view",
         "terrain-mode",
     ):
         assert f'id="{identifier}"' in html
-    assert '<h2 id="evidence-panel-heading">Evidence Panel</h2>' in html
-    assert '<h3 id="details-heading">Artifact evidence</h3>' in html
+    assert 'id="linear-evidence-panel"' not in html
+    assert 'role="dialog" aria-label="Route review lens"' in html
+    assert '>Show gradient details</button>' in html
     assert '<h3 id="linear-evidence-heading">Linear Evidence</h3>' in html
     assert 'id="linear-evidence-view" aria-labelledby="linear-evidence-heading" hidden' in html
     assert html.index('id="feature-details"') > html.index('<section class="workspace"')

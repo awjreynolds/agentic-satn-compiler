@@ -156,7 +156,7 @@ Before accepting the analytical contract, run the same fixture suite against rep
 - The 3D terrain may use the same broad source family, but it is still a display aid and must not become the analytical evidence channel.
 - Terrain exaggeration can improve visual legibility, but it multiplies displayed height; it does not alter the derived gradient.
 - A 1:10 slope is 10%. Over 50 m it rises only 5 m, so it will remain visually subtle at a district-scale camera unless vertically exaggerated.
-- The Linear Evidence Panel is the correct place to communicate the actual gradient and its distance window.
+- The on-demand Linear Evidence View opened from a pinned Review Lens is the correct place to communicate the actual gradient and its distance window.
 
 ## Remaining decisions and unknowns
 

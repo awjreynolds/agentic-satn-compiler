@@ -30,7 +30,15 @@ A selected route carries two independent visual facts:
   railway, local connector, road class or proposed corridor.
 
 An unresolved gap is an endpoint finding, not a straight line pretending to be a
-route. Patterns and text repeat colour meaning in the legend and evidence panel.
+route. Patterns and text repeat colour meaning in the legend and the map's compact
+Review Lens.
+
+Hover or keyboard-focus a visible artifact for a high-level preview, then click or
+tap to pin it. Selecting a second comparable line segment opens a two-segment view
+with a display-only spider chart and the authoritative raw values beneath it.
+Missing dimensions remain **Unknown**, and the chart does not calculate a winner or
+feed route selection. Layer checkboxes only change visibility; their explanations
+open only from the adjacent information control.
 
 ## 3. Reuse existing assets without hiding judgement
 
@@ -154,8 +162,10 @@ governed elevation evidence when available and an explicit unavailable state whe
 is not. Candidate evidence retains total absolute
 elevation change for comparison; the deployed map exposes forward/reverse ascent
 and descent, steepest sustained gradient and a zoomed Gradient Section view on a
-shared distance axis. Unavailable elevation remains explicitly unavailable and
-never reads as “flat”. Terrain colouring describes gradient, not a route score.
+shared distance axis. The detailed Linear Evidence View opens deliberately from a
+pinned Review Lens instead of occupying permanent map space. Unavailable elevation
+remains explicitly unavailable and never reads as “flat”. Terrain colouring
+describes gradient, not a route score.
 
 Where configured, the optional **DfT Motor Traffic** layer shows governed traffic
 observations or bounded candidate-route evidence. A missing count point is not
