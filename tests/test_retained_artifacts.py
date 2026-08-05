@@ -69,6 +69,29 @@ def test_retained_artifact_can_be_resolved_from_its_semantic_specification(
     assert resolution.artifact.artifact_id == written.artifact_id
 
 
+def test_active_lineage_resolution_is_exact_and_fails_closed_for_malformed_pin(
+    tmp_path: Path,
+) -> None:
+    store = RetainedArtifactStore.in_workspace(tmp_path)
+    artifact = store.put(area_extraction_specification(), outputs={"features": b"features"})
+    reference = "a" * 64
+    store.pin("active-lineage", reference, artifact.artifact_id)
+
+    hit = store.resolve_active_lineage(reference)
+    assert hit.disposition == "validated-hit"
+    assert hit.reason == "validated-active-lineage"
+    assert hit.artifact is not None
+    assert hit.artifact.artifact_id == artifact.artifact_id
+
+    pin_path = tmp_path / ".satn" / "lineages" / "active-lineage" / f"{reference}.json"
+    pin_path.parent.mkdir(parents=True, exist_ok=True)
+    pin_path.write_text("{}\n", encoding="utf-8")
+    malformed = store.resolve_active_lineage(reference)
+    assert malformed.disposition == "miss"
+    assert malformed.reason == "active-lineage-pin-invalid"
+    assert malformed.artifact is None
+
+
 def test_specification_resolution_fails_closed_for_nondeterministic_outputs(
     tmp_path: Path,
 ) -> None:

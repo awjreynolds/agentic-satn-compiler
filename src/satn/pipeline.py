@@ -365,7 +365,39 @@ def _record_compilation_run(
         or _SHA256_PATTERN.fullmatch(semantic_bundle_artifact_id) is None
     ):
         semantic_bundle_artifact_id = None
+    routing_bundle_disposition = result.metadata.get("routing_bundle_disposition")
+    routing_bundle_artifact_id = result.metadata.get("routing_bundle_artifact_id")
+    if routing_bundle_disposition not in {"hit", "build"}:
+        routing_bundle_disposition = None
+    if (
+        not isinstance(routing_bundle_artifact_id, str)
+        or _SHA256_PATTERN.fullmatch(routing_bundle_artifact_id) is None
+    ):
+        routing_bundle_artifact_id = None
+    routing_skipped_reason = (
+        "publication-reused-routing-skipped"
+        if publication_reused
+        else "routing-retention-unavailable"
+    )
     events = (
+        RunArtifactEvent(
+            kind="routing-assembly",
+            scope=council.area_id,
+            disposition=(
+                "skipped"
+                if publication_reused
+                else routing_bundle_disposition
+                if routing_bundle_disposition in {"hit", "build"}
+                else "skipped"
+            ),
+            reason=(
+                routing_skipped_reason
+                if publication_reused or routing_bundle_disposition is None
+                else str(result.metadata.get("routing_bundle_reason"))
+            ),
+            artifact_id=routing_bundle_artifact_id,
+            elapsed_ms=0,
+        ),
         RunArtifactEvent(
             kind="semantic-compilation",
             scope=council.area_id,
@@ -374,6 +406,8 @@ def _record_compilation_run(
                 if not published
                 else semantic_bundle_disposition
                 if semantic_bundle_disposition in {"hit", "build"}
+                else "skipped"
+                if semantic_bundle_disposition == "unavailable"
                 else "hit"
                 if reused
                 else "build"
@@ -854,6 +888,8 @@ def _compiled_network_bundle_specification(
     input_fingerprint: str,
     dependency_manifest: dict[str, object],
     evidence_state_fingerprint: str | None,
+    upstream_artifact_ids: tuple[str, ...] = (),
+    routing_input_identity: str | None = None,
 ) -> ArtifactSpecification:
     dependency_identity = dependency_manifest.get("sha256")
     if (
@@ -865,19 +901,22 @@ def _compiled_network_bundle_specification(
     coverage = (snapshot_identity,) + (
         (evidence_state_fingerprint,) if evidence_state_fingerprint is not None else ()
     )
+    parameters: dict[str, object] = {
+        "area_identity": area_definition_sha256(council),
+        "input_identity": input_fingerprint,
+        "governed_input_fingerprint": governed_input_fingerprint,
+        "dependency_identity": dependency_identity,
+        "snapshot_identity": snapshot_identity,
+    }
+    if routing_input_identity is not None:
+        parameters["routing_input_identity"] = routing_input_identity
     return ArtifactSpecification(
         kind="compiled-network-bundle",
         contract_version="satn-compiled-network-bundle/v1",
         implementation_fingerprint=_compiled_network_bundle_implementation_fingerprint(),
         dependency_manifest_fingerprint=dependency_identity,
-        parameters={
-            "area_identity": area_definition_sha256(council),
-            "input_identity": input_fingerprint,
-            "governed_input_fingerprint": governed_input_fingerprint,
-            "dependency_identity": dependency_identity,
-            "snapshot_identity": snapshot_identity,
-        },
-        upstream_artifact_ids=(),
+        parameters=parameters,
+        upstream_artifact_ids=upstream_artifact_ids,
         partition_identities=(council.area_id,),
         coverage_identities=coverage,
         validation_contract="satn-compiled-network-bundle-strict/v1",
@@ -1010,27 +1049,62 @@ def _routing_source_identities(
     return area_identity, source_identity
 
 
-def _routing_input_identity(
+def _routing_snapshot_area_identity(council: AreaConfig) -> str:
+    """Derive the routing boundary identity without loading the full snapshot."""
+
+    snapshot_root = council.source.snapshot_dir / council.source.snapshot_id
+    manifest_path = snapshot_root / "snapshot.json"
+    boundary_path = snapshot_root / "boundary.geojson"
+    if (
+        manifest_path.is_symlink()
+        or not manifest_path.is_file()
+        or boundary_path.is_symlink()
+        or not boundary_path.is_file()
+    ):
+        raise ValueError("routing boundary snapshot input is unavailable")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+        raise ValueError("routing snapshot manifest is invalid") from error
+    file_hashes = manifest.get("file_sha256") if isinstance(manifest, dict) else None
+    if not isinstance(file_hashes, dict) or file_hashes.get("boundary.geojson") != hashlib.sha256(
+        boundary_path.read_bytes()
+    ).hexdigest():
+        raise ValueError("routing boundary snapshot digest differs from manifest")
+    boundary = gpd.read_file(boundary_path)
+    boundary_identity = _routing_frame_payload("boundary", boundary)["content_sha256"]
+    if not isinstance(boundary_identity, str):
+        raise ValueError("routing boundary identity is invalid")
+    return hashlib.sha256(
+        json.dumps(
+            {
+                "contract": "satn-routing-area-input/v1",
+                "area_id": council.area_id,
+                "boundary": boundary_identity,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _routing_lineage_identity(
     council: AreaConfig,
-    source: dict[str, gpd.GeoDataFrame],
     *,
     ledger: AgentDecisionLedger,
     dependency_manifest: dict[str, object],
-) -> tuple[str, str]:
-    """Return stage-scoped area/input identities for routing assembly reuse."""
+) -> str:
+    """Bind active route replay to source release and route configuration."""
 
     dependency_identity = dependency_manifest.get("sha256")
-    if (
-        not isinstance(dependency_identity, str)
-        or _SHA256_PATTERN.fullmatch(dependency_identity) is None
+    if not isinstance(dependency_identity, str) or not _SHA256_PATTERN.fullmatch(
+        dependency_identity
     ):
         raise ValueError("compilation dependency manifest has no SHA-256 digest")
-    area_identity, source_identity = _routing_source_identities(council, source)
     payload = {
-        "contract": "satn-routing-input/v1",
-        "schema_version": SCHEMA_VERSION,
-        "area_identity": area_identity,
-        "source_identity": source_identity,
+        "contract": "satn-routing-lineage/v1",
+        "area_definition": area_definition_sha256(council),
         "snapshot_identity": snapshot_manifest_sha256(council),
         "source_semantics": {
             "urban_place_types": list(council.source.urban_place_types),
@@ -1048,15 +1122,62 @@ def _routing_input_identity(
         },
         "dependency_identity": dependency_identity,
     }
-    return area_identity, hashlib.sha256(
+    return hashlib.sha256(
         json.dumps(
             payload,
             sort_keys=True,
             separators=(",", ":"),
             ensure_ascii=True,
-            allow_nan=False,
         ).encode("utf-8")
     ).hexdigest()
+
+
+def _routing_input_identity_from_lineage(
+    *,
+    area_identity: str,
+    lineage_identity: str,
+) -> str:
+    """Derive replay identity from governed area and route lineage only."""
+
+    return hashlib.sha256(
+        json.dumps(
+            {
+                "contract": "satn-routing-input/v2",
+                "area_identity": area_identity,
+                "lineage_identity": lineage_identity,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _routing_input_identity(
+    council: AreaConfig,
+    source: dict[str, gpd.GeoDataFrame],
+    *,
+    ledger: AgentDecisionLedger,
+    dependency_manifest: dict[str, object],
+) -> tuple[str, str]:
+    """Return stage-scoped area/input identities for routing assembly reuse."""
+
+    dependency_identity = dependency_manifest.get("sha256")
+    if (
+        not isinstance(dependency_identity, str)
+        or _SHA256_PATTERN.fullmatch(dependency_identity) is None
+    ):
+        raise ValueError("compilation dependency manifest has no SHA-256 digest")
+    area_identity, _ = _routing_source_identities(council, source)
+    lineage_identity = _routing_lineage_identity(
+        council,
+        ledger=ledger,
+        dependency_manifest=dependency_manifest,
+    )
+    return area_identity, _routing_input_identity_from_lineage(
+        area_identity=area_identity,
+        lineage_identity=lineage_identity,
+    )
 
 
 def _routing_bundle_implementation_fingerprint() -> str:
@@ -1107,6 +1228,11 @@ def _routing_bundle_specification(
             parameters={
                 "area_identity": area_identity,
                 "input_identity": input_identity,
+                "lineage_identity": _routing_lineage_identity(
+                    council,
+                    ledger=ledger,
+                    dependency_manifest=dependency_manifest,
+                ),
                 "dependency_identity": dependency_identity,
                 "snapshot_identity": snapshot_identity,
             },
@@ -1125,6 +1251,10 @@ def _decode_retained_routing_bundle(
     artifact: RetainedArtifact,
 ) -> RoutingAssemblyBundle | None:
     try:
+        if tuple(item.role for item in artifact.manifest.outputs) != (
+            "routing-assembly-bundle",
+        ):
+            raise ValueError("routing artifact output roster is invalid")
         payload = json.loads(artifact.read_output("routing-assembly-bundle"))
         parameters = artifact.manifest.identity_payload().get("parameters")
         if not isinstance(parameters, dict):
@@ -1151,6 +1281,194 @@ def _decode_retained_routing_bundle(
         )
         return None
     return decoded
+
+
+def _artifact_manifest_matches_specification(
+    manifest: object,
+    specification: ArtifactSpecification,
+    *,
+    upstream_artifact_ids: tuple[str, ...] | None = None,
+) -> bool:
+    """Compare every semantic manifest field, including exact upstream IDs."""
+
+    expected_upstream = (
+        specification.upstream_artifact_ids
+        if upstream_artifact_ids is None
+        else upstream_artifact_ids
+    )
+    return (
+        getattr(manifest, "kind", None) == specification.kind
+        and getattr(manifest, "contract_version", None) == specification.contract_version
+        and getattr(manifest, "status", None) == specification.status
+        and getattr(manifest, "implementation_fingerprint", None)
+        == specification.implementation_fingerprint
+        and getattr(manifest, "dependency_manifest_fingerprint", None)
+        == specification.dependency_manifest_fingerprint
+        and getattr(manifest, "parameters", None) == specification.parameters
+        and getattr(manifest, "upstream_artifact_ids", None) == expected_upstream
+        and getattr(manifest, "partition_identities", None) == specification.partition_identities
+        and getattr(manifest, "coverage_identities", None) == specification.coverage_identities
+        and getattr(manifest, "validation_contract", None) == specification.validation_contract
+        and getattr(manifest, "diagnostics", None) == specification.diagnostics
+    )
+
+
+def _prepare_active_semantic_reuse(
+    council: AreaConfig,
+    *,
+    base_specification: ArtifactSpecification,
+    input_fingerprint: str,
+    governed_input_fingerprint: str,
+    evidence_state_fingerprint: str | None,
+    ledger: AgentDecisionLedger,
+    dependency_manifest: dict[str, object],
+    artifact_store: RetainedArtifactStore,
+) -> tuple[
+    CompiledNetwork | None,
+    RetainedArtifact | None,
+    RetainedArtifact | None,
+    RoutingAssemblyBundle | None,
+    str | None,
+    str,
+]:
+    """Resolve a semantic artifact through one exact active-lineage pin.
+
+    The semantic manifest is the authority for its route dependency.  We
+    validate that target, its complete closure, the one route upstream and the
+    route wire before accepting the source-free hit.  A miss is intentionally
+    fail-closed and leaves normal source/routing resolution to the caller.
+    """
+
+    pin_resolution = artifact_store.resolve_active_lineage(input_fingerprint)
+    if pin_resolution.artifact is None:
+        return None, None, None, None, None, pin_resolution.reason
+    semantic_artifact = pin_resolution.artifact
+    manifest = semantic_artifact.manifest
+    upstream = manifest.upstream_artifact_ids
+    if (
+        manifest.kind != "compiled-network-bundle"
+        or manifest.contract_version != base_specification.contract_version
+        or len(upstream) != 1
+    ):
+        return None, None, None, None, None, "active-lineage-semantic-input-mismatch"
+    route_id = upstream[0]
+    route_resolution = artifact_store.resolve(route_id)
+    if route_resolution.artifact is None:
+        return (
+            None,
+            None,
+            None,
+            None,
+            None,
+            f"active-lineage-route-{route_resolution.reason}",
+        )
+    route_artifact = route_resolution.artifact
+    route_manifest = route_artifact.manifest
+    if (
+        route_manifest.kind != "routing-assembly-bundle"
+        or route_manifest.contract_version != "satn-routing-assembly-bundle/v1"
+        or route_manifest.implementation_fingerprint
+        != _routing_bundle_implementation_fingerprint()
+        or route_manifest.dependency_manifest_fingerprint
+        != base_specification.dependency_manifest_fingerprint
+        or route_manifest.validation_contract
+        != "satn-routing-assembly-bundle-strict/v1"
+        or route_manifest.coverage_identities
+        != (snapshot_manifest_sha256(council),)
+        or route_manifest.upstream_artifact_ids
+    ):
+        return None, None, None, None, None, "active-lineage-route-invalid"
+    if route_manifest.identity_payload().get("diagnostics") != {
+        "compiler_path": "network",
+        "stage": "routing-assembly",
+    }:
+        return None, None, None, None, None, "active-lineage-route-invalid"
+    route_specification = ArtifactSpecification(
+        kind=route_manifest.kind,
+        contract_version=route_manifest.contract_version,
+        implementation_fingerprint=route_manifest.implementation_fingerprint,
+        dependency_manifest_fingerprint=route_manifest.dependency_manifest_fingerprint,
+        parameters=route_manifest.identity_payload()["parameters"],
+        upstream_artifact_ids=route_manifest.upstream_artifact_ids,
+        partition_identities=route_manifest.partition_identities,
+        coverage_identities=route_manifest.coverage_identities,
+        validation_contract=route_manifest.validation_contract,
+        diagnostics=route_manifest.identity_payload()["diagnostics"],
+        status=route_manifest.status,
+    )
+    route_exact = artifact_store.resolve_specification(route_specification)
+    if route_exact.artifact is None:
+        return None, None, None, None, None, route_exact.reason
+    if route_exact.artifact.artifact_id != route_artifact.artifact_id:
+        return None, None, None, None, None, "nondeterministic-routing-candidates"
+    route_parameters = route_manifest.identity_payload().get("parameters")
+    try:
+        expected_route_area_identity = _routing_snapshot_area_identity(council)
+        expected_route_lineage_identity = _routing_lineage_identity(
+            council,
+            ledger=ledger,
+            dependency_manifest=dependency_manifest,
+        )
+    except (OSError, TypeError, ValueError) as error:
+        LOGGER.info("Active routing lineage validation unavailable: %s", error)
+        return None, None, None, None, None, "active-lineage-route-input-unavailable"
+    semantic_parameters = {
+        "area_identity": expected_route_area_identity,
+        "lineage_identity": expected_route_lineage_identity,
+        "dependency_identity": base_specification.dependency_manifest_fingerprint,
+        "snapshot_identity": snapshot_manifest_sha256(council),
+    }
+    if not isinstance(route_parameters, dict):
+        return None, None, None, None, None, "active-lineage-route-parameters-invalid"
+    for key in (
+        "area_identity",
+        "lineage_identity",
+        "dependency_identity",
+        "snapshot_identity",
+    ):
+        if route_parameters.get(key) != semantic_parameters.get(key):
+            return None, None, None, None, None, "active-lineage-route-input-mismatch"
+    expected_route_input_identity = _routing_input_identity_from_lineage(
+        area_identity=expected_route_area_identity,
+        lineage_identity=expected_route_lineage_identity,
+    )
+    if route_parameters.get("input_identity") != expected_route_input_identity:
+        return None, None, None, None, None, "active-lineage-route-input-mismatch"
+    routing_bundle = _decode_retained_routing_bundle(artifact_store, route_artifact)
+    if routing_bundle is None:
+        return None, None, None, None, None, "active-lineage-route-contract-invalid"
+    route_input_fingerprint = route_parameters.get("input_identity")
+    if not isinstance(route_input_fingerprint, str) or not _SHA256_PATTERN.fullmatch(
+        route_input_fingerprint
+    ):
+        return None, None, None, None, None, "active-lineage-route-input-invalid"
+    semantic_specification = _compiled_network_bundle_specification(
+        council,
+        governed_input_fingerprint=governed_input_fingerprint,
+        input_fingerprint=input_fingerprint,
+        dependency_manifest=dependency_manifest,
+        evidence_state_fingerprint=evidence_state_fingerprint,
+        upstream_artifact_ids=(route_id,),
+        routing_input_identity=route_input_fingerprint,
+    )
+    if not _artifact_manifest_matches_specification(manifest, semantic_specification):
+        return None, None, None, None, None, "active-lineage-semantic-input-mismatch"
+    exact = artifact_store.resolve_specification(semantic_specification)
+    if exact.artifact is None:
+        return None, None, None, None, None, exact.reason
+    if exact.artifact.artifact_id != semantic_artifact.artifact_id:
+        return None, None, None, None, None, "nondeterministic-output-candidates"
+    compiled = _decode_retained_compiled_network(artifact_store, semantic_artifact)
+    if compiled is None:
+        return None, None, None, None, None, "semantic-contract-invalid"
+    return (
+        compiled,
+        semantic_artifact,
+        route_artifact,
+        routing_bundle,
+        route_input_fingerprint,
+        "validated-active-lineage",
+    )
 
 
 def _prepare_routing_reuse(
@@ -1257,6 +1575,10 @@ def _decode_retained_compiled_network(
     artifact: RetainedArtifact,
 ) -> CompiledNetwork | None:
     try:
+        if tuple(item.role for item in artifact.manifest.outputs) != (
+            "compiled-network-bundle",
+        ):
+            raise ValueError("compiled network artifact output roster is invalid")
         payload = json.loads(artifact.read_output("compiled-network-bundle"))
         manifest_payload = artifact.manifest.identity_payload()
         parameters = manifest_payload.get("parameters")
@@ -1407,20 +1729,48 @@ def _compile(
         and not council.compilation.full
         and not semantic_rebuild
     ):
-        bundle_resolution = artifact_store.resolve_specification(bundle_specification)
-        semantic_bundle_reason = bundle_resolution.reason
-        if bundle_resolution.artifact is not None:
-            compiled = _decode_retained_compiled_network(
-                artifact_store, bundle_resolution.artifact
+        try:
+            active_semantic_resolution = _prepare_active_semantic_reuse(
+                council,
+                base_specification=bundle_specification,
+                input_fingerprint=input_fingerprint,
+                governed_input_fingerprint=governed_input_fingerprint,
+                evidence_state_fingerprint=evidence_state_fingerprint,
+                ledger=ledger,
+                dependency_manifest=dependency_manifest,
+                artifact_store=artifact_store,
             )
-            if compiled is not None:
-                semantic_bundle_artifact = bundle_resolution.artifact
-                semantic_bundle_disposition = "hit"
-                semantic_bundle_reason = "validated-complete-compiled-network"
-                LOGGER.info(
-                    "Retained compiled network reused artifact=%s",
-                    semantic_bundle_artifact.artifact_id,
-                )
+        except (OSError, TypeError, ValueError) as error:
+            LOGGER.warning(
+                "Active semantic reuse unavailable; compiling governed inputs: %s",
+                error,
+            )
+            active_semantic_resolution = (
+                None,
+                None,
+                None,
+                None,
+                None,
+                "active-lineage-unavailable",
+            )
+        (
+            compiled,
+            semantic_bundle_artifact,
+            routing_bundle_artifact,
+            routing_bundle,
+            routing_input_fingerprint,
+            semantic_bundle_reason,
+        ) = active_semantic_resolution
+        if compiled is not None:
+            semantic_bundle_disposition = "hit"
+            routing_bundle_disposition = "hit"
+            routing_bundle_reason = "validated-routing-assembly-upstream"
+            LOGGER.info(
+                "Retained compiled network reused through active lineage artifact=%s",
+                semantic_bundle_artifact.artifact_id
+                if semantic_bundle_artifact is not None
+                else "unknown",
+            )
     source = None
     if compiled is None:
         if heartbeat is not None:
@@ -1453,6 +1803,53 @@ def _compile(
                 artifact_store=artifact_store,
                 rebuild_stages=rebuild_stages,
             )
+        # A semantic artifact is a descendant of exactly one validated route
+        # artifact.  Form its exact specification only after routing has hit or
+        # been retained; a missing route must never produce a falsely rootless
+        # semantic artifact.
+        if (
+            compiled is None
+            and artifact_store is not None
+            and bundle_specification is not None
+            and routing_bundle_artifact is not None
+        ):
+            assert routing_input_fingerprint is not None
+            bundle_specification = _compiled_network_bundle_specification(
+                council,
+                governed_input_fingerprint=governed_input_fingerprint,
+                input_fingerprint=input_fingerprint,
+                dependency_manifest=dependency_manifest,
+                evidence_state_fingerprint=evidence_state_fingerprint,
+                upstream_artifact_ids=(routing_bundle_artifact.artifact_id,),
+                routing_input_identity=routing_input_fingerprint,
+            )
+            if not council.compilation.full and not semantic_rebuild:
+                bundle_resolution = artifact_store.resolve_specification(
+                    bundle_specification
+                )
+                semantic_bundle_reason = bundle_resolution.reason
+                if bundle_resolution.artifact is not None:
+                    compiled = _decode_retained_compiled_network(
+                        artifact_store, bundle_resolution.artifact
+                    )
+                    if compiled is not None:
+                        semantic_bundle_artifact = bundle_resolution.artifact
+                        semantic_bundle_disposition = "hit"
+                        semantic_bundle_reason = (
+                            "validated-routing-dependent-compiled-network"
+                        )
+                        try:
+                            artifact_store.pin(
+                                "active-lineage",
+                                input_fingerprint,
+                                semantic_bundle_artifact.artifact_id,
+                            )
+                        except (OSError, TypeError, ValueError) as error:
+                            LOGGER.warning("Active semantic lineage pin failed: %s", error)
+                        LOGGER.info(
+                            "Retained routing-dependent compiled network reused artifact=%s",
+                            semantic_bundle_artifact.artifact_id,
+                        )
     runtime = (
         AgentRuntimeProvider(lambda: runtime_for(council.compilation.agent))
         if compiled is None
@@ -1552,6 +1949,18 @@ def _compile(
                 )
                 if routing_bundle is None:
                     raise ValueError("new routing assembly bundle failed validation")
+                if bundle_specification is not None:
+                    if routing_input_fingerprint is None:
+                        raise ValueError("routing input identity is unavailable")
+                    bundle_specification = _compiled_network_bundle_specification(
+                        council,
+                        governed_input_fingerprint=governed_input_fingerprint,
+                        input_fingerprint=input_fingerprint,
+                        dependency_manifest=dependency_manifest,
+                        evidence_state_fingerprint=evidence_state_fingerprint,
+                        upstream_artifact_ids=(routing_bundle_artifact.artifact_id,),
+                        routing_input_identity=routing_input_fingerprint,
+                    )
                 routing_bundle_disposition = "build"
                 routing_bundle_reason = "compiled-from-governed-routing-inputs"
             except (OSError, TypeError, ValueError) as error:
@@ -1635,7 +2044,11 @@ def _compile(
                 ],
             }
         ).model_dump(mode="json")["responses"]
-        if artifact_store is not None and bundle_specification is not None:
+        if (
+            artifact_store is not None
+            and bundle_specification is not None
+            and routing_bundle_artifact is not None
+        ):
             assert source is not None
             try:
                 bundle_payload = compiled_network_bundle_codec.encode_compiled_network_bundle(
@@ -1654,6 +2067,26 @@ def _compile(
                         )
                     },
                 )
+                semantic_resolution = artifact_store.resolve_specification(
+                    bundle_specification
+                )
+                if semantic_resolution.artifact is None:
+                    semantic_bundle_artifact = None
+                    semantic_bundle_disposition = "unavailable"
+                    semantic_bundle_reason = semantic_resolution.reason
+                    LOGGER.warning(
+                        "Compiled network bundle retention is not uniquely resolvable: %s",
+                        semantic_resolution.reason,
+                    )
+                    raise ValueError("semantic-retention-not-unique")
+                if (
+                    semantic_resolution.artifact.artifact_id
+                    != semantic_bundle_artifact.artifact_id
+                ):
+                    semantic_bundle_artifact = None
+                    semantic_bundle_disposition = "unavailable"
+                    semantic_bundle_reason = "semantic-retention-target-mismatch"
+                    raise ValueError("semantic-retention-target-mismatch")
                 canonical_compiled = _decode_retained_compiled_network(
                     artifact_store, semantic_bundle_artifact
                 )
@@ -1667,12 +2100,26 @@ def _compile(
                 reviewable = compiled.reviewable_network
                 semantic_bundle_disposition = "build"
                 semantic_bundle_reason = "compiled-from-governed-inputs"
+                try:
+                    artifact_store.pin(
+                        "active-lineage",
+                        input_fingerprint,
+                        semantic_bundle_artifact.artifact_id,
+                    )
+                except (OSError, TypeError, ValueError) as error:
+                    # The artifact remains valid and dependency-complete; only
+                    # the source-free active lookup is unavailable next time.
+                    LOGGER.warning("Active semantic lineage pin failed: %s", error)
             except (OSError, TypeError, ValueError) as error:
                 # Retention is an optimisation. A valid governed compilation must
                 # still reach the existing atomic publisher when retention fails.
-                semantic_bundle_disposition = "unavailable"
-                semantic_bundle_reason = "retention-failed"
+                if semantic_bundle_disposition != "unavailable":
+                    semantic_bundle_disposition = "unavailable"
+                    semantic_bundle_reason = "retention-failed"
                 LOGGER.warning("Compiled network bundle retention failed: %s", error)
+        elif artifact_store is not None and bundle_specification is not None:
+            semantic_bundle_disposition = "unavailable"
+            semantic_bundle_reason = "routing-retention-unavailable"
     if heartbeat is not None:
         heartbeat.set_stage("publication-fingerprint")
     run_fingerprint = json.dumps(

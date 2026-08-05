@@ -120,6 +120,7 @@ def test_targeted_routing_rebuild_bypasses_hit_and_retains_result(
 
     assert calls == 1
     assert rebuilt.metadata["routing_bundle_disposition"] == "build"
+    assert rebuilt.metadata["semantic_bundle_disposition"] == "build"
     assert rebuilt.metadata["routing_bundle_artifact_id"] == route_artifact_id
 
 
@@ -138,7 +139,8 @@ def test_routing_retention_identity_failure_falls_back_to_complete_cold_compile(
     assert result.status == "complete"
     assert result.metadata["routing_bundle_disposition"] == "unavailable"
     assert result.metadata["routing_bundle_reason"] == "routing-identity-unavailable"
-    assert result.metadata["semantic_bundle_disposition"] == "build"
+    assert result.metadata["semantic_bundle_disposition"] == "unavailable"
+    assert "semantic_bundle_artifact_id" not in result.metadata
 
 
 def test_public_compile_network_signature_remains_unchanged() -> None:

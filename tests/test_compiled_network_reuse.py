@@ -9,7 +9,11 @@ from test_recompilation import prepared_config
 
 import satn.pipeline as pipeline
 from satn import compile
-from satn.retained_artifacts import ArtifactSpecification, RetainedArtifactStore
+from satn.retained_artifacts import (
+    ArtifactResolution,
+    ArtifactSpecification,
+    RetainedArtifactStore,
+)
 
 
 def _publication_digests(artifacts: dict[str, Path]) -> dict[str, str]:
@@ -31,6 +35,12 @@ def test_removed_publication_is_rehydrated_from_complete_semantic_bundle(
 
     cold = compile(config, artifact_root=artifact_root, explain_reuse=True)
     artifact_id = cold.metadata["semantic_bundle_artifact_id"]
+    store = RetainedArtifactStore(artifact_root)
+    semantic_artifact = store.resolve(artifact_id).artifact
+    assert semantic_artifact is not None
+    assert semantic_artifact.manifest.upstream_artifact_ids == (
+        cold.metadata["routing_bundle_artifact_id"],
+    )
     cold_digests = _publication_digests(cold.artifacts)
     assert cold.metadata["semantic_bundle_disposition"] == "build"
     assert len(artifact_id) == 64
@@ -53,12 +63,94 @@ def test_removed_publication_is_rehydrated_from_complete_semantic_bundle(
     report = RetainedArtifactStore(artifact_root).read_run_report(
         Path(rehydrated.metadata["compilation_run_report"]).stem
     )
-    semantic_event = report.artifact_events[0]
+    assert report.artifact_events[0].kind == "routing-assembly"
+    assert report.artifact_events[0].disposition == "hit"
+    semantic_event = report.artifact_events[1]
     assert semantic_event.disposition == "hit"
     assert semantic_event.artifact_id == artifact_id
-    assert report.artifact_events[1].disposition == "build"
+    assert report.artifact_events[2].disposition == "build"
     assert report.payload()["publication"]["replacement"] == "atomic"
     assert json.loads(rehydrated.artifacts["run"].read_text())["run_id"] == cold.run_id
+
+
+def test_active_semantic_reuse_rejects_wrong_snapshot_area_identity(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    config = prepared_config(tmp_path)
+    artifact_root = tmp_path / "retained"
+    cold = compile(config, artifact_root=artifact_root)
+    store = RetainedArtifactStore(artifact_root)
+    ledger = pipeline._load_decision_ledger(None)
+    dependency_manifest = pipeline.compilation_dependency_manifest(
+        config, compiler_path="network"
+    )
+    governed = pipeline.compilation_governed_input_fingerprint(
+        config, dependency_manifest=dependency_manifest
+    )
+    base = pipeline._compiled_network_bundle_specification(
+        config,
+        governed_input_fingerprint=governed,
+        input_fingerprint=cold.metadata["compilation_input_fingerprint"],
+        dependency_manifest=dependency_manifest,
+        evidence_state_fingerprint=None,
+    )
+    monkeypatch.setattr(pipeline, "_routing_snapshot_area_identity", lambda _council: "a" * 64)
+
+    resolved = pipeline._prepare_active_semantic_reuse(
+        config,
+        base_specification=base,
+        input_fingerprint=cold.metadata["compilation_input_fingerprint"],
+        governed_input_fingerprint=governed,
+        evidence_state_fingerprint=None,
+        ledger=ledger,
+        dependency_manifest=dependency_manifest,
+        artifact_store=store,
+    )
+
+    assert resolved[0] is None
+    assert resolved[-1] == "active-lineage-route-input-mismatch"
+
+
+def test_active_semantic_reuse_rejects_opaque_route_input_identity(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    config = prepared_config(tmp_path)
+    artifact_root = tmp_path / "retained"
+    cold = compile(config, artifact_root=artifact_root)
+    store = RetainedArtifactStore(artifact_root)
+    ledger = pipeline._load_decision_ledger(None)
+    dependency_manifest = pipeline.compilation_dependency_manifest(
+        config, compiler_path="network"
+    )
+    governed = pipeline.compilation_governed_input_fingerprint(
+        config, dependency_manifest=dependency_manifest
+    )
+    base = pipeline._compiled_network_bundle_specification(
+        config,
+        governed_input_fingerprint=governed,
+        input_fingerprint=cold.metadata["compilation_input_fingerprint"],
+        dependency_manifest=dependency_manifest,
+        evidence_state_fingerprint=None,
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_routing_input_identity_from_lineage",
+        lambda **_kwargs: "b" * 64,
+    )
+
+    resolved = pipeline._prepare_active_semantic_reuse(
+        config,
+        base_specification=base,
+        input_fingerprint=cold.metadata["compilation_input_fingerprint"],
+        governed_input_fingerprint=governed,
+        evidence_state_fingerprint=None,
+        ledger=ledger,
+        dependency_manifest=dependency_manifest,
+        artifact_store=store,
+    )
+
+    assert resolved[0] is None
+    assert resolved[-1] == "active-lineage-route-input-mismatch"
 
 
 def test_corrupt_bundle_is_quarantined_and_rebuilt_from_governed_inputs(
@@ -81,6 +173,30 @@ def test_corrupt_bundle_is_quarantined_and_rebuilt_from_governed_inputs(
     assert len(rebuilt.metadata["semantic_bundle_artifact_id"]) == 64
     quarantine = artifact_root / "quarantine"
     assert any(path.name.startswith(artifact_id) for path in quarantine.iterdir())
+
+
+def test_ambiguous_semantic_retention_does_not_pin_or_block_publication(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    config = prepared_config(tmp_path)
+    original = RetainedArtifactStore.resolve_specification
+
+    def ambiguous(
+        self: RetainedArtifactStore, specification: ArtifactSpecification
+    ) -> ArtifactResolution:
+        resolution = original(self, specification)
+        if specification.kind == "compiled-network-bundle":
+            return ArtifactResolution("miss", "nondeterministic-output-candidates")
+        return resolution
+
+    monkeypatch.setattr(RetainedArtifactStore, "resolve_specification", ambiguous)
+    result = compile(config, artifact_root=tmp_path / "retained")
+
+    assert result.status == "complete"
+    assert result.metadata["semantic_bundle_disposition"] == "unavailable"
+    assert result.metadata["semantic_bundle_reason"] == "nondeterministic-output-candidates"
+    assert "semantic_bundle_artifact_id" not in result.metadata
+    assert not (tmp_path / "retained" / "lineages" / "active-lineage").exists()
 
 
 def test_full_compile_bypasses_retained_semantic_hit(

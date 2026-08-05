@@ -762,6 +762,57 @@ class RetainedArtifactStore:
         _atomic_write(destination, _canonical_bytes(payload) + b"\n")
         return destination
 
+    def resolve_active_lineage(self, reference_id: str) -> ArtifactResolution:
+        """Resolve one exact active-lineage pin and its complete artifact closure.
+
+        Active-lineage references are invocation-independent semantic lookup
+        keys (normally a full input fingerprint).  A malformed or ambiguous
+        pin is a miss; callers must fall back to governed inputs rather than
+        guessing from another lineage or from the newest artifact on disk.
+        """
+
+        if not isinstance(reference_id, str) or _RUN_ID.fullmatch(reference_id) is None:
+            return ArtifactResolution("miss", "invalid-active-lineage-id")
+        if self.lineages_root.exists() and (
+            self.lineages_root.is_symlink() or not self.lineages_root.is_dir()
+        ):
+            return ArtifactResolution("miss", "active-lineage-pin-invalid")
+        active_root = self.lineages_root / "active-lineage"
+        if active_root.exists() and (active_root.is_symlink() or not active_root.is_dir()):
+            return ArtifactResolution("miss", "active-lineage-pin-invalid")
+        path = active_root / f"{reference_id}.json"
+        if not path.exists() and not path.is_symlink():
+            return ArtifactResolution("miss", "active-lineage-not-found")
+        if path.is_symlink() or not path.is_file():
+            return ArtifactResolution("miss", "active-lineage-pin-invalid")
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return ArtifactResolution("miss", "active-lineage-pin-invalid")
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {"schema", "reference_kind", "reference_id", "artifact_id"}
+            or payload.get("schema") != ARTIFACT_PIN_SCHEMA
+            or payload.get("reference_kind") != "active-lineage"
+            or payload.get("reference_id") != reference_id
+            or path.parent.name != "active-lineage"
+            or path.stem != reference_id
+        ):
+            return ArtifactResolution("miss", "active-lineage-pin-invalid")
+        artifact_id = payload.get("artifact_id")
+        if not isinstance(artifact_id, str) or _SHA256.fullmatch(artifact_id) is None:
+            return ArtifactResolution("miss", "active-lineage-pin-invalid")
+        resolution = self.resolve(artifact_id)
+        if resolution.artifact is None:
+            return ArtifactResolution(
+                "miss",
+                f"active-lineage-{resolution.reason}",
+                quarantined_path=resolution.quarantined_path,
+            )
+        return ArtifactResolution(
+            "validated-hit", "validated-active-lineage", resolution.artifact
+        )
+
     def plan_garbage_collection(
         self,
         *,
