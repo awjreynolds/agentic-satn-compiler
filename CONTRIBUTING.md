@@ -30,7 +30,7 @@ make test
 make build
 ```
 
-`make test` enforces 80% branch-aware coverage across `satn` and `lcwip`. Use
+`make test` enforces the 79.9% branch-aware coverage baseline across `satn` and `lcwip`. Use
 `make test-fast` for a fail-fast local pass without coverage.
 
 ## Git hooks

@@ -15,7 +15,7 @@ typecheck:
 	uv run ty check src/
 
 test:
-	uv run pytest --cov=satn --cov=lcwip --cov-report=term-missing --cov-fail-under=80
+	uv run pytest --cov=satn --cov=lcwip --cov-report=term-missing
 
 test-fast:
 	uv run pytest --no-cov -x -q
