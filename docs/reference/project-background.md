@@ -1177,7 +1177,7 @@ fixtures only. The script requires an explicit Area Definition, so the WECA gate
 only be invoked deliberately.
 
 ```shell
-.venv/bin/python scripts/benchmark_cross_spine.py deployments/weca/area-125-benchmark.yaml \
+uv run python scripts/benchmark_cross_spine.py deployments/weca/area-125-benchmark.yaml \
   --output build/benchmarks/weca-cross-spine-paired.json
 ```
 
@@ -1301,7 +1301,7 @@ cannot bypass it. To inspect a non-production package locally, use the standalon
 validator's explicit review exception:
 
 ```shell
-.venv/bin/python -I scripts/validate_pages_release.py build/satn-pages.zip \
+uv run python -I scripts/validate_pages_release.py build/satn-pages.zip \
   build/validated-pages-review --catalogue deployments/catalogue.yaml \
   --allow-non-production
 ```

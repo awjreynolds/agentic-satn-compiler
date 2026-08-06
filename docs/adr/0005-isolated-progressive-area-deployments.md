@@ -43,11 +43,11 @@ regenerated once, using the controlled sequence below, rather than edited or
 accepted as equivalent.
 
 ```sh
-.venv/bin/python scripts/publish_site.py deployments/weca/area.yaml --bootstrap
-.venv/bin/python scripts/deployment_provenance.py generate deployments/weca/area.yaml \
+uv run python scripts/publish_site.py deployments/weca/area.yaml --bootstrap
+uv run python scripts/deployment_provenance.py generate deployments/weca/area.yaml \
   --deployment build/deployments/weca
-.venv/bin/python scripts/publish_site.py deployments/weca/area.yaml
-.venv/bin/python scripts/deployment_provenance.py verify deployments/weca/area.yaml \
+uv run python scripts/publish_site.py deployments/weca/area.yaml
+uv run python scripts/deployment_provenance.py verify deployments/weca/area.yaml \
   --deployment build/deployments/weca
 ```
 
@@ -60,8 +60,8 @@ new area.
 After all final Area Deployments have been verified, assemble the Pages release:
 
 ```sh
-.venv/bin/python -c "from satn.deployment_catalogue import generate_catalogue_lock; generate_catalogue_lock('deployments/catalogue.yaml')"
-.venv/bin/python scripts/package_pages.py
+uv run python -c "from satn.deployment_catalogue import generate_catalogue_lock; generate_catalogue_lock('deployments/catalogue.yaml')"
+uv run python scripts/package_pages.py
 ```
 
 The explicit first command regenerates the tracked root
@@ -77,7 +77,7 @@ independently extract and validate the release archive rather than trusting the
 packager's in-process result:
 
 ```sh
-.venv/bin/python -I scripts/validate_pages_release.py build/satn-pages.zip \
+uv run python -I scripts/validate_pages_release.py build/satn-pages.zip \
   build/validated-pages --catalogue deployments/catalogue.yaml
 ```
 
@@ -88,7 +88,7 @@ inspectable, but their review status does not block publication of this public p
 of concept. The legacy review option remains accepted for workflow compatibility:
 
 ```sh
-.venv/bin/python -I scripts/validate_pages_release.py build/satn-pages.zip \
+uv run python -I scripts/validate_pages_release.py build/satn-pages.zip \
   build/validated-pages --catalogue deployments/catalogue.yaml \
   --allow-non-production
 ```

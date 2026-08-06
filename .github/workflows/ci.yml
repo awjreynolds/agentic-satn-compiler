@@ -18,20 +18,32 @@ jobs:
       - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           enable-cache: true
+          version: "0.11.32"
       - run: uv python install 3.12
       - run: uv sync --frozen --all-groups
-      - run: uv export --frozen --group dev --no-emit-project --output-file .audit-requirements.txt
+      - run: uv export --frozen --group audit --no-emit-project --output-file .audit-requirements.txt
       - run: uv run pip-audit -r .audit-requirements.txt --strict
       - run: uv run ruff check .
+      - run: uv run ty check src/
+      - run: >-
+          uv run prek run
+          check-yaml check-toml check-merge-conflict
+          detect-secrets actionlint zizmor shellcheck
+          --all-files
       # One complete synthetic Scenario Compilation is the routine
       # Parallel-Reduction proving gate. Expected results are read-only here.
       - run: uv run pytest tests/test_parallel_reduction_corpus.py
       # Routine regression is fixture-only; the explicit WECA compiler benchmark
       # is a manual governed release gate and must never run in CI.
-      - run: uv run pytest
+      - run: >-
+          uv run pytest
+          --cov=satn --cov=lcwip
+          --cov-report=term-missing
+          --cov-report=xml
+          --cov-fail-under=80
       - run: uv run playwright install --with-deps chromium
       - run: uv run pytest --browser -m browser tests/test_review_map_browser.py
-      - run: uv build
+      - run: uv build --no-sources
 
   portable-network-identifiers:
     runs-on: macos-latest
@@ -42,6 +54,7 @@ jobs:
       - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           enable-cache: true
+          version: "0.11.32"
       - run: uv python install 3.12
       - run: uv sync --frozen --all-groups
       - run: >-

@@ -1,8 +1,15 @@
 .DS_Store
 .pytest_cache/
 .ruff_cache/
+.ty/
+.coverage
+.coverage.*
+.audit-requirements.txt
+coverage.xml
+htmlcov/
 .satn-cache*/
 .satn/
+.uv-cache/
 .venv*/
 __pycache__/
 *.py[cod]

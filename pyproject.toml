@@ -32,25 +32,38 @@ satn = "satn.cli:app"
 lcwip = "lcwip.cli:app"
 
 [dependency-groups]
-dev = [
+audit = [
+  "detect-secrets>=1.5,<2",
   "pip-audit>=2.10,<3",
+]
+dev = [
+  { include-group = "lint" },
+  { include-group = "test" },
+  { include-group = "audit" },
+]
+lint = [
+  "prek>=0.4,<1",
+  "ruff>=0.16,<1",
+  "ty>=0.0.68",
+]
+test = [
   "playwright>=1.52,<2",
   "pytest>=8.3,<10",
-  "ruff>=0.9,<1",
+  "pytest-cov>=7,<8",
 ]
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["uv_build>=0.11.32,<0.12"]
+build-backend = "uv_build"
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/satn", "src/lcwip"]
+[tool.uv]
+default-groups = ["dev"]
 
-[tool.hatch.build]
-include = ["src/satn/**/*.py", "src/satn/assets/*", "src/lcwip/**/*"]
+[tool.uv.build-backend]
+module-name = ["satn", "lcwip"]
 
 [tool.pytest.ini_options]
-addopts = "-q"
+addopts = ["-q", "-ra", "--strict-config", "--strict-markers"]
 testpaths = ["tests"]
 markers = [
   "live_agent: requires SATN_TEST_AGENT_MODEL and provider credentials",
@@ -60,9 +73,101 @@ markers = [
   "parallel_reduction_deep: runs the explicit Parallel-Reduction decision-boundary corpus",
 ]
 
+[tool.coverage.run]
+branch = true
+source = ["satn", "lcwip"]
+
+[tool.coverage.report]
+exclude_lines = [
+  "pragma: no cover",
+  "if TYPE_CHECKING:",
+  "if __name__ == .__main__.:",
+  "raise NotImplementedError",
+  "@abstractmethod",
+]
+fail_under = 80
+show_missing = true
+
 [tool.ruff]
+extend-exclude = ["*.md"]
+force-exclude = true
 line-length = 100
+src = ["src"]
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+select = ["ALL"]
+ignore = [
+  "A",       # Existing built-in shadowing is retained during migration.
+  "ANN",     # ty owns type analysis; legacy annotations remain gradual.
+  "ARG",     # Callback and protocol signatures intentionally retain unused arguments.
+  "BLE",     # Broad exception handlers are part of governed failure boundaries.
+  "C4",      # Avoid broad comprehension rewrites in the migration commit.
+  "C901",    # Existing compiler orchestration is intentionally complex.
+  "COM812",  # Conflicts with the formatter.
+  "CPY001",  # The repository license is tracked centrally.
+  "D",       # Public-docstring coverage will be introduced separately.
+  "DTZ",     # Existing date contracts include deliberately naive values.
+  "EM",      # Preserve established exception messages and fingerprints.
+  "EXE001",  # Python utility scripts are invoked through uv, not as executables.
+  "FBT",     # Existing public APIs use positional boolean compatibility parameters.
+  "FURB",    # Avoid broad semantic rewrites during tooling migration.
+  "ICN001",  # Existing scientific-library aliases are stable public conventions.
+  "INP001",  # Tests and scripts are intentionally not Python packages.
+  "ISC001",  # Conflicts with the formatter.
+  "ISC004",  # Preserve established multiline messages.
+  "N818",    # Existing exception names are part of public contracts.
+  "PD",      # Existing GeoPandas/Pandas access patterns are intentional.
+  "PERF",    # Performance rewrites require benchmark evidence.
+  "PIE",     # Avoid semantic cleanup outside the tooling scope.
+  "PL",      # Complexity and refactor rules require dedicated design work.
+  "PT",      # Preserve the established pytest style during migration.
+  "PTH",     # Existing os/path interop is deliberate and cross-platform tested.
+  "PYI",     # Runtime modules intentionally use typing-compatible idioms.
+  "Q",       # Quote normalization is owned by the formatter.
+  "RET",     # Avoid control-flow rewrites during tooling migration.
+  "S101",    # Assertions are used for invariants and tests.
+  "S105",    # Known identifier and fixture strings are not credentials.
+  "S106",    # Known fixture call arguments are not credentials.
+  "S107",    # Known default fixture values are not credentials.
+  "S108",    # A governed test fixture deliberately uses a fixed temporary path.
+  "S110",    # Existing best-effort cleanup deliberately suppresses failures.
+  "S310",    # Governed URL handling is validated by dedicated security tests.
+  "S314",    # XML inputs are bounded and validated by acquisition adapters.
+  "S603",    # Subprocess arguments are constructed without a shell.
+  "S607",    # Governed tool names intentionally resolve from PATH.
+  "S608",    # SQL fragments are built from governed identifiers and tested.
+  "S506",    # Trusted local fixture loading is covered by schema validation.
+  "SLF001",  # Tests and adapters intentionally inspect private seams.
+  "T201",    # CLI scripts intentionally write user-facing progress.
+  "TC",      # Avoid runtime import changes during the migration.
+  "TRY",     # Preserve established error contracts and messages.
+]
+
+[tool.ruff.format]
+docstring-code-format = true
+indent-style = "space"
+quote-style = "double"
+
+[tool.ty.terminal]
+error-on-warning = true
+
+[tool.ty.environment]
+python-version = "3.12"
+
+[tool.ty.rules]
+# Start from a useful legacy baseline and tighten these exceptions incrementally.
+call-non-callable = "ignore"
+invalid-argument-type = "ignore"
+invalid-assignment = "ignore"
+invalid-return-type = "ignore"
+invalid-type-form = "ignore"
+invalid-yield = "ignore"
+no-matching-overload = "ignore"
+not-subscriptable = "ignore"
+not-iterable = "ignore"
+possibly-missing-attribute = "ignore"
+unsupported-operator = "ignore"
+unresolved-attribute = "ignore"
+unresolved-import = "ignore"
+unused-ignore-comment = "warn"

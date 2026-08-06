@@ -76,9 +76,17 @@ data. Follow the [agent quickstart](docs/getting-started/agent-quickstart.md) fo
 machine-checkable success tests, then reproduce the full
 [B&NES example](docs/guides/reproduce-banes.md).
 
+## Development
+
+The repository uses uv for dependency management and command execution, Ruff for
+linting and formatting, ty for type checking, pytest with coverage, and prek for Git
+hooks. Run `make dev`, then `make lint`, `make test`, and `make build`. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the focused-test and hook workflows.
+
 ## Documentation
 
 - [Documentation index](docs/README.md)
+- [Contributing and development tooling](CONTRIBUTING.md)
 - [Agent quickstart](docs/getting-started/agent-quickstart.md)
 - [B&NES golden-path reproduction](docs/guides/reproduce-banes.md)
 - [Build a new area](docs/guides/build-a-new-area.md)

@@ -30,7 +30,7 @@ After every declared deployment has a verified build:
 ```shell
 uv run python scripts/build_deployment_catalogue.py
 uv run python scripts/package_pages.py
-.venv/bin/python -I scripts/validate_pages_release.py build/satn-pages.zip build/validated-pages --catalogue deployments/catalogue.yaml
+uv run python -I scripts/validate_pages_release.py build/satn-pages.zip build/validated-pages --catalogue deployments/catalogue.yaml
 ```
 
 Success: `build/satn-pages.zip` validates within the configured byte budget and the
