@@ -305,6 +305,30 @@ def test_bath_strategic_reference_publishes_typed_sibling_and_semantic_map(tmp_p
         _validate_artifacts(result.output_dir, config)
 
 
+def test_strategic_validation_rejects_incomplete_fallback_endpoint_roster(tmp_path) -> None:
+    _, _, reference, preparation = _resolved_reference_inputs(tmp_path)
+    config = configured_bath_saltford(tmp_path)
+    result = compile_strategic_reference(
+        config,
+        build_strategic_reference_application_plan(reference, preparation),
+        publication_authority=publication_destination_authority(workspace_root=tmp_path),
+    )
+    nested_path = result.output_dir / "review-map" / "reviewable-network.geojson"
+    nested = json.loads(nested_path.read_text())
+    gap_features = [
+        feature
+        for feature in nested["features"]
+        if feature["properties"].get("feature_type") == "reviewable-gap-endpoint"
+    ]
+    assert len(gap_features) >= 2
+    nested["features"].remove(gap_features[0])
+    nested_path.write_text(json.dumps(nested))
+    (result.output_dir / "reviewable-network.geojson").write_text(json.dumps(nested))
+
+    with pytest.raises(ValueError, match="gap endpoint roster is incomplete"):
+        _validate_artifacts(result.output_dir, config)
+
+
 def test_effective_strategic_projection_tampering_is_rejected(tmp_path) -> None:
     _, _, reference, preparation = _resolved_reference_inputs(tmp_path)
     config = configured_bath_saltford(tmp_path)
@@ -338,9 +362,10 @@ def test_effective_strategic_projection_tampering_is_rejected(tmp_path) -> None:
 
     archive_path = target / "review-map.zip"
     rebuilt_archive = target / "review-map.zip.rebuilt"
-    with zipfile.ZipFile(archive_path) as source, zipfile.ZipFile(
-        rebuilt_archive, "w", compression=zipfile.ZIP_DEFLATED
-    ) as rebuilt:
+    with (
+        zipfile.ZipFile(archive_path) as source,
+        zipfile.ZipFile(rebuilt_archive, "w", compression=zipfile.ZIP_DEFLATED) as rebuilt,
+    ):
         for info in source.infolist():
             content = source.read(info)
             if info.filename == "review-map/reviewable-network.geojson":

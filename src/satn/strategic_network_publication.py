@@ -269,25 +269,215 @@ def _collection_features(
             geometry = getattr(row, "geometry", None)
             feature_id = str(getattr(row, "id", index))
         projected = _geometry_json(geometry, source_crs) if geometry is not None else None
+        feature_prefix = {
+            StrategicPublicationLayer.ASSETS.value: "asset-existing-provision",
+            StrategicPublicationLayer.UPGRADEABLE_ASSETS.value: "asset-upgrade-required",
+            StrategicPublicationLayer.DFT_TRAFFIC.value: "dft-traffic",
+        }.get(layer, layer.lower().replace(" ", "-"))
+        contextual_properties = {
+            **properties,
+            "layer": layer,
+            **(
+                {"feature_type": "asset-existing-provision"}
+                if layer == StrategicPublicationLayer.ASSETS.value
+                else {"feature_type": "asset-upgrade-required"}
+                if layer == StrategicPublicationLayer.UPGRADEABLE_ASSETS.value
+                else {"feature_type": "dft-motor-traffic"}
+                if layer == StrategicPublicationLayer.DFT_TRAFFIC.value
+                else {"feature_type": "graph-diagnostic"}
+                if layer == StrategicPublicationLayer.DIAGNOSTICS.value
+                else {}
+            ),
+            "source_fingerprint": fingerprint,
+            "strategic_result_fingerprint": fingerprint,
+        }
+        if layer in {
+            StrategicPublicationLayer.ASSETS.value,
+            StrategicPublicationLayer.UPGRADEABLE_ASSETS.value,
+        }:
+            contextual_properties.setdefault("geometry_crs", "EPSG:4326")
+            contextual_properties.setdefault("source_geometry_crs", source_crs)
+            contextual_properties.setdefault("geometry_semantics", "accounted-governed-asset-line")
         features.append(
             _feature(
-                feature_id=f"{layer.lower().replace(' ', '-')}-{feature_id}",
+                feature_id=f"{feature_prefix}:{feature_id}",
                 geometry=projected,
-                properties={
-                    **properties,
-                    "layer": layer,
-                    **(
-                        {"feature_type": "asset-existing-provision"}
-                        if layer == StrategicPublicationLayer.ASSETS.value
-                        else {"feature_type": "asset-upgrade-required"}
-                        if layer == StrategicPublicationLayer.UPGRADEABLE_ASSETS.value
-                        else {"feature_type": "dft-motor-traffic"}
-                        if layer == StrategicPublicationLayer.DFT_TRAFFIC.value
-                        else {}
-                    ),
-                    "source_fingerprint": fingerprint,
-                    "strategic_result_fingerprint": fingerprint,
-                },
+                properties=contextual_properties,
+            )
+        )
+    return sorted(features, key=lambda item: str(item["id"]))
+
+
+def _coordinate_values(value: object) -> list[float]:
+    if not isinstance(value, (list, tuple)) or not value:
+        return []
+    if isinstance(value[0], (int, float)):
+        return [float(item) for item in value[:2]]
+    values: list[float] = []
+    for item in value:
+        values.extend(_coordinate_values(item))
+    return values
+
+
+def _record_source_crs(record: Mapping[str, object], fallback: str) -> str:
+    explicit = record.get("geometry_crs") or record.get("source_geometry_crs")
+    if explicit:
+        return str(explicit)
+    geometry = record.get("geometry")
+    if isinstance(geometry, Mapping):
+        coordinates = _coordinate_values(geometry.get("coordinates"))
+        if any(abs(value) > 180 for value in coordinates[0::2]):
+            return "EPSG:27700"
+        if coordinates:
+            return "EPSG:4326"
+    return fallback
+
+
+def _accounting_features(
+    value: object, *, layer: str, fallback_crs: str, fingerprint: str
+) -> list[dict[str, object]]:
+    """Project asset-accounting records while respecting each record's CRS."""
+
+    if not isinstance(value, Iterable) or isinstance(value, (str, bytes, Mapping)):
+        return _collection_features(
+            value, source_crs=fallback_crs, layer=layer, fingerprint=fingerprint
+        )
+    features: list[dict[str, object]] = []
+    for record in value:
+        if not isinstance(record, Mapping):
+            continue
+        source_crs = _record_source_crs(record, fallback_crs)
+        features.extend(
+            _collection_features(
+                (record,), source_crs=source_crs, layer=layer, fingerprint=fingerprint
+            )
+        )
+    return features
+
+
+def _candidate_properties(candidate: object) -> dict[str, object]:
+    """Expose governed candidate evidence without duplicating its geometry."""
+
+    model_dump = getattr(candidate, "model_dump", None)
+    if callable(model_dump):
+        try:
+            raw = model_dump(mode="json", exclude={"geometry", "traffic_observation"})
+        except TypeError:
+            raw = model_dump()
+    elif isinstance(candidate, Mapping):
+        raw = {key: value for key, value in candidate.items() if key != "geometry"}
+    else:
+        raw = {
+            key: value
+            for key, value in vars(candidate).items()
+            if key not in {"geometry", "traffic_observation"}
+        }
+    return {
+        str(key): _json_value(value) for key, value in raw.items() if _json_value(value) is not None
+    }
+
+
+def _candidate_geometry(candidate: object, source_crs: str) -> dict[str, object] | None:
+    geometry = (
+        candidate.get("geometry")
+        if isinstance(candidate, Mapping)
+        else getattr(candidate, "geometry", None)
+    )
+    return _line_geometry(geometry, source_crs) if geometry is not None else None
+
+
+def gap_endpoint_identity(endpoint_id: object, occurrence: int) -> tuple[str, bool]:
+    """Return a stable endpoint key, preserving explicit missing identities."""
+
+    endpoint_key = str(endpoint_id or "")
+    if endpoint_key:
+        identity_key = (
+            endpoint_key if occurrence == 1 else f"{endpoint_key}-occurrence-{occurrence}"
+        )
+    else:
+        identity_key = f"endpoint-missing-{occurrence}"
+    return identity_key, identity_key != endpoint_key
+
+
+def _traffic_features(
+    value: object,
+    *,
+    candidate_roster: Mapping[str, tuple[object, object]],
+    source_crs: str,
+    fingerprint: str,
+) -> list[dict[str, object]]:
+    """Project DfT observations, falling back to the bounded candidate line."""
+
+    if value is None:
+        return []
+    if isinstance(value, Mapping) and value.get("type") == "FeatureCollection":
+        rows = value.get("features", ())
+    elif isinstance(value, Mapping) and value.get("type") == "Feature":
+        rows = (value,)
+    elif isinstance(value, Iterable) and not isinstance(value, (str, bytes, Mapping)):
+        rows = value
+    else:
+        rows = (value,)
+    features: list[dict[str, object]] = []
+    for index, row in enumerate(rows):
+        if isinstance(row, Mapping) and row.get("type") == "Feature":
+            properties = dict(row.get("properties") or {})
+            geometry = row.get("geometry")
+        elif isinstance(row, Mapping):
+            properties = dict(row)
+            geometry = properties.pop("geometry", None)
+        else:
+            properties = _candidate_properties(row)
+            geometry = getattr(row, "geometry", None)
+        candidate_id = str(properties.get("candidate_id") or "")
+        if geometry is None and properties.get("longitude") is not None:
+            geometry = {
+                "type": "Point",
+                "coordinates": [
+                    float(properties["longitude"]),
+                    float(properties["latitude"]),
+                ],
+            }
+            geometry_crs = "EPSG:4326"
+        elif geometry is None and properties.get("easting") is not None:
+            geometry = {
+                "type": "Point",
+                "coordinates": [
+                    float(properties["easting"]),
+                    float(properties["northing"]),
+                ],
+            }
+            geometry_crs = str(properties.get("declared_crs") or source_crs)
+        else:
+            geometry_crs = source_crs
+        if geometry is None and candidate_id in candidate_roster:
+            geometry = (
+                candidate_roster[candidate_id][1].get("geometry")
+                if isinstance(candidate_roster[candidate_id][1], Mapping)
+                else getattr(candidate_roster[candidate_id][1], "geometry", None)
+            )
+            geometry_crs = source_crs
+            geometry_semantics = "bounded-candidate-route-evidence-no-point"
+        else:
+            geometry_semantics = "raw-observation-point"
+        projected = _geometry_json(geometry, geometry_crs) if geometry is not None else None
+        if projected is None:
+            continue
+        observation_id = str(properties.get("observation_id") or index)
+        feature_properties = {
+            **properties,
+            "layer": StrategicPublicationLayer.DFT_TRAFFIC.value,
+            "feature_type": "dft-motor-traffic",
+            "candidate_id": candidate_id or None,
+            "geometry_semantics": geometry_semantics,
+            "source_fingerprint": fingerprint,
+            "strategic_result_fingerprint": fingerprint,
+        }
+        features.append(
+            _feature(
+                feature_id=f"dft-traffic:{candidate_id or 'observation'}:{observation_id}",
+                geometry=projected,
+                properties=feature_properties,
             )
         )
     return sorted(features, key=lambda item: str(item["id"]))
@@ -298,6 +488,7 @@ class StrategicNetworkPublicationProjection:
     """Frozen, JSON-serialisable view used by review maps and artefact writers."""
 
     feature_collection: dict[str, object]
+    reviewable_feature_collection: dict[str, object]
     layers: dict[str, dict[str, object]]
     projection_fingerprint: str
     strategic_result_fingerprint: str
@@ -308,6 +499,10 @@ class StrategicNetworkPublicationProjection:
     @property
     def geojson(self) -> dict[str, object]:
         return self.feature_collection
+
+    @property
+    def reviewable_geojson(self) -> dict[str, object]:
+        return self.reviewable_feature_collection
 
     @property
     def fingerprint(self) -> str:
@@ -349,6 +544,7 @@ def project_strategic_network(
     upgradeable_assets: object | None = None,
     traffic: object | None = None,
     diagnostics: object | None = None,
+    reviewable_gaps: object | None = None,
     source_crs: str = "EPSG:27700",
     places_crs: str | None = None,
     optional_layers: bool = False,
@@ -362,6 +558,23 @@ def project_strategic_network(
     if effective is None or not hasattr(effective, "sections"):
         raise ValueError("strategic publication requires an effective strategic network")
 
+    candidate_sets = tuple(getattr(result, "candidate_sets", ()))
+    candidate_roster: dict[str, tuple[object, object]] = {}
+    for candidate_set in candidate_sets:
+        for candidate in tuple(getattr(candidate_set, "candidates", ())):
+            candidate_roster[str(getattr(candidate, "candidate_id", ""))] = (
+                candidate_set,
+                candidate,
+            )
+    dispositions = {
+        str(getattr(item, "candidate_id", "")): item
+        for item in getattr(result, "unselected_candidates", ())
+    }
+    selection_by_candidate = {
+        str(getattr(item, "effective_candidate_id", "") or getattr(item, "candidate_id", "")): item
+        for item in getattr(result, "selections", ())
+    }
+
     strategic_features: list[dict[str, object]] = []
     for section in sorted(tuple(effective.sections), key=lambda item: str(item.section_id)):
         authority = _text(getattr(section, "authority", None))
@@ -374,6 +587,9 @@ def project_strategic_network(
             getattr(section, "alignment_bases", ()),
             getattr(section, "primary_alignment_basis", None),
         )
+        section_candidate_id = str(getattr(section, "candidate_id", "") or "")
+        candidate_entry = candidate_roster.get(section_candidate_id)
+        selection = selection_by_candidate.get(section_candidate_id)
         properties = {
             "layer": StrategicPublicationLayer.STRATEGIC_NETWORK.value,
             "feature_type": "reviewable-selected-route",
@@ -381,6 +597,9 @@ def project_strategic_network(
             "route_id": section.section_id,
             "obligation_id": section.obligation_id,
             "candidate_id": section.candidate_id,
+            "candidate_set_id": None,
+            "connection_id": None,
+            "selection_disposition": "selected",
             "network_role": section.network_role,
             "authority": authority,
             "alignment_basis": basis_label,
@@ -396,6 +615,33 @@ def project_strategic_network(
             "legend_text": f"{style['text']}; {basis_label}; {style['pattern']} pattern",
             "strategic_result_fingerprint": result_fingerprint,
         }
+        if candidate_entry is not None:
+            candidate_set, candidate = candidate_entry
+            properties.update(_candidate_properties(candidate))
+            properties.update(
+                {
+                    "candidate_id": section_candidate_id,
+                    "candidate_set_id": getattr(candidate_set, "candidate_set_id", None),
+                    "connection_id": getattr(candidate_set, "connection_id", None),
+                    "selection_disposition": getattr(
+                        selection, "selection_disposition", "selected"
+                    ),
+                    "candidate_evidence_fingerprints": list(
+                        getattr(candidate, "evidence_fingerprints", ()) or ()
+                    ),
+                }
+            )
+        elif selection is not None:
+            properties.update(
+                {
+                    "candidate_set_id": getattr(selection, "candidate_set_id", None),
+                    "connection_id": getattr(selection, "connection_id", None),
+                    "selection_disposition": getattr(
+                        selection, "selection_disposition", "selected"
+                    ),
+                    "compiler_candidate_id": getattr(selection, "compiler_candidate_id", None),
+                }
+            )
         strategic_features.append(
             _feature(
                 feature_id=str(section.section_id),
@@ -425,10 +671,10 @@ def project_strategic_network(
         # Candidates retain both rejected and admitted alternatives.  Their
         # geometries come only from Candidate Discovery's canonical input.
         candidate_features: list[dict[str, object]] = []
-        selected_ids = {str(getattr(section, "candidate_id", "")) for section in effective.sections}
-        candidate_sets = tuple(getattr(result, "candidate_sets", ()))
-        dispositions = {
-            str(item.candidate_id): item for item in getattr(result, "unselected_candidates", ())
+        selected_ids = {
+            str(getattr(section, "candidate_id", ""))
+            for section in effective.sections
+            if getattr(section, "candidate_id", None)
         }
         for candidate_set in sorted(
             candidate_sets, key=lambda item: str(getattr(item, "candidate_set_id", ""))
@@ -441,24 +687,39 @@ def project_strategic_network(
                 if candidate_id in selected_ids:
                     continue
                 disposition = dispositions.get(candidate_id)
+                admission = next(
+                    (
+                        item
+                        for item in tuple(getattr(candidate_set, "admissions", ()))
+                        if str(getattr(item, "candidate_id", "")) == candidate_id
+                    ),
+                    None,
+                )
+                candidate_properties = _candidate_properties(candidate)
+                candidate_properties.update(
+                    {
+                        "layer": StrategicPublicationLayer.CANDIDATES.value,
+                        "feature_type": "reviewable-unselected-candidate",
+                        "candidate_id": candidate_id,
+                        "candidate_set_id": getattr(candidate_set, "candidate_set_id", None),
+                        "connection_id": getattr(candidate_set, "connection_id", None),
+                        "network_role": _text(getattr(candidate_set, "network_role", None)),
+                        "disposition": getattr(disposition, "disposition", "unselected"),
+                        "reason": getattr(disposition, "reason", "retained alternative"),
+                        "admission_disposition": getattr(admission, "disposition", None),
+                        "admission_rationale": getattr(admission, "rationale", None),
+                        "display_state": "candidate-discarded",
+                        "core": "#8c8c8c",
+                        "halo": "#d0d0d0",
+                        "pattern": "dash",
+                        "strategic_result_fingerprint": result_fingerprint,
+                    }
+                )
                 candidate_features.append(
                     _feature(
                         feature_id=f"candidate-{candidate_id}",
-                        geometry=_line_geometry(getattr(candidate, "geometry", None), source_crs),
-                        properties={
-                            "layer": StrategicPublicationLayer.CANDIDATES.value,
-                            "feature_type": "reviewable-unselected-candidate",
-                            "candidate_id": candidate_id,
-                            "candidate_set_id": getattr(candidate_set, "candidate_set_id", None),
-                            "network_role": _text(getattr(candidate_set, "network_role", None)),
-                            "disposition": getattr(disposition, "disposition", "unselected"),
-                            "reason": getattr(disposition, "reason", "retained alternative"),
-                            "display_state": "candidate-discarded",
-                            "core": "#8c8c8c",
-                            "halo": "#d0d0d0",
-                            "pattern": "dash",
-                            "strategic_result_fingerprint": result_fingerprint,
-                        },
+                        geometry=_candidate_geometry(candidate, source_crs),
+                        properties=candidate_properties,
                     )
                 )
         layers[StrategicPublicationLayer.CANDIDATES.value] = {
@@ -467,28 +728,41 @@ def project_strategic_network(
         }
         layers[StrategicPublicationLayer.ASSETS.value] = {
             "type": "FeatureCollection",
-            "features": _collection_features(
+            "features": _accounting_features(
                 assets,
-                source_crs=source_crs,
                 layer=StrategicPublicationLayer.ASSETS.value,
+                fallback_crs=source_crs,
                 fingerprint=result_fingerprint,
             ),
         }
         layers[StrategicPublicationLayer.UPGRADEABLE_ASSETS.value] = {
             "type": "FeatureCollection",
-            "features": _collection_features(
+            "features": _accounting_features(
                 upgradeable_assets,
-                source_crs=source_crs,
                 layer=StrategicPublicationLayer.UPGRADEABLE_ASSETS.value,
+                fallback_crs=source_crs,
                 fingerprint=result_fingerprint,
             ),
         }
+        if traffic is None:
+            derived_traffic: list[dict[str, object]] = []
+            for candidate_id, (_candidate_set, candidate) in candidate_roster.items():
+                for observation in tuple(getattr(candidate, "traffic_observations", ()) or ()):
+                    if hasattr(observation, "model_dump"):
+                        properties = observation.model_dump(mode="json")
+                    elif isinstance(observation, Mapping):
+                        properties = dict(observation)
+                    else:
+                        properties = dict(vars(observation))
+                    properties["candidate_id"] = candidate_id
+                    derived_traffic.append(properties)
+            traffic = derived_traffic
         layers[StrategicPublicationLayer.DFT_TRAFFIC.value] = {
             "type": "FeatureCollection",
-            "features": _collection_features(
+            "features": _traffic_features(
                 traffic,
+                candidate_roster=candidate_roster,
                 source_crs=source_crs,
-                layer=StrategicPublicationLayer.DFT_TRAFFIC.value,
                 fingerprint=result_fingerprint,
             ),
         }
@@ -507,30 +781,75 @@ def project_strategic_network(
             tuple(getattr(result, "divergences", ())), key=lambda item: str(item.obligation_id)
         ):
             section = sections_by_obligation.get(str(divergence.obligation_id))
-            divergence_features.append(
-                _feature(
-                    feature_id=f"divergence-{divergence.obligation_id}",
-                    geometry=_line_geometry(getattr(section, "geometry_wkt", None), source_crs)
-                    if section
-                    else None,
-                    properties={
-                        "layer": StrategicPublicationLayer.DIVERGENCE.value,
-                        "feature_type": "officer-compiler-divergence",
-                        "obligation_id": divergence.obligation_id,
-                        "network_role": divergence.network_role,
-                        "officer_candidate_id": divergence.officer_candidate_id,
-                        "compiler_candidate_id": divergence.compiler_candidate_id,
-                        "authority": "officer/compiler-divergence",
-                        "display_state": "officer-divergence",
-                        "core": _INTERVENTION_STYLES["officer-divergence"]["core"],
-                        "halo": _INTERVENTION_STYLES["officer-divergence"]["halo"],
-                        "pattern": _INTERVENTION_STYLES["officer-divergence"]["pattern"],
-                        "legend_text": _INTERVENTION_STYLES["officer-divergence"]["text"],
-                        "reason": divergence.reason,
-                        "strategic_result_fingerprint": result_fingerprint,
-                    },
-                )
+            candidate_variants = (
+                ("compiler", candidate_roster.get(str(divergence.compiler_candidate_id))),
+                ("officer", candidate_roster.get(str(divergence.officer_candidate_id))),
             )
+            emitted_variant = False
+            for variant, entry in candidate_variants:
+                if entry is None:
+                    continue
+                candidate_set, candidate = entry
+                candidate_id = str(getattr(candidate, "candidate_id", ""))
+                props = {
+                    **_candidate_properties(candidate),
+                    "layer": StrategicPublicationLayer.DIVERGENCE.value,
+                    "feature_type": "officer-compiler-divergence",
+                    "obligation_id": divergence.obligation_id,
+                    "network_role": divergence.network_role,
+                    "officer_candidate_id": divergence.officer_candidate_id,
+                    "compiler_candidate_id": divergence.compiler_candidate_id,
+                    "divergence_variant": variant,
+                    "candidate_id": candidate_id,
+                    "candidate_set_id": getattr(candidate_set, "candidate_set_id", None),
+                    "connection_id": getattr(candidate_set, "connection_id", None),
+                    "authority": "officer/compiler-divergence",
+                    "display_state": "officer-divergence",
+                    "core": _INTERVENTION_STYLES["officer-divergence"]["core"],
+                    "halo": _INTERVENTION_STYLES["officer-divergence"]["halo"],
+                    "pattern": _INTERVENTION_STYLES["officer-divergence"]["pattern"],
+                    "legend_text": _INTERVENTION_STYLES["officer-divergence"]["text"],
+                    "reason": divergence.reason,
+                    "strategic_result_fingerprint": result_fingerprint,
+                }
+                divergence_features.append(
+                    _feature(
+                        feature_id=(
+                            f"officer-compiler-divergence:{divergence.obligation_id}:"
+                            f"{variant}:{candidate_id}"
+                        ),
+                        geometry=_candidate_geometry(candidate, source_crs),
+                        properties=props,
+                    )
+                )
+                emitted_variant = True
+            if not emitted_variant:
+                divergence_features.append(
+                    _feature(
+                        feature_id=f"divergence-{divergence.obligation_id}",
+                        geometry=(
+                            _line_geometry(getattr(section, "geometry_wkt", None), source_crs)
+                            if section
+                            else None
+                        ),
+                        properties={
+                            "layer": StrategicPublicationLayer.DIVERGENCE.value,
+                            "feature_type": "officer-compiler-divergence",
+                            "obligation_id": divergence.obligation_id,
+                            "network_role": divergence.network_role,
+                            "officer_candidate_id": divergence.officer_candidate_id,
+                            "compiler_candidate_id": divergence.compiler_candidate_id,
+                            "authority": "officer/compiler-divergence",
+                            "display_state": "officer-divergence",
+                            "core": _INTERVENTION_STYLES["officer-divergence"]["core"],
+                            "halo": _INTERVENTION_STYLES["officer-divergence"]["halo"],
+                            "pattern": _INTERVENTION_STYLES["officer-divergence"]["pattern"],
+                            "legend_text": _INTERVENTION_STYLES["officer-divergence"]["text"],
+                            "reason": divergence.reason,
+                            "strategic_result_fingerprint": result_fingerprint,
+                        },
+                    )
+                )
         layers[StrategicPublicationLayer.DIVERGENCE.value] = {
             "type": "FeatureCollection",
             "features": divergence_features,
@@ -539,34 +858,87 @@ def project_strategic_network(
         for layer in OPTIONAL_LAYERS:
             layers[layer] = _empty_collection()
 
-    # Gaps are deliberately non-line features.  Endpoint identities are facts;
-    # coordinates would be invented unless a separately governed place layer is
-    # supplied, so map consumers render these as point/null review markers.
-    gap_features = [
-        _feature(
-            feature_id=f"gap-{gap.obligation_id}",
-            geometry=None,
-            properties={
-                "layer": StrategicPublicationLayer.STRATEGIC_NETWORK.value,
-                "feature_type": "reviewable-gap-endpoint",
-                "gap_id": gap.obligation_id,
-                "obligation_id": gap.obligation_id,
-                "network_role": gap.network_role,
-                "endpoints": list(gap.endpoints),
-                "display_state": "unresolved-gap",
-                "missing_endpoint_geometry": True,
-                "core": _INTERVENTION_STYLES["unresolved-gap"]["core"],
-                "halo": _INTERVENTION_STYLES["unresolved-gap"]["halo"],
-                "pattern": _INTERVENTION_STYLES["unresolved-gap"]["pattern"],
-                "legend_text": _INTERVENTION_STYLES["unresolved-gap"]["text"],
-                "reason": gap.reason,
-                "strategic_result_fingerprint": result_fingerprint,
-            },
+    place_points: dict[str, dict[str, object]] = {}
+    for place in place_features:
+        properties = place.get("properties")
+        if not isinstance(properties, Mapping):
+            properties = {}
+        place_id = properties.get("place_id") or place.get("id")
+        geometry = place.get("geometry")
+        if place_id is None or not isinstance(geometry, Mapping):
+            continue
+        try:
+            parsed = shape(geometry)
+            if parsed.is_empty:
+                continue
+            point = parsed if parsed.geom_type == "Point" else parsed.representative_point()
+            place_points[str(place_id)] = _json_value(mapping(point))  # type: ignore[assignment]
+        except (AttributeError, KeyError, TypeError, ValueError):
+            continue
+
+    # Gaps are endpoint findings. Emit a governed Point when its endpoint Place
+    # is published; retain null geometry only for genuinely absent Places.
+    gap_features: list[dict[str, object]] = []
+    result_gaps = list(getattr(result, "gaps", ()))
+    known_gap_keys = {
+        key
+        for item in result_gaps
+        for key in (
+            str(getattr(item, "gap_id", "")),
+            str(getattr(item, "obligation_id", "")),
         )
-        for gap in sorted(
-            tuple(getattr(result, "gaps", ())), key=lambda item: str(item.obligation_id)
-        )
-    ]
+        if key
+    }
+    for item in tuple(reviewable_gaps or ()):
+        gap_keys = {
+            str(getattr(item, "gap_id", "")),
+            str(getattr(item, "obligation_id", "")),
+        }
+        gap_keys.discard("")
+        if gap_keys and not (gap_keys & known_gap_keys):
+            result_gaps.append(item)
+            known_gap_keys.update(gap_keys)
+    for gap in sorted(
+        tuple(result_gaps),
+        key=lambda item: str(getattr(item, "gap_id", getattr(item, "obligation_id", ""))),
+    ):
+        gap_id = str(getattr(gap, "gap_id", getattr(gap, "obligation_id", "gap")))
+        endpoints = tuple(getattr(gap, "endpoints", ()))
+        endpoint_occurrences: dict[str, int] = {}
+        for endpoint_position, endpoint_id in enumerate(endpoints, start=1):
+            endpoint_key = str(endpoint_id or "")
+            endpoint_occurrences[endpoint_key] = endpoint_occurrences.get(endpoint_key, 0) + 1
+            occurrence = endpoint_occurrences[endpoint_key]
+            identity_key, identity_fallback = gap_endpoint_identity(endpoint_id, occurrence)
+            geometry = place_points.get(endpoint_key)
+            gap_features.append(
+                _feature(
+                    feature_id=f"reviewable-gap:{gap_id}:{identity_key}",
+                    geometry=geometry,
+                    properties={
+                        "layer": StrategicPublicationLayer.STRATEGIC_NETWORK.value,
+                        "feature_type": "reviewable-gap-endpoint",
+                        "gap_id": gap_id,
+                        "obligation_id": getattr(gap, "obligation_id", gap_id),
+                        "endpoint_id": endpoint_id,
+                        "endpoint_identity_key": identity_key,
+                        "endpoint_position": endpoint_position,
+                        "endpoint_identity_fallback": identity_fallback,
+                        "network_role": getattr(gap, "network_role", None),
+                        "endpoints": list(endpoints),
+                        "candidate_set_id": getattr(gap, "candidate_set_id", None),
+                        "display_state": "unresolved-gap",
+                        "missing_endpoint_geometry": geometry is None,
+                        "geometry_semantics": "endpoint-marker-only-no-route-geometry",
+                        "core": _INTERVENTION_STYLES["unresolved-gap"]["core"],
+                        "halo": _INTERVENTION_STYLES["unresolved-gap"]["halo"],
+                        "pattern": _INTERVENTION_STYLES["unresolved-gap"]["pattern"],
+                        "legend_text": _INTERVENTION_STYLES["unresolved-gap"]["text"],
+                        "reason": gap.reason,
+                        "strategic_result_fingerprint": result_fingerprint,
+                    },
+                )
+            )
     layers[StrategicPublicationLayer.STRATEGIC_NETWORK.value]["features"] = [
         *layers[StrategicPublicationLayer.STRATEGIC_NETWORK.value]["features"],
         *gap_features,
@@ -580,15 +952,44 @@ def project_strategic_network(
         "features": layers[StrategicPublicationLayer.STRATEGIC_NETWORK.value]["features"]
         + layers[StrategicPublicationLayer.PLACES.value]["features"],
     }
+    reviewable_layer_names = (
+        StrategicPublicationLayer.STRATEGIC_NETWORK.value,
+        StrategicPublicationLayer.CANDIDATES.value,
+        StrategicPublicationLayer.ASSETS.value,
+        StrategicPublicationLayer.UPGRADEABLE_ASSETS.value,
+        StrategicPublicationLayer.DFT_TRAFFIC.value,
+        StrategicPublicationLayer.DIAGNOSTICS.value,
+        StrategicPublicationLayer.DIVERGENCE.value,
+    )
+    reviewable_features = [
+        feature
+        for layer_name in reviewable_layer_names
+        for feature in layers[layer_name]["features"]
+    ]
+    reviewable_features.sort(key=lambda item: str(item.get("id")))
+    reviewable = {
+        "type": "FeatureCollection",
+        "name": "SATN effective strategic network map",
+        "contract": "satn-reviewable-map/v1",
+        "disclaimer": DISCLAIMER,
+        "strategic_result_fingerprint": result_fingerprint,
+        "default_layers": list(DEFAULT_LAYERS),
+        "optional_layers": list(OPTIONAL_LAYERS),
+        "legend": _legend(),
+        "features": reviewable_features,
+    }
     projection_payload = {
         "strategic_result_fingerprint": result_fingerprint,
         "default_layers": DEFAULT_LAYERS,
         "optional_layers": OPTIONAL_LAYERS,
         "layers": layers,
+        "feature_collection": core,
+        "reviewable_feature_collection": reviewable,
         "legend": _legend(),
     }
     return StrategicNetworkPublicationProjection(
         feature_collection=core,
+        reviewable_feature_collection=reviewable,
         layers=layers,
         projection_fingerprint=_fingerprint(projection_payload),
         strategic_result_fingerprint=result_fingerprint,

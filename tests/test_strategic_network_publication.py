@@ -4,6 +4,7 @@ import json
 from types import SimpleNamespace
 
 from satn.alignment_selection import CanonicalLineString
+from satn.publisher import _reviewable_map_collection
 from satn.strategic_network_publication import (
     DEFAULT_LAYERS,
     OPTIONAL_LAYERS,
@@ -137,4 +138,224 @@ def test_projection_is_json_serialisable_and_permutation_stable() -> None:
     json.dumps(first.layers, sort_keys=True)
     assert all(
         "Backbone" not in json.dumps(feature) for feature in first.feature_collection["features"]
+    )
+
+
+def test_projection_owns_contextual_evidence_and_final_reviewable_collection() -> None:
+    result = _result(_section("selected"))
+    projection = project_strategic_network(
+        result,
+        places={
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "id": "place-a",
+                    "properties": {"place_id": "place-a"},
+                    "geometry": {"type": "Point", "coordinates": [-2.0, 51.0]},
+                }
+            ],
+        },
+        places_crs="EPSG:4326",
+        assets=[
+            {
+                "asset_id": "asset-a",
+                "intervention_state": "existing-provision",
+                "geometry": {"type": "LineString", "coordinates": [[-2.0, 51.0], [-1.9, 51.0]]},
+            }
+        ],
+        upgradeable_assets=[
+            {
+                "asset_id": "asset-b",
+                "intervention_state": "upgrade-required",
+                "geometry": {"type": "LineString", "coordinates": [[-2.0, 51.0], [-1.9, 51.0]]},
+            }
+        ],
+        traffic=[
+            {
+                "observation_id": "traffic-a",
+                "geometry": {"type": "Point", "coordinates": [-2.0, 51.0]},
+            }
+        ],
+        diagnostics=[{"diagnostic_id": "diag-a", "message": "retained"}],
+        source_crs="EPSG:4326",
+        optional_layers=True,
+    )
+
+    assert {
+        feature["properties"]["feature_type"]
+        for feature in projection.reviewable_feature_collection["features"]
+    } >= {
+        "reviewable-selected-route",
+        "asset-existing-provision",
+        "asset-upgrade-required",
+        "dft-motor-traffic",
+    }
+    assert [
+        feature["properties"]["layer"] for feature in projection.feature_collection["features"]
+    ] == ["Strategic Network", "Places"]
+    assert (
+        projection.projection_fingerprint
+        != project_strategic_network(
+            result,
+            places={"type": "FeatureCollection", "features": []},
+            assets=[],
+            upgradeable_assets=[],
+            traffic=[],
+            diagnostics=[],
+            source_crs="EPSG:4326",
+            optional_layers=True,
+        ).projection_fingerprint
+    )
+
+
+def test_projection_keeps_contextual_families_and_divergence_variants_owned() -> None:
+    compiler = SimpleNamespace(
+        candidate_id="candidate-compiler",
+        geometry=CanonicalLineString(coordinates=((100000.0, 200000.0), (100100.0, 200100.0))),
+        network_role="community-access",
+        evidence_fingerprints=("compiler-evidence",),
+        intervention_state="existing-provision",
+        alignment_bases=("mapped-cycleway",),
+    )
+    officer = SimpleNamespace(
+        candidate_id="candidate-officer",
+        geometry=CanonicalLineString(coordinates=((100000.0, 200000.0), (100100.0, 200000.0))),
+        network_role="community-access",
+        evidence_fingerprints=("officer-evidence",),
+        intervention_state="upgrade-required",
+        alignment_bases=("local-connector",),
+    )
+    divergence = SimpleNamespace(
+        obligation_id="obligation-selected",
+        network_role="community-access",
+        officer_candidate_id="candidate-officer",
+        compiler_candidate_id="candidate-compiler",
+        reason="officer choice differs",
+    )
+    gap = SimpleNamespace(
+        gap_id="gap-governed",
+        obligation_id="obligation-gap",
+        network_role="strategic-destination-access",
+        endpoints=("place-a", "missing-place"),
+        reason="no admitted candidate",
+    )
+    result = _result(
+        _section("selected"),
+        gaps=(gap,),
+        divergences=(divergence,),
+        candidates=(compiler, officer),
+    )
+    projection = project_strategic_network(
+        result,
+        places={
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "id": "place-a",
+                    "properties": {"place_id": "place-a"},
+                    "geometry": {"type": "Point", "coordinates": [-2.0, 51.0]},
+                }
+            ],
+        },
+        places_crs="EPSG:4326",
+        traffic=[{"candidate_id": "candidate-compiler", "observation_id": "traffic-1"}],
+        source_crs="EPSG:27700",
+        optional_layers=True,
+    )
+
+    divergence_features = projection.layers["Officer Divergence"]["features"]
+    assert {
+        (feature["properties"]["divergence_variant"], feature["properties"]["candidate_id"])
+        for feature in divergence_features
+    } == {
+        ("compiler", "candidate-compiler"),
+        ("officer", "candidate-officer"),
+    }
+    traffic = projection.layers["DfT Traffic"]["features"][0]
+    assert traffic["properties"]["geometry_semantics"] == (
+        "bounded-candidate-route-evidence-no-point"
+    )
+    gap_features = {
+        feature["properties"]["endpoint_id"]: feature
+        for feature in projection.layers["Strategic Network"]["features"]
+        if feature["properties"].get("feature_type") == "reviewable-gap-endpoint"
+    }
+    assert gap_features["place-a"]["geometry"]["type"] == "Point"
+    assert gap_features["missing-place"]["geometry"] is None
+    assert gap_features["missing-place"]["properties"]["missing_endpoint_geometry"] is True
+
+
+def test_publisher_uses_projection_owned_reviewable_roster_without_legacy_splice() -> None:
+    result = _result(_section("selected"))
+    compiled = SimpleNamespace(
+        strategic_network_planning=result,
+        places={
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "id": "place-a",
+                    "properties": {"place_id": "place-a"},
+                    "geometry": {"type": "Point", "coordinates": [-2.0, 51.0]},
+                }
+            ],
+        },
+        asset_accounting={
+            "contract": "satn-asset-accounting/v1",
+            "records": [
+                {
+                    "asset_id": "asset-a",
+                    "intervention_state": "existing-provision",
+                    "geometry": {
+                        "type": "LineString",
+                        "coordinates": [[-2.0, 51.0], [-1.9, 51.0]],
+                    },
+                    "geometry_crs": "EPSG:4326",
+                }
+            ],
+        },
+    )
+    payload = _reviewable_map_collection(compiled)
+    feature_types = {feature["properties"].get("feature_type") for feature in payload["features"]}
+    assert "asset-existing-provision" in feature_types
+    assert "reviewable-strategic-spine" not in json.dumps(payload)
+    assert (
+        payload["projection_fingerprint"]
+        == project_strategic_network(
+            result,
+            places=compiled.places,
+            assets=compiled.asset_accounting["records"],
+            source_crs="EPSG:27700",
+            places_crs="EPSG:4326",
+            optional_layers=True,
+        ).projection_fingerprint
+    )
+
+
+def test_projection_gaps_with_empty_duplicate_endpoints_have_stable_fallback_ids() -> None:
+    gap = SimpleNamespace(
+        gap_id="discovery",
+        obligation_id="obligation-gap",
+        network_role="strategic-destination-access",
+        endpoints=("", ""),
+        reason="missing governed endpoint identities",
+    )
+    projection = project_strategic_network(_result(gaps=(gap,)))
+    gap_features = [
+        feature
+        for feature in projection.feature_collection["features"]
+        if feature["properties"].get("feature_type") == "reviewable-gap-endpoint"
+    ]
+
+    assert [feature["id"] for feature in gap_features] == [
+        "reviewable-gap:discovery:endpoint-missing-1",
+        "reviewable-gap:discovery:endpoint-missing-2",
+    ]
+    assert [feature["properties"]["endpoint_id"] for feature in gap_features] == ["", ""]
+    assert [feature["properties"]["endpoint_position"] for feature in gap_features] == [1, 2]
+    assert all(
+        feature["properties"]["endpoint_identity_fallback"] is True and feature["geometry"] is None
+        for feature in gap_features
     )

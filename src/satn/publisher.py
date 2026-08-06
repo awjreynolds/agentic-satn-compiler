@@ -81,7 +81,7 @@ from satn.sources import (
     _validated_ea_snapshot_replay_inputs,
 )
 from satn.strategic_network_publication import (
-    StrategicPublicationLayer,
+    gap_endpoint_identity,
     project_strategic_network,
 )
 from satn.strategic_reference_application import StrategicReferenceApplicationDisposition
@@ -292,9 +292,7 @@ def _presentation_input(
         },
     }
     fingerprint = hashlib.sha256(
-        json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
-            "utf-8"
-        )
+        json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
     ).hexdigest()
     return {**body, "content_fingerprint": fingerprint}
 
@@ -386,9 +384,7 @@ def validate_presentation_retention(
     for name in ("reference_enabled", "strategic_enabled"):
         if not isinstance(presentation_input.get(name), bool):
             raise ValueError(f"presentation input field {name!r} is malformed")
-    if presentation_input["strategic_enabled"] is not (
-        run.get("strategic_reference") is not None
-    ):
+    if presentation_input["strategic_enabled"] is not (run.get("strategic_reference") is not None):
         raise ValueError("presentation strategic scope is not bound to the publication")
     if presentation_input["reference_enabled"] is not (run.get("reference_satn") is not None):
         raise ValueError("presentation Reference scope is not bound to the publication")
@@ -828,9 +824,7 @@ def republish_presentation(
         _zip_review_map(temporary / "review-map.zip", review)
         run["presentation_dependency_manifest"] = publication_dependency_manifest
         run["presentation_dependency_fingerprint"] = publication_dependency_manifest.get("sha256")
-        (temporary / "run.json").write_text(
-            json.dumps(run, indent=2) + "\n", encoding="utf-8"
-        )
+        (temporary / "run.json").write_text(json.dumps(run, indent=2) + "\n", encoding="utf-8")
         validate_publication(temporary, config)
         write_ownership_marker(
             temporary,
@@ -2387,46 +2381,55 @@ def _reviewable_map_collection(compiled: CompiledNetwork) -> dict[str, object]:
     """Project the effective strategic authority when available."""
 
     result = getattr(compiled, "strategic_network_planning", None)
-    legacy = _legacy_reviewable_map_collection(compiled)
     if result is None:
-        return legacy
-    projection = project_strategic_network(result, optional_layers=True)
-    features = [
-        feature
-        for layer_name in (
-            StrategicPublicationLayer.STRATEGIC_NETWORK.value,
-            StrategicPublicationLayer.CANDIDATES.value,
-            StrategicPublicationLayer.DIVERGENCE.value,
-            StrategicPublicationLayer.DIAGNOSTICS.value,
-        )
-        for feature in projection.layers[layer_name]["features"]
-        if feature.get("properties", {}).get("feature_type") != "reviewable-gap-endpoint"
-    ]
-    # Asset accounting and DfT observations are contextual evidence, not route
-    # authority. Reuse the established WGS84 projections for those layers.
-    features.extend(
-        feature
-        for feature in legacy["features"]
-        if feature.get("properties", {}).get("feature_type")
-        in {
-            "asset-existing-provision",
-            "asset-upgrade-required",
-            "dft-motor-traffic",
-            "reviewable-gap-endpoint",
-        }
+        return _legacy_reviewable_map_collection(compiled)
+
+    accounting_records = tuple(
+        item
+        for item in getattr(compiled, "asset_accounting", {}).get("records", ())
+        if isinstance(item, dict)
     )
-    features.sort(key=lambda feature: str(feature.get("id")))
+    assets = tuple(
+        item
+        for item in accounting_records
+        if item.get("intervention_state") == "existing-provision"
+    )
+    upgradeable_assets = tuple(
+        item for item in accounting_records if item.get("intervention_state") == "upgrade-required"
+    )
+    traffic: list[dict[str, object]] = []
+    for candidate_set in tuple(getattr(result, "candidate_sets", ())):
+        for candidate in tuple(getattr(candidate_set, "candidates", ())):
+            observations = getattr(candidate, "traffic_observations", ()) or ()
+            for observation in observations:
+                if hasattr(observation, "model_dump"):
+                    properties = observation.model_dump(mode="json")
+                elif isinstance(observation, dict):
+                    properties = dict(observation)
+                else:
+                    properties = dict(vars(observation))
+                properties["candidate_id"] = str(getattr(candidate, "candidate_id", ""))
+                traffic.append(properties)
+    places = getattr(compiled, "places", None)
+    places_crs = str(getattr(places, "crs", None) or "EPSG:4326")
+    legacy_reviewable = getattr(compiled, "reviewable_network", None)
+    projection = project_strategic_network(
+        result,
+        places=places,
+        places_crs=places_crs,
+        assets=assets,
+        upgradeable_assets=upgradeable_assets,
+        traffic=traffic,
+        diagnostics=getattr(result, "diagnostics", ()),
+        reviewable_gaps=(
+            getattr(legacy_reviewable, "network_gaps", ()) if legacy_reviewable is not None else ()
+        ),
+        source_crs="EPSG:27700",
+        optional_layers=True,
+    )
     return {
-        "type": "FeatureCollection",
-        "name": "SATN effective strategic network map",
-        "contract": "satn-reviewable-map/v1",
-        "disclaimer": DISCLAIMER,
-        "strategic_result_fingerprint": result.fingerprint,
+        **projection.reviewable_feature_collection,
         "projection_fingerprint": projection.projection_fingerprint,
-        "default_layers": list(projection.default_layers),
-        "optional_layers": list(projection.optional_layers),
-        "legend": projection.legend,
-        "features": features,
     }
 
 
@@ -5151,11 +5154,28 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
         top_level_reviewable_map = json.loads(reviewable_map_path.read_text(encoding="utf-8"))
         if top_level_reviewable_map != reviewable_map:
             raise ValueError("reviewable-network GeoJSON differs from review map")
-        expected_gap_ids = {
-            f"reviewable-gap:{gap['gap_id']}:{endpoint_id}"
-            for gap in artifact["semantic"].get("network_gaps", [])
-            for endpoint_id in gap.get("endpoints", [])
-        }
+        expected_gap_ids: set[str] = set()
+        expected_gap_records = list(artifact["semantic"].get("network_gaps", []))
+        strategic_sidecar_path = output / "review-map" / "strategic-network.json"
+        if strategic_sidecar_path.is_file():
+            strategic_sidecar = json.loads(strategic_sidecar_path.read_text(encoding="utf-8"))
+            expected_gap_records.extend(
+                {
+                    "gap_id": gap.get("gap_id") or gap.get("obligation_id"),
+                    "endpoints": gap.get("endpoints", []),
+                }
+                for gap in strategic_sidecar.get("gaps", [])
+                if isinstance(gap, dict)
+            )
+        for gap in expected_gap_records:
+            endpoint_occurrences: dict[str, int] = {}
+            for endpoint_id in gap.get("endpoints", []):
+                endpoint_key = str(endpoint_id or "")
+                endpoint_occurrences[endpoint_key] = endpoint_occurrences.get(endpoint_key, 0) + 1
+                identity_key, _ = gap_endpoint_identity(
+                    endpoint_id, endpoint_occurrences[endpoint_key]
+                )
+                expected_gap_ids.add(f"reviewable-gap:{gap['gap_id']}:{identity_key}")
         actual_gap_ids = {
             str(feature["id"])
             for feature in reviewable_features
