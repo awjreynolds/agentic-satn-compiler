@@ -2397,19 +2397,6 @@ def _reviewable_map_collection(compiled: CompiledNetwork) -> dict[str, object]:
     upgradeable_assets = tuple(
         item for item in accounting_records if item.get("intervention_state") == "upgrade-required"
     )
-    traffic: list[dict[str, object]] = []
-    for candidate_set in tuple(getattr(result, "candidate_sets", ())):
-        for candidate in tuple(getattr(candidate_set, "candidates", ())):
-            observations = getattr(candidate, "traffic_observations", ()) or ()
-            for observation in observations:
-                if hasattr(observation, "model_dump"):
-                    properties = observation.model_dump(mode="json")
-                elif isinstance(observation, dict):
-                    properties = dict(observation)
-                else:
-                    properties = dict(vars(observation))
-                properties["candidate_id"] = str(getattr(candidate, "candidate_id", ""))
-                traffic.append(properties)
     places = getattr(compiled, "places", None)
     places_crs = str(getattr(places, "crs", None) or "EPSG:4326")
     legacy_reviewable = getattr(compiled, "reviewable_network", None)
@@ -2419,12 +2406,12 @@ def _reviewable_map_collection(compiled: CompiledNetwork) -> dict[str, object]:
         places_crs=places_crs,
         assets=assets,
         upgradeable_assets=upgradeable_assets,
-        traffic=traffic,
         diagnostics=getattr(result, "diagnostics", ()),
         reviewable_gaps=(
             getattr(legacy_reviewable, "network_gaps", ()) if legacy_reviewable is not None else ()
         ),
         source_crs="EPSG:27700",
+        assets_crs="EPSG:4326",
         optional_layers=True,
     )
     return {

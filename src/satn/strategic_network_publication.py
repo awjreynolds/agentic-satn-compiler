@@ -295,8 +295,9 @@ def _collection_features(
             StrategicPublicationLayer.ASSETS.value,
             StrategicPublicationLayer.UPGRADEABLE_ASSETS.value,
         }:
-            contextual_properties.setdefault("geometry_crs", "EPSG:4326")
-            contextual_properties.setdefault("source_geometry_crs", source_crs)
+            source_geometry_crs = str(contextual_properties.get("geometry_crs") or source_crs)
+            contextual_properties["geometry_crs"] = "EPSG:4326"
+            contextual_properties["source_geometry_crs"] = source_geometry_crs
             contextual_properties.setdefault("geometry_semantics", "accounted-governed-asset-line")
         features.append(
             _feature(
@@ -308,28 +309,10 @@ def _collection_features(
     return sorted(features, key=lambda item: str(item["id"]))
 
 
-def _coordinate_values(value: object) -> list[float]:
-    if not isinstance(value, (list, tuple)) or not value:
-        return []
-    if isinstance(value[0], (int, float)):
-        return [float(item) for item in value[:2]]
-    values: list[float] = []
-    for item in value:
-        values.extend(_coordinate_values(item))
-    return values
-
-
 def _record_source_crs(record: Mapping[str, object], fallback: str) -> str:
     explicit = record.get("geometry_crs") or record.get("source_geometry_crs")
     if explicit:
         return str(explicit)
-    geometry = record.get("geometry")
-    if isinstance(geometry, Mapping):
-        coordinates = _coordinate_values(geometry.get("coordinates"))
-        if any(abs(value) > 180 for value in coordinates[0::2]):
-            return "EPSG:27700"
-        if coordinates:
-            return "EPSG:4326"
     return fallback
 
 
@@ -338,7 +321,9 @@ def _accounting_features(
 ) -> list[dict[str, object]]:
     """Project asset-accounting records while respecting each record's CRS."""
 
-    if not isinstance(value, Iterable) or isinstance(value, (str, bytes, Mapping)):
+    if isinstance(value, Mapping) and value.get("type") not in {"Feature", "FeatureCollection"}:
+        value = (value,)
+    elif not isinstance(value, Iterable) or isinstance(value, (str, bytes, Mapping)):
         return _collection_features(
             value, source_crs=fallback_crs, layer=layer, fingerprint=fingerprint
         )
@@ -483,6 +468,42 @@ def _traffic_features(
     return sorted(features, key=lambda item: str(item["id"]))
 
 
+def _diagnostic_records(value: object, *, fingerprint: str) -> list[dict[str, object]]:
+    """Expose graph diagnostics as stable data records, never null geometries."""
+
+    if value is None:
+        return []
+    if isinstance(value, Mapping):
+        rows = value.get("features", ()) if value.get("type") == "FeatureCollection" else (value,)
+    elif isinstance(value, Iterable) and not isinstance(value, (str, bytes)):
+        rows = value
+    else:
+        rows = (value,)
+    records: dict[str, dict[str, object]] = {}
+    for row in rows:
+        if isinstance(row, Mapping) and row.get("type") == "Feature":
+            raw = dict(row.get("properties") or {})
+        elif isinstance(row, Mapping):
+            raw = dict(row)
+        elif hasattr(row, "model_dump"):
+            raw = row.model_dump(mode="json")
+        else:
+            raw = dict(vars(row))
+        canonical = {
+            str(key): _json_value(item)
+            for key, item in raw.items()
+            if key not in {"geometry", "layer", "feature_type", "source_fingerprint"}
+        }
+        diagnostic_id = f"diagnostic-{_fingerprint(canonical)[:20]}"
+        records[diagnostic_id] = {
+            **canonical,
+            "diagnostic_id": diagnostic_id,
+            "layer": StrategicPublicationLayer.DIAGNOSTICS.value,
+            "strategic_result_fingerprint": fingerprint,
+        }
+    return [records[key] for key in sorted(records)]
+
+
 @dataclass(frozen=True)
 class StrategicNetworkPublicationProjection:
     """Frozen, JSON-serialisable view used by review maps and artefact writers."""
@@ -547,6 +568,7 @@ def project_strategic_network(
     reviewable_gaps: object | None = None,
     source_crs: str = "EPSG:27700",
     places_crs: str | None = None,
+    assets_crs: str | None = None,
     optional_layers: bool = False,
 ) -> StrategicNetworkPublicationProjection:
     """Project one planning result without selecting, repairing or inventing routes."""
@@ -731,7 +753,7 @@ def project_strategic_network(
             "features": _accounting_features(
                 assets,
                 layer=StrategicPublicationLayer.ASSETS.value,
-                fallback_crs=source_crs,
+                fallback_crs=assets_crs or source_crs,
                 fingerprint=result_fingerprint,
             ),
         }
@@ -740,7 +762,7 @@ def project_strategic_network(
             "features": _accounting_features(
                 upgradeable_assets,
                 layer=StrategicPublicationLayer.UPGRADEABLE_ASSETS.value,
-                fallback_crs=source_crs,
+                fallback_crs=assets_crs or source_crs,
                 fingerprint=result_fingerprint,
             ),
         }
@@ -768,12 +790,8 @@ def project_strategic_network(
         }
         layers[StrategicPublicationLayer.DIAGNOSTICS.value] = {
             "type": "FeatureCollection",
-            "features": _collection_features(
-                diagnostics,
-                source_crs=source_crs,
-                layer=StrategicPublicationLayer.DIAGNOSTICS.value,
-                fingerprint=result_fingerprint,
-            ),
+            "features": [],
+            "records": _diagnostic_records(diagnostics, fingerprint=result_fingerprint),
         }
         divergence_features: list[dict[str, object]] = []
         sections_by_obligation = {str(item.obligation_id): item for item in effective.sections}
@@ -976,6 +994,7 @@ def project_strategic_network(
         "default_layers": list(DEFAULT_LAYERS),
         "optional_layers": list(OPTIONAL_LAYERS),
         "legend": _legend(),
+        "diagnostics": list(layers[StrategicPublicationLayer.DIAGNOSTICS.value].get("records", ())),
         "features": reviewable_features,
     }
     projection_payload = {

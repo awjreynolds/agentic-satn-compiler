@@ -359,3 +359,100 @@ def test_projection_gaps_with_empty_duplicate_endpoints_have_stable_fallback_ids
         feature["properties"]["endpoint_identity_fallback"] is True and feature["geometry"] is None
         for feature in gap_features
     )
+
+
+def test_projection_diagnostics_are_data_only_with_permutation_stable_ids() -> None:
+    diagnostics = (
+        SimpleNamespace(code="z-code", subject_id="subject-z", message="last"),
+        SimpleNamespace(code="a-code", subject_id="subject-a", message="first"),
+    )
+    first = project_strategic_network(
+        _result(_section("selected")), diagnostics=diagnostics, optional_layers=True
+    )
+    second = project_strategic_network(
+        _result(_section("selected")),
+        diagnostics=tuple(reversed(diagnostics)),
+        optional_layers=True,
+    )
+
+    first_layer = first.layers["Graph Diagnostics"]
+    second_layer = second.layers["Graph Diagnostics"]
+    assert first_layer["features"] == second_layer["features"] == []
+    assert [record["diagnostic_id"] for record in first_layer["records"]] == [
+        record["diagnostic_id"] for record in second_layer["records"]
+    ]
+    assert all(record["layer"] == "Graph Diagnostics" for record in first_layer["records"])
+    assert first.reviewable_feature_collection["diagnostics"] == first_layer["records"]
+    assert all(
+        feature["properties"].get("feature_type") != "graph-diagnostic"
+        for feature in first.reviewable_feature_collection["features"]
+    )
+
+
+def test_projection_reprojects_bng_assets_and_retains_source_crs() -> None:
+    projection = project_strategic_network(
+        _result(_section("selected")),
+        assets=[
+            {
+                "asset_id": "asset-bng",
+                "intervention_state": "existing-provision",
+                "geometry_crs": "EPSG:27700",
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [[370000, 170000], [370100, 170100]],
+                },
+            }
+        ],
+        optional_layers=True,
+    )
+    feature = projection.layers["Existing Assets"]["features"][0]
+    assert feature["properties"]["geometry_crs"] == "EPSG:4326"
+    assert feature["properties"]["source_geometry_crs"] == "EPSG:27700"
+    assert feature["geometry"]["coordinates"][0][0] < 0
+
+
+def test_projection_uses_declared_asset_crs_not_coordinate_magnitude() -> None:
+    projection = project_strategic_network(
+        _result(_section("selected")),
+        assets=[
+            {
+                "asset_id": "asset-declared-wgs",
+                "intervention_state": "existing-provision",
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [[370000, 170000], [370100, 170100]],
+                },
+            }
+        ],
+        assets_crs="EPSG:4326",
+        optional_layers=True,
+    )
+    feature = projection.layers["Existing Assets"]["features"][0]
+    assert feature["properties"]["source_geometry_crs"] == "EPSG:4326"
+    assert feature["geometry"]["coordinates"][0][0] == 370000
+
+
+def test_publisher_leaves_candidate_traffic_derivation_to_projection() -> None:
+    candidate = SimpleNamespace(
+        candidate_id="candidate-traffic",
+        geometry=CanonicalLineString(coordinates=((100000.0, 200000.0), (100100.0, 200100.0))),
+        network_role="community-access",
+        traffic_observations=(SimpleNamespace(observation_id="traffic-1"),),
+    )
+    result = _result(_section("selected"), candidates=(candidate,))
+    compiled = SimpleNamespace(
+        strategic_network_planning=result,
+        places={"type": "FeatureCollection", "features": []},
+        asset_accounting={"records": []},
+    )
+
+    payload = _reviewable_map_collection(compiled)
+    traffic = [
+        feature
+        for feature in payload["features"]
+        if feature["properties"].get("feature_type") == "dft-motor-traffic"
+    ]
+    assert len(traffic) == 1
+    assert traffic[0]["properties"]["geometry_semantics"] == (
+        "bounded-candidate-route-evidence-no-point"
+    )
