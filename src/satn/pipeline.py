@@ -3037,13 +3037,14 @@ def _review_map_assets_are_current(output: Path) -> bool:
             "maplibre-gl.js",
             "maplibre-gl.css",
             "MAPLIBRE-LICENSE.txt",
+            "review-lens-state.js",
             "review-map.js",
             "review-map.css",
         ):
             content = (source_assets / name).read_bytes()
             if (published_assets / name).read_bytes() != content:
                 return False
-            if name.startswith("review-map."):
+            if name in {"review-lens-state.js", "review-map.js", "review-map.css"}:
                 path = Path(name)
                 digest = hashlib.sha256(content).hexdigest()[:12]
                 fingerprinted = f"{path.stem}.{digest}{path.suffix}"

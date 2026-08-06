@@ -363,6 +363,7 @@ def test_review_map_and_release_packaging_changes_do_not_change_the_digest(tmp_p
     )
 
     for relative_path in (
+        "assets/review-lens-state.js",
         "assets/review-map.js",
         "publisher.py",
         "pages_packaging.py",

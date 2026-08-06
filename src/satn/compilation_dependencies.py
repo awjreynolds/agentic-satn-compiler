@@ -276,6 +276,7 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     "satn/assets/review-map.css": "review-map presentation asset",
     "satn/assets/review-map.html": "review-map presentation asset",
     "satn/assets/review-map.js": "review-map presentation asset",
+    "satn/assets/review-lens-state.js": "review-map presentation asset",
     "satn/assets/strategic-reference.css": "strategic-only review-map presentation asset",
     "satn/assets/strategic-reference.js": "strategic-only review-map presentation asset",
     "satn/cli.py": "command-line adapter",

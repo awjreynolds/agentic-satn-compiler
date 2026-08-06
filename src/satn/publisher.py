@@ -102,6 +102,7 @@ _PRESENTATION_CORE_ASSETS = (
     "maplibre-gl.js",
     "maplibre-gl.css",
     "MAPLIBRE-LICENSE.txt",
+    "review-lens-state.js",
     "review-map.js",
     "review-map.css",
 )
@@ -316,13 +317,14 @@ def _render_presentation_html(
     )
     if any(not isinstance(presentation_input.get(name), str) for name in required_text):
         raise ValueError("presentation input text fields are malformed")
-    for name in ("review-map.css", "review-map.js"):
+    for name in ("review-lens-state.js", "review-map.css", "review-map.js"):
         if name not in fingerprinted_assets:
             raise ValueError("presentation asset fingerprint is incomplete")
     html = (
         template.replace("__TITLE__", escape(str(presentation_input["title"])))
         .replace("__DISCLAIMER__", DISCLAIMER)
         .replace("__REVIEW_MAP_CSS__", fingerprinted_assets["review-map.css"])
+        .replace("__REVIEW_LENS_STATE_JS__", fingerprinted_assets["review-lens-state.js"])
         .replace("__REVIEW_MAP_JS__", fingerprinted_assets["review-map.js"])
         .replace("__ATM_STATE__", str(presentation_input["atm_state"]))
         .replace("__ATM_STATUS__", str(presentation_input["atm_status"]))
@@ -810,7 +812,7 @@ def republish_presentation(
             source = asset_root / name
             content_bytes = source.read_bytes()
             (asset_output / name).write_bytes(content_bytes)
-            if name.startswith("review-map."):
+            if name in {"review-lens-state.js", "review-map.js", "review-map.css"}:
                 path = Path(name)
                 digest = hashlib.sha256(content_bytes).hexdigest()[:12]
                 fingerprinted = f"{path.stem}.{digest}{path.suffix}"
@@ -3976,12 +3978,13 @@ def _write_review_map(
         "maplibre-gl.js",
         "maplibre-gl.css",
         "MAPLIBRE-LICENSE.txt",
+        "review-lens-state.js",
         "review-map.js",
         "review-map.css",
     ):
         content = (asset_root / name).read_bytes()
         (asset_output / name).write_bytes(content)
-        if name.startswith("review-map."):
+        if name in {"review-lens-state.js", "review-map.js", "review-map.css"}:
             path = Path(name)
             digest = hashlib.sha256(content).hexdigest()[:12]
             fingerprinted_name = f"{path.stem}.{digest}{path.suffix}"
@@ -3998,6 +4001,7 @@ def _write_review_map(
         template.replace("__TITLE__", escape(config.publication.title))
         .replace("__DISCLAIMER__", DISCLAIMER)
         .replace("__REVIEW_MAP_CSS__", fingerprinted_assets["review-map.css"])
+        .replace("__REVIEW_LENS_STATE_JS__", fingerprinted_assets["review-lens-state.js"])
         .replace("__REVIEW_MAP_JS__", fingerprinted_assets["review-map.js"])
         .replace("__ATM_STATE__", atm_state)
         .replace("__ATM_STATUS__", atm_status)
@@ -5017,6 +5021,7 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
         "review-map/agent-records.json",
         "review-map/assets/maplibre-gl.js",
         "review-map/assets/maplibre-gl.css",
+        "review-map/assets/review-lens-state.js",
         "review-map/assets/review-map.js",
         "review-map/assets/review-map.css",
         "review-map/backbone-comparison.json",

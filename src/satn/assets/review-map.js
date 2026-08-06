@@ -58,6 +58,10 @@
   const places = data.places;
   const referenceRecord = data.reference_satn || null;
   const referenceOptions = data.reference_satn_options || { type: "FeatureCollection", features: [] };
+  const reviewLensState = window.SATN_REVIEW_LENS_STATE;
+  if (!reviewLensState) throw new Error("Review Lens state module failed to load.");
+  const lensCatalog = reviewLensState.parseArtifactCatalog(data);
+  let lensState = reviewLensState.createInitialLensState();
   const state = {
     pinned: null,
     pinnedArtifact: null,
@@ -67,6 +71,14 @@
     inspectionVersion: 0,
     populationSectionIds: new Set()
   };
+
+  function syncLensState(next) {
+    lensState = next;
+    state.pinned = next.pinned;
+    state.pinnedArtifact = next.pinnedArtifact;
+    state.comparisonArtifacts = next.comparisonArtifacts;
+    return next;
+  }
   const gradientPathTypes = new Set([
     "strategic-spine",
     "spine-access-connection",
@@ -1107,45 +1119,17 @@
   }
 
   function stableArtifactId(feature) {
-    if (feature?.id !== null && feature?.id !== undefined && feature.id !== "") {
-      return String(feature.id);
-    }
-    const properties = feature?.properties || {};
-    const preferredKeys = [
-      "rendered_feature_id",
-      "section_id",
-      "profile_id",
-      "place_id",
-      "connection_id",
-      "structure_id",
-      "obligation_id",
-      "option_id",
-      "evidence_id"
-    ];
-    const preferred = preferredKeys.find((key) => value(properties[key], null) !== null);
-    if (preferred) return String(properties[preferred]);
-    const fallback = Object.keys(properties).find((key) => key.endsWith("_id"));
-    return fallback ? String(properties[fallback]) : "";
+    return reviewLensState.stableArtifactId(feature);
   }
 
   function artifactRecord(feature, sourceId, layerId) {
-    if (!feature) return null;
-    const id = stableArtifactId(feature);
-    if (!id) return null;
-    return {
-      key: `${sourceId}:${id}`,
-      id,
-      sourceId,
-      layerId,
-      feature
-    };
+    return reviewLensState.artifactRecord(feature, sourceId, layerId);
   }
 
   function sourceFeatures(sourceId) {
-    if (sourceId === "places") return places.features;
-    if (sourceId === "reference-satn-options") return referenceOptions.features;
-    if (sourceId === "reviewable") return reviewable.features;
-    if (["network", "topography"].includes(sourceId)) return network.features;
+    if (sourceId === "topography") sourceId = "network";
+    const sourceArtifacts = lensCatalog.sources[sourceId];
+    if (sourceArtifacts) return sourceArtifacts.map((artifact) => artifact.feature);
     return [];
   }
 
@@ -1160,10 +1144,8 @@
   }
 
   function networkArtifact(id, layerId = "feature-index") {
-    const feature = network.features.find(
-      (candidate) => String(candidate.id) === String(id)
-    );
-    return artifactRecord(feature, "network", layerId);
+    const artifact = lensCatalog.find("network", String(id));
+    return artifact ? reviewLensState.artifactRecord(artifact.feature, "network", layerId) : null;
   }
 
   function selectableArtifactLayers() {
@@ -1206,15 +1188,13 @@
 
   function showReviewLens() {
     const lens = document.querySelector("#review-lens");
-    const pinned = Boolean(state.pinnedArtifact);
-    lens.hidden = false;
-    lens.dataset.state = pinned ? "pinned" : "preview";
-    document.querySelector("#review-lens-state").textContent = pinned
-      ? "Pinned review"
-      : "Quick view";
-    document.querySelector("#review-gradient-details").hidden = !(
-      pinned && state.inspectionPath.length
-    );
+    const view = reviewLensState.projectLensView(lensState, {
+      inspectionPathLength: state.inspectionPath.length,
+    });
+    lens.hidden = !view.visible;
+    lens.dataset.state = view.state;
+    document.querySelector("#review-lens-state").textContent = view.label;
+    document.querySelector("#review-gradient-details").hidden = !view.showGradientDetails;
   }
 
   function positionReviewLens(point) {
@@ -1491,11 +1471,6 @@
     );
   }
 
-  function canCompareArtifact(artifact) {
-    const geometryType = artifact?.feature?.geometry?.type;
-    return ["LineString", "MultiLineString"].includes(geometryType);
-  }
-
   function segmentComparisonValues(feature) {
     const properties = feature.properties || {};
     const values = alignmentMetrics(feature).map(([label, metric]) => [
@@ -1588,6 +1563,12 @@
 
   function showArtifactDetails(artifact) {
     if (!artifact) return;
+    if (!state.pinnedArtifact) {
+      syncLensState(reviewLensState.reduceLens(
+        lensState,
+        { type: reviewLensState.ActionType.PREVIEW_ARTIFACT, artifact }
+      ));
+    }
     const canonical = ["network", "topography"].includes(artifact.sourceId)
       ? network.features.find(
         (candidate) => stableArtifactId(candidate) === artifact.id
@@ -1863,6 +1844,10 @@
   }
 
   function clearTransient() {
+    syncLensState(reviewLensState.reduceLens(
+      lensState,
+      { type: reviewLensState.ActionType.PREVIEW_ARTIFACT, artifact: null }
+    ));
     if (!state.pinnedArtifact) {
       renderEmptyArtifactPanel();
       setHighlight(null);
@@ -1870,23 +1855,19 @@
   }
 
   function toggleArtifactPin(artifact) {
-    const previous = state.pinnedArtifact;
-    const unpin = state.pinnedArtifact?.key === artifact.key;
-    if (unpin) {
+    const next = syncLensState(reviewLensState.reduceLens(
+      lensState,
+      { type: reviewLensState.ActionType.TOGGLE_PIN_ARTIFACT, artifact }
+    ));
+    if (next.selectionKind === reviewLensState.SelectionKind.NONE) {
       closeReviewLens();
       return;
     }
-    if (previous && canCompareArtifact(previous) && canCompareArtifact(artifact)) {
-      state.comparisonArtifacts = [previous, artifact];
-      state.pinnedArtifact = artifact;
-      state.pinned = artifact.sourceId === "network" ? artifact.id : null;
+    if (next.comparisonKind === reviewLensState.ComparisonKind.SEGMENTS) {
       renderSegmentComparison(state.comparisonArtifacts);
       updateGradientCandidate();
       return;
     }
-    state.comparisonArtifacts = canCompareArtifact(artifact) ? [artifact] : [];
-    state.pinnedArtifact = artifact;
-    state.pinned = artifact.sourceId === "network" ? artifact.id : null;
     if (state.pinnedArtifact) {
       showArtifactDetails(state.pinnedArtifact);
     } else {
@@ -1897,9 +1878,10 @@
   }
 
   function closeReviewLens() {
-    state.pinnedArtifact = null;
-    state.pinned = null;
-    state.comparisonArtifacts = [];
+    syncLensState(reviewLensState.reduceLens(
+      lensState,
+      { type: reviewLensState.ActionType.CLOSE }
+    ));
     renderEmptyArtifactPanel();
     setHighlight(null);
     updateGradientCandidate();
