@@ -34,6 +34,7 @@ from satn.content_identity import (
     canonical_network_geometry_fingerprint,
 )
 from satn.cross_spine import CrossSpineAssembly, CrossSpineProgress, resolve_cross_spine_assembly
+from satn.effective_strategic_network import EffectiveStrategicNetworkState
 from satn.evidence import (
     PUBLIC_CYCLE_ROUTE_TYPES,
     STRATEGIC_CYCLE_ROUTE_TYPES,
@@ -232,9 +233,10 @@ def governed_input_binding(
         if re.fullmatch(r"[0-9a-f]{64}", evidence_state_fingerprint or "") is None:
             raise ValueError("evidence_state_fingerprint must be a full lowercase SHA-256")
         evidence_store.resolve_coverage(state_fingerprint=evidence_state_fingerprint)
-    if routing_input_fingerprint is not None and re.fullmatch(
-        r"[0-9a-f]{64}", routing_input_fingerprint
-    ) is None:
+    if (
+        routing_input_fingerprint is not None
+        and re.fullmatch(r"[0-9a-f]{64}", routing_input_fingerprint) is None
+    ):
         raise ValueError("routing_input_fingerprint must be a full lowercase SHA-256")
     token = _GOVERNED_INPUT_BINDING.set(
         _GovernedInputBinding(
@@ -367,6 +369,19 @@ class CompiledNetwork:
         return len(self.strategic_interurban_connections) + len(
             self.strategic_destination_access_connections
         )
+
+    @property
+    def effective_strategic_network(self) -> EffectiveStrategicNetworkState:
+        """Canonical effective-network state without rerunning selection.
+
+        ``strategic_network_planning`` remains the established compatibility
+        result for publisher and bundle consumers.  This view wraps that exact
+        result, or records the governed-identity absence explicitly.
+        """
+
+        if self.strategic_network_planning is None:
+            return EffectiveStrategicNetworkState.unavailable()
+        return EffectiveStrategicNetworkState.evaluated(self.strategic_network_planning)
 
     @property
     def status(self) -> str:
@@ -617,8 +632,7 @@ def _compile_network(
         # live resolver so downstream request-context fingerprints and the final
         # unconsumed-ledger check match a cold compilation.
         routing_resolver.accepted_responses = [
-            response.model_copy(deep=True)
-            for response in routing_replay.accepted_responses
+            response.model_copy(deep=True) for response in routing_replay.accepted_responses
         ]
         accepted_ids = routing_resolver.consumed_request_ids
         routing_resolver.applied_records = [
@@ -697,9 +711,7 @@ def _compile_network(
             RoutingAssemblyBundle.from_assemblies(
                 backbone,
                 cross_spine_assembly,
-                accepted_responses=(
-                    tuple(gate.decision_resolver.accepted_responses)
-                ),
+                accepted_responses=(tuple(gate.decision_resolver.accepted_responses)),
             )
         )
     # Downstream request-context fingerprints include the accepted routing

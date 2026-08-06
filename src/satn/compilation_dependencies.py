@@ -76,6 +76,10 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
         "module",
         "immutable strategic candidate selection and network application",
     ),
+    "satn/effective_strategic_network.py": (
+        "module",
+        "canonical effective strategic-network evaluation and governed selection state",
+    ),
     "satn/strategic_network_adapter.py": (
         "module",
         "exact prepared-corridor adaptation to effective strategic planning",
@@ -231,6 +235,7 @@ OPTIONAL_COMPONENT_GROUPS: Final[dict[str, frozenset[str]]] = {
             "satn/candidate_discovery.py",
             "satn/corridor_obligations.py",
             "satn/strategic_network_planning.py",
+            "satn/effective_strategic_network.py",
             "satn/strategic_network_adapter.py",
             "satn/strategic_network_publication.py",
             "satn/network_selection.py",
