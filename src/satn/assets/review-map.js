@@ -63,10 +63,7 @@
   const lensCatalog = reviewLensState.parseArtifactCatalog(data);
   let lensState = reviewLensState.createInitialLensState();
   const state = {
-    pinned: null,
-    pinnedArtifact: null,
     active: null,
-    comparisonArtifacts: [],
     inspectionPath: [],
     inspectionVersion: 0,
     populationSectionIds: new Set()
@@ -74,9 +71,6 @@
 
   function syncLensState(next) {
     lensState = next;
-    state.pinned = next.pinned;
-    state.pinnedArtifact = next.pinnedArtifact;
-    state.comparisonArtifacts = next.comparisonArtifacts;
     return next;
   }
   const gradientPathTypes = new Set([
@@ -767,12 +761,12 @@
   }
 
   function updateGradientCandidate() {
-    const candidate = network.features.find((feature) => feature.id === state.pinned);
+    const candidate = network.features.find((feature) => feature.id === lensState.pinned);
     const message = document.querySelector("#gradient-path-candidate");
     const start = document.querySelector("#gradient-path-start");
     const append = document.querySelector("#gradient-path-append");
     if (!eligibleForGradientPath(candidate)) {
-      message.textContent = state.pinnedArtifact
+      message.textContent = lensState.pinnedArtifact
         ? "Pinned feature is not an eligible analytical edge."
         : "Pin an eligible Published Feature, then start or append it.";
       start.disabled = true;
@@ -819,12 +813,12 @@
   }
 
   function startPinnedPath() {
-    const feature = network.features.find((candidate) => candidate.id === state.pinned);
+    const feature = network.features.find((candidate) => candidate.id === lensState.pinned);
     if (eligibleForGradientPath(feature)) setInspectionPath([{ feature, reversed: false }]);
   }
 
   function appendPinnedPath() {
-    const feature = network.features.find((candidate) => candidate.id === state.pinned);
+    const feature = network.features.find((candidate) => candidate.id === lensState.pinned);
     if (!eligibleForGradientPath(feature) || !state.inspectionPath.length) return;
     if (state.inspectionPath.some((item) => item.feature.id === feature.id)) {
       document.querySelector("#gradient-path-status").textContent = "That edge is already in the path.";
@@ -893,7 +887,7 @@
     };
     const leave = () => {
       cell.classList.remove("hovered");
-      setHighlight(state.pinned);
+      setHighlight(lensState.pinned);
     };
     cell.addEventListener("mouseenter", enter);
     cell.addEventListener("focus", enter);
@@ -964,7 +958,7 @@
       summary.textContent = "Build a continuous Gradient Inspection Path to compare distance-aligned evidence.";
       return;
     }
-    detailsButton.hidden = !state.pinnedArtifact;
+    detailsButton.hidden = !lensState.pinnedArtifact;
     view.hidden = detailsButton.getAttribute("aria-expanded") !== "true";
     const segments = state.inspectionPath.map((item) => {
       const profile = profileFor(item.feature);
@@ -1031,8 +1025,8 @@
       cell.dataset.featureId = segment.feature.id;
       cell.addEventListener("mouseenter", () => setHighlight(segment.feature.id));
       cell.addEventListener("focus", () => setHighlight(segment.feature.id));
-      cell.addEventListener("mouseleave", () => setHighlight(state.pinned));
-      cell.addEventListener("blur", () => setHighlight(state.pinned));
+      cell.addEventListener("mouseleave", () => setHighlight(lensState.pinned));
+      cell.addEventListener("blur", () => setHighlight(lensState.pinned));
       cell.addEventListener("click", () => togglePin(segment.feature.id));
       boundaryCells.append(cell);
     });
@@ -1058,8 +1052,8 @@
       cell.addEventListener("click", () => togglePin(segment.feature.id));
       cell.addEventListener("mouseenter", () => setHighlight(segment.feature.id));
       cell.addEventListener("focus", () => setHighlight(segment.feature.id));
-      cell.addEventListener("mouseleave", () => setHighlight(state.pinned));
-      cell.addEventListener("blur", () => setHighlight(state.pinned));
+      cell.addEventListener("mouseleave", () => setHighlight(lensState.pinned));
+      cell.addEventListener("blur", () => setHighlight(lensState.pinned));
       cell.dataset.segmentIndex = String(index);
       cell.dataset.featureId = segment.feature.id;
       roadCells.append(cell);
@@ -1118,14 +1112,6 @@
     return String(value(item));
   }
 
-  function stableArtifactId(feature) {
-    return reviewLensState.stableArtifactId(feature);
-  }
-
-  function artifactRecord(feature, sourceId, layerId) {
-    return reviewLensState.artifactRecord(feature, sourceId, layerId);
-  }
-
   function sourceFeatures(sourceId) {
     if (sourceId === "topography") sourceId = "network";
     const sourceArtifacts = lensCatalog.sources[sourceId];
@@ -1136,11 +1122,11 @@
   function resolveRenderedArtifact(rendered) {
     const sourceId = rendered.source;
     const layerId = rendered.layer?.id || "unknown";
-    const renderedId = stableArtifactId(rendered);
+    const renderedId = reviewLensState.stableArtifactId(rendered);
     const original = sourceFeatures(sourceId).find(
-      (candidate) => stableArtifactId(candidate) === renderedId
+      (candidate) => reviewLensState.stableArtifactId(candidate) === renderedId
     );
-    return artifactRecord(original || rendered, sourceId, layerId);
+    return reviewLensState.artifactRecord(original || rendered, sourceId, layerId);
   }
 
   function networkArtifact(id, layerId = "feature-index") {
@@ -1556,14 +1542,11 @@
     panel.append(renderAlignmentRadar(artifacts.map((artifact) => artifact.feature), axes));
     renderRawSegmentComparison(panel, artifacts);
     showReviewLens();
-    const lens = document.querySelector("#review-lens");
-    lens.dataset.state = "compare";
-    document.querySelector("#review-lens-state").textContent = "Segment comparison";
   }
 
   function showArtifactDetails(artifact) {
     if (!artifact) return;
-    if (!state.pinnedArtifact) {
+    if (!lensState.pinnedArtifact) {
       syncLensState(reviewLensState.reduceLens(
         lensState,
         { type: reviewLensState.ActionType.PREVIEW_ARTIFACT, artifact }
@@ -1571,10 +1554,10 @@
     }
     const canonical = ["network", "topography"].includes(artifact.sourceId)
       ? network.features.find(
-        (candidate) => stableArtifactId(candidate) === artifact.id
+        (candidate) => reviewLensState.stableArtifactId(candidate) === artifact.id
       )
       : null;
-    if (!state.pinnedArtifact) {
+    if (!lensState.pinnedArtifact) {
       renderArtifactPreview(artifact);
     } else if (canonical) {
       showDetails(canonical.id);
@@ -1642,7 +1625,7 @@
       button.className = "finding-button";
       button.textContent = `${value(properties.gap_id, "Gap")} · ${value(properties.endpoint_id, "unknown endpoint")} · ${feature.geometry ? "mapped endpoint" : "endpoint geometry unavailable"}`;
       button.addEventListener("click", () => {
-        const artifact = artifactRecord(feature, "reviewable", "reviewable-findings");
+        const artifact = reviewLensState.artifactRecord(feature, "reviewable", "reviewable-findings");
         if (artifact) toggleArtifactPin(artifact);
       });
       list.append(button);
@@ -1653,7 +1636,7 @@
     state.active = id;
     document.querySelectorAll(".connection").forEach((item) => {
       item.classList.toggle("active", item.dataset.featureId === id);
-      item.setAttribute("aria-pressed", String(state.pinned === item.dataset.featureId));
+      item.setAttribute("aria-pressed", String(lensState.pinned === item.dataset.featureId));
     });
     if (map.getLayer("connections-highlight")) {
       map.setFilter("connections-highlight", id ? ["==", ["id"], id] : ["==", ["id"], ""]);
@@ -1848,7 +1831,7 @@
       lensState,
       { type: reviewLensState.ActionType.PREVIEW_ARTIFACT, artifact: null }
     ));
-    if (!state.pinnedArtifact) {
+    if (!lensState.pinnedArtifact) {
       renderEmptyArtifactPanel();
       setHighlight(null);
     }
@@ -1864,16 +1847,16 @@
       return;
     }
     if (next.comparisonKind === reviewLensState.ComparisonKind.SEGMENTS) {
-      renderSegmentComparison(state.comparisonArtifacts);
+      renderSegmentComparison(lensState.comparisonArtifacts);
       updateGradientCandidate();
       return;
     }
-    if (state.pinnedArtifact) {
-      showArtifactDetails(state.pinnedArtifact);
+    if (lensState.pinnedArtifact) {
+      showArtifactDetails(lensState.pinnedArtifact);
     } else {
       clearTransient();
     }
-    setHighlight(state.pinned || state.active);
+    setHighlight(lensState.pinned || state.active);
     updateGradientCandidate();
   }
 
@@ -1961,7 +1944,7 @@
           button.append(warning);
         }
         const preview = () => {
-          if (!state.pinnedArtifact) showArtifactDetails(networkArtifact(feature.id));
+          if (!lensState.pinnedArtifact) showArtifactDetails(networkArtifact(feature.id));
         };
         button.addEventListener("mouseenter", preview);
         button.addEventListener("focus", preview);
@@ -2577,7 +2560,7 @@
     map.on("mousemove", (event) => {
       const artifact = artifactAt(event.point);
       map.getCanvas().style.cursor = artifact ? "pointer" : "";
-      if (artifact && !state.pinnedArtifact) {
+      if (artifact && !lensState.pinnedArtifact) {
         showArtifactDetails(artifact);
         positionReviewLens(event.point);
       } else if (!artifact) {
@@ -2591,7 +2574,7 @@
           togglePopulationSectionSelection(artifact.feature);
         }
         toggleArtifactPin(artifact);
-      } else if (state.pinnedArtifact) {
+      } else if (lensState.pinnedArtifact) {
         closeReviewLens();
       }
     });
