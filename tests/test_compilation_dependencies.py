@@ -64,6 +64,7 @@ def test_manifest_is_explicit_complete_and_records_component_digests() -> None:
         "satn/parallel_reduction_corpus_cli.py",
         "satn/parallel_reduction_evidence.py",
         "satn/parallel_reduction_scope.py",
+        "satn/retained_compilation.py",
         "satn/strategic_destination_access.py",
     } <= excluded
     population_component = next(
@@ -83,9 +84,7 @@ def test_manifest_is_explicit_complete_and_records_component_digests() -> None:
         == "deterministic Preferred Strategic Alignment selection contract"
     )
     assert all(not path.startswith("src/") for path in components)
-    runtime_components = {
-        component["path"]: component for component in manifest["components"]
-    }
+    runtime_components = {component["path"]: component for component in manifest["components"]}
     for distribution in ("openai", "httpx"):
         assert runtime_components[f"runtime-distribution/{distribution}"]["version"] == (
             dependencies.metadata.version(distribution)
@@ -138,9 +137,7 @@ def test_active_network_selection_change_invalidates_banes(
     original = dependencies.compilation_dependency_manifest(config, package_root=root)
     active_validator = root / "psa_evidence_loaders.py"
     validator_bytes = active_validator.read_bytes()
-    active_validator.write_bytes(
-        validator_bytes + b"\n# inactive dependency regression probe\n"
-    )
+    active_validator.write_bytes(validator_bytes + b"\n# inactive dependency regression probe\n")
 
     changed = dependencies.compilation_dependency_manifest(config, package_root=root)
     assert changed["sha256"] != original["sha256"]
@@ -216,9 +213,7 @@ def test_ea_recovery_code_is_active_only_for_recovery_candidate_identity(
 
     assert recovery_path not in ordinary["selection"]["component_paths"]
     assert recovery_publisher_path not in ordinary["selection"]["component_paths"]
-    assert recovery_path in {
-        component["path"] for component in ordinary["inactive_components"]
-    }
+    assert recovery_path in {component["path"] for component in ordinary["inactive_components"]}
     assert recovery["selection"]["active_groups"] == [
         "core",
         "ea-recovery",
@@ -241,9 +236,7 @@ def test_ea_recovery_code_is_active_only_for_recovery_candidate_identity(
     for relative_path in ("ea_snapshot_recovery.py", "publisher.py"):
         module = root / relative_path
         original_bytes = module.read_bytes()
-        module.write_bytes(
-            original_bytes + b"\n# active recovery dependency probe\n"
-        )
+        module.write_bytes(original_bytes + b"\n# active recovery dependency probe\n")
         unchanged_ordinary = dependencies.compilation_dependency_manifest(
             config,
             package_root=root,
@@ -256,14 +249,20 @@ def test_ea_recovery_code_is_active_only_for_recovery_candidate_identity(
 
         assert unchanged_ordinary["sha256"] == ordinary["sha256"]
         assert changed_recovery["sha256"] != recovery["sha256"]
-        assert compilation_governed_input_fingerprint(
-            config,
-            dependency_manifest=unchanged_ordinary,
-        ) == ordinary_fingerprint
-        assert compilation_governed_input_fingerprint(
-            config,
-            dependency_manifest=changed_recovery,
-        ) != recovery_fingerprint
+        assert (
+            compilation_governed_input_fingerprint(
+                config,
+                dependency_manifest=unchanged_ordinary,
+            )
+            == ordinary_fingerprint
+        )
+        assert (
+            compilation_governed_input_fingerprint(
+                config,
+                dependency_manifest=changed_recovery,
+            )
+            != recovery_fingerprint
+        )
         module.write_bytes(original_bytes)
 
 
@@ -273,11 +272,7 @@ def test_external_direct_runtime_versions_are_selected_only_when_configured() ->
         update={"provider": "openai", "model": "test-model", "response_mode": "direct-runtime"}
     )
     external_config = fixture.model_copy(
-        update={
-            "compilation": fixture.compilation.model_copy(
-                update={"agent": external_agent}
-            )
-        }
+        update={"compilation": fixture.compilation.model_copy(update={"agent": external_agent})}
     )
 
     caller_manifest = dependencies.compilation_dependency_manifest(fixture)
@@ -315,9 +310,7 @@ def test_streaming_geojson_validation_changes_compiler_identity(tmp_path: Path) 
     changed = dependencies.compilation_dependency_manifest(package_root=root)
 
     component = next(
-        item
-        for item in original["components"]
-        if item["path"] == "satn/streaming_geojson.py"
+        item for item in original["components"] if item["path"] == "satn/streaming_geojson.py"
     )
     assert component["reason"] == "strict bounded validation of governed GeoJSON snapshot inputs"
     assert changed["sha256"] != original["sha256"]
@@ -387,9 +380,7 @@ def test_additive_evidence_sidecars_do_not_change_the_ordinary_compiler_digest(
 ) -> None:
     root = copied_compiler_tree(tmp_path)
     original = dependencies.compilation_dependency_manifest(package_root=root)
-    excluded = {
-        component["path"] for component in original["excluded_components"]
-    }
+    excluded = {component["path"] for component in original["excluded_components"]}
 
     for relative_path in ("ea_raster_evidence.py", "evidence_replay.py"):
         component_path = f"satn/{relative_path}"
@@ -446,14 +437,19 @@ def test_non_compiler_tooling_versions_and_project_files_do_not_change_manifest(
 
     def versions(distribution: str) -> str:
         queried.append(distribution)
-        return "999.0-regression" if distribution in {
-            "pytest",
-            "ruff",
-            "playwright",
-            "pypdf",
-            "reportlab",
-            "hatchling",
-        } else recorded_version(distribution)
+        return (
+            "999.0-regression"
+            if distribution
+            in {
+                "pytest",
+                "ruff",
+                "playwright",
+                "pypdf",
+                "reportlab",
+                "hatchling",
+            }
+            else recorded_version(distribution)
+        )
 
     monkeypatch.setattr(dependencies.metadata, "version", versions)
     (project_root / "pyproject.toml").write_text("[build-system]\nrequires = ['changed']\n")

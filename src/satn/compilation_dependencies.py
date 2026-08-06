@@ -376,6 +376,10 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
         "workspace-local content-addressed artifact storage and lifecycle; "
         "stage implementation fingerprints govern reuse independently"
     ),
+    "satn/retained_compilation.py": (
+        "retained compilation orchestration and run reporting; "
+        "stage implementation fingerprints govern semantic reuse independently"
+    ),
     "satn/runtime_governance.py": "current publication runtime-governance validation",
     "satn/runtime_governance_contract.py": "current publication governance contract",
     "satn/routing_materialisation.py": (
