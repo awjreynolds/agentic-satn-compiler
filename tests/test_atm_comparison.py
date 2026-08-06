@@ -107,7 +107,7 @@ def test_local_or_permitted_output_can_include_the_atm_overlay(tmp_path: Path) -
     assert local.metadata["atm_geometry_included"] is True
     assert "atm_reference" in set(pyogrio.list_layers(local.artifacts["geopackage"])[:, 0])
     published_atm = gpd.read_file(local.artifacts["geopackage"], layer="atm_reference")
-    assert list(published_atm["source_fid"]) == [101, 102, 103]
+    assert sorted(published_atm["source_fid"].tolist()) == [101, 102, 103]
     network = json.loads(local.artifacts["geojson"].read_text())
     assert "atm-reference" in {f["properties"]["feature_type"] for f in network["features"]}
 

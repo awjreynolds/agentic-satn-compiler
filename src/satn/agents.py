@@ -523,6 +523,7 @@ class CompilationGate:
                     selected_role=initial_role,
                     outcome_reason=reason,
                     usage={"requests": 0, "tokens": 0},
+                    created_at=None,
                 ),
                 initial_role,
             )

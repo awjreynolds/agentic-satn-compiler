@@ -95,6 +95,18 @@ EA_FIXED_POINT_CANDIDATE_NETWORK = "network.geojson"
 EA_FIXED_POINT_CANDIDATE_STATUS = "status.json"
 REVIEW_MAP_ZIP_MAX_COMPRESSION_RATIO = 200
 
+PRESENTATION_DEPENDENCY_SCHEMA = "satn-presentation-dependency-manifest/v1"
+PRESENTATION_INPUT_SCHEMA = "satn-presentation-input/v1"
+_PRESENTATION_CORE_ASSETS = (
+    "review-map.html",
+    "maplibre-gl.js",
+    "maplibre-gl.css",
+    "MAPLIBRE-LICENSE.txt",
+    "review-map.js",
+    "review-map.css",
+)
+_PRESENTATION_STRATEGIC_ASSETS = ("strategic-reference.css", "strategic-reference.js")
+
 
 class EAFixedPointMismatchError(ValueError):
     """The sole EA fixed-point failure that can retain a candidate route network."""
@@ -198,6 +210,237 @@ def publication_artifacts(output: Path) -> dict[str, Path]:
     if strategic_network.is_file():
         artifacts["strategic_network"] = strategic_network
     return artifacts
+
+
+def presentation_dependency_manifest(
+    *, strategic: bool = False, asset_root: Path | None = None
+) -> dict[str, object]:
+    """Return the complete presentation-only dependency fingerprint.
+
+    Presentation bytes are deliberately separate from the semantic compiler
+    dependency manifest.  The manifest is retained in ``run.json`` so a
+    changed review shell can be republished without rebuilding the network.
+    """
+
+    root = Path(asset_root) if asset_root is not None else Path(files("satn.assets"))
+    names = (
+        (*_PRESENTATION_CORE_ASSETS, *_PRESENTATION_STRATEGIC_ASSETS)
+        if strategic
+        else _PRESENTATION_CORE_ASSETS
+    )
+    assets: dict[str, str] = {}
+    for name in names:
+        path = root / name
+        if not path.is_file() or path.is_symlink():
+            raise ValueError(f"presentation dependency is unreadable: {name}")
+        assets[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    identity = {
+        "schema": PRESENTATION_DEPENDENCY_SCHEMA,
+        "strategic": strategic,
+        "assets": assets,
+    }
+    digest = hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return {**identity, "sha256": digest}
+
+
+def _presentation_input(
+    config: AreaConfig,
+    compiled: CompiledNetwork,
+    run_id: str,
+    reference_publication: _ValidatedReferencePublication | None,
+    strategic_reference_publication: _ValidatedStrategicReferencePublication | None,
+) -> dict[str, object]:
+    """Capture typed, semantic-bound values needed to render the review shell."""
+
+    strategic_payload = (
+        strategic_reference_publication.payload()
+        if strategic_reference_publication is not None
+        else None
+    )
+    body: dict[str, object] = {
+        "schema": PRESENTATION_INPUT_SCHEMA,
+        "semantic_run_id": run_id,
+        "compilation_input_fingerprint": compiled.compilation_input_fingerprint,
+        "title": config.publication.title,
+        "atm_state": "" if compiled.atm_reference is not None else "disabled",
+        "atm_status": (
+            "A governed ATM reference is bundled locally; toggle it to compare before/after."
+            if compiled.atm_reference is not None
+            else "ATM geometry is not published. Load a governed local GeoJSON to compare it."
+        ),
+        "reference_enabled": reference_publication is not None,
+        "reference_evidence_html": (
+            _reference_option_evidence_html(
+                reference_publication.options(), reference_publication.record
+            )
+            if reference_publication is not None
+            else ""
+        ),
+        "strategic_enabled": strategic_payload is not None,
+        "strategic_reference_html": (
+            _strategic_reference_review_html(strategic_payload)
+            if strategic_payload is not None
+            else ""
+        ),
+        "topography": {
+            "gentle_max_pct": f"{config.compilation.topography.gentle_max_pct:g}",
+            "noticeable_max_pct": f"{config.compilation.topography.noticeable_max_pct:g}",
+            "steep_max_pct": f"{config.compilation.topography.steep_max_pct:g}",
+            "very_steep_max_pct": f"{config.compilation.topography.very_steep_max_pct:g}",
+        },
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+    return {**body, "content_fingerprint": fingerprint}
+
+
+def _render_presentation_html(
+    template: str,
+    presentation_input: dict[str, object],
+    fingerprinted_assets: dict[str, str],
+) -> str:
+    """Render a review shell using only retained presentation input."""
+
+    topography = presentation_input.get("topography")
+    if not isinstance(topography, dict):
+        raise ValueError("presentation input topography is malformed")
+    required_text = (
+        "title",
+        "atm_state",
+        "atm_status",
+        "reference_evidence_html",
+        "strategic_reference_html",
+    )
+    if any(not isinstance(presentation_input.get(name), str) for name in required_text):
+        raise ValueError("presentation input text fields are malformed")
+    for name in ("review-map.css", "review-map.js"):
+        if name not in fingerprinted_assets:
+            raise ValueError("presentation asset fingerprint is incomplete")
+    html = (
+        template.replace("__TITLE__", escape(str(presentation_input["title"])))
+        .replace("__DISCLAIMER__", DISCLAIMER)
+        .replace("__REVIEW_MAP_CSS__", fingerprinted_assets["review-map.css"])
+        .replace("__REVIEW_MAP_JS__", fingerprinted_assets["review-map.js"])
+        .replace("__ATM_STATE__", str(presentation_input["atm_state"]))
+        .replace("__ATM_STATUS__", str(presentation_input["atm_status"]))
+        .replace(
+            "__REFERENCE_SATN_STATE__",
+            "" if presentation_input.get("reference_enabled") is True else "hidden",
+        )
+        .replace("__REFERENCE_SATN_EVIDENCE__", str(presentation_input["reference_evidence_html"]))
+        .replace("__GENTLE_MAX_PCT__", str(topography.get("gentle_max_pct", "")))
+        .replace("__NOTICEABLE_MAX_PCT__", str(topography.get("noticeable_max_pct", "")))
+        .replace("__STEEP_MAX_PCT__", str(topography.get("steep_max_pct", "")))
+        .replace("__VERY_STEEP_MAX_PCT__", str(topography.get("very_steep_max_pct", "")))
+    )
+    if presentation_input.get("strategic_enabled") is True:
+        html = html.replace(
+            "</main>", str(presentation_input["strategic_reference_html"]) + "</main>"
+        )
+        html = html.replace(
+            "</head>", '<link rel="stylesheet" href="assets/strategic-reference.css">\n</head>'
+        ).replace(
+            f'<script src="assets/{fingerprinted_assets["review-map.js"]}"></script>',
+            '<script src="assets/strategic-reference.js"></script>\n'
+            f'<script src="assets/{fingerprinted_assets["review-map.js"]}"></script>',
+        )
+    return html
+
+
+def validate_presentation_retention(
+    run: object,
+) -> tuple[dict[str, object], dict[str, object]]:
+    """Fail closed unless retained presentation input and manifest are self-bound."""
+
+    if not isinstance(run, dict):
+        raise ValueError("publication run manifest is not an object")
+    presentation_input = run.get("presentation_input")
+    presentation_manifest = run.get("presentation_dependency_manifest")
+    if not isinstance(presentation_input, dict) or not isinstance(presentation_manifest, dict):
+        raise ValueError("publication has no verified presentation retention")
+    if presentation_input.get("schema") != PRESENTATION_INPUT_SCHEMA:
+        raise ValueError("publication presentation input schema is unsupported")
+    if presentation_input.get("semantic_run_id") != run.get("run_id"):
+        raise ValueError("presentation input is not bound to the published semantic run")
+    if presentation_input.get("compilation_input_fingerprint") != run.get(
+        "compilation_input_fingerprint"
+    ):
+        raise ValueError("presentation input is not bound to the semantic compilation input")
+    for name in (
+        "semantic_run_id",
+        "compilation_input_fingerprint",
+        "title",
+        "atm_state",
+        "atm_status",
+        "reference_evidence_html",
+        "strategic_reference_html",
+        "content_fingerprint",
+    ):
+        if not isinstance(presentation_input.get(name), str):
+            raise ValueError(f"presentation input field {name!r} is malformed")
+    for name in ("reference_enabled", "strategic_enabled"):
+        if not isinstance(presentation_input.get(name), bool):
+            raise ValueError(f"presentation input field {name!r} is malformed")
+    if presentation_input["strategic_enabled"] is not (
+        run.get("strategic_reference") is not None
+    ):
+        raise ValueError("presentation strategic scope is not bound to the publication")
+    if presentation_input["reference_enabled"] is not (run.get("reference_satn") is not None):
+        raise ValueError("presentation Reference scope is not bound to the publication")
+    topography = presentation_input.get("topography")
+    if not isinstance(topography, dict) or any(
+        not isinstance(topography.get(name), str)
+        for name in (
+            "gentle_max_pct",
+            "noticeable_max_pct",
+            "steep_max_pct",
+            "very_steep_max_pct",
+        )
+    ):
+        raise ValueError("presentation input topography is malformed")
+    content = dict(presentation_input)
+    expected_content_fingerprint = content.pop("content_fingerprint")
+    actual_content_fingerprint = hashlib.sha256(
+        json.dumps(content, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+    if expected_content_fingerprint != actual_content_fingerprint:
+        raise ValueError("publication presentation input fingerprint is invalid")
+    if presentation_manifest.get("schema") != PRESENTATION_DEPENDENCY_SCHEMA:
+        raise ValueError("publication presentation dependency schema is unsupported")
+    strategic = presentation_input["strategic_enabled"]
+    if presentation_manifest.get("strategic") is not strategic:
+        raise ValueError("presentation dependency strategic scope differs from input")
+    assets = presentation_manifest.get("assets")
+    if not isinstance(assets, dict) or any(
+        not isinstance(name, str) or not isinstance(digest, str) or len(digest) != 64
+        for name, digest in assets.items()
+    ):
+        raise ValueError("presentation dependency assets are malformed")
+    expected_assets = set(_PRESENTATION_CORE_ASSETS)
+    if strategic:
+        expected_assets.update(_PRESENTATION_STRATEGIC_ASSETS)
+    if set(assets) != expected_assets:
+        raise ValueError("presentation dependency asset roster is incomplete")
+    identity = {
+        "schema": presentation_manifest["schema"],
+        "strategic": strategic,
+        "assets": assets,
+    }
+    expected_manifest_fingerprint = hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    if presentation_manifest.get("sha256") != expected_manifest_fingerprint:
+        raise ValueError("presentation dependency manifest fingerprint is invalid")
+    if run.get("presentation_dependency_fingerprint") != expected_manifest_fingerprint:
+        raise ValueError("presentation dependency fingerprint is not bound to its manifest")
+    return presentation_input, presentation_manifest
 
 
 def published_artifact_reference(
@@ -404,6 +647,16 @@ def publish(
         compiled.strategic_reference_publication,
         compiled,
     )
+    presentation_input = _presentation_input(
+        config,
+        compiled,
+        run_id,
+        reference_publication,
+        strategic_reference_publication,
+    )
+    presentation_manifest = presentation_dependency_manifest(
+        strategic=bool(presentation_input["strategic_enabled"])
+    )
     output = config.publication.output_dir
     authority = publication_authority or default_publication_destination_authority(
         config.config_path
@@ -454,6 +707,8 @@ def publish(
             reference_publication,
             strategic_reference_publication,
             compilation_metadata,
+            presentation_input=presentation_input,
+            presentation_dependency_manifest=presentation_manifest,
         )
         _write_backbone_comparison(
             temporary / "backbone-comparison.json",
@@ -507,6 +762,86 @@ def publish(
         LOGGER.info("Publication atomically replaced output=%s", output)
         if _uses_ea_lidar_weca_fixed_point(config):
             _remove_ea_fixed_point_candidate(config)
+    finally:
+        staging.cleanup()
+    return publication_artifacts(output)
+
+
+def republish_presentation(
+    config: AreaConfig,
+    *,
+    publication_dependency_manifest: dict[str, object],
+    publication_authority: PublicationDestinationAuthority | None = None,
+) -> dict[str, Path]:
+    """Atomically replace only presentation files from a validated publication."""
+
+    output = config.publication.output_dir
+    run_path = output / "run.json"
+    run = json.loads(run_path.read_text(encoding="utf-8"))
+    presentation_input, stored_manifest = validate_presentation_retention(run)
+    strategic = presentation_input["strategic_enabled"]
+    expected_manifest = presentation_dependency_manifest(strategic=strategic)
+    if stored_manifest != run.get("presentation_dependency_manifest"):
+        raise ValueError("presentation dependency manifest changed during validation")
+    if publication_dependency_manifest != expected_manifest:
+        raise ValueError("presentation dependency manifest does not match current assets")
+    authority = publication_authority or default_publication_destination_authority(
+        config.config_path
+    )
+    validate_publication(output, config)
+    staging = stage_replacement(
+        output,
+        authority=authority,
+        owner_kind=f"compiled-network:{config.area_id}",
+        prior_record_name="run.json",
+    )
+    temporary = staging.temporary
+    try:
+        shutil.copytree(output, temporary, dirs_exist_ok=True)
+        review = temporary / "review-map"
+        asset_output = review / "assets"
+        if asset_output.exists():
+            shutil.rmtree(asset_output)
+        asset_output.mkdir(parents=True)
+        asset_root = Path(files("satn.assets"))
+        fingerprinted_assets: dict[str, str] = {}
+        names = (
+            (*_PRESENTATION_CORE_ASSETS, *_PRESENTATION_STRATEGIC_ASSETS)
+            if strategic
+            else _PRESENTATION_CORE_ASSETS
+        )
+        for name in names[1:]:
+            source = asset_root / name
+            content_bytes = source.read_bytes()
+            (asset_output / name).write_bytes(content_bytes)
+            if name.startswith("review-map."):
+                path = Path(name)
+                digest = hashlib.sha256(content_bytes).hexdigest()[:12]
+                fingerprinted = f"{path.stem}.{digest}{path.suffix}"
+                (asset_output / fingerprinted).write_bytes(content_bytes)
+                fingerprinted_assets[name] = fingerprinted
+        template = (asset_root / "review-map.html").read_text(encoding="utf-8")
+        (review / "index.html").write_text(
+            _render_presentation_html(template, presentation_input, fingerprinted_assets),
+            encoding="utf-8",
+        )
+        _zip_review_map(temporary / "review-map.zip", review)
+        run["presentation_dependency_manifest"] = publication_dependency_manifest
+        run["presentation_dependency_fingerprint"] = publication_dependency_manifest.get("sha256")
+        (temporary / "run.json").write_text(
+            json.dumps(run, indent=2) + "\n", encoding="utf-8"
+        )
+        validate_publication(temporary, config)
+        write_ownership_marker(
+            temporary,
+            owner_kind=f"compiled-network:{config.area_id}",
+        )
+        commit_replacement(
+            staging,
+            authority=authority,
+            owner_kind=f"compiled-network:{config.area_id}",
+            prior_record_name="run.json",
+        )
     finally:
         staging.cleanup()
     return publication_artifacts(output)
@@ -2227,6 +2562,9 @@ def _write_json_records(
     reference_publication: _ValidatedReferencePublication | None = None,
     strategic_reference_publication: _ValidatedStrategicReferencePublication | None = None,
     compilation_metadata: dict[str, object] | None = None,
+    *,
+    presentation_input: dict[str, object] | None = None,
+    presentation_dependency_manifest: dict[str, object] | None = None,
 ) -> None:
     if compiled.reference_satn_publication is not None and reference_publication is None:
         raise ValueError(
@@ -2272,6 +2610,17 @@ def _write_json_records(
         "snapshot_manifest_sha256": compiled.snapshot_manifest_sha256,
         "area_definition_sha256": compiled.area_definition_sha256,
         "compilation_dependency_manifest": compiled.compilation_dependency_manifest,
+        **(
+            {
+                "presentation_input": presentation_input,
+                "presentation_dependency_manifest": presentation_dependency_manifest,
+                "presentation_dependency_fingerprint": presentation_dependency_manifest.get(
+                    "sha256"
+                ),
+            }
+            if presentation_input is not None and presentation_dependency_manifest is not None
+            else {}
+        ),
         "compilation_diagnostics": compiled.compilation_diagnostics,
         "connection_count": compiled.connection_count,
         "gap_count": len(compiled.gaps),

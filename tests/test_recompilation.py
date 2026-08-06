@@ -7,6 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import geopandas as gpd
+import pytest
 
 import satn.compilation_dependencies as dependencies
 import satn.compiler as compiler_module
@@ -90,11 +91,27 @@ def test_review_map_change_refreshes_publication_without_changing_semantic_run_i
 ) -> None:
     config = prepared_config(tmp_path)
     first = compile(config)
+    semantic_bytes = {
+        name: first.artifacts[name].read_bytes()
+        for name in ("geopackage", "geojson", "asset_accounting")
+    }
+    # A presentation-only rebuild must not need the governed source network. Removing
+    # it after the first valid publication makes an accidental network compilation
+    # observable through the public compile seam without mocking compiler internals.
+    (config.source.snapshot_dir / config.source.snapshot_id / "network.geojson").unlink()
     root = copied_compiler_tree(tmp_path)
     review_map = root / "assets" / "review-map.js"
     probe = b"\n/* dependency-manifest regression probe */\n"
     review_map.write_bytes(
         review_map.read_bytes() + probe
+    )
+    review_template = root / "assets" / "review-map.html"
+    template_probe = '<meta name="presentation-probe" content="template-refreshed">'
+    review_template.write_text(
+        review_template.read_text(encoding="utf-8").replace(
+            "</head>", f"  {template_probe}\n</head>"
+        ),
+        encoding="utf-8",
     )
     monkeypatch.setattr(dependencies, "_package_root", lambda: root)
     monkeypatch.setattr("satn.publisher.files", lambda _package: root / "assets")
@@ -106,7 +123,217 @@ def test_review_map_change_refreshes_publication_without_changing_semantic_run_i
 
     assert refreshed.run_id == first.run_id
     assert refreshed.metadata.get("publication_reused") is not True
+    assert refreshed.metadata["semantic_compilation_reused"] is True
+    assert refreshed.metadata["presentation_republished"] is True
+    assert refreshed.metadata["presentation_elapsed_seconds"] < 60
+    assert {
+        name: refreshed.artifacts[name].read_bytes()
+        for name in semantic_bytes
+    } == semantic_bytes
     assert published_script.endswith(probe)
+    assert template_probe in refreshed.artifacts["review_map"].read_text(encoding="utf-8")
+
+    unchanged = compile(config)
+
+    assert unchanged.metadata["publication_reused"] is True
+    assert unchanged.metadata.get("presentation_republished") is not True
+
+
+def test_targeted_presentation_rebuild_does_not_recompile_semantic_network(
+    tmp_path: Path,
+) -> None:
+    config = prepared_config(tmp_path)
+    first = compile(config)
+    semantic_bytes = {
+        name: first.artifacts[name].read_bytes()
+        for name in ("geopackage", "geojson", "asset_accounting")
+    }
+    (config.source.snapshot_dir / config.source.snapshot_id / "network.geojson").unlink()
+
+    refreshed = compile(config, rebuild_stages=("presentation",))
+
+    assert refreshed.run_id == first.run_id
+    assert refreshed.metadata["semantic_compilation_reused"] is True
+    assert refreshed.metadata["presentation_republished"] is True
+    assert {
+        name: refreshed.artifacts[name].read_bytes()
+        for name in semantic_bytes
+    } == semantic_bytes
+
+
+def test_targeted_publication_rebuild_reuses_validated_semantic_network_without_source(
+    tmp_path: Path,
+) -> None:
+    config = prepared_config(tmp_path)
+    first = compile(config)
+    semantic_bytes = {
+        name: first.artifacts[name].read_bytes()
+        for name in ("geopackage", "geojson", "asset_accounting")
+    }
+    (config.source.snapshot_dir / config.source.snapshot_id / "network.geojson").unlink()
+
+    republished = compile(config, rebuild_stages=("publication",))
+
+    assert republished.run_id == first.run_id
+    assert republished.metadata["semantic_compilation_reused"] is True
+    assert republished.metadata["presentation_republished"] is True
+    assert {
+        name: republished.artifacts[name].read_bytes()
+        for name in semantic_bytes
+    } == semantic_bytes
+    report = json.loads(
+        Path(republished.metadata["compilation_run_report"]).read_text()
+    )
+    assert [event["kind"] for event in report["artifacts"]] == [
+        "edge-enrichments",
+        "routing-assembly",
+        "semantic-compilation",
+        "presentation",
+        "publication",
+    ]
+    assert report["artifacts"][0]["reason"] == (
+        "presentation-republish-edge-enrichment-skipped"
+    )
+    assert report["artifacts"][1]["reason"] == (
+        "presentation-republish-routing-skipped"
+    )
+    assert report["artifacts"][3]["reason"] == "forced-stage"
+
+
+def test_targeted_scenario_rebuild_reuses_edge_and_route_but_rebuilds_semantic(
+    tmp_path: Path,
+) -> None:
+    config = prepared_config(tmp_path)
+    artifact_root = tmp_path / "retained"
+    first = compile(config, artifact_root=artifact_root)
+    shutil.rmtree(config.publication.output_dir)
+
+    rebuilt = compile(
+        config,
+        artifact_root=artifact_root,
+        rebuild_stages=("scenario-selection",),
+    )
+
+    assert rebuilt.metadata["edge_enrichment_disposition"] == "hit"
+    assert rebuilt.metadata["routing_bundle_disposition"] == "hit"
+    assert rebuilt.metadata["semantic_bundle_disposition"] == "build"
+    assert rebuilt.metadata["routing_bundle_artifact_id"] == first.metadata[
+        "routing_bundle_artifact_id"
+    ]
+
+
+def test_targeted_edge_report_records_forced_descendants_in_stable_order(
+    tmp_path: Path,
+) -> None:
+    config = prepared_config(tmp_path)
+    artifact_root = tmp_path / "retained"
+    compile(config, artifact_root=artifact_root)
+    shutil.rmtree(config.publication.output_dir)
+
+    rebuilt = compile(
+        config,
+        artifact_root=artifact_root,
+        rebuild_stages=("edge-enrichments",),
+    )
+    report = json.loads(
+        Path(rebuilt.metadata["compilation_run_report"]).read_text()
+    )
+    events = report["artifacts"]
+
+    assert [event["kind"] for event in events] == [
+        "edge-enrichments",
+        "routing-assembly",
+        "semantic-compilation",
+        "presentation",
+        "publication",
+    ]
+    assert [event["disposition"] for event in events] == [
+        "build",
+        "build",
+        "build",
+        "build",
+        "done",
+    ]
+    assert events[0]["reason"] == "forced-stage"
+    assert events[1]["reason"] == "forced-stage"
+
+
+def test_invalid_presentation_refresh_preserves_previous_publication(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = prepared_config(tmp_path)
+    first = compile(config)
+    prior_index = first.artifacts["review_map"].read_bytes()
+    prior_run = first.artifacts["run"].read_bytes()
+    (config.source.snapshot_dir / config.source.snapshot_id / "network.geojson").unlink()
+    root = copied_compiler_tree(tmp_path)
+    review_template = root / "assets" / "review-map.html"
+    review_template.write_text(
+        review_template.read_text(encoding="utf-8").replace(
+            'id="layer-atm"', 'id="invalid-layer-atm"'
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(dependencies, "_package_root", lambda: root)
+    monkeypatch.setattr("satn.publisher.files", lambda _package: root / "assets")
+
+    with pytest.raises(
+        RuntimeError,
+        match="presentation-only publication failed; previous publication retained",
+    ):
+        compile(config)
+
+    assert first.artifacts["review_map"].read_bytes() == prior_index
+    assert first.artifacts["run"].read_bytes() == prior_run
+
+
+def test_invalid_publication_target_preserves_previous_publication(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    config = prepared_config(tmp_path)
+    first = compile(config)
+    prior_index = first.artifacts["review_map"].read_bytes()
+    prior_run = first.artifacts["run"].read_bytes()
+    (config.source.snapshot_dir / config.source.snapshot_id / "network.geojson").unlink()
+    root = copied_compiler_tree(tmp_path)
+    review_template = root / "assets" / "review-map.html"
+    review_template.write_text(
+        review_template.read_text(encoding="utf-8").replace(
+            'id="layer-atm"', 'id="invalid-layer-atm"'
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(dependencies, "_package_root", lambda: root)
+    monkeypatch.setattr("satn.publisher.files", lambda _package: root / "assets")
+
+    with pytest.raises(
+        RuntimeError,
+        match="presentation-only publication failed; previous publication retained",
+    ):
+        compile(config, rebuild_stages=("publication",))
+
+    assert first.artifacts["review_map"].read_bytes() == prior_index
+    assert first.artifacts["run"].read_bytes() == prior_run
+
+
+def test_tampered_presentation_input_is_rebuilt_from_valid_semantic_bundle(
+    tmp_path: Path,
+) -> None:
+    config = prepared_config(tmp_path)
+    first = compile(config)
+    run = json.loads(first.artifacts["run"].read_text(encoding="utf-8"))
+    run["presentation_input"]["title"] = "Tampered retained title"
+    first.artifacts["run"].write_text(json.dumps(run), encoding="utf-8")
+    (config.source.snapshot_dir / config.source.snapshot_id / "network.geojson").unlink()
+
+    recovered = compile(config)
+
+    assert recovered.metadata["semantic_compilation_reused"] is True
+    assert recovered.metadata["semantic_bundle_disposition"] == "hit"
+    repaired = json.loads(recovered.artifacts["run"].read_text(encoding="utf-8"))
+    assert repaired["presentation_input"]["title"] != "Tampered retained title"
 
 
 def test_full_directive_ignores_reusable_connections(tmp_path: Path) -> None:

@@ -332,7 +332,7 @@ class StrategicNetworkPlanningResult:
     status: str
     effective_network: EffectiveStrategicNetwork
     selections: tuple[EffectiveReviewableSelection, ...]
-    candidate_sets: tuple[object, ...]
+    candidate_sets: tuple[AlignmentCandidateSet, ...]
     reference_routes: tuple[ReferenceRoute, ...]
     unselected_candidates: tuple[CandidateDisposition, ...]
     gaps: tuple[ReviewableNetworkGap, ...]

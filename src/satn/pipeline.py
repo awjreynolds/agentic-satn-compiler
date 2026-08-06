@@ -8,14 +8,20 @@ import logging
 import os
 import re
 import time
+import uuid
 from collections import Counter
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import geopandas as gpd
+import numpy as np
 
 import satn.compilation_dependencies as compilation_dependencies
+import satn.compiled_network_bundle as compiled_network_bundle_codec
+import satn.routable_edge_enrichment as routable_edge_enrichment_codec
 from satn.agents import (
     AgentCompilationTerminated,
     AgentDecisionRequired,
@@ -31,13 +37,20 @@ from satn.compiler import (
     CompiledNetwork,
     _compile_network_with_reference,
     _compile_network_with_strategic_reference,
+    _routable_edge_enrichment_capture,
+    _routable_edge_enrichment_replay,
+    _routing_assembly_capture,
+    _routing_assembly_replay,
     compile_network,
     governed_input_binding,
 )
 from satn.constants import SCHEMA_VERSION
 from satn.content_identity import ordered_geometry_fingerprint
 from satn.ea_snapshot_recovery import load_legacy_ea_recovery_snapshot
-from satn.filesystem_safety import PublicationDestinationAuthority
+from satn.filesystem_safety import (
+    PublicationDestinationAuthority,
+    default_publication_destination_authority,
+)
 from satn.heartbeat import StageHeartbeat
 from satn.local_evidence_store import LocalEvidenceStore
 from satn.models import (
@@ -55,19 +68,42 @@ from satn.models import (
 from satn.parallel_reduction import PreloadedOfficerDecision
 from satn.psa_evidence_loaders import GovernedEvidenceLoadError
 from satn.publisher import (
+    presentation_dependency_manifest,
     publication_artifacts,
     publish,
+    republish_presentation,
     retain_ea_recovery_candidate,
+    validate_presentation_retention,
     validate_publication,
 )
 from satn.reference_application import (
     _build_reference_application_plan_for_current_baseline,
     build_reference_satn_publication_record,
 )
+from satn.retained_artifacts import (
+    ArtifactSpecification,
+    CompilationRunReport,
+    RetainedArtifact,
+    RetainedArtifactStore,
+    RunArtifactEvent,
+)
 from satn.reviewable_network import (
     ReviewableNetwork,
     canonical_officer_decisions,
     terminal_reviewable_network_for_governed_evidence,
+)
+from satn.routable_edge_enrichment import (
+    EDGE_ENRICHMENT_OUTPUT_ROLE,
+    EDGE_ENRICHMENT_VALIDATION_CONTRACT,
+    decode_routable_edge_enrichment,
+    encode_routable_edge_enrichment,
+    policy_fingerprint,
+    validate_identities,
+)
+from satn.routing_assembly_bundle import (
+    RoutingAssemblyBundle,
+    decode_routing_assembly_bundle,
+    encode_routing_assembly_bundle,
 )
 from satn.runtime_governance import incomplete_runtime_governance
 from satn.sources import load_snapshot
@@ -80,6 +116,26 @@ from satn.strategic_reference_replay import validate_fresh_replay
 
 LOGGER = logging.getLogger(__name__)
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_INCREMENTAL_STAGE_NAMES = frozenset(
+    {
+        "edge-enrichments",
+        "routing-assembly",
+        "scenario-selection",
+        "presentation",
+        "publication",
+    }
+)
+_ROUTING_BYPASS_STAGES = frozenset(
+    {
+        "edge-enrichments",
+        "routing-assembly",
+    }
+)
+_EDGE_ENRICHMENT_BYPASS_STAGES = frozenset(
+    {
+        "edge-enrichments",
+    }
+)
 
 
 def _compilation_metadata(started: float) -> dict[str, object]:
@@ -214,6 +270,10 @@ def compile(
     publication_authority: PublicationDestinationAuthority | None = None,
     evidence_store: LocalEvidenceStore | None = None,
     evidence_state: str | None = None,
+    rebuild_stages: tuple[str, ...] = (),
+    artifact_root: Path | None = None,
+    workers: str | int = "auto",
+    explain_reuse: bool = False,
 ) -> CompilationResult:
     """Compile into a complete publication or a non-publishing decision request."""
     council = (
@@ -221,6 +281,42 @@ def compile(
         if isinstance(config, (AreaDefinition, CouncilConfig))
         else AreaDefinition.from_yaml(config)
     )
+    rebuild_stages = tuple(dict.fromkeys(rebuild_stages))
+    unknown_stages = sorted(set(rebuild_stages).difference(_INCREMENTAL_STAGE_NAMES))
+    if unknown_stages:
+        retired_input_stages = {
+            "source-export": "satn snapshot",
+            "evidence-refresh": "satn evidence refresh",
+            "area-extraction": "satn snapshot",
+            "canonical-network": "satn snapshot",
+        }
+        retired = [stage for stage in unknown_stages if stage in retired_input_stages]
+        if retired:
+            hints = "; ".join(
+                f"{stage}: run `{retired_input_stages[stage]}`"
+                for stage in retired
+            )
+            raise ValueError(
+                "retained input stages are not compile rebuild targets ("
+                + hints
+                + "); use compile --rebuild-stage only for edge-enrichments, "
+                "routing-assembly, scenario-selection, presentation, or publication"
+            )
+        raise ValueError("unknown retained compilation stage: " + ", ".join(unknown_stages))
+    if workers != "auto" and (
+        not isinstance(workers, int) or isinstance(workers, bool) or workers < 1
+    ):
+        raise ValueError("workers must be auto or a positive integer")
+    authority = publication_authority or default_publication_destination_authority(
+        council.config_path
+    )
+    store = (
+        RetainedArtifactStore(artifact_root)
+        if artifact_root is not None
+        else RetainedArtifactStore.in_workspace(authority.workspace_root)
+    )
+    report_started_at = datetime.now(UTC)
+    report_started = time.perf_counter()
     try:
         _validate_evidence_binding(evidence_store, evidence_state)
     except GovernedEvidenceLoadError as error:
@@ -229,7 +325,17 @@ def compile(
             (),
             detail=str(error),
         )
-        return _reviewable_terminal_result(council, "", reviewable)
+        result = _reviewable_terminal_result(council, "", reviewable)
+        return _record_compilation_run(
+            store,
+            council,
+            result,
+            report_started_at=report_started_at,
+            elapsed_ms=int((time.perf_counter() - report_started) * 1000),
+            rebuild_stages=rebuild_stages,
+            workers=workers,
+            explain_reuse=explain_reuse,
+        )
     with StageHeartbeat(
         LOGGER,
         "publication-reuse-check",
@@ -238,7 +344,7 @@ def compile(
             "snapshot_id": council.source.snapshot_id,
         },
     ) as heartbeat:
-        return _compile(
+        result = _compile(
             council,
             decision_ledger=decision_ledger,
             officer_decisions=officer_decisions,
@@ -246,7 +352,233 @@ def compile(
             evidence_store=evidence_store,
             evidence_state_fingerprint=evidence_state,
             heartbeat=heartbeat,
+            rebuild_stages=rebuild_stages,
+            artifact_store=store,
         )
+    return _record_compilation_run(
+        store,
+        council,
+        result,
+        report_started_at=report_started_at,
+        elapsed_ms=int((time.perf_counter() - report_started) * 1000),
+        rebuild_stages=rebuild_stages,
+        workers=workers,
+        explain_reuse=explain_reuse,
+    )
+
+
+def _record_compilation_run(
+    store: RetainedArtifactStore,
+    council: AreaConfig,
+    result: CompilationResult,
+    *,
+    report_started_at: datetime,
+    elapsed_ms: int,
+    rebuild_stages: tuple[str, ...],
+    workers: str | int,
+    explain_reuse: bool,
+) -> CompilationResult:
+    publication_reused = bool(result.metadata.get("publication_reused"))
+    semantic_reused = bool(result.metadata.get("semantic_compilation_reused"))
+    reused = publication_reused or semantic_reused
+    published = result.status in {"complete", "reviewable"}
+    presentation_republished = bool(result.metadata.get("presentation_republished"))
+    retained_publication_context = publication_reused or presentation_republished
+    semantic_bundle_disposition = result.metadata.get("semantic_bundle_disposition")
+    semantic_bundle_artifact_id = result.metadata.get("semantic_bundle_artifact_id")
+    if semantic_bundle_disposition not in {"hit", "build", "unavailable"}:
+        semantic_bundle_disposition = None
+    if (
+        not isinstance(semantic_bundle_artifact_id, str)
+        or _SHA256_PATTERN.fullmatch(semantic_bundle_artifact_id) is None
+    ):
+        semantic_bundle_artifact_id = None
+    routing_bundle_disposition = result.metadata.get("routing_bundle_disposition")
+    routing_bundle_artifact_id = result.metadata.get("routing_bundle_artifact_id")
+    if routing_bundle_disposition not in {"hit", "build"}:
+        routing_bundle_disposition = None
+    if (
+        not isinstance(routing_bundle_artifact_id, str)
+        or _SHA256_PATTERN.fullmatch(routing_bundle_artifact_id) is None
+    ):
+        routing_bundle_artifact_id = None
+    edge_enrichment_disposition = result.metadata.get("edge_enrichment_disposition")
+    edge_enrichment_artifact_id = result.metadata.get("edge_enrichment_artifact_id")
+    if edge_enrichment_disposition not in {"hit", "build"}:
+        edge_enrichment_disposition = None
+    if (
+        not isinstance(edge_enrichment_artifact_id, str)
+        or _SHA256_PATTERN.fullmatch(edge_enrichment_artifact_id) is None
+    ):
+        edge_enrichment_artifact_id = None
+    routing_skipped_reason = (
+        "publication-reused-routing-skipped"
+        if publication_reused
+        else "presentation-republish-routing-skipped"
+        if presentation_republished
+        else "routing-retention-unavailable"
+    )
+    events = (
+        RunArtifactEvent(
+            kind="edge-enrichments",
+            scope=council.area_id,
+            disposition=(
+                "skipped"
+                if retained_publication_context
+                else edge_enrichment_disposition
+                if edge_enrichment_disposition in {"hit", "build"}
+                else "skipped"
+            ),
+            reason=(
+                "publication-reused-edge-enrichment-skipped"
+                if publication_reused
+                else "presentation-republish-edge-enrichment-skipped"
+                if presentation_republished
+                else str(result.metadata.get("edge_enrichment_reason"))
+                if result.metadata.get("edge_enrichment_reason") is not None
+                else "edge-enrichment-retention-unavailable"
+            ),
+            artifact_id=edge_enrichment_artifact_id,
+            elapsed_ms=0,
+        ),
+        RunArtifactEvent(
+            kind="routing-assembly",
+            scope=council.area_id,
+            disposition=(
+                "skipped"
+                if retained_publication_context
+                else routing_bundle_disposition
+                if routing_bundle_disposition in {"hit", "build"}
+                else "skipped"
+            ),
+            reason=(
+                routing_skipped_reason
+                if retained_publication_context or routing_bundle_disposition is None
+                else str(result.metadata.get("routing_bundle_reason"))
+            ),
+            artifact_id=routing_bundle_artifact_id,
+            elapsed_ms=0,
+        ),
+        RunArtifactEvent(
+            kind="semantic-compilation",
+            scope=council.area_id,
+            disposition=(
+                "failed"
+                if not published
+                else semantic_bundle_disposition
+                if semantic_bundle_disposition in {"hit", "build"}
+                else "skipped"
+                if semantic_bundle_disposition == "unavailable"
+                else "hit"
+                if reused
+                else "build"
+            ),
+            reason=(
+                result.status
+                if not published
+                else str(result.metadata.get("semantic_bundle_reason"))
+                if semantic_bundle_disposition is not None
+                else "validated-semantic-publication"
+                if reused
+                else "compiled-from-governed-inputs"
+            ),
+            artifact_id=semantic_bundle_artifact_id,
+            elapsed_ms=max(0, elapsed_ms),
+        ),
+        RunArtifactEvent(
+            kind="presentation",
+            scope=council.area_id,
+            disposition=(
+                "skipped"
+                if not published
+                else "build"
+                if presentation_republished or not publication_reused
+                else "hit"
+            ),
+            reason=(
+                "semantic-compilation-incomplete"
+                if not published
+                else "forced-stage"
+                if presentation_republished
+                and set(rebuild_stages).intersection({"presentation", "publication"})
+                else "presentation-dependencies-changed"
+                if presentation_republished
+                else "generated-from-semantic-publication"
+                if not publication_reused
+                else "validated-current-presentation"
+            ),
+            artifact_id=None,
+            elapsed_ms=int(
+                max(
+                    0.0,
+                    float(result.metadata.get("presentation_elapsed_seconds", 0.0)),
+                )
+                * 1000
+            ),
+        ),
+        RunArtifactEvent(
+            kind="publication",
+            scope=council.area_id,
+            disposition="done" if published else "skipped",
+            reason=(
+                "semantic-compilation-incomplete"
+                if not published
+                else "validated-existing-publication"
+                if publication_reused and not presentation_republished
+                else "validated-atomic-replacement"
+            ),
+            artifact_id=None,
+            elapsed_ms=0,
+        ),
+    )
+    finished_at = datetime.now(UTC)
+    report_id = finished_at.strftime("%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex[:12]
+    report = CompilationRunReport(
+        run_id=report_id,
+        area_definition=str(council.config_path),
+        mode=(
+            "full"
+            if council.compilation.full
+            else "targeted"
+            if rebuild_stages
+            else "incremental"
+        ),
+        result=(
+            "failed"
+            if result.status in {"decision-required", "terminated"}
+            else "complete-with-gaps"
+            if result.gaps or result.status == "reviewable"
+            else "complete"
+        ),
+        started_at=report_started_at.isoformat().replace("+00:00", "Z"),
+        finished_at=finished_at.isoformat().replace("+00:00", "Z"),
+        workers={"requested": workers, "selected": 1},
+        artifact_events=events,
+        stitch=None,
+        publication={
+            "run_id": result.run_id,
+            "validation": "passed" if published else "none",
+            "replacement": (
+                "retained"
+                if not published
+                else "reused"
+                if publication_reused
+                else "atomic"
+            ),
+        },
+        peak_rss_bytes=0,
+    )
+    report_path = store.write_run_report(report)
+    result.metadata = {
+        **result.metadata,
+        "compilation_run_report": str(report_path),
+        **(
+            {"reuse_explanation": [event.payload() for event in events]}
+            if explain_reuse
+            else {}
+        ),
+    }
+    return result
 
 
 def compile_ea_recovery_candidate(config: AreaConfig | str | Path) -> Path:
@@ -593,6 +925,983 @@ def _copy_compilation_source(
     return {name: frame.copy(deep=True) for name, frame in source.items()}
 
 
+def _compiled_network_bundle_implementation_fingerprint() -> str:
+    """Bind reuse to both compiler semantics and the exact installed wire codec."""
+
+    codec_path = Path(compiled_network_bundle_codec.__file__ or "")
+    if not codec_path.is_file():
+        raise ValueError("compiled network bundle codec source is unavailable")
+    return hashlib.sha256(
+        json.dumps(
+            {
+                "compiler": _compiler_digest(),
+                "codec": hashlib.sha256(codec_path.read_bytes()).hexdigest(),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _compiled_network_bundle_specification(
+    council: AreaConfig,
+    *,
+    governed_input_fingerprint: str,
+    input_fingerprint: str,
+    dependency_manifest: dict[str, object],
+    evidence_state_fingerprint: str | None,
+    upstream_artifact_ids: tuple[str, ...] = (),
+    routing_input_identity: str | None = None,
+) -> ArtifactSpecification:
+    dependency_identity = dependency_manifest.get("sha256")
+    if (
+        not isinstance(dependency_identity, str)
+        or _SHA256_PATTERN.fullmatch(dependency_identity) is None
+    ):
+        raise ValueError("compilation dependency manifest has no SHA-256 digest")
+    snapshot_identity = snapshot_manifest_sha256(council)
+    coverage = (snapshot_identity,) + (
+        (evidence_state_fingerprint,) if evidence_state_fingerprint is not None else ()
+    )
+    parameters: dict[str, object] = {
+        "area_identity": area_definition_sha256(council),
+        "input_identity": input_fingerprint,
+        "governed_input_fingerprint": governed_input_fingerprint,
+        "dependency_identity": dependency_identity,
+        "snapshot_identity": snapshot_identity,
+    }
+    if routing_input_identity is not None:
+        parameters["routing_input_identity"] = routing_input_identity
+    return ArtifactSpecification(
+        kind="compiled-network-bundle",
+        contract_version="satn-compiled-network-bundle/v1",
+        implementation_fingerprint=_compiled_network_bundle_implementation_fingerprint(),
+        dependency_manifest_fingerprint=dependency_identity,
+        parameters=parameters,
+        upstream_artifact_ids=upstream_artifact_ids,
+        partition_identities=(council.area_id,),
+        coverage_identities=coverage,
+        validation_contract="satn-compiled-network-bundle-strict/v1",
+        diagnostics={"compiler_path": "network"},
+    )
+
+
+def _compiled_network_bundle_bytes(payload: dict[str, object]) -> bytes:
+    return (
+        json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+        + b"\n"
+    )
+
+
+def _routing_frame_payload(
+    name: str,
+    frame: gpd.GeoDataFrame,
+) -> dict[str, object]:
+    """Return the canonical, input-order-independent source-frame wire."""
+
+    candidates = {
+        "boundary": (("boundary_id",),),
+        "places": (("place_id",),),
+        "network": (
+            ("source_id", "u", "v", "key"),
+            ("source_id", "u", "v"),
+            ("source_id",),
+        ),
+        "context": (("evidence_id",),),
+        "official_road_classification": (("official_feature_id",),),
+        "elevation_evidence": (("evidence_id",),),
+    }.get(name, ())
+    stable_keys = None
+    for keys in candidates:
+        if all(key in frame.columns for key in keys):
+            values = frame.loc[:, list(keys)]
+            if not values.isna().any(axis=None) and not values.duplicated().any():
+                stable_keys = keys
+                break
+    identity_frame = frame.copy(deep=True)
+    for column in identity_frame.columns:
+        if str(identity_frame[column].dtype) != "geometry":
+            identity_frame[column] = identity_frame[column].map(
+                _normalise_routing_identity_value
+            )
+    return compiled_network_bundle_codec.encode_geodataframe(
+        identity_frame,
+        stable_key_columns=stable_keys,
+    )
+
+
+def _normalise_routing_identity_value(value: Any) -> Any:
+    """Make array-valued source cells explicit in the canonical identity wire."""
+
+    if isinstance(value, np.ndarray):
+        return {
+            "__satn_numpy_array__": {
+                "dtype": value.dtype.str,
+                "shape": list(value.shape),
+                "values": _normalise_routing_identity_value(value.tolist()),
+            }
+        }
+    if isinstance(value, tuple):
+        return tuple(_normalise_routing_identity_value(item) for item in value)
+    if isinstance(value, list):
+        return [_normalise_routing_identity_value(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _normalise_routing_identity_value(item)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _routing_source_identities(
+    council: AreaConfig,
+    source: dict[str, gpd.GeoDataFrame],
+) -> tuple[str, str]:
+    """Bind routing reuse to the exact canonical source content it consumes."""
+
+    names = (
+        "boundary",
+        "places",
+        "network",
+        "context",
+        "official_road_classification",
+        "elevation_evidence",
+    )
+    frames = {
+        name: (
+            _routing_frame_payload(name, source[name])["content_sha256"]
+            if name in source
+            else None
+        )
+        for name in names
+    }
+    source_payload = {
+        "contract": "satn-routing-source-input/v1",
+        "frames": frames,
+    }
+    source_identity = hashlib.sha256(
+        json.dumps(
+            source_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    area_payload = {
+        "contract": "satn-routing-area-input/v1",
+        "area_id": council.area_id,
+        "boundary": frames["boundary"],
+    }
+    area_identity = hashlib.sha256(
+        json.dumps(
+            area_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    return area_identity, source_identity
+
+
+def _edge_enrichment_implementation_fingerprint() -> str:
+    """Bind replay to both wire codecs and compiler implementation."""
+
+    codec_path = Path(routable_edge_enrichment_codec.__file__ or "")
+    compiled_codec_path = Path(compiled_network_bundle_codec.__file__ or "")
+    if not codec_path.is_file() or not compiled_codec_path.is_file():
+        raise ValueError("edge-enrichment codec source is unavailable")
+    return hashlib.sha256(
+        json.dumps(
+            {
+                "compiler": _compiler_digest(),
+                "codec": hashlib.sha256(codec_path.read_bytes()).hexdigest(),
+                "compiled_codec": hashlib.sha256(
+                    compiled_codec_path.read_bytes()
+                ).hexdigest(),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _edge_enrichment_identities(
+    council: AreaConfig,
+    source: dict[str, gpd.GeoDataFrame],
+    *,
+    dependency_identity: str,
+) -> dict[str, str]:
+    """Return exact governed identities for the mark-NCN-edges boundary."""
+
+    if not isinstance(dependency_identity, str) or not _SHA256_PATTERN.fullmatch(
+        dependency_identity
+    ):
+        raise ValueError("edge-enrichment dependency identity is unavailable")
+    area_identity, _ = _routing_source_identities(council, source)
+    network = source.get("network")
+    context = source.get("context")
+    if not isinstance(network, gpd.GeoDataFrame) or not isinstance(context, gpd.GeoDataFrame):
+        raise ValueError("edge-enrichment network/context inputs are unavailable")
+    network_identity = _routing_frame_payload("network", network)["content_sha256"]
+    context_identity = _routing_frame_payload("context", context)["content_sha256"]
+    if not isinstance(network_identity, str) or not isinstance(context_identity, str):
+        raise ValueError("edge-enrichment source identities are invalid")
+    return {
+        "snapshot_manifest_sha256": snapshot_manifest_sha256(council),
+        "area_identity": area_identity,
+        "network_identity": network_identity,
+        "context_identity": context_identity,
+        "policy_fingerprint": policy_fingerprint(),
+        "implementation_identity": _edge_enrichment_implementation_fingerprint(),
+        "dependency_identity": dependency_identity,
+    }
+
+
+def _edge_enrichment_specification(
+    council: AreaConfig,
+    source: dict[str, gpd.GeoDataFrame],
+    *,
+    dependency_manifest: dict[str, object],
+) -> tuple[ArtifactSpecification, dict[str, str]]:
+    dependency_identity = dependency_manifest.get("sha256")
+    if not isinstance(dependency_identity, str):
+        raise ValueError("compilation dependency manifest has no SHA-256 digest")
+    identities = _edge_enrichment_identities(
+        council,
+        source,
+        dependency_identity=dependency_identity,
+    )
+    specification = ArtifactSpecification(
+        kind="edge-enrichments",
+        contract_version="satn-edge-enrichments/v1",
+        implementation_fingerprint=identities["implementation_identity"],
+        dependency_manifest_fingerprint=dependency_identity,
+        parameters={**identities},
+        upstream_artifact_ids=(),
+        partition_identities=(council.area_id,),
+        coverage_identities=(identities["snapshot_manifest_sha256"],),
+        validation_contract=EDGE_ENRICHMENT_VALIDATION_CONTRACT,
+        diagnostics={"compiler_path": "network", "stage": "edge-enrichments"},
+    )
+    return specification, identities
+
+
+def _decode_retained_edge_enrichment(
+    store: RetainedArtifactStore,
+    artifact: RetainedArtifact,
+    *,
+    identities: dict[str, str] | None = None,
+) -> gpd.GeoDataFrame | None:
+    try:
+        if tuple(item.role for item in artifact.manifest.outputs) != (
+            EDGE_ENRICHMENT_OUTPUT_ROLE,
+        ):
+            raise ValueError("edge-enrichment artifact output roster is invalid")
+        manifest_parameters = artifact.manifest.identity_payload().get("parameters")
+        manifest_identities = validate_identities(manifest_parameters)
+        if identities is None:
+            identities = manifest_identities
+        elif validate_identities(identities) != manifest_identities:
+            raise ValueError("edge-enrichment identities differ from manifest parameters")
+        payload = json.loads(artifact.read_output(EDGE_ENRICHMENT_OUTPUT_ROLE))
+        decoded = decode_routable_edge_enrichment(payload, identities=identities)
+    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+        LOGGER.warning(
+            "Retained edge enrichment failed semantic validation; rebuilding reason=%s",
+            error,
+        )
+        store.reject_semantic_artifact(
+            artifact.artifact_id, reason="edge-enrichment-contract-invalid"
+        )
+        return None
+    return decoded
+
+
+def _prepare_edge_enrichment_reuse(
+    council: AreaConfig,
+    source: dict[str, gpd.GeoDataFrame],
+    *,
+    dependency_manifest: dict[str, object],
+    artifact_store: RetainedArtifactStore | None,
+    rebuild_stages: tuple[str, ...],
+) -> tuple[
+    ArtifactSpecification | None,
+    dict[str, str] | None,
+    gpd.GeoDataFrame | None,
+    RetainedArtifact | None,
+    str,
+    str,
+]:
+    """Resolve one exact marked-network frame; failures are cold misses."""
+
+    try:
+        specification, identities = _edge_enrichment_specification(
+            council,
+            source,
+            dependency_manifest=dependency_manifest,
+        )
+        if artifact_store is None:
+            return (
+                specification,
+                identities,
+                None,
+                None,
+                "unavailable",
+                "retained-store-unavailable",
+            )
+        forced = council.compilation.full or bool(
+            set(rebuild_stages).intersection(_EDGE_ENRICHMENT_BYPASS_STAGES)
+        )
+        if forced:
+            return specification, identities, None, None, "unavailable", "forced-stage"
+        resolution = artifact_store.resolve_specification(specification)
+        if resolution.artifact is None:
+            return specification, identities, None, None, "unavailable", resolution.reason
+        frame = _decode_retained_edge_enrichment(
+            artifact_store,
+            resolution.artifact,
+            identities=identities,
+        )
+        if frame is None:
+            return (
+                specification,
+                identities,
+                None,
+                None,
+                "unavailable",
+                "edge-enrichment-contract-invalid",
+            )
+        return (
+            specification,
+            identities,
+            frame,
+            resolution.artifact,
+            "hit",
+            "validated-edge-enrichment",
+        )
+    except (OSError, TypeError, ValueError) as error:
+        LOGGER.warning("Edge enrichment reuse unavailable; compiling cold: %s", error)
+        return None, None, None, None, "unavailable", "edge-enrichment-identity-unavailable"
+
+
+def _routing_snapshot_area_identity(council: AreaConfig) -> str:
+    """Derive the routing boundary identity without loading the full snapshot."""
+
+    snapshot_root = council.source.snapshot_dir / council.source.snapshot_id
+    manifest_path = snapshot_root / "snapshot.json"
+    boundary_path = snapshot_root / "boundary.geojson"
+    if (
+        manifest_path.is_symlink()
+        or not manifest_path.is_file()
+        or boundary_path.is_symlink()
+        or not boundary_path.is_file()
+    ):
+        raise ValueError("routing boundary snapshot input is unavailable")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+        raise ValueError("routing snapshot manifest is invalid") from error
+    file_hashes = manifest.get("file_sha256") if isinstance(manifest, dict) else None
+    if not isinstance(file_hashes, dict) or file_hashes.get("boundary.geojson") != hashlib.sha256(
+        boundary_path.read_bytes()
+    ).hexdigest():
+        raise ValueError("routing boundary snapshot digest differs from manifest")
+    boundary = gpd.read_file(boundary_path)
+    boundary_identity = _routing_frame_payload("boundary", boundary)["content_sha256"]
+    if not isinstance(boundary_identity, str):
+        raise ValueError("routing boundary identity is invalid")
+    return hashlib.sha256(
+        json.dumps(
+            {
+                "contract": "satn-routing-area-input/v1",
+                "area_id": council.area_id,
+                "boundary": boundary_identity,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _routing_lineage_identity(
+    council: AreaConfig,
+    *,
+    ledger: AgentDecisionLedger,
+    dependency_manifest: dict[str, object],
+) -> str:
+    """Bind active route replay to source release and route configuration."""
+
+    dependency_identity = dependency_manifest.get("sha256")
+    if not isinstance(dependency_identity, str) or not _SHA256_PATTERN.fullmatch(
+        dependency_identity
+    ):
+        raise ValueError("compilation dependency manifest has no SHA-256 digest")
+    payload = {
+        "contract": "satn-routing-lineage/v1",
+        "area_definition": area_definition_sha256(council),
+        "snapshot_identity": snapshot_manifest_sha256(council),
+        "source_semantics": {
+            "urban_place_types": list(council.source.urban_place_types),
+            "urban_place_source_ids": list(council.source.urban_place_source_ids),
+            "urban_settlement_form": council.source.urban_settlement_form.model_dump(
+                mode="json"
+            ),
+            "urban_scope_buffer_km": council.source.urban_scope_buffer_km,
+        },
+        "routing": {
+            "max_connection_km": council.compilation.max_connection_km,
+            "topography": council.compilation.topography.model_dump(mode="json"),
+            "agent": council.compilation.agent.model_dump(mode="json"),
+            "decision_ledger": ledger.model_dump(mode="json"),
+        },
+        "dependency_identity": dependency_identity,
+    }
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _routing_input_identity_from_lineage(
+    *,
+    area_identity: str,
+    lineage_identity: str,
+) -> str:
+    """Derive replay identity from governed area and route lineage only."""
+
+    return hashlib.sha256(
+        json.dumps(
+            {
+                "contract": "satn-routing-input/v2",
+                "area_identity": area_identity,
+                "lineage_identity": lineage_identity,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _routing_input_identity(
+    council: AreaConfig,
+    source: dict[str, gpd.GeoDataFrame],
+    *,
+    ledger: AgentDecisionLedger,
+    dependency_manifest: dict[str, object],
+) -> tuple[str, str]:
+    """Return stage-scoped area/input identities for routing assembly reuse."""
+
+    dependency_identity = dependency_manifest.get("sha256")
+    if (
+        not isinstance(dependency_identity, str)
+        or _SHA256_PATTERN.fullmatch(dependency_identity) is None
+    ):
+        raise ValueError("compilation dependency manifest has no SHA-256 digest")
+    area_identity, _ = _routing_source_identities(council, source)
+    lineage_identity = _routing_lineage_identity(
+        council,
+        ledger=ledger,
+        dependency_manifest=dependency_manifest,
+    )
+    return area_identity, _routing_input_identity_from_lineage(
+        area_identity=area_identity,
+        lineage_identity=lineage_identity,
+    )
+
+
+def _routing_bundle_implementation_fingerprint() -> str:
+    """Bind route reuse to both canonical codecs and compiler semantics."""
+
+    route_codec_path = compilation_dependencies._package_root() / "routing_assembly_bundle.py"
+    compiled_codec_path = Path(compiled_network_bundle_codec.__file__ or "")
+    if not route_codec_path.is_file() or not compiled_codec_path.is_file():
+        raise ValueError("routing bundle codec source is unavailable")
+    return hashlib.sha256(
+        json.dumps(
+            {
+                "compiler": _compiler_digest(),
+                "compiled_codec": hashlib.sha256(
+                    compiled_codec_path.read_bytes()
+                ).hexdigest(),
+                "routing_codec": hashlib.sha256(route_codec_path.read_bytes()).hexdigest(),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _routing_bundle_specification(
+    council: AreaConfig,
+    source: dict[str, gpd.GeoDataFrame],
+    *,
+    ledger: AgentDecisionLedger,
+    dependency_manifest: dict[str, object],
+    upstream_artifact_ids: tuple[str, ...] = (),
+) -> tuple[ArtifactSpecification, str]:
+    dependency_identity = dependency_manifest.get("sha256")
+    if not isinstance(dependency_identity, str):
+        raise ValueError("compilation dependency manifest has no SHA-256 digest")
+    area_identity, input_identity = _routing_input_identity(
+        council,
+        source,
+        ledger=ledger,
+        dependency_manifest=dependency_manifest,
+    )
+    snapshot_identity = snapshot_manifest_sha256(council)
+    return (
+        ArtifactSpecification(
+            kind="routing-assembly-bundle",
+            contract_version="satn-routing-assembly-bundle/v1",
+            implementation_fingerprint=_routing_bundle_implementation_fingerprint(),
+            dependency_manifest_fingerprint=dependency_identity,
+            parameters={
+                "area_identity": area_identity,
+                "input_identity": input_identity,
+                "lineage_identity": _routing_lineage_identity(
+                    council,
+                    ledger=ledger,
+                    dependency_manifest=dependency_manifest,
+                ),
+                "dependency_identity": dependency_identity,
+                "snapshot_identity": snapshot_identity,
+            },
+            upstream_artifact_ids=upstream_artifact_ids,
+            partition_identities=(council.area_id,),
+            coverage_identities=(snapshot_identity,),
+            validation_contract="satn-routing-assembly-bundle-strict/v1",
+            diagnostics={"compiler_path": "network", "stage": "routing-assembly"},
+        ),
+        input_identity,
+    )
+
+
+def _decode_retained_routing_bundle(
+    store: RetainedArtifactStore,
+    artifact: RetainedArtifact,
+) -> RoutingAssemblyBundle | None:
+    try:
+        if tuple(item.role for item in artifact.manifest.outputs) != (
+            "routing-assembly-bundle",
+        ):
+            raise ValueError("routing artifact output roster is invalid")
+        payload = json.loads(artifact.read_output("routing-assembly-bundle"))
+        parameters = artifact.manifest.identity_payload().get("parameters")
+        if not isinstance(parameters, dict):
+            raise ValueError("routing artifact parameters are invalid")
+        expected_identities = {
+            "area": parameters.get("area_identity"),
+            "input": parameters.get("input_identity"),
+            "dependency": parameters.get("dependency_identity"),
+        }
+        if payload.get("identities") != expected_identities:
+            raise ValueError("routing bundle identities differ from manifest")
+        if payload.get("upstream_artifact_ids") != list(
+            artifact.manifest.upstream_artifact_ids
+        ):
+            raise ValueError("routing bundle upstream identities differ from manifest")
+        decoded = decode_routing_assembly_bundle(payload, RoutingAssemblyBundle)
+    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+        LOGGER.warning(
+            "Retained routing assembly failed semantic validation; rebuilding reason=%s",
+            error,
+        )
+        store.reject_semantic_artifact(
+            artifact.artifact_id, reason="routing-contract-invalid"
+        )
+        return None
+    return decoded
+
+
+def _artifact_manifest_matches_specification(
+    manifest: object,
+    specification: ArtifactSpecification,
+    *,
+    upstream_artifact_ids: tuple[str, ...] | None = None,
+) -> bool:
+    """Compare every semantic manifest field, including exact upstream IDs."""
+
+    expected_upstream = (
+        specification.upstream_artifact_ids
+        if upstream_artifact_ids is None
+        else upstream_artifact_ids
+    )
+    return (
+        getattr(manifest, "kind", None) == specification.kind
+        and getattr(manifest, "contract_version", None) == specification.contract_version
+        and getattr(manifest, "status", None) == specification.status
+        and getattr(manifest, "implementation_fingerprint", None)
+        == specification.implementation_fingerprint
+        and getattr(manifest, "dependency_manifest_fingerprint", None)
+        == specification.dependency_manifest_fingerprint
+        and getattr(manifest, "parameters", None) == specification.parameters
+        and getattr(manifest, "upstream_artifact_ids", None) == expected_upstream
+        and getattr(manifest, "partition_identities", None) == specification.partition_identities
+        and getattr(manifest, "coverage_identities", None) == specification.coverage_identities
+        and getattr(manifest, "validation_contract", None) == specification.validation_contract
+        and getattr(manifest, "diagnostics", None) == specification.diagnostics
+    )
+
+
+def _prepare_active_semantic_reuse(
+    council: AreaConfig,
+    *,
+    base_specification: ArtifactSpecification,
+    input_fingerprint: str,
+    governed_input_fingerprint: str,
+    evidence_state_fingerprint: str | None,
+    ledger: AgentDecisionLedger,
+    dependency_manifest: dict[str, object],
+    artifact_store: RetainedArtifactStore,
+) -> tuple[
+    CompiledNetwork | None,
+    RetainedArtifact | None,
+    RetainedArtifact | None,
+    RoutingAssemblyBundle | None,
+    str | None,
+    str,
+]:
+    """Resolve a semantic artifact through one exact active-lineage pin.
+
+    The semantic manifest is the authority for its route dependency.  We
+    validate that target, its complete closure, the one route upstream and the
+    route wire before accepting the source-free hit.  A miss is intentionally
+    fail-closed and leaves normal source/routing resolution to the caller.
+    """
+
+    pin_resolution = artifact_store.resolve_active_lineage(input_fingerprint)
+    if pin_resolution.artifact is None:
+        return None, None, None, None, None, pin_resolution.reason
+    semantic_artifact = pin_resolution.artifact
+    manifest = semantic_artifact.manifest
+    upstream = manifest.upstream_artifact_ids
+    if (
+        manifest.kind != "compiled-network-bundle"
+        or manifest.contract_version != base_specification.contract_version
+        or len(upstream) != 1
+    ):
+        return None, None, None, None, None, "active-lineage-semantic-input-mismatch"
+    route_id = upstream[0]
+    route_resolution = artifact_store.resolve(route_id)
+    if route_resolution.artifact is None:
+        return (
+            None,
+            None,
+            None,
+            None,
+            None,
+            f"active-lineage-route-{route_resolution.reason}",
+        )
+    route_artifact = route_resolution.artifact
+    route_manifest = route_artifact.manifest
+    if (
+        route_manifest.kind != "routing-assembly-bundle"
+        or route_manifest.contract_version != "satn-routing-assembly-bundle/v1"
+        or route_manifest.implementation_fingerprint
+        != _routing_bundle_implementation_fingerprint()
+        or route_manifest.dependency_manifest_fingerprint
+        != base_specification.dependency_manifest_fingerprint
+        or route_manifest.validation_contract
+        != "satn-routing-assembly-bundle-strict/v1"
+        or route_manifest.coverage_identities
+        != (snapshot_manifest_sha256(council),)
+        or len(route_manifest.upstream_artifact_ids) != 1
+    ):
+        return None, None, None, None, None, "active-lineage-route-invalid"
+    edge_id = route_manifest.upstream_artifact_ids[0]
+    edge_resolution = artifact_store.resolve(edge_id)
+    if edge_resolution.artifact is None:
+        return None, None, None, None, None, f"active-lineage-edge-{edge_resolution.reason}"
+    edge_artifact = edge_resolution.artifact
+    edge_manifest = edge_artifact.manifest
+    if (
+        edge_manifest.kind != "edge-enrichments"
+        or edge_manifest.contract_version != "satn-edge-enrichments/v1"
+        or edge_manifest.implementation_fingerprint
+        != _edge_enrichment_implementation_fingerprint()
+        or edge_manifest.dependency_manifest_fingerprint
+        != base_specification.dependency_manifest_fingerprint
+        or edge_manifest.validation_contract != EDGE_ENRICHMENT_VALIDATION_CONTRACT
+        or edge_manifest.coverage_identities != (snapshot_manifest_sha256(council),)
+        or edge_manifest.upstream_artifact_ids
+    ):
+        return None, None, None, None, None, "active-lineage-edge-invalid"
+    edge_payload = edge_manifest.identity_payload().get("parameters")
+    if not isinstance(edge_payload, dict):
+        return None, None, None, None, None, "active-lineage-edge-parameters-invalid"
+    if (
+        edge_payload.get("snapshot_manifest_sha256") != snapshot_manifest_sha256(council)
+        or edge_payload.get("dependency_identity")
+        != base_specification.dependency_manifest_fingerprint
+        or edge_payload.get("policy_fingerprint") != policy_fingerprint()
+    ):
+        return None, None, None, None, None, "active-lineage-edge-input-mismatch"
+    if _decode_retained_edge_enrichment(artifact_store, edge_artifact) is None:
+        return None, None, None, None, None, "active-lineage-edge-contract-invalid"
+    if route_manifest.identity_payload().get("diagnostics") != {
+        "compiler_path": "network",
+        "stage": "routing-assembly",
+    }:
+        return None, None, None, None, None, "active-lineage-route-invalid"
+    route_specification = ArtifactSpecification(
+        kind=route_manifest.kind,
+        contract_version=route_manifest.contract_version,
+        implementation_fingerprint=route_manifest.implementation_fingerprint,
+        dependency_manifest_fingerprint=route_manifest.dependency_manifest_fingerprint,
+        parameters=route_manifest.identity_payload()["parameters"],
+        upstream_artifact_ids=route_manifest.upstream_artifact_ids,
+        partition_identities=route_manifest.partition_identities,
+        coverage_identities=route_manifest.coverage_identities,
+        validation_contract=route_manifest.validation_contract,
+        diagnostics=route_manifest.identity_payload()["diagnostics"],
+        status=route_manifest.status,
+    )
+    route_exact = artifact_store.resolve_specification(route_specification)
+    if route_exact.artifact is None:
+        return None, None, None, None, None, route_exact.reason
+    if route_exact.artifact.artifact_id != route_artifact.artifact_id:
+        return None, None, None, None, None, "nondeterministic-routing-candidates"
+    route_parameters = route_manifest.identity_payload().get("parameters")
+    try:
+        expected_route_area_identity = _routing_snapshot_area_identity(council)
+        expected_route_lineage_identity = _routing_lineage_identity(
+            council,
+            ledger=ledger,
+            dependency_manifest=dependency_manifest,
+        )
+    except (OSError, TypeError, ValueError) as error:
+        LOGGER.info("Active routing lineage validation unavailable: %s", error)
+        return None, None, None, None, None, "active-lineage-route-input-unavailable"
+    semantic_parameters = {
+        "area_identity": expected_route_area_identity,
+        "lineage_identity": expected_route_lineage_identity,
+        "dependency_identity": base_specification.dependency_manifest_fingerprint,
+        "snapshot_identity": snapshot_manifest_sha256(council),
+    }
+    if not isinstance(route_parameters, dict):
+        return None, None, None, None, None, "active-lineage-route-parameters-invalid"
+    for key in (
+        "area_identity",
+        "lineage_identity",
+        "dependency_identity",
+        "snapshot_identity",
+    ):
+        if route_parameters.get(key) != semantic_parameters.get(key):
+            return None, None, None, None, None, "active-lineage-route-input-mismatch"
+    if edge_payload.get("area_identity") != expected_route_area_identity:
+        return None, None, None, None, None, "active-lineage-route-input-mismatch"
+    expected_route_input_identity = _routing_input_identity_from_lineage(
+        area_identity=expected_route_area_identity,
+        lineage_identity=expected_route_lineage_identity,
+    )
+    if route_parameters.get("input_identity") != expected_route_input_identity:
+        return None, None, None, None, None, "active-lineage-route-input-mismatch"
+    routing_bundle = _decode_retained_routing_bundle(artifact_store, route_artifact)
+    if routing_bundle is None:
+        return None, None, None, None, None, "active-lineage-route-contract-invalid"
+    route_input_fingerprint = route_parameters.get("input_identity")
+    if not isinstance(route_input_fingerprint, str) or not _SHA256_PATTERN.fullmatch(
+        route_input_fingerprint
+    ):
+        return None, None, None, None, None, "active-lineage-route-input-invalid"
+    semantic_specification = _compiled_network_bundle_specification(
+        council,
+        governed_input_fingerprint=governed_input_fingerprint,
+        input_fingerprint=input_fingerprint,
+        dependency_manifest=dependency_manifest,
+        evidence_state_fingerprint=evidence_state_fingerprint,
+        upstream_artifact_ids=(route_id,),
+        routing_input_identity=route_input_fingerprint,
+    )
+    if not _artifact_manifest_matches_specification(manifest, semantic_specification):
+        return None, None, None, None, None, "active-lineage-semantic-input-mismatch"
+    exact = artifact_store.resolve_specification(semantic_specification)
+    if exact.artifact is None:
+        return None, None, None, None, None, exact.reason
+    if exact.artifact.artifact_id != semantic_artifact.artifact_id:
+        return None, None, None, None, None, "nondeterministic-output-candidates"
+    compiled = _decode_retained_compiled_network(artifact_store, semantic_artifact)
+    if compiled is None:
+        return None, None, None, None, None, "semantic-contract-invalid"
+    return (
+        compiled,
+        semantic_artifact,
+        route_artifact,
+        routing_bundle,
+        route_input_fingerprint,
+        "validated-active-lineage",
+    )
+
+
+def _prepare_routing_reuse(
+    council: AreaConfig,
+    source: dict[str, gpd.GeoDataFrame],
+    *,
+    ledger: AgentDecisionLedger,
+    dependency_manifest: dict[str, object],
+    governed_input_fingerprint: str,
+    artifact_store: RetainedArtifactStore | None,
+    rebuild_stages: tuple[str, ...],
+    edge_enrichment_artifact: RetainedArtifact | None,
+) -> tuple[
+    str,
+    ArtifactSpecification | None,
+    RoutingAssemblyBundle | None,
+    RetainedArtifact | None,
+    str,
+    str,
+]:
+    """Resolve a safe route hit; identity/retention failure remains a cold compile."""
+
+    try:
+        _, routing_input_fingerprint = _routing_input_identity(
+            council,
+            source,
+            ledger=ledger,
+            dependency_manifest=dependency_manifest,
+        )
+        if artifact_store is None:
+            return (
+                routing_input_fingerprint,
+                None,
+                None,
+                None,
+                "unavailable",
+                "retained-store-unavailable",
+            )
+        if edge_enrichment_artifact is None:
+            return (
+                routing_input_fingerprint,
+                None,
+                None,
+                None,
+                "unavailable",
+                "edge-enrichment-retention-unavailable",
+            )
+        specification, specified_input = _routing_bundle_specification(
+            council,
+            source,
+            ledger=ledger,
+            dependency_manifest=dependency_manifest,
+            upstream_artifact_ids=(edge_enrichment_artifact.artifact_id,),
+        )
+        if specified_input != routing_input_fingerprint:
+            raise ValueError("routing specification input identity is inconsistent")
+        routing_forced = council.compilation.full or bool(
+            set(rebuild_stages).intersection(_ROUTING_BYPASS_STAGES)
+        )
+        if routing_forced:
+            return (
+                routing_input_fingerprint,
+                specification,
+                None,
+                None,
+                "unavailable",
+                "forced-stage",
+            )
+        resolution = artifact_store.resolve_specification(specification)
+        if resolution.artifact is None:
+            return (
+                routing_input_fingerprint,
+                specification,
+                None,
+                None,
+                "unavailable",
+                resolution.reason,
+            )
+        bundle = _decode_retained_routing_bundle(artifact_store, resolution.artifact)
+        if bundle is None:
+            return (
+                routing_input_fingerprint,
+                specification,
+                None,
+                None,
+                "unavailable",
+                "routing-contract-invalid",
+            )
+        LOGGER.info(
+            "Retained routing assembly reused artifact=%s",
+            resolution.artifact.artifact_id,
+        )
+        return (
+            routing_input_fingerprint,
+            specification,
+            bundle,
+            resolution.artifact,
+            "hit",
+            "validated-routing-assembly",
+        )
+    except (OSError, TypeError, ValueError) as error:
+        LOGGER.warning("Routing assembly reuse unavailable; compiling cold: %s", error)
+        return (
+            governed_input_fingerprint,
+            None,
+            None,
+            None,
+            "unavailable",
+            "routing-identity-unavailable",
+        )
+
+
+def _decode_retained_compiled_network(
+    store: RetainedArtifactStore,
+    artifact: RetainedArtifact,
+) -> CompiledNetwork | None:
+    try:
+        if tuple(item.role for item in artifact.manifest.outputs) != (
+            "compiled-network-bundle",
+        ):
+            raise ValueError("compiled network artifact output roster is invalid")
+        payload = json.loads(artifact.read_output("compiled-network-bundle"))
+        manifest_payload = artifact.manifest.identity_payload()
+        parameters = manifest_payload.get("parameters")
+        if not isinstance(parameters, dict):
+            raise ValueError("compiled network artifact parameters are invalid")
+        expected_identities = {
+            "area": parameters.get("area_identity"),
+            "input": parameters.get("input_identity"),
+            "dependency": parameters.get("dependency_identity"),
+        }
+        if payload.get("identities") != expected_identities:
+            raise ValueError("compiled network bundle identities differ from manifest")
+        if payload.get("upstream_artifact_ids") != list(
+            artifact.manifest.upstream_artifact_ids
+        ):
+            raise ValueError("compiled network bundle upstream identities differ from manifest")
+        decoded = compiled_network_bundle_codec.decode_compiled_network_bundle(
+            payload, CompiledNetwork
+        )
+    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+        LOGGER.warning(
+            "Retained compiled network bundle failed semantic validation; rebuilding reason=%s",
+            error,
+        )
+        store.reject_semantic_artifact(
+            artifact.artifact_id, reason="semantic-contract-invalid"
+        )
+        return None
+    if not isinstance(decoded, CompiledNetwork):
+        store.reject_semantic_artifact(
+            artifact.artifact_id, reason="semantic-contract-invalid"
+        )
+        return None
+    return decoded
+
+
 def _compile(
     config: AreaConfig,
     *,
@@ -603,6 +1912,8 @@ def _compile(
     compiler_path: CompilerPath = "network",
     evidence_store: LocalEvidenceStore | None = None,
     evidence_state_fingerprint: str | None = None,
+    rebuild_stages: tuple[str, ...] = (),
+    artifact_store: RetainedArtifactStore | None = None,
 ) -> CompilationResult:
     """Compile a parsed area definition, reporting its current long-running stage."""
     if compiler_path not in {"network", "ea-recovery"}:
@@ -657,93 +1968,430 @@ def _compile(
         council.source.snapshot_id,
         SCHEMA_VERSION,
     )
+    downstream_only_rebuild = bool(rebuild_stages) and set(rebuild_stages).issubset(
+        {"presentation", "publication"}
+    )
+    semantic_rebuild = bool(rebuild_stages) and not downstream_only_rebuild
+    force_presentation_republish = bool(
+        set(rebuild_stages).intersection({"presentation", "publication"})
+    )
     reused = (
         None
-        if recovery_candidate
+        if recovery_candidate or semantic_rebuild
         else _reuse_validated_publication(
             council,
             governed_input_fingerprint,
             input_fingerprint,
             dependency_manifest,
             officer_decisions=officer_decisions,
+            publication_authority=publication_authority,
+            force_presentation_republish=force_presentation_republish,
         )
     )
+    if semantic_rebuild:
+        LOGGER.info(
+            "Validated publication reuse disabled by targeted retained-stage rebuild stages=%s",
+            ",".join(rebuild_stages),
+        )
     if reused is not None:
         return reused
-    if heartbeat is not None:
-        heartbeat.set_stage("snapshot-load")
-    source = (
-        load_legacy_ea_recovery_snapshot(council)
-        if recovery_candidate
-        else load_snapshot(council)
-    )
-    LOGGER.info(
-        "Snapshot loaded places=%d road_edges=%d context_features=%d",
-        len(source["places"]),
-        len(source["network"]),
-        len(source.get("context", [])),
-    )
+    bundle_specification = None
+    semantic_bundle_artifact = None
+    semantic_bundle_disposition = "unavailable"
+    semantic_bundle_reason = "retained-store-unavailable"
+    routing_specification = None
+    routing_bundle: RoutingAssemblyBundle | None = None
+    routing_bundle_artifact = None
+    routing_bundle_disposition = "unavailable"
+    routing_bundle_reason = "retained-store-unavailable"
+    routing_input_fingerprint = None
+    captured_routing: list[RoutingAssemblyBundle] | None = None
+    edge_enrichment_specification: ArtifactSpecification | None = None
+    edge_enrichment_identities: dict[str, str] | None = None
+    edge_enrichment_frame: gpd.GeoDataFrame | None = None
+    edge_enrichment_artifact: RetainedArtifact | None = None
+    edge_enrichment_artifact_id: str | None = None
+    edge_enrichment_disposition = "unavailable"
+    edge_enrichment_reason = "retained-store-unavailable"
+    captured_edge_enrichments: list[gpd.GeoDataFrame] | None = None
+    compiled: CompiledNetwork | None = None
+    if artifact_store is not None and not recovery_candidate:
+        bundle_specification = _compiled_network_bundle_specification(
+            council,
+            governed_input_fingerprint=governed_input_fingerprint,
+            input_fingerprint=input_fingerprint,
+            dependency_manifest=dependency_manifest,
+            evidence_state_fingerprint=evidence_state_fingerprint,
+        )
+    if (
+        artifact_store is not None
+        and bundle_specification is not None
+        and not council.compilation.full
+        and not semantic_rebuild
+    ):
+        try:
+            active_semantic_resolution = _prepare_active_semantic_reuse(
+                council,
+                base_specification=bundle_specification,
+                input_fingerprint=input_fingerprint,
+                governed_input_fingerprint=governed_input_fingerprint,
+                evidence_state_fingerprint=evidence_state_fingerprint,
+                ledger=ledger,
+                dependency_manifest=dependency_manifest,
+                artifact_store=artifact_store,
+            )
+        except (OSError, TypeError, ValueError) as error:
+            LOGGER.warning(
+                "Active semantic reuse unavailable; compiling governed inputs: %s",
+                error,
+            )
+            active_semantic_resolution = (
+                None,
+                None,
+                None,
+                None,
+                None,
+                "active-lineage-unavailable",
+            )
+        (
+            compiled,
+            semantic_bundle_artifact,
+            routing_bundle_artifact,
+            routing_bundle,
+            routing_input_fingerprint,
+            semantic_bundle_reason,
+        ) = active_semantic_resolution
+        if compiled is not None:
+            semantic_bundle_disposition = "hit"
+            routing_bundle_disposition = "hit"
+            routing_bundle_reason = "validated-routing-assembly-upstream"
+            edge_enrichment_disposition = "hit"
+            edge_enrichment_reason = "validated-edge-enrichment-upstream"
+            if (
+                routing_bundle_artifact is not None
+                and routing_bundle_artifact.manifest.upstream_artifact_ids
+            ):
+                edge_enrichment_artifact_id = (
+                    routing_bundle_artifact.manifest.upstream_artifact_ids[0]
+                )
+            LOGGER.info(
+                "Retained compiled network reused through active lineage artifact=%s",
+                semantic_bundle_artifact.artifact_id
+                if semantic_bundle_artifact is not None
+                else "unknown",
+            )
+    source = None
+    if compiled is None:
+        if heartbeat is not None:
+            heartbeat.set_stage("snapshot-load")
+        source = (
+            load_legacy_ea_recovery_snapshot(council)
+            if recovery_candidate
+            else load_snapshot(council)
+        )
+        LOGGER.info(
+            "Snapshot loaded places=%d road_edges=%d context_features=%d",
+            len(source["places"]),
+            len(source["network"]),
+            len(source.get("context", [])),
+        )
+        if not recovery_candidate:
+            (
+                edge_enrichment_specification,
+                edge_enrichment_identities,
+                edge_enrichment_frame,
+                edge_enrichment_artifact,
+                edge_enrichment_disposition,
+                edge_enrichment_reason,
+            ) = _prepare_edge_enrichment_reuse(
+                council,
+                source,
+                dependency_manifest=dependency_manifest,
+                artifact_store=artifact_store,
+                rebuild_stages=rebuild_stages,
+            )
+            if edge_enrichment_artifact is not None:
+                edge_enrichment_artifact_id = edge_enrichment_artifact.artifact_id
+            (
+                routing_input_fingerprint,
+                routing_specification,
+                routing_bundle,
+                routing_bundle_artifact,
+                routing_bundle_disposition,
+                routing_bundle_reason,
+            ) = _prepare_routing_reuse(
+                council,
+                source,
+                ledger=ledger,
+                dependency_manifest=dependency_manifest,
+                governed_input_fingerprint=governed_input_fingerprint,
+                artifact_store=artifact_store,
+                rebuild_stages=rebuild_stages,
+                edge_enrichment_artifact=edge_enrichment_artifact,
+            )
+        # A semantic artifact is a descendant of exactly one validated route
+        # artifact.  Form its exact specification only after routing has hit or
+        # been retained; a missing route must never produce a falsely rootless
+        # semantic artifact.
+        if (
+            compiled is None
+            and artifact_store is not None
+            and bundle_specification is not None
+            and routing_bundle_artifact is not None
+        ):
+            assert routing_input_fingerprint is not None
+            bundle_specification = _compiled_network_bundle_specification(
+                council,
+                governed_input_fingerprint=governed_input_fingerprint,
+                input_fingerprint=input_fingerprint,
+                dependency_manifest=dependency_manifest,
+                evidence_state_fingerprint=evidence_state_fingerprint,
+                upstream_artifact_ids=(routing_bundle_artifact.artifact_id,),
+                routing_input_identity=routing_input_fingerprint,
+            )
+            if not council.compilation.full and not semantic_rebuild:
+                bundle_resolution = artifact_store.resolve_specification(
+                    bundle_specification
+                )
+                semantic_bundle_reason = bundle_resolution.reason
+                if bundle_resolution.artifact is not None:
+                    compiled = _decode_retained_compiled_network(
+                        artifact_store, bundle_resolution.artifact
+                    )
+                    if compiled is not None:
+                        semantic_bundle_artifact = bundle_resolution.artifact
+                        semantic_bundle_disposition = "hit"
+                        semantic_bundle_reason = (
+                            "validated-routing-dependent-compiled-network"
+                        )
+                        try:
+                            artifact_store.pin(
+                                "active-lineage",
+                                input_fingerprint,
+                                semantic_bundle_artifact.artifact_id,
+                            )
+                        except (OSError, TypeError, ValueError) as error:
+                            LOGGER.warning("Active semantic lineage pin failed: %s", error)
+                        LOGGER.info(
+                            "Retained routing-dependent compiled network reused artifact=%s",
+                            semantic_bundle_artifact.artifact_id,
+                        )
     runtime = (
         AgentRuntimeProvider(lambda: runtime_for(council.compilation.agent))
-        if council.compilation.agent.response_mode == "direct-runtime"
+        if compiled is None
+        and council.compilation.agent.response_mode == "direct-runtime"
         and council.compilation.agent.review_statuses
         else None
     )
     atm_reference = None
-    if council.atm.enabled and council.atm.mode == "seeded":
+    if compiled is None and council.atm.enabled and council.atm.mode == "seeded":
+        assert source is not None
         if heartbeat is not None:
             heartbeat.set_stage("atm-seeded-load-reprojection")
         atm_reference = load_atm(council).to_crs(source["network"].crs)
-    if heartbeat is not None:
-        heartbeat.set_stage("network-compilation")
-    try:
-        with governed_input_binding(
-            officer_decisions=officer_decisions,
-            evidence_store=evidence_store,
-            evidence_state_fingerprint=evidence_state_fingerprint,
-        ):
-            compiled = compile_network(
+    if compiled is None:
+        assert source is not None
+        if heartbeat is not None:
+            heartbeat.set_stage("network-compilation")
+        try:
+            with governed_input_binding(
+                officer_decisions=officer_decisions,
+                evidence_store=evidence_store,
+                evidence_state_fingerprint=evidence_state_fingerprint,
+                routing_input_fingerprint=routing_input_fingerprint,
+            ):
+                if routing_bundle is not None:
+                    if edge_enrichment_frame is not None:
+                        with (
+                            _routable_edge_enrichment_replay(edge_enrichment_frame),
+                            _routing_assembly_replay(routing_bundle),
+                        ):
+                            compiled = compile_network(
+                                council,
+                                source,
+                                runtime,
+                                governed_input_fingerprint=governed_input_fingerprint,
+                                decision_resolver=decision_resolver,
+                                heartbeat=heartbeat,
+                            )
+                    else:
+                        with _routing_assembly_replay(routing_bundle):
+                            compiled = compile_network(
+                                council,
+                                source,
+                                runtime,
+                                governed_input_fingerprint=governed_input_fingerprint,
+                                decision_resolver=decision_resolver,
+                                heartbeat=heartbeat,
+                            )
+                else:
+                    edge_binding = (
+                        _routable_edge_enrichment_replay(edge_enrichment_frame)
+                        if edge_enrichment_frame is not None
+                        else nullcontext()
+                    )
+                    with (
+                        edge_binding,
+                        _routable_edge_enrichment_capture() as captured_edge_enrichments,
+                        _routing_assembly_capture() as captured_routing,
+                    ):
+                        compiled = compile_network(
+                            council,
+                            source,
+                            runtime,
+                            governed_input_fingerprint=governed_input_fingerprint,
+                            decision_resolver=decision_resolver,
+                            heartbeat=heartbeat,
+                        )
+        except AgentDecisionRequired as required:
+            return _decision_required_result(
                 council,
-                source,
-                runtime,
-                governed_input_fingerprint=governed_input_fingerprint,
-                decision_resolver=decision_resolver,
-                heartbeat=heartbeat,
+                input_fingerprint,
+                required.request,
+                ledger,
+                required.applied_records,
+                required.applied_divergence_records,
+                required.validation,
             )
-    except AgentDecisionRequired as required:
-        return _decision_required_result(
-            council,
-            input_fingerprint,
-            required.request,
-            ledger,
-            required.applied_records,
-            required.applied_divergence_records,
-            required.validation,
-        )
-    except AgentCompilationTerminated as terminated:
-        return _terminated_result(council, input_fingerprint, terminated)
-    except GovernedEvidenceLoadError as error:
-        reviewable = terminal_reviewable_network_for_governed_evidence(
-            None,
-            officer_decisions,
-            detail=str(error),
-        )
-        return _reviewable_terminal_result(council, input_fingerprint, reviewable)
+        except AgentCompilationTerminated as terminated:
+            return _terminated_result(council, input_fingerprint, terminated)
+        except GovernedEvidenceLoadError as error:
+            reviewable = terminal_reviewable_network_for_governed_evidence(
+                None,
+                officer_decisions,
+                detail=str(error),
+            )
+            return _reviewable_terminal_result(council, input_fingerprint, reviewable)
+        if (
+            edge_enrichment_artifact is None
+            and artifact_store is not None
+            and edge_enrichment_specification is not None
+            and edge_enrichment_identities is not None
+            and captured_edge_enrichments is not None
+            and len(captured_edge_enrichments) == 1
+        ):
+            try:
+                edge_payload = encode_routable_edge_enrichment(
+                    captured_edge_enrichments[0],
+                    identities=edge_enrichment_identities,
+                )
+                edge_enrichment_artifact = artifact_store.put(
+                    edge_enrichment_specification,
+                    outputs={
+                        EDGE_ENRICHMENT_OUTPUT_ROLE: _compiled_network_bundle_bytes(
+                            edge_payload
+                        )
+                    },
+                )
+                edge_enrichment_artifact_id = edge_enrichment_artifact.artifact_id
+                edge_enrichment_frame = _decode_retained_edge_enrichment(
+                    artifact_store,
+                    edge_enrichment_artifact,
+                    identities=edge_enrichment_identities,
+                )
+                if edge_enrichment_frame is None:
+                    raise ValueError("new edge enrichment failed validation")
+                edge_enrichment_disposition = "build"
+                edge_enrichment_reason = (
+                    "forced-stage"
+                    if "edge-enrichments" in rebuild_stages
+                    else "compiled-from-governed-network-context"
+                )
+                if routing_specification is None:
+                    routing_specification, specified_input = _routing_bundle_specification(
+                        council,
+                        source,
+                        ledger=ledger,
+                        dependency_manifest=dependency_manifest,
+                        upstream_artifact_ids=(edge_enrichment_artifact.artifact_id,),
+                    )
+                    if routing_input_fingerprint != specified_input:
+                        raise ValueError("routing specification input identity is inconsistent")
+            except (OSError, TypeError, ValueError) as error:
+                edge_enrichment_artifact = None
+                edge_enrichment_frame = None
+                edge_enrichment_disposition = "unavailable"
+                edge_enrichment_reason = "retention-failed"
+                routing_specification = None
+                LOGGER.warning("Edge enrichment retention failed: %s", error)
+        if (
+            routing_bundle_disposition != "hit"
+            and artifact_store is not None
+            and routing_specification is not None
+            and captured_routing is not None
+            and len(captured_routing) == 1
+        ):
+            try:
+                routing_area_identity, _ = _routing_source_identities(council, source)
+                dependency_identity = dependency_manifest.get("sha256")
+                if not isinstance(dependency_identity, str):
+                    raise ValueError("routing dependency identity is unavailable")
+                if routing_input_fingerprint is None:
+                    raise ValueError("routing input identity is unavailable")
+                routing_payload = encode_routing_assembly_bundle(
+                    captured_routing[0],
+                    area_identity=routing_area_identity,
+                    input_identity=routing_input_fingerprint,
+                    dependency_identity=dependency_identity,
+                    upstream_artifact_ids=routing_specification.upstream_artifact_ids,
+                    bundle_crs=source["network"].crs,
+                )
+                routing_bundle_artifact = artifact_store.put(
+                    routing_specification,
+                    outputs={
+                        "routing-assembly-bundle": _compiled_network_bundle_bytes(
+                            routing_payload
+                        )
+                    },
+                )
+                routing_bundle = _decode_retained_routing_bundle(
+                    artifact_store,
+                    routing_bundle_artifact,
+                )
+                if routing_bundle is None:
+                    raise ValueError("new routing assembly bundle failed validation")
+                if bundle_specification is not None:
+                    if routing_input_fingerprint is None:
+                        raise ValueError("routing input identity is unavailable")
+                    bundle_specification = _compiled_network_bundle_specification(
+                        council,
+                        governed_input_fingerprint=governed_input_fingerprint,
+                        input_fingerprint=input_fingerprint,
+                        dependency_manifest=dependency_manifest,
+                        evidence_state_fingerprint=evidence_state_fingerprint,
+                        upstream_artifact_ids=(routing_bundle_artifact.artifact_id,),
+                        routing_input_identity=routing_input_fingerprint,
+                    )
+                routing_bundle_disposition = "build"
+                routing_bundle_reason = (
+                    "forced-stage"
+                    if "edge-enrichments" in rebuild_stages
+                    or "routing-assembly" in rebuild_stages
+                    else "compiled-from-governed-routing-inputs"
+                )
+            except (OSError, TypeError, ValueError) as error:
+                routing_bundle_artifact = None
+                routing_bundle_disposition = "unavailable"
+                routing_bundle_reason = "retention-failed"
+                LOGGER.warning("Routing assembly retention failed: %s", error)
+    assert compiled is not None
     reviewable = compiled.reviewable_network
     if reviewable is not None and reviewable.status.value == "terminal-failure":
         return _reviewable_terminal_result(council, input_fingerprint, reviewable)
-    compiled.compilation_input_fingerprint = input_fingerprint
-    compiled.governed_input_fingerprint = governed_input_fingerprint
-    compiled.snapshot_manifest_sha256 = snapshot_manifest_sha256(council)
-    compiled.area_definition_sha256 = area_definition_sha256(council)
-    compiled.compilation_dependency_manifest = dependency_manifest
-    LOGGER.info(
-        "Network compiled connections=%d gaps=%d status=%s",
-        compiled.connection_count,
-        len(compiled.gaps),
-        compiled.status,
-    )
-    if council.atm.enabled:
+    if semantic_bundle_disposition != "hit":
+        compiled.compilation_input_fingerprint = input_fingerprint
+        compiled.governed_input_fingerprint = governed_input_fingerprint
+        compiled.snapshot_manifest_sha256 = snapshot_manifest_sha256(council)
+        compiled.area_definition_sha256 = area_definition_sha256(council)
+        compiled.compilation_dependency_manifest = dependency_manifest
+        LOGGER.info(
+            "Network compiled connections=%d gaps=%d status=%s",
+            compiled.connection_count,
+            len(compiled.gaps),
+            compiled.status,
+        )
+    if semantic_bundle_disposition != "hit" and council.atm.enabled:
+        assert source is not None
         if council.atm.mode == "blind":
             if heartbeat is not None:
                 heartbeat.set_stage("atm-blind-load-reprojection")
@@ -777,30 +2425,107 @@ def _compile(
             "comparison_available": TrafficLight.GREEN,
             "unresolved_divergences": (TrafficLight.AMBER if unresolved else TrafficLight.GREEN),
         }
-    if heartbeat is not None:
-        heartbeat.set_stage("post-compilation-artifact-preparation")
-    unconsumed = {
-        response.request_id for response in ledger.responses
-    } - decision_resolver.consumed_request_ids
-    if unconsumed:
-        raise ValueError(
-            "decision ledger contains responses that do not belong to this compilation: "
-            + ", ".join(sorted(unconsumed))
-        )
-    compiled.decision_contract = ledger.decision_contract
-    compiled.decision_ledger_input = ledger.model_dump(mode="json")
-    # Execution order is not a durable audit order.  Persist the same canonical
-    # response order used by the ledger contract, so downstream equality checks
-    # cannot mistake a traversal-order difference for a different decision set.
-    compiled.accepted_decisions = AgentDecisionLedger.model_validate(
-        {
-            "decision_contract": ledger.decision_contract,
-            "responses": [
-                response.model_dump(mode="json")
-                for response in decision_resolver.accepted_responses
-            ],
-        }
-    ).model_dump(mode="json")["responses"]
+    if semantic_bundle_disposition != "hit":
+        if heartbeat is not None:
+            heartbeat.set_stage("post-compilation-artifact-preparation")
+        unconsumed = {
+            response.request_id for response in ledger.responses
+        } - decision_resolver.consumed_request_ids
+        if unconsumed:
+            raise ValueError(
+                "decision ledger contains responses that do not belong to this compilation: "
+                + ", ".join(sorted(unconsumed))
+            )
+        compiled.decision_contract = ledger.decision_contract
+        compiled.decision_ledger_input = ledger.model_dump(mode="json")
+        # Execution order is not a durable audit order.  Persist the same canonical
+        # response order used by the ledger contract, so downstream equality checks
+        # cannot mistake a traversal-order difference for a different decision set.
+        compiled.accepted_decisions = AgentDecisionLedger.model_validate(
+            {
+                "decision_contract": ledger.decision_contract,
+                "responses": [
+                    response.model_dump(mode="json")
+                    for response in decision_resolver.accepted_responses
+                ],
+            }
+        ).model_dump(mode="json")["responses"]
+        if (
+            artifact_store is not None
+            and bundle_specification is not None
+            and routing_bundle_artifact is not None
+        ):
+            assert source is not None
+            try:
+                bundle_payload = compiled_network_bundle_codec.encode_compiled_network_bundle(
+                    compiled,
+                    area_identity=area_definition_sha256(council),
+                    input_identity=input_fingerprint,
+                    dependency_identity=str(dependency_manifest["sha256"]),
+                    upstream_artifact_ids=bundle_specification.upstream_artifact_ids,
+                    bundle_crs=source["network"].crs,
+                )
+                semantic_bundle_artifact = artifact_store.put(
+                    bundle_specification,
+                    outputs={
+                        "compiled-network-bundle": _compiled_network_bundle_bytes(
+                            bundle_payload
+                        )
+                    },
+                )
+                semantic_resolution = artifact_store.resolve_specification(
+                    bundle_specification
+                )
+                if semantic_resolution.artifact is None:
+                    semantic_bundle_artifact = None
+                    semantic_bundle_disposition = "unavailable"
+                    semantic_bundle_reason = semantic_resolution.reason
+                    LOGGER.warning(
+                        "Compiled network bundle retention is not uniquely resolvable: %s",
+                        semantic_resolution.reason,
+                    )
+                    raise ValueError("semantic-retention-not-unique")
+                if (
+                    semantic_resolution.artifact.artifact_id
+                    != semantic_bundle_artifact.artifact_id
+                ):
+                    semantic_bundle_artifact = None
+                    semantic_bundle_disposition = "unavailable"
+                    semantic_bundle_reason = "semantic-retention-target-mismatch"
+                    raise ValueError("semantic-retention-target-mismatch")
+                canonical_compiled = _decode_retained_compiled_network(
+                    artifact_store, semantic_bundle_artifact
+                )
+                if canonical_compiled is None:
+                    raise ValueError(
+                        "newly retained compiled network bundle failed validation"
+                    )
+                # Cold and retained paths publish the same canonical, validated
+                # materialisation so byte-level publication equivalence is testable.
+                compiled = canonical_compiled
+                reviewable = compiled.reviewable_network
+                semantic_bundle_disposition = "build"
+                semantic_bundle_reason = "compiled-from-governed-inputs"
+                try:
+                    artifact_store.pin(
+                        "active-lineage",
+                        input_fingerprint,
+                        semantic_bundle_artifact.artifact_id,
+                    )
+                except (OSError, TypeError, ValueError) as error:
+                    # The artifact remains valid and dependency-complete; only
+                    # the source-free active lookup is unavailable next time.
+                    LOGGER.warning("Active semantic lineage pin failed: %s", error)
+            except (OSError, TypeError, ValueError) as error:
+                # Retention is an optimisation. A valid governed compilation must
+                # still reach the existing atomic publisher when retention fails.
+                if semantic_bundle_disposition != "unavailable":
+                    semantic_bundle_disposition = "unavailable"
+                    semantic_bundle_reason = "retention-failed"
+                LOGGER.warning("Compiled network bundle retention failed: %s", error)
+        elif artifact_store is not None and bundle_specification is not None:
+            semantic_bundle_disposition = "unavailable"
+            semantic_bundle_reason = "routing-retention-unavailable"
     if heartbeat is not None:
         heartbeat.set_stage("publication-fingerprint")
     run_fingerprint = json.dumps(
@@ -1047,6 +2772,29 @@ def _compile(
             "network_model": "backbone-outward",
             "compilation_input_fingerprint": input_fingerprint,
             "compilation_metadata": compilation_metadata,
+            "semantic_compilation_reused": semantic_bundle_disposition == "hit",
+            "semantic_bundle_disposition": semantic_bundle_disposition,
+            "semantic_bundle_reason": semantic_bundle_reason,
+            **(
+                {"semantic_bundle_artifact_id": semantic_bundle_artifact.artifact_id}
+                if semantic_bundle_artifact is not None
+                else {}
+            ),
+            "routing_input_fingerprint": routing_input_fingerprint,
+            "routing_bundle_disposition": routing_bundle_disposition,
+            "routing_bundle_reason": routing_bundle_reason,
+            **(
+                {"routing_bundle_artifact_id": routing_bundle_artifact.artifact_id}
+                if routing_bundle_artifact is not None
+                else {}
+            ),
+            "edge_enrichment_disposition": edge_enrichment_disposition,
+            "edge_enrichment_reason": edge_enrichment_reason,
+            **(
+                {"edge_enrichment_artifact_id": edge_enrichment_artifact_id}
+                if edge_enrichment_artifact_id is not None
+                else {}
+            ),
             "dft_traffic_evidence_state_fingerprint": evidence_state_fingerprint,
             "dft_traffic_match_policy_fingerprint": (
                 compiled.traffic_match_policy_fingerprint
@@ -1644,6 +3392,8 @@ def _reuse_validated_publication(
     dependency_manifest: dict[str, object],
     *,
     officer_decisions: tuple[PreloadedOfficerDecision, ...] = (),
+    publication_authority: PublicationDestinationAuthority | None = None,
+    force_presentation_republish: bool = False,
 ) -> CompilationResult | None:
     if council.compilation.full:
         LOGGER.info("Validated publication reuse disabled by --full")
@@ -1698,10 +3448,45 @@ def _reuse_validated_publication(
         if persisted_input_fingerprint != input_fingerprint:
             LOGGER.info("Existing publication input fingerprint differs; recompiling")
             return None
-        if not _review_map_assets_are_current(output):
-            LOGGER.info("Existing publication review-map assets differ; republishing")
-            return None
         validate_publication(output, council)
+        presentation_republished = False
+        presentation_elapsed: float | None = None
+        try:
+            presentation_input, presentation_manifest = validate_presentation_retention(run)
+        except ValueError as error:
+            LOGGER.info(
+                "Existing publication presentation retention is invalid; "
+                "recompiling reason=%s",
+                error,
+            )
+            return None
+        strategic = presentation_input["strategic_enabled"]
+        current_presentation_manifest = presentation_dependency_manifest(strategic=strategic)
+        if (
+            force_presentation_republish
+            or presentation_manifest != current_presentation_manifest
+            or run.get("presentation_dependency_fingerprint")
+            != current_presentation_manifest.get("sha256")
+            or not _review_map_assets_are_current(output)
+        ):
+            LOGGER.info("Existing publication presentation dependencies differ; republishing")
+            presentation_started = time.perf_counter()
+            try:
+                republish_presentation(
+                    council,
+                    publication_dependency_manifest=current_presentation_manifest,
+                    publication_authority=publication_authority,
+                )
+            except Exception as error:
+                # The republisher stages beside the live directory.  Surface a
+                # failed candidate rather than falling through to a fresh
+                # semantic compile that could replace the valid old publication.
+                raise RuntimeError(
+                    "presentation-only publication failed; previous publication retained"
+                ) from error
+            presentation_republished = True
+            presentation_elapsed = max(0.0, time.perf_counter() - presentation_started)
+            run = json.loads(run_path.read_text(encoding="utf-8"))
         agents_payload = json.loads((output / "agent-records.json").read_text(encoding="utf-8"))
         divergences_payload = json.loads(
             (output / "divergence-records.json").read_text(encoding="utf-8")
@@ -1715,6 +3500,19 @@ def _reuse_validated_publication(
             run["run_id"],
             output,
         )
+        metadata = dict(run)
+        # These are invocation-scoped result flags, never durable publication
+        # state.  Strip markers from older publications before ordinary reuse.
+        metadata.pop("presentation_republished", None)
+        metadata.pop("presentation_elapsed_seconds", None)
+        if presentation_republished:
+            metadata.update(
+                {
+                    "semantic_compilation_reused": True,
+                    "presentation_republished": True,
+                    "presentation_elapsed_seconds": presentation_elapsed,
+                }
+            )
         return CompilationResult(
             run_id=run["run_id"],
             status=run["status"],
@@ -1729,7 +3527,9 @@ def _reuse_validated_publication(
             divergence_records=[
                 DivergenceRecord.model_validate(record) for record in divergences_payload["records"]
             ],
-            metadata=run | {"publication_reused": True},
+            metadata=(metadata | {"publication_reused": True})
+            if not presentation_republished
+            else metadata,
         )
     except (KeyError, OSError, ValueError, json.JSONDecodeError) as error:
         LOGGER.warning(

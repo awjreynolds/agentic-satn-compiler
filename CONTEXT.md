@@ -388,6 +388,30 @@ _Avoid_: undifferentiated healthcare amenity, every clinical service, proximity-
 One immutable compilation defined by an Area Definition, evidence snapshot, Criteria Set, Network Selection Profile and accepted decisions. It may be compared with other scenarios but does not itself create authority for a Reference SATN.
 _Avoid_: mutable scenario, adopted network, live policy view
 
+**Retained Artifact**:
+One immutable, validated compiler-stage result addressed by the full SHA-256 of its canonical Artifact Manifest. It is a reusable materialisation rather than authority; a compilation accepts it only after validating its outputs and complete dependency closure.
+_Avoid_: mutable cache entry, trusted intermediate file, latest result
+
+**Artifact Manifest**:
+The canonical dependency and validation record that gives a Retained Artifact its identity, including its contract, semantic parameters, sorted upstream identities, partition scope, output digests and deterministic diagnostics. Runtime paths, timestamps, worker allocation and timings are observations and never affect this identity.
+_Avoid_: build log, cache key, path inventory, mutable metadata
+
+**Compilation Partition**:
+A stable versioned BNG cell used as the semantic geographic identity for independently reusable compiler artifacts. It may be read with a declared halo and grouped with other cells for execution, but it is not an administrative area, map tile or separately publishable network.
+_Avoid_: council boundary, worker task, Network Compilation Unit, web-map tile
+
+**Execution Bundle**:
+A non-semantic scheduling group of one or more Compilation Partitions processed together for efficiency. Its membership, worker and completion order may change without changing any Retained Artifact or Scenario Compilation identity.
+_Avoid_: partition identity, administrative compilation, published subnetwork
+
+**Boundary Portal**:
+A stable governed node or canonical partition-boundary intersection through which independently compiled partition fragments may connect. It makes cross-partition continuity explicit; proximity, overlapping halos or visual intersection cannot silently create a portal.
+_Avoid_: geometric snap, nearest boundary point, inferred connection
+
+**Deterministic Partition Stitch**:
+The canonical assembly of owned partition fragments and Boundary Portals into one authority-wide compilation result, independent of worker count and completion order. Missing or conflicting optional boundary evidence remains an explicit Network Gap and Evidence Request; malformed required governed input fails closed.
+_Avoid_: geometry merge, best-effort join, worker-order aggregation
+
 **Generated Scenario Compilation**:
 A publishable Scenario Compilation whose alignment choices were resolved by deterministic compiler rules, a validated Agent Runtime response or the Deterministic Alignment Fallback, without an Officer Decision or formal Adoption. Its public provenance identifies how each choice was resolved, but grants no human planning authority.
 _Avoid_: generated clean baseline, agent-approved network, Officer-Informed Scenario Compilation, Reference SATN

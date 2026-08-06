@@ -88,6 +88,19 @@ def test_decision_uses_the_declared_governing_criterion_without_status_rollup() 
     assert outcome.record.review_required is False
 
 
+def test_deterministic_non_invoked_record_has_no_wall_clock_semantic_input() -> None:
+    outcome = CompilationGate(None, AgentConfig(review_statuses=(TrafficLight.AMBER,))).evaluate(
+        "connection-a-b",
+        facts(direct="green"),
+        "direct",
+        ["direct"],
+        governing_criterion="continuity",
+        governing_status=TrafficLight.GREEN,
+    )
+
+    assert outcome.record.created_at is None
+
+
 def test_reviewed_record_exposes_only_the_bounded_choice_audit() -> None:
     outcome = gate(FakeAgentRuntime(), attempts=1).evaluate(
         "connection-a-b",

@@ -9,6 +9,7 @@ import time
 from collections.abc import Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
+from copy import deepcopy
 from dataclasses import dataclass, field
 from itertools import combinations
 from numbers import Number
@@ -23,6 +24,7 @@ from satn.agents import AgentDecisionResolver, AgentRuntimeSource, CompilationGa
 from satn.asset_accounting import build_asset_accounting
 from satn.backbone import (
     GAP_COLUMNS,
+    BackboneAssembly,
     _assemble_backbone_outward,
     assemble_backbone_outward,
 )
@@ -31,7 +33,7 @@ from satn.content_identity import (
     CanonicalNetworkGeometryCollapseError,
     canonical_network_geometry_fingerprint,
 )
-from satn.cross_spine import CrossSpineProgress, resolve_cross_spine_assembly
+from satn.cross_spine import CrossSpineAssembly, CrossSpineProgress, resolve_cross_spine_assembly
 from satn.evidence import (
     PUBLIC_CYCLE_ROUTE_TYPES,
     STRATEGIC_CYCLE_ROUTE_TYPES,
@@ -79,6 +81,7 @@ from satn.reviewable_network import (
     terminal_reviewable_network_for_governed_evidence,
 )
 from satn.routing import RoadGraph
+from satn.routing_assembly_bundle import RoutingAssemblyBundle
 from satn.scenario_compilation import PreparedScenarioCompilationInput
 from satn.school_street import assess_school_street_candidates
 from satn.settlement import (
@@ -126,6 +129,7 @@ class _GovernedInputBinding:
     officer_decisions: tuple[PreloadedOfficerDecision, ...]
     evidence_store: LocalEvidenceStore | None
     evidence_state_fingerprint: str | None
+    routing_input_fingerprint: str | None
 
 
 _GOVERNED_INPUT_BINDING: ContextVar[_GovernedInputBinding | None] = ContextVar(
@@ -134,12 +138,84 @@ _GOVERNED_INPUT_BINDING: ContextVar[_GovernedInputBinding | None] = ContextVar(
 )
 
 
+# Pipeline-only routing replay state.  The public compiler API intentionally
+# does not expose this seam: ordinary callers and the private Reference paths
+# remain cold unless the pipeline binds a validated bundle in this context.
+_ROUTING_REPLAY_BUNDLE: ContextVar[RoutingAssemblyBundle | None] = ContextVar(
+    "satn_compiler_routing_replay_bundle",
+    default=None,
+)
+_ROUTING_CAPTURE: ContextVar[list[RoutingAssemblyBundle] | None] = ContextVar(
+    "satn_compiler_routing_capture",
+    default=None,
+)
+_EDGE_ENRICHMENT_REPLAY: ContextVar[gpd.GeoDataFrame | None] = ContextVar(
+    "satn_compiler_edge_enrichment_replay",
+    default=None,
+)
+_EDGE_ENRICHMENT_CAPTURE: ContextVar[list[gpd.GeoDataFrame] | None] = ContextVar(
+    "satn_compiler_edge_enrichment_capture",
+    default=None,
+)
+
+
+@contextmanager
+def _routing_assembly_replay(bundle: RoutingAssemblyBundle):
+    """Bind a validated routing bundle for one pipeline compilation."""
+
+    if not isinstance(bundle, RoutingAssemblyBundle):
+        raise TypeError("routing replay requires a RoutingAssemblyBundle")
+    token = _ROUTING_REPLAY_BUNDLE.set(bundle)
+    try:
+        yield
+    finally:
+        _ROUTING_REPLAY_BUNDLE.reset(token)
+
+
+@contextmanager
+def _routing_assembly_capture():
+    """Capture a cold routing assembly without changing compiler arguments."""
+
+    captured: list[RoutingAssemblyBundle] = []
+    token = _ROUTING_CAPTURE.set(captured)
+    try:
+        yield captured
+    finally:
+        _ROUTING_CAPTURE.reset(token)
+
+
+@contextmanager
+def _routable_edge_enrichment_replay(frame: gpd.GeoDataFrame):
+    """Bind one validated marked-network frame for ordinary network replay."""
+
+    if not isinstance(frame, gpd.GeoDataFrame):
+        raise TypeError("edge-enrichment replay requires a GeoDataFrame")
+    token = _EDGE_ENRICHMENT_REPLAY.set(frame.copy(deep=True))
+    try:
+        yield
+    finally:
+        _EDGE_ENRICHMENT_REPLAY.reset(token)
+
+
+@contextmanager
+def _routable_edge_enrichment_capture():
+    """Capture the exact cold output of ``mark_ncn_edges``."""
+
+    captured: list[gpd.GeoDataFrame] = []
+    token = _EDGE_ENRICHMENT_CAPTURE.set(captured)
+    try:
+        yield captured
+    finally:
+        _EDGE_ENRICHMENT_CAPTURE.reset(token)
+
+
 @contextmanager
 def governed_input_binding(
     *,
     officer_decisions: tuple[PreloadedOfficerDecision, ...] = (),
     evidence_store: LocalEvidenceStore | None = None,
     evidence_state_fingerprint: str | None = None,
+    routing_input_fingerprint: str | None = None,
 ):
     """Bind pipeline-only inputs for one public ``compile_network`` call.
 
@@ -156,11 +232,16 @@ def governed_input_binding(
         if re.fullmatch(r"[0-9a-f]{64}", evidence_state_fingerprint or "") is None:
             raise ValueError("evidence_state_fingerprint must be a full lowercase SHA-256")
         evidence_store.resolve_coverage(state_fingerprint=evidence_state_fingerprint)
+    if routing_input_fingerprint is not None and re.fullmatch(
+        r"[0-9a-f]{64}", routing_input_fingerprint
+    ) is None:
+        raise ValueError("routing_input_fingerprint must be a full lowercase SHA-256")
     token = _GOVERNED_INPUT_BINDING.set(
         _GovernedInputBinding(
             officer_decisions=tuple(officer_decisions),
             evidence_store=evidence_store,
             evidence_state_fingerprint=evidence_state_fingerprint,
+            routing_input_fingerprint=routing_input_fingerprint,
         )
     )
     try:
@@ -326,9 +407,13 @@ def compile_network(
         source,
         runtime,
         governed_input_fingerprint=governed_input_fingerprint,
+        routing_input_fingerprint=(
+            binding.routing_input_fingerprint if binding is not None else None
+        ),
         decision_resolver=decision_resolver,
         heartbeat=heartbeat,
         cross_spine_progress=cross_spine_progress,
+        edge_enrichment_replay_enabled=True,
         **(
             {
                 "officer_decisions": binding.officer_decisions,
@@ -363,6 +448,8 @@ def _compile_network_with_reference(
         heartbeat=heartbeat,
         cross_spine_progress=cross_spine_progress,
         reference_application_plan=reference_application_plan,
+        routing_replay_enabled=False,
+        edge_enrichment_replay_enabled=False,
     )
 
 
@@ -388,6 +475,8 @@ def _compile_network_with_strategic_reference(
         heartbeat=heartbeat,
         cross_spine_progress=cross_spine_progress,
         validated_strategic_replay=validated_replay,
+        routing_replay_enabled=False,
+        edge_enrichment_replay_enabled=False,
     )
 
 
@@ -397,6 +486,7 @@ def _compile_network(
     runtime: AgentRuntimeSource,
     *,
     governed_input_fingerprint: str = "",
+    routing_input_fingerprint: str | None = None,
     decision_resolver: AgentDecisionResolver | None = None,
     heartbeat: StageHeartbeat | None = None,
     cross_spine_progress: CrossSpineProgress | None = None,
@@ -405,6 +495,8 @@ def _compile_network(
     officer_decisions: tuple[PreloadedOfficerDecision, ...] = (),
     evidence_store: LocalEvidenceStore | None = None,
     evidence_state_fingerprint: str | None = None,
+    routing_replay_enabled: bool = True,
+    edge_enrichment_replay_enabled: bool = True,
 ) -> CompiledNetwork:
     places = source["places"].copy().sort_values("place_id").reset_index(drop=True)
     context = source.get("context", empty_context(source["network"].crs)).copy()
@@ -443,13 +535,34 @@ def _compile_network(
         urban_scope_buffer_km=config.source.urban_scope_buffer_km,
     )
     gateways = places[places["kind"] == "cross_boundary_gateway"].copy()
-    routable_network = mark_ncn_edges(source["network"], context)
+    edge_replay = _EDGE_ENRICHMENT_REPLAY.get() if edge_enrichment_replay_enabled else None
+    if edge_replay is not None:
+        routable_network = edge_replay.copy(deep=True)
+    else:
+        routable_network = mark_ncn_edges(source["network"], context)
+        capture = _EDGE_ENRICHMENT_CAPTURE.get()
+        if capture is not None:
+            capture.append(routable_network.copy(deep=True))
     road_graph = RoadGraph(routable_network)
+    routing_resolver = AgentDecisionResolver(
+        decision_resolver.ledger if decision_resolver is not None else None,
+        governed_input_fingerprint,
+    )
     gate = CompilationGate(
         runtime,
         config.compilation.agent,
         governed_input_fingerprint,
-        decision_resolver,
+        routing_resolver,
+    )
+    downstream_resolver = decision_resolver or AgentDecisionResolver(
+        routing_resolver.ledger,
+        governed_input_fingerprint,
+    )
+    downstream_gate = CompilationGate(
+        runtime,
+        config.compilation.agent,
+        governed_input_fingerprint,
+        downstream_resolver,
     )
     strategic_spines = _strategic_spines(context)
     rural_communities = _rural_communities(communities)
@@ -479,14 +592,51 @@ def _compile_network(
         source.get("elevation_evidence", empty_elevation_evidence(road_graph.crs)),
         config.compilation.topography,
     )
-    backbone = (
-        assemble_backbone_outward(*backbone_arguments)
-        if reference_application_plan is None
-        else _assemble_backbone_outward(
-            *backbone_arguments,
-            reference_application_plan=reference_application_plan,
+    routing_replay = _ROUTING_REPLAY_BUNDLE.get() if routing_replay_enabled else None
+    if routing_replay is not None and (
+        reference_application_plan is not None or validated_strategic_replay is not None
+    ):
+        raise ValueError("routing replay cannot be combined with a Reference replay")
+    if routing_replay is not None:
+        backbone = BackboneAssembly(
+            connections=deepcopy(routing_replay.connections),
+            obligations=deepcopy(routing_replay.obligations),
+            branches=deepcopy(routing_replay.branches),
+            meeting_connections=deepcopy(routing_replay.meeting_connections),
+            cross_spine_connectors=deepcopy(routing_replay.cross_spine_connectors),
+            gaps=deepcopy(routing_replay.gaps),
+            gateway_count=routing_replay.gateway_count,
+            connected_gateway_count=routing_replay.connected_gateway_count,
+            agent_records=[record.model_copy(deep=True) for record in routing_replay.agent_records],
+            compilation_diagnostics=deepcopy(routing_replay.compilation_diagnostics),
+            cross_spine_assembly_diagnostics=deepcopy(
+                routing_replay.cross_spine_assembly_diagnostics
+            ),
         )
-    )
+        # Accepted routing decisions are part of the replay boundary.  Seed the
+        # live resolver so downstream request-context fingerprints and the final
+        # unconsumed-ledger check match a cold compilation.
+        routing_resolver.accepted_responses = [
+            response.model_copy(deep=True)
+            for response in routing_replay.accepted_responses
+        ]
+        accepted_ids = routing_resolver.consumed_request_ids
+        routing_resolver.applied_records = [
+            record.model_copy(deep=True)
+            for record in routing_replay.agent_records
+            if record.decision_request is not None
+            and record.decision_request.request_id in accepted_ids
+        ]
+        routing_resolver.validation = "accepted" if routing_replay.accepted_responses else None
+    else:
+        backbone = (
+            assemble_backbone_outward(*backbone_arguments)
+            if reference_application_plan is None
+            else _assemble_backbone_outward(
+                *backbone_arguments,
+                reference_application_plan=reference_application_plan,
+            )
+        )
     spine_access_connections = backbone.connections
     access_obligations = backbone.obligations
     access_obligations["network_scope"] = access_obligations["network_scope"].astype(object)
@@ -524,13 +674,46 @@ def _compile_network(
     low_traffic_area_portals = urban.low_traffic_area_portals
     if heartbeat is not None:
         heartbeat.set_stage("cross-spine-assembly")
-    cross_spine_assembly = resolve_cross_spine_assembly(
-        cross_spine_connectors,
-        strategic_spines,
-        agent_records,
-        progress=_cross_spine_progress_observer(heartbeat, cross_spine_progress),
-        assembly_diagnostics=backbone.cross_spine_assembly_diagnostics,
-    )
+    if routing_replay is not None:
+        cross_spine_assembly = CrossSpineAssembly(
+            valid_connectors=deepcopy(routing_replay.valid_cross_spine_connectors),
+            route_refinement_findings=deepcopy(routing_replay.route_refinement_findings),
+            agent_records=tuple(
+                record.model_copy(deep=True) for record in routing_replay.agent_records
+            ),
+            diagnostics=deepcopy(routing_replay.cross_spine_diagnostics),
+        )
+    else:
+        cross_spine_assembly = resolve_cross_spine_assembly(
+            cross_spine_connectors,
+            strategic_spines,
+            agent_records,
+            progress=_cross_spine_progress_observer(heartbeat, cross_spine_progress),
+            assembly_diagnostics=backbone.cross_spine_assembly_diagnostics,
+        )
+    capture = _ROUTING_CAPTURE.get()
+    if capture is not None and routing_replay is None:
+        capture.append(
+            RoutingAssemblyBundle.from_assemblies(
+                backbone,
+                cross_spine_assembly,
+                accepted_responses=(
+                    tuple(gate.decision_resolver.accepted_responses)
+                ),
+            )
+        )
+    # Downstream request-context fingerprints include the accepted routing
+    # responses.  Seed the full compiler resolver in both cold and replay runs.
+    downstream_resolver.accepted_responses = [
+        response.model_copy(deep=True) for response in routing_resolver.accepted_responses
+    ]
+    downstream_resolver.applied_records = [
+        record.model_copy(deep=True)
+        for record in routing_resolver.applied_records
+        if record.decision_request is not None
+        and record.decision_request.request_id in downstream_resolver.consumed_request_ids
+    ]
+    downstream_resolver.validation = routing_resolver.validation
     if heartbeat is not None:
         heartbeat.set_stage("network-compilation")
     cross_spine_connectors = cross_spine_assembly.valid_connectors
@@ -591,7 +774,7 @@ def _compile_network(
         )
         urban_school_gaps = _urban_school_gaps(urban_school_access, crs)
         if not urban_school_gaps.empty:
-            agent_records.extend(_review_urban_school_gaps(urban_school_gaps, gate))
+            agent_records.extend(_review_urban_school_gaps(urban_school_gaps, downstream_gate))
             gaps = gpd.GeoDataFrame(
                 pd.concat([gaps, urban_school_gaps], ignore_index=True, sort=False),
                 columns=GAP_COLUMNS,
@@ -1005,7 +1188,7 @@ def _compile_network(
     # must therefore carry the same exact decision wire contract as the
     # pipeline path, rather than relying on dataclass defaults which would
     # erase a direct-runtime audit before ``publish`` sees it.
-    ledger = gate.decision_resolver.ledger
+    ledger = downstream_gate.decision_resolver.ledger
     compiled.decision_contract = ledger.decision_contract
     compiled.decision_ledger_input = ledger.model_dump(mode="json")
     compiled.accepted_decisions = AgentDecisionLedger.model_validate(
@@ -1013,7 +1196,7 @@ def _compile_network(
             "decision_contract": ledger.decision_contract,
             "responses": [
                 response.model_dump(mode="json")
-                for response in gate.decision_resolver.accepted_responses
+                for response in downstream_gate.decision_resolver.accepted_responses
             ],
         }
     ).model_dump(mode="json")["responses"]

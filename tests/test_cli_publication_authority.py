@@ -52,3 +52,100 @@ publication:
     assert authority.workspace_root == workspace
     assert authority.approved_external_destination == approved
     assert authority.expected_prior_run_fingerprint == "a" * 64
+
+
+def test_compile_cli_passes_incremental_artifact_controls(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    config = tmp_path / "area.yaml"
+    config.write_text(
+        """\
+council_id: tiny
+council_name: Tiny Council
+source:
+  snapshot_dir: snapshots
+publication:
+  output_dir: output
+  title: Tiny publication
+""",
+        encoding="utf-8",
+    )
+    artifacts = tmp_path / "retained"
+    observed: dict[str, object] = {}
+
+    def compile_stub(*_args: object, **kwargs: object) -> SimpleNamespace:
+        observed.update(kwargs)
+        return SimpleNamespace(
+            status="complete",
+            connections=1,
+            gaps=0,
+            output_dir=tmp_path / "output",
+            metadata={
+                "compilation_run_report": str(tmp_path / "run-report.json"),
+                "reuse_explanation": [
+                    {
+                        "kind": "semantic-compilation",
+                        "disposition": "hit",
+                        "reason": "validated-semantic-publication",
+                    }
+                ],
+            },
+        )
+
+    monkeypatch.setattr(cli, "compile_satn", compile_stub)
+    response = CliRunner().invoke(
+        cli.app,
+        [
+            "compile",
+            str(config),
+            "--rebuild-stage",
+            "edge-enrichments",
+            "--rebuild-stage",
+            "scenario-selection",
+            "--artifacts",
+            str(artifacts),
+            "--workers",
+            "3",
+            "--explain-reuse",
+        ],
+    )
+
+    assert response.exit_code == 0, response.output
+    assert observed["rebuild_stages"] == (
+        "edge-enrichments",
+        "scenario-selection",
+    )
+    assert observed["artifact_root"] == artifacts
+    assert observed["workers"] == 3
+    assert observed["explain_reuse"] is True
+    assert "semantic-compilation" in response.output
+    assert "validated-semantic-publication" in response.output
+    assert "run-report.json" in response.output
+
+
+def test_compile_cli_rejects_removed_input_stage_with_producer_hint(
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    config = tmp_path / "area.yaml"
+    config.write_text(
+        """\
+council_id: tiny
+council_name: Tiny Council
+source:
+  snapshot_dir: snapshots
+publication:
+  output_dir: output
+  title: Tiny publication
+""",
+        encoding="utf-8",
+    )
+
+    response = CliRunner().invoke(
+        cli.app,
+        ["compile", str(config), "--rebuild-stage", "canonical-network"],
+    )
+
+    assert response.exit_code != 0
+    assert response.exception is not None
+    assert "canonical-network" in str(response.exception)
+    assert "satn snapshot" in str(response.exception)

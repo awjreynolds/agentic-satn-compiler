@@ -175,6 +175,14 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
         "private deterministic strategic Reference replay materialisation",
     ),
     "satn/routing.py": ("module", "routable network and route selection"),
+    "satn/routing_assembly_bundle.py": (
+        "module",
+        "canonical retained routing assembly replay contract",
+    ),
+    "satn/routable_edge_enrichment.py": (
+        "module",
+        "canonical retained mark_ncn_edges output replay contract",
+    ),
     "satn/route_controls.py": (
         "module",
         "governed route exclusions, preferences and retained-gap constraints",
@@ -266,6 +274,9 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     "satn/assets/strategic-reference.css": "strategic-only review-map presentation asset",
     "satn/assets/strategic-reference.js": "strategic-only review-map presentation asset",
     "satn/cli.py": "command-line adapter",
+    "satn/compiled_network_bundle.py": (
+        "additive retained CompiledNetwork wire codec; not a compiler input before cutover"
+    ),
     "satn/acceptance_cutover.py": (
         "additive Local Evidence acceptance gate; not a compiler input before cutover"
     ),
@@ -307,6 +318,10 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
         "not a compiler input before equivalence cutover"
     ),
     "satn/filesystem_safety.py": "publication and deployment replacement guard",
+    "satn/geographic_partitions.py": (
+        "additive geographic partition/halo/portal contracts; "
+        "not a compiler input before partition cutover"
+    ),
     "satn/ea_fixed_point_convergence.py": (
         "bounded fixed-point orchestration without CompiledNetwork mutation"
     ),
@@ -314,6 +329,10 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
         "local fixed-point command operations without CompiledNetwork mutation"
     ),
     "satn/heartbeat.py": "operational progress reporting",
+    "satn/incremental_dag.py": (
+        "retained artifact orchestration; stage implementation fingerprints "
+        "govern semantic reuse independently"
+    ),
     "satn/open_roads_adapter.py": (
         "additive Local Evidence source adapter; not a compiler input before equivalence cutover"
     ),
@@ -323,6 +342,10 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     ),
     "satn/officer_decisions.py": ("post-compile human decision ledger and scenario translation"),
     "satn/pages_packaging.py": "Pages release packaging",
+    "satn/parallel_execution.py": (
+        "additive bounded partition executor; hardware and scheduling never alter "
+        "CompiledNetwork semantics before partition cutover"
+    ),
     "satn/parallel_reduction.py": (
         "post-compile parallel-alignment Scenario seam without CompiledNetwork mutation"
     ),
@@ -339,11 +362,19 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     "satn/parallel_reduction_scope.py": (
         "post-compile parallel scope-range helper without CompiledNetwork mutation"
     ),
+    "satn/partition_stitch.py": (
+        "additive deterministic partition-stitch contract; not a compiler input "
+        "before partition cutover"
+    ),
     "satn/psa_criteria_assembly.py": (
         "post-compile governed criteria assembly without CompiledNetwork mutation"
     ),
     "satn/reference_application.py": (
         "post-adoption Reference replay planning without CompiledNetwork mutation"
+    ),
+    "satn/retained_artifacts.py": (
+        "workspace-local content-addressed artifact storage and lifecycle; "
+        "stage implementation fingerprints govern reuse independently"
     ),
     "satn/runtime_governance.py": "current publication runtime-governance validation",
     "satn/runtime_governance_contract.py": "current publication governance contract",
