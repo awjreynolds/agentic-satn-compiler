@@ -4151,6 +4151,7 @@ def _write_review_map(
                     "legend": reviewable_map["legend"],
                     "gaps": [
                         {
+                            "gap_id": gap.gap_id,
                             "obligation_id": gap.obligation_id,
                             "network_role": gap.network_role,
                             "endpoints": list(gap.endpoints),

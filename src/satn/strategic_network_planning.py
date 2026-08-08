@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass
 from enum import StrEnum
 
 from shapely.geometry import LineString
@@ -285,6 +285,23 @@ class ReviewableNetworkGap:
     endpoints: tuple[str, str]
     reason: str
     candidate_set_id: str | None = None
+    gap_id: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "gap_id",
+            _stable_id(
+                "network-gap",
+                {
+                    "obligation_id": self.obligation_id,
+                    "network_role": self.network_role,
+                    "endpoints": self.endpoints,
+                    "reason": self.reason,
+                    "candidate_set_id": self.candidate_set_id,
+                },
+            ),
+        )
 
 
 @dataclass(frozen=True)

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from satn.alignment_selection import CanonicalLineString
 from satn.publisher import _reviewable_map_collection
+from satn.strategic_network_planning import ReviewableNetworkGap
 from satn.strategic_network_publication import (
     DEFAULT_LAYERS,
     OPTIONAL_LAYERS,
@@ -359,6 +360,38 @@ def test_projection_gaps_with_empty_duplicate_endpoints_have_stable_fallback_ids
         feature["properties"]["endpoint_identity_fallback"] is True and feature["geometry"] is None
         for feature in gap_features
     )
+
+
+def test_projection_distinguishes_gap_findings_for_the_same_obligation() -> None:
+    gaps = (
+        ReviewableNetworkGap(
+            obligation_id="shared-obligation",
+            network_role="unresolved-strategic-alignment",
+            endpoints=("place-a", "place-b"),
+            reason="prepared route is unusable",
+        ),
+        ReviewableNetworkGap(
+            obligation_id="shared-obligation",
+            network_role="interurban-spine",
+            endpoints=("place-a", "place-b"),
+            reason="no admitted candidate",
+            candidate_set_id="candidate-set-a",
+        ),
+    )
+
+    projection = project_strategic_network(_result(gaps=gaps))
+    gap_features = [
+        feature
+        for feature in projection.reviewable_feature_collection["features"]
+        if feature["properties"].get("feature_type") == "reviewable-gap-endpoint"
+    ]
+    feature_ids = [feature["id"] for feature in gap_features]
+
+    assert len(feature_ids) == 4
+    assert len(set(feature_ids)) == 4
+    assert {feature["properties"]["gap_id"] for feature in gap_features} == {
+        gap.gap_id for gap in gaps
+    }
 
 
 def test_projection_diagnostics_are_data_only_with_permutation_stable_ids() -> None:
