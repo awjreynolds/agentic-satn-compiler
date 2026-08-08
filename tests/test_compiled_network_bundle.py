@@ -31,6 +31,7 @@ from satn.compiler import CompiledNetwork, compile_network
 from satn.spine_access_candidate_preparation import SpineAccessCandidatePreparationResult
 from satn.strategic_corridors import NetworkSelectionPreparationResult
 from satn.strategic_network_planning import (
+    ReviewableNetworkGap,
     StrategicNetworkPlanningResult,
     compile_strategic_network,
 )
@@ -391,10 +392,22 @@ def test_bundle_round_trips_network_selection_preparation_result() -> None:
     assert decode_compiled_network_bundle(encoded, NetworkSelectionPreparationResult) == fixture
 
 
-def test_bundle_round_trips_strategic_planning_candidate_sets() -> None:
+def test_bundle_round_trips_strategic_planning_candidate_sets_and_gaps() -> None:
     graph = fixture_graph()
     fixture = compile_strategic_network(
         request(graph, discovery(graph, CorridorObligation("corridor-a-d", "A", "D")))
+    )
+    fixture = replace(
+        fixture,
+        gaps=(
+            ReviewableNetworkGap(
+                obligation_id="gap-a-d",
+                network_role="interurban-spine",
+                endpoints=("A", "D"),
+                reason="no admitted candidate",
+                candidate_set_id="candidate-set-gap-a-d",
+            ),
+        ),
     )
     encoded = encode_compiled_network_bundle(
         fixture,
