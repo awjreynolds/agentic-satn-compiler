@@ -1,5 +1,9 @@
 # Retained incremental seam audit (Issue #339)
 
+> Status: historical / superseded by ADR 0020 (2026-08-06). This report records
+> the pre-Retained Compilation seam state and remains evidence of that migration
+> boundary, not the current reuse authority.
+
 ## Decision
 
 The repository has implemented identity, validation and selective-store seams,

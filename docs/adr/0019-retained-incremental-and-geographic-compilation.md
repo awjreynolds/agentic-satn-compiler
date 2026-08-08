@@ -3,7 +3,7 @@
 - Status: accepted
 - Date: 2026-08-05
 - Issue: #345
-- Related: ADR 0005, ADR 0009, ADR 0010, ADR 0011, ADR 0012, ADR 0013, ADR 0014, ADR 0015, ADR 0016 and ADR 0018
+- Related: ADR 0005, ADR 0009, ADR 0010, ADR 0011, ADR 0012, ADR 0013, ADR 0014, ADR 0015, ADR 0016, ADR 0018 and ADR 0020
 
 ## Context
 
@@ -22,6 +22,21 @@ merged by geometry. Cross-boundary ownership, continuity, obligations, alternati
 gaps and provenance must remain deterministic.
 
 ## Decision
+
+### Implementation status (2026-08-06)
+
+The Retained Compilation seam described here is implemented. Typed
+`RetainedCompilationIntent` values enter `compile_retained()` and produce typed
+`RetainedCompilationOutcome` values containing the compilation result, validated
+run report and report path. The existing public `pipeline.compile` contract is
+unchanged: pipeline orchestration supplies the internal compiler callback and
+does not expose a competing public reuse decision path. During migration that
+private callback still contains the retained decoders, resolvers and validation
+checks in `pipeline.py`; `compile_retained()` validates the controls and records
+their dispositions in one typed report. Moving those mechanics behind the seam
+remains an internal refactor and does not create another authority. Semantic
+authority still comes from the compiler result and publisher validation, not from
+the report.
 
 ### Automatic retained DAG
 

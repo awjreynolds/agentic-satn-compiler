@@ -80,6 +80,10 @@ _Avoid_: final scheme map, cycle-route inventory, undifferentiated linework
 The default-on selected SATN layer, including its required Community and destination connections. Its line core communicates Network Display State, while its halo communicates the primary Alignment Basis; details retain every basis and the evidence behind it. It is accompanied by quiet Places and prominent material gaps and officer–compiler divergences rather than an undifferentiated red backbone.
 _Avoid_: uniform-red route, hidden connectors, contextual asset inventory, colour-only meaning
 
+**Effective Strategic Network**:
+The single fingerprinted selected network state produced by the authoritative network-selection step for one exact compilation request. It includes the selected strategic sections and their governed result identity; finite Alignment Candidates and preparation rosters are inputs, while publication artifacts and Review Lens interaction state are projections or views. Downstream consumers use this stored result and never select again.
+_Avoid_: candidate set, preparation roster, published map, review selection, route winner
+
 **Alignment Basis**:
 The evidence-backed physical or corridor basis followed by an Alignment Section, such as current cycle provision, Greenway, current or reclassified National Cycle Network, public right of way, former railway, governed Local Connector, classified road or proposed corridor. A section retains every applicable basis and names one primary basis for map presentation; basis alone never establishes condition, access, feasibility or Intervention State.
 _Avoid_: route quality, intervention need, single source label, inferred suitability

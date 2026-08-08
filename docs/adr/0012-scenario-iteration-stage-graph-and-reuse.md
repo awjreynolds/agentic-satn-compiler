@@ -1,9 +1,13 @@
 # ADR 0012: Scenario Iteration is a small DAG of immutable materialisations
 
-- Status: accepted
+- Status: superseded by ADR 0020
 - Date: 2026-07-28
 - Issue: #192
 - Related: ADR 0003, ADR 0005, ADR 0006, ADR 0008, ADR 0009, ADR 0010 and ADR 0011
+
+> Historical note: ADR 0020 supersedes this ADR's retained-reuse authority model.
+> The stage DAG and its contracts remain historical context; current retained
+> compilation authority and implementation status are defined by ADR 0020.
 
 ## Decision
 
