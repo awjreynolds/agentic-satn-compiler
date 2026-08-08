@@ -14,7 +14,6 @@ import math
 import re
 import threading
 import urllib.parse
-import xml.etree.ElementTree as ElementTree
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -29,6 +28,8 @@ import pandas as pd
 import pyogrio
 import pyproj
 import shapely
+from defusedxml import ElementTree
+from defusedxml.common import DefusedXmlException
 from pyproj import CRS, Transformer
 from shapely.geometry import box
 from shapely.geometry.base import BaseGeometry
@@ -250,9 +251,7 @@ def load_acquisition_receipt(receipt_path: Path) -> SourceExport:
         raise ValueError("governed OSM acquisition receipt is not canonical")
     source_payload, acquisition, publisher, raw_object = _validated_acquisition_receipt(payload)
     raw_sha256 = str(raw_object["sha256"])
-    object_path = (
-        resolved_receipt.parent.parent / "objects" / "sha256" / f"{raw_sha256}.osm"
-    )
+    object_path = resolved_receipt.parent.parent / "objects" / "sha256" / f"{raw_sha256}.osm"
     if object_path.is_symlink() or not object_path.is_file():
         raise ValueError(f"governed OSM raw object is not retained at {object_path}")
     if object_path.stat().st_size != raw_object["byte_count"]:
@@ -271,11 +270,7 @@ def load_acquisition_receipt(receipt_path: Path) -> SourceExport:
         "attribution": payload["licence"]["attribution"],
     }
     source_export = SourceExport(
-        **{
-            key: value
-            for key, value in source_payload.items()
-            if key != "contract"
-        },
+        **{key: value for key, value in source_payload.items() if key != "contract"},
         provenance=provenance,
     )
     validate_export(source_export, ingestion_contract())
@@ -508,15 +503,19 @@ def _validated_acquisition_receipt(
     Mapping[str, object],
     Mapping[str, object],
 ]:
-    if set(payload) != {
-        "contract",
-        "source_export",
-        "acquisition",
-        "publisher",
-        "http",
-        "raw_object",
-        "licence",
-    } or payload.get("contract") != ACQUISITION_RECEIPT_CONTRACT:
+    if (
+        set(payload)
+        != {
+            "contract",
+            "source_export",
+            "acquisition",
+            "publisher",
+            "http",
+            "raw_object",
+            "licence",
+        }
+        or payload.get("contract") != ACQUISITION_RECEIPT_CONTRACT
+    ):
         raise ValueError("governed OSM acquisition receipt does not match the v1 schema")
     source_payload = payload["source_export"]
     acquisition = payload["acquisition"]
@@ -656,7 +655,11 @@ def _raw_xml_receipt(source_path: Path) -> str:
     depth = 0
     receipts: list[str] = []
     try:
-        for event, element in ElementTree.iterparse(source_path, events=("start", "end")):
+        for event, element in ElementTree.iterparse(
+            source_path,
+            events=("start", "end"),
+            forbid_dtd=True,
+        ):
             if event == "start":
                 depth += 1
                 if depth == 1:
@@ -679,6 +682,8 @@ def _raw_xml_receipt(source_path: Path) -> str:
                 continue
             element.clear()
             depth -= 1
+    except DefusedXmlException as error:
+        raise ValueError("governed Source Export contains unsafe XML constructs") from error
     except ValueError:
         raise
     except (ElementTree.ParseError, UnicodeDecodeError) as error:
@@ -692,13 +697,19 @@ def _raw_xml_receipt(source_path: Path) -> str:
 
 def _raw_xml_generator(source_path: Path) -> str | None:
     try:
-        for _event, element in ElementTree.iterparse(source_path, events=("start",)):
+        for _event, element in ElementTree.iterparse(
+            source_path,
+            events=("start",),
+            forbid_dtd=True,
+        ):
             if element.tag != "osm" or element.attrib.get("version") != "0.6":
                 raise ValueError('governed OSM XML must have root <osm version="0.6">')
             generator = element.attrib.get("generator")
             if generator is not None and not generator.strip():
                 raise ValueError("governed OSM XML generator must be non-empty when present")
             return generator
+    except DefusedXmlException as error:
+        raise ValueError("governed Source Export contains unsafe XML constructs") from error
     except ValueError:
         raise
     except (ElementTree.ParseError, UnicodeDecodeError) as error:

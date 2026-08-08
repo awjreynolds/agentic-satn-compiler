@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import urllib.error
+import urllib.request
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,22 +10,22 @@ from types import SimpleNamespace
 import pytest
 
 from lcwip.publication import ARTIFACTS, _validate_zip
-from satn import sources
+from satn import remote_endpoints, sources
 from satn.publisher import _validate_review_map_zip
 from satn.remote_endpoints import validate_configured_https_endpoint
 
 
 @pytest.mark.parametrize(
-"endpoint",
-[
-"http://example.test/api",
-"https://user:secret@example.test/api",
-"https://example.test/api#fragment",
-"https://localhost/api",
-"https://127.0.0.1/api",
-"https://[::1]/api",
-"https://169.254.169.254/latest/meta-data",
-],
+    "endpoint",
+    [
+        "http://example.test/api",
+        "https://user:secret@example.test/api",
+        "https://example.test/api#fragment",
+        "https://localhost/api",
+        "https://127.0.0.1/api",
+        "https://[::1]/api",
+        "https://169.254.169.254/latest/meta-data",
+    ],
 )
 def test_configured_remote_endpoint_rejects_unsafe_locations(endpoint: str) -> None:
     with pytest.raises(ValueError):
@@ -33,6 +35,21 @@ def test_configured_remote_endpoint_rejects_unsafe_locations(endpoint: str) -> N
 def test_configured_remote_endpoint_accepts_production_service() -> None:
     endpoint = "https://services5.arcgis.com/example/FeatureServer"
     assert validate_configured_https_endpoint(endpoint, field_name="endpoint") == endpoint
+
+
+def test_configured_https_transport_refuses_remote_redirects() -> None:
+    request = urllib.request.Request("https://service.example.test/data")
+    handler = remote_endpoints._RejectRedirects()
+
+    with pytest.raises(urllib.error.HTTPError, match="redirect"):
+        handler.redirect_request(
+            request,
+            None,
+            302,
+            "Found",
+            {},
+            "http://169.254.169.254/latest/meta-data",
+        )
 
 
 def test_bounded_response_read_rejects_chunked_overflow() -> None:
@@ -69,7 +86,7 @@ def test_arcgis_page_budget_is_checked_before_next_request(
             return value
 
     monkeypatch.setattr(sources, "ARCGIS_MAX_PAGES", 1)
-    monkeypatch.setattr(sources.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
+    monkeypatch.setattr(sources, "open_configured_https", lambda *_args, **_kwargs: Response())
     boundary = gpd.GeoDataFrame(geometry=[Polygon([(0, 0), (1, 0), (1, 1), (0, 0)])], crs=4326)
     with pytest.raises(ValueError, match="page budget"):
         sources._load_arcgis_cycle_routes(

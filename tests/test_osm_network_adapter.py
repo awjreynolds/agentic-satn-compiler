@@ -78,6 +78,32 @@ def test_validate_export_binds_raw_xml_receipt_schema_and_provenance(tmp_path: P
 
 
 @pytest.mark.parametrize(
+    "doctype",
+    (
+        '<!DOCTYPE osm [<!ENTITY generator "untrusted-generator">]>',
+        "<!DOCTYPE osm>",
+    ),
+)
+def test_validate_export_rejects_xml_dtd_and_entity_declarations(
+    tmp_path: Path,
+    doctype: str,
+) -> None:
+    path = tmp_path / "network.osm"
+    path.write_text(
+        f"""<?xml version="1.0" encoding="UTF-8"?>
+{doctype}
+<osm version="0.6">
+  <meta osm_base="2026-07-27T10:11:12Z" />
+</osm>
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="unsafe XML"):
+        adapter.validate_export(_source_export(path), _contract())
+
+
+@pytest.mark.parametrize(
     ("changes", "message"),
     (
         ({"source_family": "osm"}, "unsupported"),
