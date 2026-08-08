@@ -14,6 +14,10 @@ from pathlib import Path
 
 from satn import osm_network_adapter
 from satn.evidence_contracts import IngestionContract
+from satn.remote_endpoints import (
+    open_configured_https,
+    validate_configured_https_endpoint,
+)
 
 MAX_RAW_BYTES = 2 * 1024 * 1024 * 1024
 READ_CHUNK_BYTES = 1024 * 1024
@@ -67,7 +71,7 @@ def acquire_osm_export(
     temporary = Path(temporary_name)
     try:
         with os.fdopen(descriptor, "wb") as output:
-            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            with open_configured_https(request, timeout=timeout_seconds) as response:
                 if getattr(response, "status", 200) != 200:
                     raise ValueError(
                         f"Overpass returned HTTP status {getattr(response, 'status', 'unknown')}"
@@ -93,9 +97,7 @@ def acquire_osm_export(
 
         raw_sha256 = digest.hexdigest()
         raw_object_path = f"objects/sha256/{raw_sha256}.osm"
-        effective_retrieved_at = retrieved_at or datetime.now(UTC).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        )
+        effective_retrieved_at = retrieved_at or datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         receipt = osm_network_adapter.acquisition_receipt_payload(
             temporary,
             raw_object_path=raw_object_path,
@@ -109,11 +111,7 @@ def acquire_osm_export(
         object_path = cache_dir / raw_object_path
         _publish_object(temporary, object_path, raw_sha256, byte_count)
         receipt_bytes = osm_network_adapter.acquisition_receipt_bytes(receipt)
-        receipt_path = (
-            cache_dir
-            / "receipts"
-            / f"{hashlib.sha256(receipt_bytes).hexdigest()}.json"
-        )
+        receipt_path = cache_dir / "receipts" / f"{hashlib.sha256(receipt_bytes).hexdigest()}.json"
         _publish_bytes(receipt_path, receipt_bytes, "OSM acquisition receipt")
         return receipt_path
     finally:
@@ -124,6 +122,7 @@ def acquire_osm_export(
 def _canonical_endpoint(value: object) -> str:
     if not isinstance(value, str) or value != value.strip():
         raise ValueError("OSM acquisition endpoint must be an HTTPS URL")
+    validate_configured_https_endpoint(value, field_name="OSM acquisition endpoint")
     parsed = urllib.parse.urlsplit(value)
     if (
         parsed.scheme != "https"
@@ -166,9 +165,7 @@ def _is_osm_xml_content_type(value: str) -> bool:
     }
 
 
-def _publish_object(
-    temporary: Path, object_path: Path, raw_sha256: str, byte_count: int
-) -> None:
+def _publish_object(temporary: Path, object_path: Path, raw_sha256: str, byte_count: int) -> None:
     object_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         os.link(temporary, object_path)

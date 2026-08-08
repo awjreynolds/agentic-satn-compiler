@@ -56,7 +56,7 @@ def test_explicit_acquisition_retains_exact_bytes_and_replays_offline(
         requests.append((request, timeout))
         return _Response(raw_bytes)
 
-    monkeypatch.setattr(acquisition.urllib.request, "urlopen", online)
+    monkeypatch.setattr(acquisition, "open_configured_https", online)
     receipt_path = acquisition.acquire_osm_export(
         (51.28, -2.39, 51.40, -2.19),
         tmp_path / "osm-cache",
@@ -70,7 +70,7 @@ def test_explicit_acquisition_retains_exact_bytes_and_replays_offline(
     assert timeout == 90
     assert request.full_url == "https://overpass.example.test/api/interpreter"
     assert request.get_method() == "POST"
-    assert b'way%5B%22highway%22%5D' in request.data
+    assert b"way%5B%22highway%22%5D" in request.data
 
     raw_sha256 = hashlib.sha256(raw_bytes).hexdigest()
     object_path = tmp_path / "osm-cache" / "objects" / "sha256" / f"{raw_sha256}.osm"
@@ -104,8 +104,8 @@ def test_explicit_acquisition_retains_exact_bytes_and_replays_offline(
     assert receipt_path.name == f"{hashlib.sha256(receipt_path.read_bytes()).hexdigest()}.json"
 
     monkeypatch.setattr(
-        acquisition.urllib.request,
-        "urlopen",
+        acquisition,
+        "open_configured_https",
         lambda *_args, **_kwargs: pytest.fail("offline replay must not access the network"),
     )
     source_export = adapter.load_acquisition_receipt(receipt_path)
@@ -130,9 +130,7 @@ def test_explicit_acquisition_retains_exact_bytes_and_replays_offline(
         ),
     )
     assert {
-        partition.partition_key.cell: [
-            feature.logical_key for feature in partition.features
-        ]
+        partition.partition_key.cell: [feature.logical_key for feature in partition.features]
         for partition in partitions
     } == {
         "ST75": ["osm-way:2002"],
@@ -155,8 +153,8 @@ def test_acquisition_rejects_unbounded_or_invalid_area_before_network(
     bounds: tuple[float, float, float, float],
 ) -> None:
     monkeypatch.setattr(
-        acquisition.urllib.request,
-        "urlopen",
+        acquisition,
+        "open_configured_https",
         lambda *_args, **_kwargs: pytest.fail("invalid area must fail before network access"),
     )
 
@@ -174,8 +172,8 @@ def test_acquisition_rejects_untrusted_endpoint_and_invalid_raw_response_without
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        acquisition.urllib.request,
-        "urlopen",
+        acquisition,
+        "open_configured_https",
         lambda *_args, **_kwargs: pytest.fail("non-HTTPS endpoint must fail before network access"),
     )
     with pytest.raises(ValueError, match="HTTPS"):
@@ -187,8 +185,8 @@ def test_acquisition_rejects_untrusted_endpoint_and_invalid_raw_response_without
         )
 
     monkeypatch.setattr(
-        acquisition.urllib.request,
-        "urlopen",
+        acquisition,
+        "open_configured_https",
         lambda *_args, **_kwargs: _Response(b"<html>not an OSM receipt</html>"),
     )
     with pytest.raises(ValueError, match="OSM XML"):
@@ -209,8 +207,8 @@ def test_disconnected_acquisitions_are_retained_independently(
     second = first.replace(b"satn-test", b"satn-test-oxfordshire")
     responses = iter((_Response(first), _Response(second)))
     monkeypatch.setattr(
-        acquisition.urllib.request,
-        "urlopen",
+        acquisition,
+        "open_configured_https",
         lambda *_args, **_kwargs: next(responses),
     )
     cache = tmp_path / "cache"
@@ -235,9 +233,9 @@ def test_disconnected_acquisitions_are_retained_independently(
     assert len(list((cache / "objects" / "sha256").glob("*.osm"))) == 2
     first_export = adapter.load_acquisition_receipt(first_receipt)
     second_export = adapter.load_acquisition_receipt(second_receipt)
-    assert first_export.provenance["acquisition_area"] != second_export.provenance[
-        "acquisition_area"
-    ]
+    assert (
+        first_export.provenance["acquisition_area"] != second_export.provenance["acquisition_area"]
+    )
     assert first_export.fingerprint != second_export.fingerprint
 
 
@@ -246,8 +244,8 @@ def test_offline_receipt_load_fails_closed_on_missing_tampered_or_schema_drift(
 ) -> None:
     raw_bytes = RAW_OSM_FIXTURE.read_bytes()
     monkeypatch.setattr(
-        acquisition.urllib.request,
-        "urlopen",
+        acquisition,
+        "open_configured_https",
         lambda *_args, **_kwargs: _Response(raw_bytes),
     )
     receipt_path = acquisition.acquire_osm_export(

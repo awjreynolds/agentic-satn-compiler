@@ -248,9 +248,7 @@ def _route_feature_line(feature_id: str = "route-a") -> bytes:
 def _single_line_feature_collection(features: list[bytes]) -> bytes:
     return (
         b'{"type":"FeatureCollection","crs":{"type":"name","properties":'
-        b'{"name":"urn:ogc:def:crs:EPSG::27700"}},"features":['
-        + b",".join(features)
-        + b"]}"
+        b'{"name":"urn:ogc:def:crs:EPSG::27700"}},"features":[' + b",".join(features) + b"]}"
     )
 
 
@@ -288,11 +286,7 @@ def test_snapshot_streaming_parser_accepts_single_line_collection_across_chunks(
     "payload",
     [
         b"garbage" + _single_line_feature_collection([_route_feature_line()]),
-        (
-            b'{"type":"FeatureCollection","features":['
-            + _route_feature_line()
-            + b"] garbage}"
-        ),
+        (b'{"type":"FeatureCollection","features":[' + _route_feature_line() + b"] garbage}"),
         _single_line_feature_collection([_route_feature_line()]) + b"}",
         _single_line_feature_collection([_route_feature_line()]) + b" true",
     ],
@@ -480,13 +474,8 @@ def test_weca_bootstrap_and_final_definitions_are_separate_parseable_workflow_st
     assert bootstrap.source.national_elevation is None
     assert bootstrap.source.snapshot_id != final.source.snapshot_id
     assert final.source.retained_core_source == RetainedCoreSourceConfig(
-        snapshot_id=(
-            "weca-classification-elevation-2026-07-31-v14-"
-            "fp-20260731T092920522968Z-01"
-        ),
-        manifest_sha256=(
-            "ae3bdee90d03ceb2c3be309847c65d7ca29fe82d92767d115903b593d081ebb9"
-        ),
+        snapshot_id=("weca-classification-elevation-2026-07-31-v14-fp-20260731T092920522968Z-01"),
+        manifest_sha256=("ae3bdee90d03ceb2c3be309847c65d7ca29fe82d92767d115903b593d081ebb9"),
     )
     assert bootstrap.publication.output_dir != final.publication.output_dir
     assert final.source.national_elevation is not None
@@ -708,9 +697,7 @@ def _retain_candidate_status(
         governed_input_fingerprint="c" * 64,
     )
     return json.loads(
-        (
-            _ea_fixed_point_candidate_path(config) / EA_FIXED_POINT_CANDIDATE_STATUS
-        ).read_text()
+        (_ea_fixed_point_candidate_path(config) / EA_FIXED_POINT_CANDIDATE_STATUS).read_text()
     )
 
 
@@ -999,9 +986,7 @@ def test_ea_acquisition_sidecar_binds_pre_elevation_network_to_snapshot(
     replay = elevation["replay_inputs"]
     assert replay["schema_version"] == "ea-fixed-point-replay-inputs/v1"
     assert replay["licence"] == "Open Government Licence v3.0"
-    assert {
-        role: record["path"] for role, record in replay["files"].items()
-    } == {
+    assert {role: record["path"] for role, record in replay["files"].items()} == {
         "authority_boundaries": "ea-authority-boundaries.geojson",
         "sample_ledger": SAMPLE_LEDGER_FILENAME,
         "sample_routes": EA_RETAINED_ROUTE_FILENAME,
@@ -1320,9 +1305,7 @@ def test_ea_recovery_staging_accepts_only_the_exact_legacy_parent_and_seals_stri
         json.dumps(parent_manifest, indent=2, sort_keys=True),
         encoding="utf-8",
     )
-    parent_manifest_sha256 = hashlib.sha256(
-        parent_manifest_path.read_bytes()
-    ).hexdigest()
+    parent_manifest_sha256 = hashlib.sha256(parent_manifest_path.read_bytes()).hexdigest()
     monkeypatch.setattr(sources_module, "STREAMING_GEOJSON_THRESHOLD_BYTES", 1)
     monkeypatch.setattr(
         recovery_module,
@@ -1366,9 +1349,7 @@ def test_ea_recovery_staging_accepts_only_the_exact_legacy_parent_and_seals_stri
     assert not staged.destination.exists()
     assert not (staged.path / EA_RETAINED_ROUTE_FILENAME).exists()
     _validate_snapshot(staged.path)
-    staged_manifest = json.loads(
-        (staged.path / "snapshot.json").read_text(encoding="utf-8")
-    )
+    staged_manifest = json.loads((staged.path / "snapshot.json").read_text(encoding="utf-8"))
     assert staged_manifest["retained_core_lineage"] == {
         "source_snapshot_id": parent.name,
         "source_manifest_sha256": parent_manifest_sha256,
@@ -1635,8 +1616,7 @@ def test_ea_fixed_point_mismatch_retains_candidate_with_exact_status_and_keeps_o
         "timestamp": status["timestamp"],
     }
     assert (
-        status["next_step_reason"]
-        == "candidate-extent-or-request-differs-from-pinned-survey-index"
+        status["next_step_reason"] == "candidate-extent-or-request-differs-from-pinned-survey-index"
     )
     assert "next_step_command" not in status
 
@@ -2154,7 +2134,7 @@ def test_remote_national_elevation_request_uses_governed_bbox(
         assert timeout == 90
         return Response()
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr(sources_module, "open_configured_https", fake_urlopen)
 
     path = snapshot(config)
 
@@ -2225,7 +2205,7 @@ def test_empty_remote_coverage_is_snapshotted_as_explicit_unknown(
         assert timeout == 90
         return Response()
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr(sources_module, "open_configured_https", fake_urlopen)
 
     path = snapshot(config)
     result = compile(config)

@@ -74,6 +74,7 @@ from satn.models import (
     OfficialRoadClassification,
     safe_snapshot_id,
 )
+from satn.remote_endpoints import open_configured_https
 from satn.settlement import assess_community_urban_eligibility
 from satn.streaming_geojson import iter_geojson_features
 
@@ -404,9 +405,7 @@ def _validate_existing_lineaged_target(
                     f"retained-core lineage target {key} does not match configured source"
                 )
             if target_evidence.get(key) != expected_evidence:
-                raise ValueError(
-                    f"retained-core lineage target {key} provenance mismatch"
-                )
+                raise ValueError(f"retained-core lineage target {key} provenance mismatch")
     national_elevation = config.source.national_elevation
     if (
         national_elevation is not None
@@ -448,9 +447,7 @@ def _validate_existing_lineaged_target(
         ):
             raise ValueError("retained-core lineage target changed retained evidence identity")
     if any(
-        key not in source_evidence
-        and key != "elevation"
-        and key not in governed_evidence_keys
+        key not in source_evidence and key != "elevation" and key not in governed_evidence_keys
         for key in target_evidence
     ):
         raise ValueError("retained-core lineage target added unconfigured evidence identity")
@@ -539,6 +536,10 @@ class OSMnxAdapter:
 
         ox.settings.overpass_url = config.source.overpass_url
         ox.settings.requests_timeout = config.source.osm_timeout_seconds
+        ox.settings.requests_kwargs = {
+            **ox.settings.requests_kwargs,
+            "allow_redirects": False,
+        }
         queries = config.source.boundary_queries
         query: str | list[str] = queries[0] if len(queries) == 1 else list(queries)
         geocoded = ox.geocode_to_gdf(query).to_crs(4326)
@@ -901,10 +902,7 @@ def _materialise_snapshot(
                     "elevation": _elevation_evidence_manifest(config, temporary, retrieved_at),
                 },
                 "files": files,
-                "file_sha256": {
-                    filename: sha256_file(file_paths[filename])
-                    for filename in files
-                },
+                "file_sha256": {filename: sha256_file(file_paths[filename]) for filename in files},
                 "provenance_file_sha256": {
                     filename: sha256_file(provenance_paths[filename])
                     for filename in provenance_files
@@ -1833,11 +1831,7 @@ def _validate_streaming_ea_ledger_completeness(
                 "EA sample ledger is not complete for the retained governed 10m routes"
             )
 
-        selected_records = [
-            record
-            for record in route_records
-            if not has_primary or record[3]
-        ]
+        selected_records = [record for record in route_records if not has_primary or record[3]]
         if has_primary and primary_count == 0:
             raise ValueError("EA sampled routes do not mark a fixed-point primary route set")
         digest = hashlib.sha256()
@@ -2282,8 +2276,7 @@ def _validated_ea_snapshot_replay_inputs(snapshot_dir: Path) -> dict[str, Path]:
             for field, expected in expected_sidecar_values.items()
         )
         or not isinstance(authority_identity, dict)
-        or authority_identity.get("raw_sha256")
-        != records["authority_boundaries"]["sha256"]
+        or authority_identity.get("raw_sha256") != records["authority_boundaries"]["sha256"]
     ):
         raise ValueError("EA fixed-point replay acquisition inputs do not match the snapshot")
     return resolved
@@ -2512,7 +2505,7 @@ def _load_remote_elevation(
     query.append(("bbox", ",".join(f"{value:.8f}" for value in (minx, miny, maxx, maxy))))
     url = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query)))
     request = urllib.request.Request(url, headers={"Accept": "application/geo+json"})
-    with urllib.request.urlopen(request, timeout=governed.timeout_seconds) as response:
+    with open_configured_https(request, timeout=governed.timeout_seconds) as response:
         payload = json.loads(
             _read_response_with_limit(
                 response,
@@ -2685,7 +2678,7 @@ def _load_arcgis_cycle_routes(
             f"{service_url.rstrip('/')}/0/query?{parameters}",
             headers={"User-Agent": "banes-satn/0.1 cycle-route snapshot"},
         )
-        with urllib.request.urlopen(request, timeout=90) as response:
+        with open_configured_https(request, timeout=90) as response:
             payload = json.loads(
                 _read_response_with_limit(
                     response,
@@ -3049,10 +3042,7 @@ def _validate_geojson_file(
 ) -> None:
     """Validate large canonical GeoJSON without materialising its feature collection."""
 
-    if (
-        path.stat().st_size < STREAMING_GEOJSON_THRESHOLD_BYTES
-        and legacy_nan_property_key is None
-    ):
+    if path.stat().st_size < STREAMING_GEOJSON_THRESHOLD_BYTES and legacy_nan_property_key is None:
         frame = gpd.read_file(path)
         if frame.crs is None:
             raise ValueError(f"invalid snapshot: {path.name} has no CRS")
@@ -3103,17 +3093,12 @@ def _validate_streaming_geojson(
             and properties.get("feature_type") in ELIGIBLE_FEATURE_TYPES
             and not pd.isna(properties.get("topography_profile_id"))
         ):
-            feature_id = str(
-                properties.get("feature_id")
-                or properties.get("id")
-                or position
-            )
+            feature_id = str(properties.get("feature_id") or properties.get("id") or position)
             try:
                 canonical_network_geometry_fingerprint(geometry, source_crs)
             except ValueError as error:
                 raise ValueError(
-                    f"invalid snapshot: {path.name} eligible route "
-                    f"{feature_id!r} {error}"
+                    f"invalid snapshot: {path.name} eligible route {feature_id!r} {error}"
                 ) from error
 
 
@@ -3182,12 +3167,9 @@ def _validate_snapshot(
                 "survey_index_sha256",
             }.intersection(elevation)
         )
-        if (
-            file_hashes[ELEVATION_EVIDENCE_FILENAME] != content_fingerprint
-            or (
-                provenance_hashes.get(ELEVATION_EVIDENCE_FILENAME) != content_fingerprint
-                and not legacy_generic_local_elevation
-            )
+        if file_hashes[ELEVATION_EVIDENCE_FILENAME] != content_fingerprint or (
+            provenance_hashes.get(ELEVATION_EVIDENCE_FILENAME) != content_fingerprint
+            and not legacy_generic_local_elevation
         ):
             raise ValueError("invalid snapshot: elevation evidence provenance mismatch")
     # All sibling paths have now passed containment, regular-file and duplicate
@@ -3200,19 +3182,13 @@ def _validate_snapshot(
                 file_path,
                 defer_ea_route_nondegeneracy=defer_ea_route_nondegeneracy,
                 legacy_nan_property_key=(
-                    legacy_nan_property_key
-                    if filename == EA_RETAINED_ROUTE_FILENAME
-                    else None
+                    legacy_nan_property_key if filename == EA_RETAINED_ROUTE_FILENAME else None
                 ),
                 expected_legacy_nan_count=(
-                    expected_legacy_nan_count
-                    if filename == EA_RETAINED_ROUTE_FILENAME
-                    else None
+                    expected_legacy_nan_count if filename == EA_RETAINED_ROUTE_FILENAME else None
                 ),
                 normalization_report=(
-                    normalization_report
-                    if filename == EA_RETAINED_ROUTE_FILENAME
-                    else None
+                    normalization_report if filename == EA_RETAINED_ROUTE_FILENAME else None
                 ),
             )
     if (
@@ -3220,9 +3196,7 @@ def _validate_snapshot(
         and normalization_report is not None
         and legacy_nan_property_key not in normalization_report
     ):
-        raise ValueError(
-            "invalid snapshot: legacy GeoJSON NaN normalization proof is missing"
-        )
+        raise ValueError("invalid snapshot: legacy GeoJSON NaN normalization proof is missing")
     for filename, file_path in provenance.items():
         if sha256_file(file_path) != provenance_hashes[filename]:
             raise ValueError(f"invalid snapshot: {filename} provenance hash mismatch")

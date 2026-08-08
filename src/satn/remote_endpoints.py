@@ -1,16 +1,35 @@
-"""Syntactic policy for configured outbound HTTP endpoints.
-
-This deliberately performs no DNS lookup while configuration is parsed: doing
-so would make an Area Definition dependent on ambient resolver state and would
-still leave a time-of-check/time-of-use window.  Callers therefore must treat
-hostname rebinding and redirect-target validation as a transport-layer follow-up
-when replacing ``urllib`` with a redirect-controlling client.
-"""
+"""Policy and redirect-safe transport for configured outbound HTTPS endpoints."""
 
 from __future__ import annotations
 
 import ipaddress
+import urllib.error
+import urllib.request
+from contextlib import AbstractContextManager
+from http.client import HTTPMessage
+from typing import IO
 from urllib.parse import urlsplit
+
+
+class _RejectRedirects(urllib.request.HTTPRedirectHandler):
+    """Prevent a configured remote service from retargeting an outbound request."""
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: IO[bytes],
+        code: int,
+        msg: str,
+        headers: HTTPMessage,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        raise urllib.error.HTTPError(
+            req.full_url,
+            code,
+            f"configured HTTPS endpoint must not redirect to {newurl}",
+            headers,
+            fp,
+        )
 
 
 def validate_configured_https_endpoint(value: str, *, field_name: str) -> str:
@@ -48,3 +67,14 @@ def validate_configured_https_endpoint(value: str, *, field_name: str) -> str:
     ):
         raise ValueError(f"{field_name} must not target a non-public IP address")
     return value
+
+
+def open_configured_https(
+    request: urllib.request.Request,
+    *,
+    timeout: int,
+) -> AbstractContextManager[IO[bytes]]:
+    """Open one validated HTTPS request without following remote redirects."""
+    validate_configured_https_endpoint(request.full_url, field_name="outbound request url")
+    opener = urllib.request.build_opener(_RejectRedirects())
+    return opener.open(request, timeout=timeout)

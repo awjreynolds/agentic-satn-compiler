@@ -15,6 +15,7 @@ name = "agentic-satn-compiler"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "defusedxml" },
     { name = "duckdb" },
     { name = "geopandas" },
     { name = "jsonschema" },
@@ -58,6 +59,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
+    { name = "defusedxml", specifier = ">=0.7,<1" },
     { name = "duckdb", specifier = "==1.4.4" },
     { name = "geopandas", specifier = ">=1.0,<2" },
     { name = "jsonschema", specifier = ">=4.23,<5" },

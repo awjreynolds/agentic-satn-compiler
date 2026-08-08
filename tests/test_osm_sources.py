@@ -114,7 +114,11 @@ def test_area_definition_accepts_multiple_boundary_queries_and_unions_acquisitio
     seen: list[object] = []
 
     class FakeOSMnx:
-        settings = SimpleNamespace(overpass_url="", requests_timeout=0)
+        settings = SimpleNamespace(
+            overpass_url="",
+            requests_timeout=0,
+            requests_kwargs={"verify": True},
+        )
 
         @staticmethod
         def geocode_to_gdf(query: object) -> gpd.GeoDataFrame:
@@ -138,9 +142,7 @@ def test_area_definition_accepts_multiple_boundary_queries_and_unions_acquisitio
             )
 
         @staticmethod
-        def features_from_polygon(
-            _polygon: object, *, tags: dict[str, object]
-        ) -> gpd.GeoDataFrame:
+        def features_from_polygon(_polygon: object, *, tags: dict[str, object]) -> gpd.GeoDataFrame:
             return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs=4326)
 
         @staticmethod
@@ -155,9 +157,7 @@ def test_area_definition_accepts_multiple_boundary_queries_and_unions_acquisitio
 
         @staticmethod
         def graph_to_gdfs(_graph: object) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
-            nodes = gpd.GeoDataFrame(
-                [{"osmid": 1, "geometry": Point(-2.5, 51.35)}], crs=4326
-            )
+            nodes = gpd.GeoDataFrame([{"osmid": 1, "geometry": Point(-2.5, 51.35)}], crs=4326)
             edges = gpd.GeoDataFrame(
                 [
                     {
@@ -177,6 +177,10 @@ def test_area_definition_accepts_multiple_boundary_queries_and_unions_acquisitio
     acquired = OSMnxAdapter().acquire(config)
 
     assert seen == [["First Council", "Second Council"]]
+    assert FakeOSMnx.settings.requests_kwargs == {
+        "allow_redirects": False,
+        "verify": True,
+    }
     assert list(acquired.boundary["name"]) == ["First Council", "Second Council"]
     assert list(acquired.boundary["source_query"]) == ["First Council", "Second Council"]
     assert acquired.boundary.geometry.union_all().equals(first.union(second))
@@ -304,15 +308,14 @@ def test_loads_current_ncn_features_from_public_service(monkeypatch: pytest.Monk
         assert timeout == 90
         return Response()
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("satn.sources.open_configured_https", fake_urlopen)
 
     result = _load_ncn_features("https://example.test/FeatureServer", boundary)
 
     queries = [urllib.parse.parse_qs(urllib.parse.urlparse(url).query) for url in seen]
     assert [query["resultOffset"] for query in queries] == [["0"], ["1"]]
     assert all(
-        query["where"] == ["RouteType IN ('NCN','LINK') OR Greenway = 'Yes'"]
-        for query in queries
+        query["where"] == ["RouteType IN ('NCN','LINK') OR Greenway = 'Yes'"] for query in queries
     )
     assert all(query["resultRecordCount"] == ["2000"] for query in queries)
     query = queries[0]
@@ -341,7 +344,7 @@ def test_ncn_pagination_rejects_a_transfer_limit_page_without_progress(
         def read(self) -> bytes:
             return json.dumps(payload).encode()
 
-    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: Response())
+    monkeypatch.setattr("satn.sources.open_configured_https", lambda request, timeout: Response())
 
     with pytest.raises(ValueError, match="transfer limit without returning features"):
         _load_ncn_features("https://example.test/FeatureServer", source_frames().boundary)
@@ -381,7 +384,7 @@ def test_loads_reclassified_ncn_features_as_declassified_route_evidence(
         assert timeout == 90
         return Response()
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("satn.sources.open_configured_https", fake_urlopen)
 
     result = _load_reclassified_ncn_features(
         "https://example.test/Reclassified/FeatureServer",
@@ -630,13 +633,9 @@ def test_osm_snapshot_selects_intersecting_whole_official_roads(
         "predicate": "intersects",
         "geometry_treatment": "retain-whole-source-feature",
         "selected_feature_count": 1,
-        "source_export_sha256": hashlib.sha256(
-            classification_path.read_bytes()
-        ).hexdigest(),
+        "source_export_sha256": hashlib.sha256(classification_path.read_bytes()).hexdigest(),
         "boundary_file": "boundary.geojson",
-        "boundary_sha256": hashlib.sha256(
-            (path / "boundary.geojson").read_bytes()
-        ).hexdigest(),
+        "boundary_sha256": hashlib.sha256((path / "boundary.geojson").read_bytes()).hexdigest(),
     }
 
 
