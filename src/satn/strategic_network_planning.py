@@ -307,6 +307,16 @@ class ReviewableNetworkGap:
         )
 
 
+def _canonical_gaps(gaps: list[ReviewableNetworkGap]) -> tuple[ReviewableNetworkGap, ...]:
+    by_id: dict[str, ReviewableNetworkGap] = {}
+    for gap in gaps:
+        existing = by_id.get(gap.gap_id)
+        if existing is not None and existing != gap:
+            raise ValueError("strategic network gap identity collision")
+        by_id[gap.gap_id] = gap
+    return tuple(by_id[gap_id] for gap_id in sorted(by_id))
+
+
 @dataclass(frozen=True)
 class OfficerCompilerDivergence:
     obligation_id: str
@@ -1201,6 +1211,7 @@ def compile_strategic_network(
         reference_routes_fingerprint=_fingerprint(request.reference_routes),
         fallback_profile_fingerprint=request.fallback_profile.fingerprint,
     )
+    canonical_gaps = _canonical_gaps(gaps)
     payload = {
         "status": status,
         "effective_network": effective_network,
@@ -1208,7 +1219,7 @@ def compile_strategic_network(
         "candidate_sets": candidate_sets,
         "reference_routes": request.reference_routes,
         "unselected_candidates": dispositions,
-        "gaps": gaps,
+        "gaps": canonical_gaps,
         "divergences": divergences,
         "evidence_requests": requests,
         "diagnostics": diagnostics,
@@ -1223,7 +1234,7 @@ def compile_strategic_network(
         unselected_candidates=tuple(
             sorted(dispositions, key=lambda item: (item.obligation_id, item.candidate_id))
         ),
-        gaps=tuple(sorted(gaps, key=lambda item: item.obligation_id)),
+        gaps=canonical_gaps,
         divergences=tuple(sorted(divergences, key=lambda item: item.obligation_id)),
         evidence_requests=tuple(sorted(requests, key=lambda item: item.request_id)),
         diagnostics=tuple(sorted(diagnostics, key=lambda item: (item.code, item.subject_id))),

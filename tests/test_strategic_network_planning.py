@@ -190,22 +190,21 @@ def test_governed_compiler_preference_is_applied_without_reordering_candidates()
 def test_candidate_discovery_gaps_survive_into_reviewable_network() -> None:
     graph = fixture_graph()
     discovered = discovery(graph, CorridorObligation("corridor-a-d", "A", "D"))
+    repeated_gap = CandidateSetGapEvidence(
+        obligation_id="destination-gap",
+        endpoints=("D", "hospital"),
+        reason="destination access evidence unavailable",
+        search_diagnostic_ids=("diagnostic-destination",),
+    )
     discovered = replace(
         discovered,
-        gaps=(
-            CandidateSetGapEvidence(
-                obligation_id="destination-gap",
-                endpoints=("D", "hospital"),
-                reason="destination access evidence unavailable",
-                search_diagnostic_ids=("diagnostic-destination",),
-            ),
-        ),
+        gaps=(repeated_gap, repeated_gap),
     )
 
     result = compile_strategic_network(request(graph, discovered))
 
     assert result.status == "complete-with-gaps"
-    assert any(item.obligation_id == "destination-gap" for item in result.gaps)
+    assert len([item for item in result.gaps if item.obligation_id == "destination-gap"]) == 1
     assert any(item.obligation_id == "destination-gap" for item in result.evidence_requests)
 
 
