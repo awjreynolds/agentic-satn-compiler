@@ -147,9 +147,7 @@ def _write_completed_acquisition_output(
     *,
     governed_input_fingerprint: str,
 ) -> None:
-    sampled_routes = evidence_path.with_name(
-        f"{evidence_path.stem}.sampled-routes.geojson"
-    )
+    sampled_routes = evidence_path.with_name(f"{evidence_path.stem}.sampled-routes.geojson")
     ledger = evidence_path.with_name(f"{evidence_path.stem}.sample-ledger.jsonl")
     manifest = evidence_path.with_suffix(".manifest.json")
     evidence_path.write_text('{"type":"FeatureCollection","features":[]}\n', encoding="utf-8")
@@ -165,9 +163,7 @@ def _write_completed_acquisition_output(
                 "sample_ledger_path": ledger.name,
                 "sample_ledger_sha256": hashlib.sha256(ledger.read_bytes()).hexdigest(),
                 "sample_route_path": sampled_routes.name,
-                "sample_route_sha256": hashlib.sha256(
-                    sampled_routes.read_bytes()
-                ).hexdigest(),
+                "sample_route_sha256": hashlib.sha256(sampled_routes.read_bytes()).hexdigest(),
             },
             sort_keys=True,
         )
@@ -247,9 +243,7 @@ def test_current_weca_startup_reports_the_invalid_retained_route(
     (snapshot_dir / "snapshot.json").write_text(
         json.dumps(
             {
-                "evidence_sources": {
-                    "elevation": {"pre_elevation_network_sha256": "a" * 64}
-                },
+                "evidence_sources": {"elevation": {"pre_elevation_network_sha256": "a" * 64}},
                 "provenance_file_sha256": {"network.geojson": "b" * 64},
             }
         ),
@@ -776,9 +770,7 @@ def test_retained_supplemental_routes_contain_only_elevation_eligible_features(
         gpd.read_file(primary)
     )
     samples, _feature_ids = eligible_route_samples(retained, spacing_m=10)
-    assert {
-        (sample["geometry"].x, sample["geometry"].y) for sample in samples
-    } == {
+    assert {(sample["geometry"].x, sample["geometry"].y) for sample in samples} == {
         (350000, 150000),
         (350010, 150000),
         (350010, 150010),
@@ -837,9 +829,7 @@ def test_acquisition_retains_only_normalized_elevation_routes_without_supplement
     assert manifest["pre_elevation_network_sha256"] == eligible_route_fingerprint(
         gpd.read_file(routes)
     )
-    assert fixed_point_route_fingerprint(retained) == manifest[
-        "pre_elevation_network_sha256"
-    ]
+    assert fixed_point_route_fingerprint(retained) == manifest["pre_elevation_network_sha256"]
 
 
 def test_acquisition_writes_strict_sample_routes_for_inferred_school_provenance(
@@ -921,9 +911,7 @@ def test_acquisition_writes_strict_sample_routes_for_inferred_school_provenance(
 
 
 def test_supplemental_routes_support_three_set_convergence(tmp_path: Path) -> None:
-    route_paths = {
-        name: tmp_path / f"{name}.geojson" for name in ("first", "second", "third")
-    }
+    route_paths = {name: tmp_path / f"{name}.geojson" for name in ("first", "second", "third")}
     accumulated_path = tmp_path / "accumulated.geojson"
     for offset, (name, path) in enumerate(route_paths.items()):
         northing = 150000 + offset * 10
@@ -933,9 +921,7 @@ def test_supplemental_routes_support_three_set_convergence(tmp_path: Path) -> No
                     "feature_id": name,
                     "feature_type": "strategic-spine",
                     "topography_profile_id": f"profile-{name}",
-                    "geometry": LineString(
-                        [(350000, northing), (350010, northing)]
-                    ),
+                    "geometry": LineString([(350000, northing), (350010, northing)]),
                 }
             ],
             geometry="geometry",
@@ -944,8 +930,7 @@ def test_supplemental_routes_support_three_set_convergence(tmp_path: Path) -> No
 
     def selected_route(sampled_routes: gpd.GeoDataFrame) -> str:
         covered = {
-            round(float(geometry.centroid.y))
-            for geometry in sampled_routes.to_crs(27700).geometry
+            round(float(geometry.centroid.y)) for geometry in sampled_routes.to_crs(27700).geometry
         }
         return "second" if 150010 not in covered else "third"
 
@@ -955,9 +940,7 @@ def test_supplemental_routes_support_three_set_convergence(tmp_path: Path) -> No
         primary = route_paths[primary_name]
         if iteration > 1:
             accumulated.to_file(accumulated_path, driver="GeoJSON")
-            accumulated = acquisition._combined_sample_routes(
-                primary, [accumulated_path]
-            )
+            accumulated = acquisition._combined_sample_routes(primary, [accumulated_path])
         actual_name = selected_route(accumulated)
         expected_actual.append((primary_name, actual_name))
         if actual_name == primary_name:
@@ -993,7 +976,12 @@ def test_fixed_point_next_step_replays_validated_accumulated_sample_routes(
         )
     )
     west, south, east, north = WECA_PINNED_ELIGIBLE_ROUTE_BBOX
-    monkeypatch.setattr("satn.publisher.gpd.read_file", lambda _path: object())
+    routes = gpd.GeoDataFrame(
+        [{"geometry": LineString([(west, south), (east, north)])}],
+        geometry="geometry",
+        crs=27700,
+    )
+    monkeypatch.setattr("satn.publisher.gpd.read_file", lambda _path: routes)
     monkeypatch.setattr(
         "satn.publisher.eligible_route_samples",
         lambda _routes, spacing_m: (
@@ -1006,9 +994,7 @@ def test_fixed_point_next_step_replays_validated_accumulated_sample_routes(
     )
     monkeypatch.setattr(
         "satn.publisher.governed_survey_request_bbox",
-        lambda _routes, routing_buffer_m: tuple(
-            int(value) for value in WECA_SURVEY_REQUEST_BBOX
-        ),
+        lambda _routes, routing_buffer_m: tuple(int(value) for value in WECA_SURVEY_REQUEST_BBOX),
     )
     monkeypatch.setattr(
         "satn.publisher._validated_ea_snapshot_replay_inputs",
@@ -1027,6 +1013,67 @@ def test_fixed_point_next_step_replays_validated_accumulated_sample_routes(
     )
     command = shlex.split(result["next_step_command"])
 
-    assert command[command.index("--supplemental-routes") + 1] == str(
-        accumulated_routes
+    assert command[command.index("--supplemental-routes") + 1] == str(accumulated_routes)
+
+
+def test_fixed_point_next_step_validates_primary_and_supplemental_route_union(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    authority_boundaries = snapshot / "ea-authority-boundaries.geojson"
+    survey_index = snapshot / "ea-survey-index.geojson"
+    accumulated_routes = snapshot / "ea-elevation-sampled-routes.geojson"
+    candidate = tmp_path / "candidate.geojson"
+    elevation = tmp_path / "elevation.geojson"
+    west, south, east, north = WECA_PINNED_ELIGIBLE_ROUTE_BBOX
+    gpd.GeoDataFrame(
+        [
+            {
+                "feature_id": "new-primary",
+                "feature_type": "strategic-spine",
+                "topography_profile_id": "new-primary-profile",
+                "geometry": LineString(
+                    [(west + 10_000, south + 10_000), (east - 10_000, north - 10_000)]
+                ),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    ).to_file(candidate, driver="GeoJSON")
+    gpd.GeoDataFrame(
+        [
+            {
+                "feature_id": "retained-supplemental",
+                "feature_type": "strategic-spine",
+                "topography_profile_id": "retained-profile",
+                "geometry": LineString([(west, south), (east, north)]),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    ).to_file(accumulated_routes, driver="GeoJSON")
+    monkeypatch.setattr(
+        "satn.publisher._validated_ea_snapshot_replay_inputs",
+        lambda _snapshot: {
+            "authority_boundaries": authority_boundaries,
+            "survey_index": survey_index,
+            "sample_routes": accumulated_routes,
+        },
     )
+    config = SimpleNamespace(
+        source=SimpleNamespace(
+            national_elevation=SimpleNamespace(path=elevation),
+            snapshot_dir=tmp_path,
+            snapshot_id=snapshot.name,
+        )
+    )
+
+    result = _ea_fixed_point_next_step(
+        config,
+        candidate,
+        validation_network=candidate,
+        governed_input_fingerprint="a" * 64,
+    )
+
+    assert result["next_step_status"] == "ea-acquisition-ready"

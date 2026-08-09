@@ -22,6 +22,7 @@ import networkx as nx
 import pandas as pd
 from pyproj import CRS
 from shapely.geometry import LineString, MultiLineString, MultiPoint, Point
+from shapely.geometry.base import BaseGeometry
 from shapely.ops import unary_union
 
 from satn.constants import DISCLAIMER, SCHEMA_VERSION
@@ -105,6 +106,9 @@ REMOTE_ELEVATION_MAX_RESPONSE_BYTES = 50 * 1024 * 1024
 ARCGIS_MAX_PAGE_RESPONSE_BYTES = 20 * 1024 * 1024
 ARCGIS_MAX_PAGES = 100
 ARCGIS_MAX_FEATURES = 100_000
+CYCLE_ROUTE_CONTEXT_TYPES = frozenset(
+    {"ncn-route", "ncn-link", "declassified-ncn-route", "greenway-cycleway"}
+)
 ROAD_CLASSIFICATION_COLUMNS = [
     "official_feature_id",
     "official_classification",
@@ -2651,7 +2655,9 @@ def _load_arcgis_cycle_routes(
     where: str,
     source_label: str,
 ) -> gpd.GeoDataFrame:
-    min_x, min_y, max_x, max_y = boundary.to_crs(4326).total_bounds
+    boundary_wgs84 = boundary.to_crs(4326)
+    governed_area = boundary_wgs84.geometry.union_all()
+    min_x, min_y, max_x, max_y = boundary_wgs84.total_bounds
     page_size = 2000
     offset = 0
     features: list[dict[str, object]] = []
@@ -2720,7 +2726,47 @@ def _load_arcgis_cycle_routes(
         break
     if not features:
         return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs=4326)
-    return gpd.GeoDataFrame.from_features(features, crs=4326)
+    routes = gpd.GeoDataFrame.from_features(features, crs=4326)
+    return _clip_line_features_to_governed_area(routes, governed_area)
+
+
+def _clip_line_features_to_governed_area(
+    features: gpd.GeoDataFrame,
+    governed_area: BaseGeometry,
+) -> gpd.GeoDataFrame:
+    """Clip line evidence to one governed geometry without changing its attributes."""
+
+    if features.empty or governed_area.is_empty:
+        return features.iloc[0:0].copy() if governed_area.is_empty else features.copy()
+    scoped = features[
+        features.geometry.notna()
+        & ~features.geometry.is_empty
+        & features.geometry.intersects(governed_area)
+    ].copy()
+    if scoped.empty:
+        return scoped
+    scoped["geometry"] = scoped.geometry.intersection(governed_area)
+    return scoped[
+        ~scoped.geometry.is_empty
+        & scoped.geometry.geom_type.isin(("LineString", "MultiLineString"))
+    ].copy()
+
+
+def _scope_cycle_route_context(
+    context: gpd.GeoDataFrame,
+    boundary: gpd.GeoDataFrame,
+) -> gpd.GeoDataFrame:
+    """Enforce authority scope when compiling retained cycle-route evidence."""
+
+    if context.empty or "feature_type" not in context:
+        return context.copy()
+    cycle_routes = context["feature_type"].isin(CYCLE_ROUTE_CONTEXT_TYPES)
+    if not cycle_routes.any():
+        return context.copy()
+    governed_area = boundary.to_crs(context.crs).geometry.union_all()
+    scoped_routes = _clip_line_features_to_governed_area(context.loc[cycle_routes], governed_area)
+    combined = pd.concat([context.loc[~cycle_routes], scoped_routes]).sort_index()
+    return gpd.GeoDataFrame(combined, geometry="geometry", crs=context.crs)
 
 
 def _read_response_with_limit(
@@ -3211,6 +3257,7 @@ def load_snapshot(config: AreaConfig) -> dict[str, gpd.GeoDataFrame]:
 def _read_snapshot_frames(path: Path) -> dict[str, gpd.GeoDataFrame]:
     """Read an already validated snapshot into the compiler's source frames."""
 
+    boundary = gpd.read_file(path / "boundary.geojson")
     network = gpd.read_file(path / "network.geojson")
     context_path = path / "context.geojson"
     context = (
@@ -3218,12 +3265,14 @@ def _read_snapshot_frames(path: Path) -> dict[str, gpd.GeoDataFrame]:
     )
     if context.empty:
         context = empty_context(network.crs)
+    else:
+        context = _scope_cycle_route_context(context, boundary)
     place_features_path = path / "osm-place-features.geojson"
     classification_path = path / ROAD_CLASSIFICATION_FILENAME
     observed_traffic_path = path / OBSERVED_THROUGH_TRAFFIC_FILENAME
     elevation_path = path / ELEVATION_EVIDENCE_FILENAME
     return {
-        "boundary": gpd.read_file(path / "boundary.geojson"),
+        "boundary": boundary,
         "places": gpd.read_file(path / "places.geojson"),
         "label_places": (
             gpd.read_file(place_features_path)

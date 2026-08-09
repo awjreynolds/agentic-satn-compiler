@@ -15,10 +15,10 @@ source:
   snapshot_dir: ../../data/snapshots
   # Recovery starts from the immutable v10 benchmark and promotes a new
   # bounded fixed-point chain without mutating that historical core.
-  snapshot_id: "weca-classification-elevation-2026-07-31-v14-fp-20260731T092920522968Z-02"
+  snapshot_id: "weca-classification-elevation-2026-07-31-v14-fp-20260731T092920522968Z-02-fp-20260809T123804416841Z-01"
   retained_core_source:
-    snapshot_id: "weca-classification-elevation-2026-07-31-v14-fp-20260731T092920522968Z-01"
-    manifest_sha256: "ae3bdee90d03ceb2c3be309847c65d7ca29fe82d92767d115903b593d081ebb9"
+    snapshot_id: "weca-classification-elevation-2026-07-31-v14-fp-20260731T092920522968Z-02"
+    manifest_sha256: "63f9724a47c1913050ac3a0a59a3a54c2616659e18d6b6582dbf0f59233c095e"
   network_type: bike
   overpass_url: https://overpass-api.de/api
   osm_timeout_seconds: 600
@@ -34,7 +34,7 @@ source:
     licence: Open Government Licence v3.0
   national_elevation:
     provider: local-geojson
-    path: "../../data/local/ea-lidar-dtm-1m-weca-recovery-v14.fixed-point-0879f68f5d1d918cf54ed80c91c425768e95deca450ca0227582b6a2511cc216.geojson"
+    path: "../../data/local/ea-lidar-dtm-1m-weca-recovery-v14.fixed-point-0879f68f5d1d918cf54ed80c91c425768e95deca450ca0227582b6a2511cc216.fixed-point-a49aa1b90bb1a7a342e52e3ac272453a6b1c09138c6f055a36897817f3513120.geojson"
     source_id: ea-lidar-composite-dtm-1m
     acquisition_contract: ea-lidar-weca-v1
     licence: Open Government Licence v3.0

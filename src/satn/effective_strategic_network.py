@@ -41,7 +41,12 @@ from satn.planning_graph import (
     PlanningGraphSnapshot,
     PlanningNodeRecord,
 )
-from satn.routing import _coordinate_id, _present, _truthy
+from satn.routing import (
+    _coordinate_id,
+    _directed_edge_identity,
+    _present,
+    _truthy,
+)
 from satn.strategic_corridors import StrategicCorridorPreparationResult
 
 if TYPE_CHECKING:
@@ -150,21 +155,15 @@ def planning_graph_from_compiler_edges(
     diagnostics: list[GraphDiagnostic] = []
     seen: set[str] = set()
     directed = nx.DiGraph()
+    source_rows: list[tuple[object, object, object, str, str, str]] = []
     for index, row in projected.iterrows():
         geometry = row.geometry
-        edge_id = _source_edge_id(row, index)
-        if edge_id in seen:
-            diagnostics.append(
-                GraphDiagnostic(
-                    "duplicate-compiler-edge-id",
-                    edge_id,
-                    "duplicate source edge identity was retained once",
-                )
-            )
-            continue
+        source_edge_id = _source_edge_id(row, index)
         if not isinstance(geometry, LineString) or len(geometry.coords) < 2:
             diagnostics.append(
-                GraphDiagnostic("invalid-compiler-edge", edge_id, "source edge is not a line")
+                GraphDiagnostic(
+                    "invalid-compiler-edge", source_edge_id, "source edge is not a line"
+                )
             )
             continue
         source_row = routable_network.loc[index]
@@ -179,11 +178,34 @@ def planning_graph_from_compiler_edges(
             if _present(source_row.get("v"))
             else _coordinate_id(tuple(source_geometry.coords[-1]))
         )
+        source_rows.append((index, source_row, geometry, source_edge_id, start, end))
+    source_id_counts: dict[str, int] = {}
+    for _index, _source_row, _geometry, source_edge_id, _start, _end in source_rows:
+        source_id_counts[source_edge_id] = source_id_counts.get(source_edge_id, 0) + 1
+    for _index, source_row, geometry, source_edge_id, start, end in source_rows:
+        edge_id = _directed_edge_identity(
+            source_edge_id,
+            start,
+            end,
+            geometry,
+            duplicate_source_id=source_id_counts[source_edge_id] > 1,
+            crs="EPSG:27700",
+        )
+        if edge_id in seen:
+            diagnostics.append(
+                GraphDiagnostic(
+                    "duplicate-compiler-edge-id",
+                    source_edge_id,
+                    "duplicate directed source identity was retained once",
+                )
+            )
+            continue
         seen.add(edge_id)
         directed.add_edge(start, end, edge_id=edge_id)
         drafts.append(
             {
                 "edge_id": edge_id,
+                "source_edge_id": source_edge_id,
                 "start": start,
                 "end": end,
                 "geometry": geometry,
@@ -237,7 +259,7 @@ def planning_graph_from_compiler_edges(
         )
     records = tuple(
         PlanningEdgeRecord(
-            source_edge_id=str(item["edge_id"]),
+            source_edge_id=str(item["source_edge_id"]),
             directed_edge_id=str(item["edge_id"]),
             from_node_id=str(item["start"]),
             to_node_id=str(item["end"]),

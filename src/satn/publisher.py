@@ -1247,7 +1247,26 @@ def _ea_fixed_point_next_step(
         return _ea_fixed_point_repin_required("candidate-has-no-local-elevation-output")
     snapshot = config.source.snapshot_dir / config.source.snapshot_id
     try:
-        routes = gpd.read_file(validation_network)
+        replay_inputs = _validated_ea_snapshot_replay_inputs(snapshot)
+    except ValueError as error:
+        reason = (
+            "legacy-snapshot-not-self-contained"
+            if str(error) == "legacy EA fixed-point snapshot is not self-contained"
+            else "candidate-snapshot-replay-inputs-invalid"
+        )
+        LOGGER.warning("EA fixed-point replay unavailable reason=%s detail=%s", reason, error)
+        return _ea_fixed_point_repin_required(reason)
+    authority_boundaries = replay_inputs["authority_boundaries"]
+    survey_index = replay_inputs["survey_index"]
+    sample_routes = replay_inputs["sample_routes"]
+    try:
+        primary_routes = gpd.read_file(validation_network)
+        supplemental_routes = gpd.read_file(sample_routes).to_crs(primary_routes.crs)
+        routes = gpd.GeoDataFrame(
+            pd.concat([primary_routes, supplemental_routes], ignore_index=True),
+            geometry="geometry",
+            crs=primary_routes.crs,
+        )
         samples, _ = eligible_route_samples(routes, spacing_m=10.0)
         if not samples:
             raise ValueError("candidate has no eligible routes")
@@ -1278,19 +1297,6 @@ def _ea_fixed_point_next_step(
         return _ea_fixed_point_repin_required(
             "candidate-current-governed-input-fingerprint-is-invalid"
         )
-    try:
-        replay_inputs = _validated_ea_snapshot_replay_inputs(snapshot)
-    except ValueError as error:
-        reason = (
-            "legacy-snapshot-not-self-contained"
-            if str(error) == "legacy EA fixed-point snapshot is not self-contained"
-            else "candidate-snapshot-replay-inputs-invalid"
-        )
-        LOGGER.warning("EA fixed-point replay unavailable reason=%s detail=%s", reason, error)
-        return _ea_fixed_point_repin_required(reason)
-    authority_boundaries = replay_inputs["authority_boundaries"]
-    survey_index = replay_inputs["survey_index"]
-    sample_routes = replay_inputs["sample_routes"]
     cache_dir = elevation.path.parent / "ea-dtm-cache"
     command = [
         "uv",

@@ -7,7 +7,7 @@ import json
 import logging
 import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import count, pairwise
 
 import geopandas as gpd
@@ -16,7 +16,10 @@ import pandas as pd
 from shapely.geometry import LineString, Point
 from shapely.ops import linemerge, substring, unary_union
 
-from satn.content_identity import canonical_network_geometry_fingerprint
+from satn.content_identity import (
+    canonical_network_geometry_fingerprint,
+    content_fingerprint,
+)
 from satn.route_controls import (
     DirectedEdgeBinding,
     EdgeBindingMode,
@@ -42,6 +45,37 @@ ATTACHMENT_TIE_BREAK_EPSILON = 1e-9
 _REVERSE_PATH_UNSET = object()
 
 
+def _directed_edge_identity(
+    source_edge_id: str,
+    from_node_id: str,
+    to_node_id: str,
+    geometry: LineString,
+    *,
+    duplicate_source_id: bool,
+    crs: object,
+) -> str:
+    """Return a stable identity for one directed source segment.
+
+    Source OSM way IDs are not edge identities: one way can cover many directed
+    segments. Preserve the established source ID when it is unique, and add a
+    deterministic segment suffix only when disambiguation is required.
+    """
+
+    if not duplicate_source_id:
+        return source_edge_id
+    return f"{source_edge_id}#{
+        content_fingerprint(
+            {
+                'contract': 'satn-routing-directed-edge/v1',
+                'source_edge_id': source_edge_id,
+                'from_node_id': from_node_id,
+                'to_node_id': to_node_id,
+                'geometry_fingerprint': canonical_network_geometry_fingerprint(geometry, crs),
+            }
+        )[:20]
+    }"
+
+
 @dataclass
 class RouteOption:
     role: str
@@ -55,6 +89,8 @@ class RouteOption:
     reverse_edge_ids: list[str]
     reverse_corridor_share: float
     impracticable_alongside: bool
+    directed_edge_ids: list[str] = field(default_factory=list)
+    reverse_directed_edge_ids: list[str] = field(default_factory=list)
 
     def summary(self) -> dict[str, object]:
         return {
@@ -99,6 +135,8 @@ class PointAttachment:
     ncn: bool
     impracticable_alongside: bool
     attachment_point: Point
+    directed_edge_id: str | None = None
+    reverse_directed_edge_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -141,12 +179,20 @@ class RoadGraph:
         # Project all source edge geometries in one GeoPandas operation before
         # constructing the graph.  Projection is evidence normalisation, not
         # a routing decision, so it must not depend on iteration order.
-        projected_lengths = gpd.GeoSeries(edges.geometry, crs=edges.crs).to_crs(27700).length
+        projected_source = gpd.GeoSeries(edges.geometry, crs=edges.crs).to_crs(27700)
+        projected_lengths = projected_source.length
         edge_rows = [
-            (index, row, float(projected_lengths.iloc[position]))
+            (index, row, float(projected_lengths.iloc[position]), projected_source.iloc[position])
             for position, (index, row) in enumerate(edges.iterrows())
         ]
-        for index, row, projected_length_m in sorted(
+        source_id_counts: dict[str, int] = {}
+        for index, row, _projected_length_m, _projected_geometry in edge_rows:
+            geometry = row.geometry
+            if not isinstance(geometry, LineString) or len(geometry.coords) < 2:
+                continue
+            source_edge_id = str(row.get("osmid", row.get("source_id", index)))
+            source_id_counts[source_edge_id] = source_id_counts.get(source_edge_id, 0) + 1
+        for index, row, projected_length_m, projected_geometry in sorted(
             edge_rows,
             key=lambda item: _edge_row_sort_key((item[0], item[1])),
         ):
@@ -158,13 +204,19 @@ class RoadGraph:
             self.node_points.setdefault(u, Point(geometry.coords[0]))
             self.node_points.setdefault(v, Point(geometry.coords[-1]))
             source_length = row.get("length")
-            length_m = (
-                float(source_length) if _present(source_length) else projected_length_m
+            length_m = float(source_length) if _present(source_length) else projected_length_m
+            source_edge_id = str(row.get("osmid", row.get("source_id", index)))
+            directed_edge_id = _directed_edge_identity(
+                source_edge_id,
+                u,
+                v,
+                projected_geometry,
+                duplicate_source_id=source_id_counts[source_edge_id] > 1,
+                crs="EPSG:27700",
             )
             attrs = {
-                self.edge_id_attribute: str(
-                    row.get("osmid", row.get("source_id", index))
-                ),
+                self.edge_id_attribute: source_edge_id,
+                "directed_edge_id": directed_edge_id,
                 "geometry": geometry,
                 "length_m": length_m,
                 "projected_length_m": projected_length_m,
@@ -189,8 +241,7 @@ class RoadGraph:
                 str(ref) for ref in attrs["ref"]
             )
         self._edge_ids_by_node = {
-            node_id: tuple(sorted(edge_ids))
-            for node_id, edge_ids in edge_ids_by_node.items()
+            node_id: tuple(sorted(edge_ids)) for node_id, edge_ids in edge_ids_by_node.items()
         }
         self._references_by_edge_id = {
             edge_id: tuple(sorted(references))
@@ -208,18 +259,22 @@ class RoadGraph:
         self._routing_graph = nx.subgraph_view(
             self.graph,
             filter_edge=lambda left, right: (
-                str(left),
-                str(right),
-            )
-            not in self._routing_excluded_pairs,
+                (
+                    str(left),
+                    str(right),
+                )
+                not in self._routing_excluded_pairs
+            ),
         )
         self._strategic_graph = nx.subgraph_view(
             self._routing_graph,
             filter_edge=lambda left, right: (
-                str(left),
-                str(right),
-            )
-            not in self._strategic_excluded_pairs,
+                (
+                    str(left),
+                    str(right),
+                )
+                not in self._strategic_excluded_pairs
+            ),
         )
         self._set_lower_bound_cost_factor()
         # Access connections must work in both directions. Searching only edges
@@ -250,9 +305,7 @@ class RoadGraph:
         all_projected_nodes = gpd.GeoSeries(
             [self.node_points[node] for node in all_node_ids], crs=self.crs
         ).to_crs(27700)
-        self._projected_node_by_id = dict(
-            zip(all_node_ids, all_projected_nodes, strict=True)
-        )
+        self._projected_node_by_id = dict(zip(all_node_ids, all_projected_nodes, strict=True))
         self._projected_nodes = gpd.GeoSeries(
             [self._projected_node_by_id[node] for node in self._node_ids], crs=27700
         )
@@ -353,9 +406,7 @@ class RoadGraph:
         if self.route_controls is None:
             return frozenset(), frozenset()
         routing = self._validate_bindings(self.route_controls.routing_exclusions)
-        strategic = self._validate_bindings(
-            self.route_controls.strategic_spine_exclusions
-        )
+        strategic = self._validate_bindings(self.route_controls.strategic_spine_exclusions)
         return frozenset(routing), frozenset(strategic)
 
     def _validate_bindings(
@@ -381,9 +432,7 @@ class RoadGraph:
                     str(attrs["edge_id"]) != direction.source_edge_id
                     or geometry_fingerprint != direction.geometry_fingerprint
                 ):
-                    raise ValueError(
-                        "route control edge binding is stale or geometry-mismatched"
-                    )
+                    raise ValueError("route control edge binding is stale or geometry-mismatched")
                 pairs.add(direction.directed_key)
         return pairs
 
@@ -391,11 +440,7 @@ class RoadGraph:
     def route_control_fingerprint(self) -> str | None:
         """Return the governed routing dependency, absent for a clean baseline."""
 
-        return (
-            self.route_controls.control_fingerprint
-            if self.route_controls is not None
-            else None
-        )
+        return self.route_controls.control_fingerprint if self.route_controls is not None else None
 
     def edge_restrictions(
         self,
@@ -413,16 +458,13 @@ class RoadGraph:
         ):
             for binding in bindings:
                 if any(
-                    item.directed_key == (from_node_id, to_node_id)
-                    for item in binding.directions
+                    item.directed_key == (from_node_id, to_node_id) for item in binding.directions
                 ):
                     records.append(
                         {
                             "restriction": restriction,
                             "binding_id": binding.binding_id,
-                            "route_control_fingerprint": (
-                                self.route_controls.control_fingerprint
-                            ),
+                            "route_control_fingerprint": (self.route_controls.control_fingerprint),
                         }
                     )
         return tuple(sorted(records, key=lambda item: (item["restriction"], item["binding_id"])))
@@ -770,6 +812,8 @@ class RoadGraph:
                     attachment_point=gpd.GeoSeries([projected_point], crs=27700)
                     .to_crs(self.crs)
                     .iloc[0],
+                    directed_edge_id=str(attrs["directed_edge_id"]),
+                    reverse_directed_edge_id=str(reverse["directed_edge_id"]),
                 )
             )
         return sorted(
@@ -797,6 +841,8 @@ class RoadGraph:
             if option.reverse_length_km is not None
             else None
         )
+        directed_edge_ids = option.directed_edge_ids or option.edge_ids
+        reverse_directed_edge_ids = option.reverse_directed_edge_ids or option.reverse_edge_ids
         return RouteOption(
             role=option.role,
             geometry=geometry,
@@ -814,6 +860,18 @@ class RoadGraph:
             impracticable_alongside=(
                 option.impracticable_alongside or attachment.impracticable_alongside
             ),
+            directed_edge_ids=[
+                attachment.directed_edge_id or attachment.edge_id,
+                *directed_edge_ids,
+            ],
+            reverse_directed_edge_ids=[
+                *reverse_directed_edge_ids,
+                *(
+                    [attachment.reverse_directed_edge_id or attachment.reverse_edge_id]
+                    if attachment.reverse_edge_id
+                    else []
+                ),
+            ],
         )
 
     def network_distance(
@@ -887,9 +945,7 @@ class RoadGraph:
             starts = nodes_by_root[left_root]
             routable_right_roots = []
             for right_root in root_ids[left_index + 1 :]:
-                if components_by_root[left_root].intersection(
-                    components_by_root[right_root]
-                ):
+                if components_by_root[left_root].intersection(components_by_root[right_root]):
                     routable_right_roots.append(right_root)
                 else:
                     unroutable_pairs.add((left_root, right_root))
@@ -910,10 +966,14 @@ class RoadGraph:
                 ]
                 if distances:
                     bounds[(left_root, right_root)] = min(distances)
-        return bounds, unroutable_pairs, {
-            "root_group_distance_planning_searches": searches,
-            "root_group_distance_planning_nodes_settled": nodes_settled,
-        }
+        return (
+            bounds,
+            unroutable_pairs,
+            {
+                "root_group_distance_planning_searches": searches,
+                "root_group_distance_planning_nodes_settled": nodes_settled,
+            },
+        )
 
     def best_attachment(
         self,
@@ -1204,19 +1264,14 @@ class RoadGraph:
                 continue
             route_graph = self._graph_for_role(role, strategic_use=strategic_use)
             reciprocal = list(reversed(nodes))
-            if all(
-                route_graph.has_edge(left, right)
-                for left, right in pairwise(reciprocal)
-            ):
+            if all(route_graph.has_edge(left, right) for left, right in pairwise(reciprocal)):
                 reverse_paths[request_key] = reciprocal
                 continue
             reverse_groups.setdefault((role, pair[1], strategic_use), []).append(
                 (request_key, pair[0])
             )
 
-        for (role, reverse_start, role_strategic_use), requests in sorted(
-            reverse_groups.items()
-        ):
+        for (role, reverse_start, role_strategic_use), requests in sorted(reverse_groups.items()):
             route_graph = self._graph_for_role(
                 role,
                 strategic_use=role_strategic_use,
@@ -1309,12 +1364,9 @@ class RoadGraph:
             else:
                 resolved_reverse_nodes = reverse_nodes
             reverse_edges = [
-                route_graph[left][right]
-                for left, right in pairwise(resolved_reverse_nodes)
+                route_graph[left][right] for left, right in pairwise(resolved_reverse_nodes)
             ]
-            reverse_geometry = _merge_route(
-                [edge["geometry"] for edge in reverse_edges]
-            )
+            reverse_geometry = _merge_route([edge["geometry"] for edge in reverse_edges])
         except (nx.NetworkXNoPath, nx.NodeNotFound):
             reverse_edges = []
             reverse_geometry = None
@@ -1347,6 +1399,8 @@ class RoadGraph:
                 edge["alongside"] == "impracticable" and _is_a_road(edge["ref"])
                 for edge in edge_data
             ),
+            directed_edge_ids=[str(edge["directed_edge_id"]) for edge in edge_data],
+            reverse_directed_edge_ids=[str(edge["directed_edge_id"]) for edge in reverse_edges],
         )
 
     def governed_option_or_gap(
@@ -1378,12 +1432,8 @@ class RoadGraph:
             route_role=role,
             unsatisfied_network_place_ids=unsatisfied_network_place_ids,
             unsatisfied_access_obligation_ids=unsatisfied_access_obligation_ids,
-            unsatisfied_strategic_destination_ids=(
-                unsatisfied_strategic_destination_ids
-            ),
-            evidence_snapshot_fingerprint=(
-                self.route_controls.evidence_snapshot_fingerprint
-            ),
+            unsatisfied_strategic_destination_ids=(unsatisfied_strategic_destination_ids),
+            evidence_snapshot_fingerprint=(self.route_controls.evidence_snapshot_fingerprint),
             route_control_fingerprint=self.route_controls.control_fingerprint,
             excluded_edge_binding_ids=self.route_controls.excluded_binding_ids,
         )
@@ -1555,11 +1605,7 @@ def _dijkstra_trace(
             else graph[node].items()
         )
         for neighbor, edge in neighbors:
-            cost = (
-                weight(neighbor, node, edge)
-                if reverse
-                else weight(node, neighbor, edge)
-            )
+            cost = weight(neighbor, node, edge) if reverse else weight(node, neighbor, edge)
             candidate = distance + cost
             if neighbor in settled:
                 if candidate < settled[neighbor]:
@@ -1567,12 +1613,8 @@ def _dijkstra_trace(
             elif neighbor not in seen or candidate < seen[neighbor]:
                 seen[neighbor] = candidate
                 heapq.heappush(fringe, (candidate, next(sequence), neighbor))
-                relaxations.append(
-                    _DijkstraRelaxation(neighbor, candidate, node)
-                )
-        events.append(
-            _DijkstraTraceEvent(node, distance, True, tuple(relaxations))
-        )
+                relaxations.append(_DijkstraRelaxation(neighbor, candidate, node))
+        events.append(_DijkstraTraceEvent(node, distance, True, tuple(relaxations)))
     return tuple(events)
 
 
@@ -1626,9 +1668,7 @@ def _replay_bidirectional_trace(
             seen[direction][relaxation.node] = relaxation.distance
             predecessors[direction][relaxation.node] = relaxation.predecessor
             if relaxation.node in seen[1 - direction]:
-                candidate = (
-                    relaxation.distance + seen[1 - direction][relaxation.node]
-                )
+                candidate = relaxation.distance + seen[1 - direction][relaxation.node]
                 if final_distance is None or final_distance > candidate:
                     final_distance = candidate
                     meeting_node = relaxation.node
@@ -1658,8 +1698,7 @@ def _has_equal_cost_route_tie(
             for predecessor in graph.predecessors(node)
             if predecessor in distances
             and math.isclose(
-                float(distances[predecessor])
-                + weight(predecessor, node, graph[predecessor][node]),
+                float(distances[predecessor]) + weight(predecessor, node, graph[predecessor][node]),
                 float(distances[node]),
                 rel_tol=1e-12,
                 abs_tol=1e-9,

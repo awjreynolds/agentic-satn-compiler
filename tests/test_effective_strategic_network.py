@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sys
 
+import geopandas as gpd
+from shapely.geometry import LineString
 from test_strategic_network_planning import discovery, fixture_graph, request
 
 from satn.candidate_discovery import CorridorObligation
@@ -9,8 +11,57 @@ from satn.effective_strategic_network import (
     EffectiveStrategicNetworkRequest,
     EffectiveStrategicNetworkState,
     EffectiveStrategicNetworkStatus,
+    _route_geometry,
     compile_effective_strategic_network,
+    planning_graph_from_compiler_edges,
 )
+from satn.routing import RoadGraph
+
+
+def test_repeated_osmid_rows_keep_directed_identity_and_contiguous_route_geometry() -> None:
+    network = gpd.GeoDataFrame(
+        [
+            {
+                "osmid": "shared-way",
+                "u": "A",
+                "v": "B",
+                "oneway": True,
+                "geometry": LineString([(0, 0), (1, 0)]),
+            },
+            {
+                "osmid": "shared-way",
+                "u": "B",
+                "v": "C",
+                "oneway": True,
+                "geometry": LineString([(1, 0), (2, 0)]),
+            },
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+
+    snapshot = planning_graph_from_compiler_edges(
+        network,
+        source_export_fingerprint="a" * 64,
+    )
+    graph = RoadGraph(network)
+    option = graph.option("A", "C", "strategic-spine", strategic_use=True)
+
+    assert option is not None
+    assert len(snapshot.edge_records) == 2
+    assert len({record.directed_edge_id for record in snapshot.edge_records}) == 2
+    records_by_direction = {
+        (record.from_node_id, record.to_node_id): record for record in snapshot.edge_records
+    }
+    assert tuple(option.directed_edge_ids) == (
+        records_by_direction[("A", "B")].directed_edge_id,
+        records_by_direction[("B", "C")].directed_edge_id,
+    )
+    assert list(_route_geometry(snapshot, tuple(option.directed_edge_ids)).coords) == [
+        (0.0, 0.0),
+        (1.0, 0.0),
+        (2.0, 0.0),
+    ]
 
 
 def test_evaluation_is_the_canonical_state_and_preserves_planning_parity() -> None:

@@ -20,13 +20,12 @@ from satn.sources import ELEVATION_EVIDENCE_FILENAME, snapshot
 PROJECT = Path(__file__).parents[1]
 WECA_BENCHMARK_SHA256 = "24a03e50ccfe541ff637b9c75f15caa41ac452cc20667f31df5ad274ffbeae6a"
 WECA_CONFIGURED_SNAPSHOT_ID = (
-    "weca-classification-elevation-2026-07-31-v14-fp-20260731T092920522968Z-02"
+    "weca-classification-elevation-2026-07-31-v14-fp-20260731T092920522968Z-02-"
+    "fp-20260809T123804416841Z-01"
 )
 WECA_CONFIGURED_PARENT = RetainedCoreSourceConfig(
-    snapshot_id=(
-        "weca-classification-elevation-2026-07-31-v14-fp-20260731T092920522968Z-01"
-    ),
-    manifest_sha256="ae3bdee90d03ceb2c3be309847c65d7ca29fe82d92767d115903b593d081ebb9",
+    snapshot_id=("weca-classification-elevation-2026-07-31-v14-fp-20260731T092920522968Z-02"),
+    manifest_sha256="63f9724a47c1913050ac3a0a59a3a54c2616659e18d6b6582dbf0f59233c095e",
 )
 
 
@@ -299,8 +298,7 @@ def test_lineaged_retained_core_seeds_distinct_target_and_is_idempotent(tmp_path
     assert final_manifest["file_sha256"][ELEVATION_EVIDENCE_FILENAME] == elevation_digest
     assert final_manifest["provenance_file_sha256"][ELEVATION_EVIDENCE_FILENAME] == elevation_digest
     assert (
-        final_manifest["evidence_sources"]["elevation"]["content_fingerprint"]
-        == elevation_digest
+        final_manifest["evidence_sources"]["elevation"]["content_fingerprint"] == elevation_digest
     )
     assert final_manifest["retained_core_lineage"] == {
         "source_snapshot_id": "historical-core",
@@ -315,13 +313,9 @@ def test_lineaged_whole_road_selection_is_idempotently_revalidated(
     tmp_path: Path,
 ) -> None:
     config = copied_config(tmp_path)
-    historical, historical_manifest_sha256 = retained_core_source(
-        config, "historical-core"
-    )
+    historical, historical_manifest_sha256 = retained_core_source(config, "historical-core")
     historical_manifest_path = historical / "snapshot.json"
-    historical_manifest = json.loads(
-        historical_manifest_path.read_text(encoding="utf-8")
-    )
+    historical_manifest = json.loads(historical_manifest_path.read_text(encoding="utf-8"))
     historical_manifest.pop("area_id")
     historical_manifest.pop("area_name")
     historical_manifest["disclaimer"] = "Historical area-specific disclaimer."
@@ -329,9 +323,7 @@ def test_lineaged_whole_road_selection_is_idempotently_revalidated(
         json.dumps(historical_manifest, indent=2, sort_keys=True),
         encoding="utf-8",
     )
-    historical_manifest_sha256 = hashlib.sha256(
-        historical_manifest_path.read_bytes()
-    ).hexdigest()
+    historical_manifest_sha256 = hashlib.sha256(historical_manifest_path.read_bytes()).hexdigest()
     boundary = gpd.read_file(historical / "boundary.geojson")
     minx, miny, maxx, maxy = boundary.total_bounds
     roads = tmp_path / "regional-open-roads.geojson"

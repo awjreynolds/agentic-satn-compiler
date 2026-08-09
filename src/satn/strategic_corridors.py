@@ -54,9 +54,7 @@ from satn.section_population import (
 from satn.spine_access_candidate_preparation import SpineAccessCandidatePreparationResult
 
 STRATEGIC_CORRIDOR_PREPARATION_CONTRACT = "satn-strategic-corridor-preparation/v1"
-STRATEGIC_DESTINATION_GRAPH_BINDING_CONTRACT = (
-    "satn-strategic-destination-graph-binding/v1"
-)
+STRATEGIC_DESTINATION_GRAPH_BINDING_CONTRACT = "satn-strategic-destination-graph-binding/v1"
 _ID = re.compile(r"^[a-z0-9][a-z0-9._:-]*$")
 _ROUTING_ROLES = ("direct", "strategic-spine", "ncn-informed", "low-traffic")
 
@@ -163,10 +161,8 @@ class StrategicCorridorEndpointBinding:
             or self.candidate_endpoints != tuple(sorted(set(self.candidate_endpoints)))
             or len(self.routing_node_ids) != 2
             or any(not item or item.strip() != item for item in self.routing_node_ids)
-            or self.network_place_ids
-            != tuple(sorted(set(self.network_place_ids)))
-            or self.strategic_destination_ids
-            != tuple(sorted(set(self.strategic_destination_ids)))
+            or self.network_place_ids != tuple(sorted(set(self.network_place_ids)))
+            or self.strategic_destination_ids != tuple(sorted(set(self.strategic_destination_ids)))
         ):
             raise ValueError("strategic corridor endpoint binding is not canonical")
 
@@ -228,9 +224,7 @@ class PreparedStrategicCorridorUnit:
 
     def __post_init__(self) -> None:
         binding = self.endpoint_binding
-        anchor_count = len(self.anchor_connection_ids) + len(
-            self.anchor_obligation_ids
-        )
+        anchor_count = len(self.anchor_connection_ids) + len(self.anchor_obligation_ids)
         if (
             self.candidate_set.endpoints != binding.candidate_endpoints
             or self.candidate_set.mandatory_strategic_destination_ids
@@ -240,10 +234,8 @@ class PreparedStrategicCorridorUnit:
                 self.routing_end_node_id,
             )
             != binding.routing_node_ids
-            or self.anchor_connection_ids
-            != tuple(sorted(set(self.anchor_connection_ids)))
-            or self.anchor_obligation_ids
-            != tuple(sorted(set(self.anchor_obligation_ids)))
+            or self.anchor_connection_ids != tuple(sorted(set(self.anchor_connection_ids)))
+            or self.anchor_obligation_ids != tuple(sorted(set(self.anchor_obligation_ids)))
         ):
             raise ValueError("strategic corridor unit endpoint binding is stale")
         if self.unit_role is StrategicCorridorUnitRole.INTERURBAN_SPINE:
@@ -252,8 +244,7 @@ class PreparedStrategicCorridorUnit:
                 or len(binding.network_place_ids) != 2
                 or binding.strategic_destination_ids
                 or self.strategic_destination_id is not None
-                or self.candidate_set.mandatory_network_place_ids
-                != binding.network_place_ids
+                or self.candidate_set.mandatory_network_place_ids != binding.network_place_ids
                 or any(
                     candidate.served_network_place_ids != binding.network_place_ids
                     or candidate.served_strategic_destination_ids
@@ -265,14 +256,12 @@ class PreparedStrategicCorridorUnit:
             anchor_count != 1
             or len(binding.network_place_ids) != 1
             or len(binding.strategic_destination_ids) != 1
-            or (self.strategic_destination_id,)
-            != binding.strategic_destination_ids
+            or (self.strategic_destination_id,) != binding.strategic_destination_ids
             or self.strategic_destination_id in binding.candidate_endpoints
             or self.candidate_set.mandatory_network_place_ids
             or any(
                 candidate.served_network_place_ids
-                or candidate.served_strategic_destination_ids
-                != binding.strategic_destination_ids
+                or candidate.served_strategic_destination_ids != binding.strategic_destination_ids
                 for candidate in self.candidate_set.candidates
             )
         ):
@@ -334,8 +323,7 @@ class StrategicCorridorPreparationResult:
         if self.section_population is not None:
             payload["section_population"] = self.section_population.canonical()
             payload["material_population_differences"] = [
-                item.canonical()
-                for item in self.material_population_differences
+                item.canonical() for item in self.material_population_differences
             ]
         return payload
 
@@ -346,9 +334,7 @@ class StrategicCorridorPreparationResult:
             "unit_count": len(self.units),
             "candidate_count": sum(len(item.candidate_set.candidates) for item in self.units),
             "population_display_section_count": (
-                len(self.section_population.sections)
-                if self.section_population is not None
-                else 0
+                len(self.section_population.sections) if self.section_population is not None else 0
             ),
             "phase_diagnostics": self.phase_diagnostics,
             "selection_performed": False,
@@ -370,9 +356,7 @@ class NetworkSelectionPreparationResult:
 
     @property
     def alignment_units(self) -> tuple[object, ...]:
-        access = getattr(
-            self.spine_access_preparation, "prepared_spine_access_connections", ()
-        )
+        access = getattr(self.spine_access_preparation, "prepared_spine_access_connections", ())
         strategic = (
             self.strategic_corridor_preparation.units
             if self.strategic_corridor_preparation is not None
@@ -667,9 +651,7 @@ def _interurban_units(
                     endpoint_binding=StrategicCorridorEndpointBinding(
                         candidate_endpoints=candidate_set.endpoints,
                         routing_node_ids=(start, end),
-                        network_place_ids=tuple(
-                            sorted((left["place_id"], right["place_id"]))
-                        ),
+                        network_place_ids=tuple(sorted((left["place_id"], right["place_id"]))),
                         strategic_destination_ids=(),
                     ),
                     anchor_connection_ids=tuple(
@@ -788,9 +770,7 @@ def _destination_units(
             evidence_ids=tuple(sorted({anchor["evidence_id"], *site["access_ids"]})),
             context=context,
             strategic_destination_id=destination_id,
-            precomputed_options=route_options.get(
-                (anchor["routing_node"], destination_node)
-            ),
+            precomputed_options=route_options.get((anchor["routing_node"], destination_node)),
         )
         unit_id = _stable_id(
             "alignment-unit",
@@ -813,14 +793,10 @@ def _destination_units(
                     strategic_destination_ids=(destination_id,),
                 ),
                 anchor_connection_ids=tuple(
-                    [anchor["access_connection_id"]]
-                    if anchor["access_connection_id"]
-                    else []
+                    [anchor["access_connection_id"]] if anchor["access_connection_id"] else []
                 ),
                 anchor_obligation_ids=tuple(
-                    [anchor["access_obligation_id"]]
-                    if anchor["access_obligation_id"]
-                    else []
+                    [anchor["access_obligation_id"]] if anchor["access_obligation_id"] else []
                 ),
                 routing_start_node_id=anchor["routing_node"],
                 routing_end_node_id=destination_node,
@@ -930,9 +906,7 @@ def _candidate_set(
                 )
             ),
             topology_state=(
-                CriterionState.SATISFIED
-                if option.bidirectional
-                else CriterionState.UNSATISFIED
+                CriterionState.SATISFIED if option.bidirectional else CriterionState.UNSATISFIED
             ),
             served_network_place_ids=tuple(sorted(mandatory_network_place_ids)),
             served_strategic_destination_ids=strategic_destination_ids,
@@ -959,14 +933,15 @@ def _candidate_set(
                     ),
                     routing_start_node_id=start_node,
                     routing_end_node_id=end_node,
-                    routing_edge_ids=tuple(option.edge_ids),
-                    reverse_routing_edge_ids=tuple(option.reverse_edge_ids),
+                    routing_edge_ids=tuple(option.directed_edge_ids or option.edge_ids),
+                    reverse_routing_edge_ids=tuple(
+                        option.reverse_directed_edge_ids or option.reverse_edge_ids
+                    ),
                     source_ids=tuple(sorted({*source_ids, *option.edge_ids})),
                     evidence_ids=evidence_ids,
                     generation_strategies=strategies,
                     generation_rationale=(
-                        "retained exact physical route generated by "
-                        + ", ".join(strategies)
+                        "retained exact physical route generated by " + ", ".join(strategies)
                         if candidate.candidate_id in admitted
                         else (
                             "exact physical route generated by "
@@ -1014,12 +989,8 @@ def _direct_spine_anchors(
                 "place_id": _text(row.get("place_id")),
                 "root_spine_id": _text(row.get("root_spine_id")),
                 "routing_node": _text(row.get("community_attachment_node")),
-                "source_id": (
-                    _text(provenance.get("root_source_id")) or "unknown-source"
-                ),
-                "evidence_id": (
-                    _text(provenance.get("root_evidence_id")) or "unknown-evidence"
-                ),
+                "source_id": (_text(provenance.get("root_source_id")) or "unknown-source"),
+                "evidence_id": (_text(provenance.get("root_evidence_id")) or "unknown-evidence"),
             }
             if all(
                 values[key]
@@ -1054,8 +1025,7 @@ def _direct_spine_anchors(
         if (
             _text(row.get("access_connection_id"))
             or provenance.get("service_kind") != "backbone-access-association"
-            or provenance.get("association_kind")
-            != "colocated-direct-strategic-spine"
+            or provenance.get("association_kind") != "colocated-direct-strategic-spine"
             or provenance.get("parent_role") != "strategic-spine"
             or _text(provenance.get("root_spine_id")) != root_spine_id
         ):
@@ -1151,9 +1121,7 @@ def _governed_destination_site(
                 "evidence_id": _text(row.get("evidence_id")),
                 "site_id": site_id,
                 "admission_record_id": _text(row.get("admission_record_id")),
-                "admission_record_version": _text(
-                    row.get("admission_record_version")
-                ),
+                "admission_record_version": _text(row.get("admission_record_version")),
                 "graph_node_id": graph_node_id,
                 "graph_edge_ids": graph_edge_ids,
                 "graph_binding_sha256": graph_binding_sha256,
@@ -1259,9 +1227,7 @@ def _physical_alignments(
                 record.physical_alignment_id,
                 {
                     "geometry": record.candidate.geometry,
-                    "geometry_fingerprints": {
-                        record.candidate.geometry_fingerprint
-                    },
+                    "geometry_fingerprints": {record.candidate.geometry_fingerprint},
                     "candidates": set(),
                     "roles": set(),
                 },
@@ -1315,9 +1281,7 @@ def _evidence_lineage(
         "education": (
             {
                 "governed_source_fingerprint": education.governed_source_fingerprint,
-                "source_snapshot": education.source_snapshot.model_dump(
-                    mode="json"
-                ),
+                "source_snapshot": education.source_snapshot.model_dump(mode="json"),
                 "school_register_content_sha256": education.school_register_lineage.content_sha256,
                 "admissions_content_sha256": (
                     education.admissions_lineage.content_sha256
