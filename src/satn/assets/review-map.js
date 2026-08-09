@@ -55,6 +55,7 @@
   const hasReviewableRoutes = reviewable.features.some(
     (feature) => feature.properties?.feature_type === "reviewable-selected-route"
   );
+  const usesLegacyStrategicFallback = !hasEffectiveStrategicNetwork && !hasReviewableRoutes;
   const places = data.places;
   const referenceRecord = data.reference_satn || null;
   const referenceOptions = data.reference_satn_options || { type: "FeatureCollection", features: [] };
@@ -1982,7 +1983,7 @@
       "layer-authority-boundaries": ["authority-boundaries"],
       "layer-strategic-network": hasReviewableRoutes
         ? ["reviewable-strategic-network-halo", "reviewable-strategic-network-core", "reviewable-route-labels"]
-        : ["strategic-network"],
+        : usesLegacyStrategicFallback ? ["strategic-network"] : [],
       "layer-required-connections": ["reviewable-required-connections"],
       "layer-reviewable-gaps": ["reviewable-gaps", "reviewable-gap-labels"],
       "layer-officer-divergences": ["reviewable-divergences-halo", "reviewable-divergences"],
@@ -2530,7 +2531,7 @@
           "greenway-cycleway"
         ]]
       ],
-      layout: { visibility: hasReviewableRoutes ? "none" : "visible" },
+      layout: { visibility: usesLegacyStrategicFallback ? "visible" : "none" },
       paint: {
         "line-color": "#c0392b",
         "line-width": ["interpolate", ["linear"], ["zoom"], 8, 4, 13, 6],

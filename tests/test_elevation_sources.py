@@ -26,6 +26,7 @@ from satn.ea_elevation import (
     LEGACY_CONTRACT_SCHEMA_VERSION,
     LEGACY_SAMPLE_LEDGER_SCHEMA_VERSION,
     SAMPLE_LEDGER_FILENAME,
+    WECA_PINNED_ELIGIBLE_ROUTE_BBOX,
     canonical_ea_elevation_evidence_bytes,
     eligible_route_fingerprint,
     evidence_row_sha256,
@@ -527,6 +528,19 @@ def _write_final_ea_snapshot(config: CouncilConfig, *, pre_elevation_network_sha
         geometry="geometry",
         crs=4326,
     )
+    west, south, east, north = WECA_PINNED_ELIGIBLE_ROUTE_BBOX
+    retained_routes = gpd.GeoDataFrame(
+        [
+            {
+                "feature_id": "retained-route",
+                "feature_type": "strategic-spine",
+                "topography_profile_id": "retained-profile",
+                "geometry": LineString([(west, south), (east, north)]),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
     retained = {
         ELEVATION_EVIDENCE_FILENAME: canonical_ea_elevation_evidence_bytes(
             evidence,
@@ -537,7 +551,7 @@ def _write_final_ea_snapshot(config: CouncilConfig, *, pre_elevation_network_sha
             output_sample_spacing_m=10,
         ),
         SAMPLE_LEDGER_FILENAME: b"retained-elevation-sample-ledger",
-        EA_RETAINED_ROUTE_FILENAME: b"retained-elevation-sampled-routes",
+        EA_RETAINED_ROUTE_FILENAME: retained_routes.to_json().encode(),
         "ea-authority-boundaries.geojson": b'{"authority":"retained"}',
         "ea-survey-index.geojson": b'{"survey":"retained"}',
     }

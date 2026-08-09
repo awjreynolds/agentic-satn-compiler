@@ -23,6 +23,7 @@ from satn.sources import (
     _features_from_tag_groups,
     _load_ncn_features,
     _load_reclassified_ncn_features,
+    _scope_cycle_route_context,
     derive_network_places,
     snapshot,
 )
@@ -323,6 +324,96 @@ def test_loads_current_ncn_features_from_public_service(monkeypatch: pytest.Monk
     assert list(result["RouteType"]) == ["NCN", "LINK"]
     assert list(result["RouteNo"]) == ["24", "24"]
     assert result.crs.to_epsg() == 4326
+
+
+def test_ncn_features_are_clipped_to_the_governed_authority_polygon(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    boundary_shape = Polygon([(-2.6, 51.3), (-2.4, 51.3), (-2.6, 51.5), (-2.6, 51.3)])
+    boundary = gpd.GeoDataFrame([{"geometry": boundary_shape}], crs=4326)
+    payload = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {"RouteType": "NCN", "RouteNo": "outside"},
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [[-2.45, 51.48], [-2.42, 51.46]],
+                },
+            },
+            {
+                "type": "Feature",
+                "properties": {"RouteType": "NCN", "RouteNo": "inside"},
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [[-2.55, 51.35], [-2.52, 51.36]],
+                },
+            },
+            {
+                "type": "Feature",
+                "properties": {"RouteType": "NCN", "RouteNo": "crossing"},
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [[-2.55, 51.35], [-2.45, 51.45]],
+                },
+            },
+        ],
+    }
+
+    class Response:
+        def __enter__(self) -> Response:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps(payload).encode()
+
+    monkeypatch.setattr("satn.sources.open_configured_https", lambda request, timeout: Response())
+
+    result = _load_ncn_features("https://example.test/FeatureServer", boundary)
+
+    assert list(result["RouteNo"]) == ["inside", "crossing"]
+    crossing = result.loc[result["RouteNo"] == "crossing", "geometry"].iloc[0]
+    assert boundary_shape.covers(crossing)
+
+
+def test_retained_cycle_route_context_is_scoped_without_rewriting_other_evidence() -> None:
+    boundary_shape = Polygon([(-2.6, 51.3), (-2.4, 51.3), (-2.6, 51.5), (-2.6, 51.3)])
+    boundary = gpd.GeoDataFrame([{"geometry": boundary_shape}], crs=4326)
+    context = gpd.GeoDataFrame(
+        [
+            {
+                "evidence_id": "outside-cycle",
+                "feature_type": "ncn-route",
+                "geometry": LineString([(-2.45, 51.48), (-2.42, 51.46)]),
+            },
+            {
+                "evidence_id": "crossing-cycle",
+                "feature_type": "greenway-cycleway",
+                "geometry": LineString([(-2.55, 51.35), (-2.45, 51.45)]),
+            },
+            {
+                "evidence_id": "outside-road",
+                "feature_type": "a-road-spine",
+                "geometry": LineString([(-2.45, 51.48), (-2.42, 51.46)]),
+            },
+        ],
+        crs=4326,
+    )
+
+    result = _scope_cycle_route_context(context, boundary)
+
+    assert list(result["evidence_id"]) == ["crossing-cycle", "outside-road"]
+    crossing = result.loc[result["evidence_id"] == "crossing-cycle", "geometry"].iloc[0]
+    assert boundary_shape.covers(crossing)
+    assert (
+        result.loc[result["evidence_id"] == "outside-road", "geometry"]
+        .iloc[0]
+        .equals(context.loc[context["evidence_id"] == "outside-road", "geometry"].iloc[0])
+    )
 
 
 def test_ncn_pagination_rejects_a_transfer_limit_page_without_progress(

@@ -259,10 +259,7 @@ def _combined_sample_routes(
         source_digest = sha256_file(supplemental_path)[:12]
         retained[FIXED_POINT_PRIMARY_FIELD] = False
         retained["feature_id"] = [
-            (
-                f"supplemental-{source_digest}-{sequence}-"
-                f"{_route_identifier(row, position)}"
-            )
+            (f"supplemental-{source_digest}-{sequence}-{_route_identifier(row, position)}")
             for sequence, (position, row) in enumerate(retained.iterrows())
         ]
         additions.append(retained)
@@ -785,7 +782,10 @@ def _assigned_samples(
     assigned = []
     for sample in samples:
         point = sample["geometry"]
-        matches = sorted(key for key, geometry in authorities.items() if geometry.covers(point))
+        ledger_point = Point(round(point.x * 1000) / 1000, round(point.y * 1000) / 1000)
+        matches = sorted(
+            key for key, geometry in authorities.items() if geometry.covers(ledger_point)
+        )
         # Borders belong deterministically to one authority; points outside all
         # authorities remain visible in the routing-buffer bucket.
         key = matches[0] if matches else "routing-buffer"
@@ -916,9 +916,7 @@ def preflight_weca_coverage(
     for normalised, authority_name in expected.items():
         authority_samples = [row for row in assigned if row["authority_key"] == normalised]
         missing = [
-            sample
-            for sample in authority_samples
-            if choices[_sample_identity(sample)] is None
+            sample for sample in authority_samples if choices[_sample_identity(sample)] is None
         ]
         available = len(authority_samples) - len(missing)
         status = (
@@ -959,9 +957,7 @@ def preflight_weca_coverage(
 def validate_weca_route_extent(route_path: Path, *, routing_buffer_m: float) -> None:
     """Bind the pinned WECA WFS subset to exact retained routes and 15 km buffer."""
     if routing_buffer_m != WECA_ROUTING_BUFFER_M:
-        raise ValueError(
-            f"WECA routing buffer must be exactly {WECA_ROUTING_BUFFER_M:g}m"
-        )
+        raise ValueError(f"WECA routing buffer must be exactly {WECA_ROUTING_BUFFER_M:g}m")
     routes = gpd.read_file(route_path)
     samples, _ = eligible_route_samples(routes, spacing_m=10.0)
     actual_extent = (

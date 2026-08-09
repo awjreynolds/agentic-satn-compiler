@@ -249,8 +249,7 @@ def test_multipart_route_uses_one_canonical_sequence_for_tiles_evidence_and_ledg
 
     canonical, feature_ids = eligible_route_samples(gpd.read_file(routes), spacing_m=10)
     assert [
-        (sample["sample_index"], sample["geometry"].x, sample["geometry"].y)
-        for sample in canonical
+        (sample["sample_index"], sample["geometry"].x, sample["geometry"].y) for sample in canonical
     ] == [(0, 0, 0), (1, 10, 0), (2, 20, 0), (3, 100, 0), (4, 110, 0)]
     points, sampled_feature_ids = acquisition.route_sample_points(routes, 10)
     assert [(point.x, point.y) for point in points] == [
@@ -272,8 +271,7 @@ def test_multipart_route_uses_one_canonical_sequence_for_tiles_evidence_and_ledg
     )
     ledger = read_sample_ledger(output.with_name("elevation-evidence.sample-ledger.jsonl"))
     assert [
-        (row["route_id"], row["sample_index"], row["east_mm"], row["north_mm"])
-        for row in ledger
+        (row["route_id"], row["sample_index"], row["east_mm"], row["north_mm"]) for row in ledger
     ] == [
         (
             sample["route_id"],
@@ -722,9 +720,7 @@ def test_canonical_survey_polygon_ignores_ring_start_direction_and_multipart_ord
     )
 
 
-def _unindexed_survey_choice(
-    point: Point, index: gpd.GeoDataFrame
-) -> dict[str, object] | None:
+def _unindexed_survey_choice(point: Point, index: gpd.GeoDataFrame) -> dict[str, object] | None:
     """The previous full-scan selection rule, retained here as an equivalence oracle."""
     matches: list[dict[str, object]] = []
     for position, row in index.to_crs(27700).iterrows():
@@ -893,6 +889,34 @@ def test_weca_acquisition_rejects_any_buffer_other_than_the_pinned_15km(
 
     with pytest.raises(ValueError, match="exactly 15000m"):
         acquisition.validate_weca_route_extent(routes, routing_buffer_m=14_999)
+
+
+def test_authority_assignment_uses_the_immutable_millimetre_sample_point() -> None:
+    boundaries = gpd.GeoDataFrame(
+        [
+            {
+                "authority": name,
+                "authority_id": f"authority-{position}",
+                "geometry": (
+                    box(0, 0, 1_000, 1)
+                    if position == 0
+                    else box(2_000 + position, 0, 2_001 + position, 1)
+                ),
+            }
+            for position, name in enumerate(acquisition.WECA_AUTHORITIES)
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    sample = {
+        "route_id": "boundary-rounding",
+        "sample_index": 0,
+        "geometry": Point(1_000.0004, 0.5),
+    }
+
+    assigned = acquisition._assigned_samples([sample], boundaries)
+
+    assert assigned[0]["authority_id"] == "authority-0"
 
 
 def test_banes_cross_boundary_samples_beyond_authority_buffer_are_retained_reported_and_immutable(

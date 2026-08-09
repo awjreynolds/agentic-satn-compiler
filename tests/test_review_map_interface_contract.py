@@ -27,7 +27,7 @@ def test_gradient_inspection_interface_contract() -> None:
         assert f'id="{identifier}"' in html
     assert 'id="linear-evidence-panel"' not in html
     assert 'role="dialog" aria-label="Route review lens"' in html
-    assert '>Show gradient details</button>' in html
+    assert ">Show gradient details</button>" in html
     assert '<h3 id="linear-evidence-heading">Linear Evidence</h3>' in html
     assert 'id="linear-evidence-view" aria-labelledby="linear-evidence-heading" hidden' in html
     assert html.index('id="feature-details"') > html.index('<section class="workspace"')
@@ -105,8 +105,12 @@ def test_reviewable_network_layer_defaults_and_semantics_are_explicit() -> None:
     assert 'id="reviewable-findings"' in html
     assert "endpoint geometry unavailable" in script
     assert "renderReviewableFindings()" in script
+    assert (
+        "const usesLegacyStrategicFallback = !hasEffectiveStrategicNetwork && !hasReviewableRoutes;"
+    ) in script
     assert '"layer-strategic-network": hasReviewableRoutes' in script
-    assert ': ["strategic-network"]' in script
+    assert 'usesLegacyStrategicFallback ? ["strategic-network"] : []' in script
+    assert 'visibility: usesLegacyStrategicFallback ? "visible" : "none"' in script
     for label in (
         "Existing provision",
         "Upgrade required",
