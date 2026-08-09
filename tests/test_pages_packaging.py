@@ -529,6 +529,31 @@ def test_published_pages_workflow_requires_independent_release_validation() -> N
     assert "satn-pages.zip" in cleanup_script
 
 
+def test_pages_workflow_uses_a_fully_pinned_artifact_upload() -> None:
+    """Pages deployment must not hide a mutable upload action in a composite action."""
+
+    workflow = yaml.load(
+        (PROJECT / ".github" / "workflows" / "pages.yml").read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+    deploy_steps = workflow["jobs"]["deploy"]["steps"]
+    action_refs = [step.get("uses", "") for step in deploy_steps]
+    assert not any(ref.startswith("actions/upload-pages-artifact@") for ref in action_refs)
+
+    archive_step = next(
+        step for step in deploy_steps if step.get("name") == "Archive Pages artifact"
+    )
+    assert '--directory "$INPUT_PATH"' in archive_step["run"]
+    assert archive_step["env"]["INPUT_PATH"] == "pages"
+
+    upload_step = next(step for step in deploy_steps if step.get("name") == "Upload Pages artifact")
+    assert upload_step["uses"] == (
+        "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+    )
+    assert upload_step["with"]["name"] == "github-pages"
+    assert upload_step["with"]["path"] == "${{ runner.temp }}/artifact.tar"
+
+
 def write_layer_shard(
     bundle: Path, feature_type: str, coordinates: tuple[int, int]
 ) -> tuple[dict[str, object], bytes]:
@@ -577,9 +602,7 @@ def add_layer_shard(bundle: Path) -> Path:
     retail["feature_count"] = 1
     retail["size_bytes"] = len(encoded)
     retail["shards"] = [entry]
-    (bundle / "layer-manifest.json").write_text(
-        json.dumps({"groups": groups}), encoding="utf-8"
-    )
+    (bundle / "layer-manifest.json").write_text(json.dumps({"groups": groups}), encoding="utf-8")
     return bundle / str(entry["path"])
 
 
