@@ -69,7 +69,7 @@ def test_reviewable_network_layer_defaults_and_semantics_are_explicit() -> None:
     for control_id in ("layer-strategic-network", "layer-places"):
         assert f'id="{control_id}" type="checkbox" checked' in html
     for control_id in (
-        "layer-required-connections",
+        "layer-alignment-review",
         "layer-reviewable-gaps",
         "layer-officer-divergences",
     ):
@@ -80,7 +80,6 @@ def test_reviewable_network_layer_defaults_and_semantics_are_explicit() -> None:
         "layer-unselected-candidates",
         "layer-dft-traffic",
         "layer-authority-boundaries",
-        "layer-cross-spine-connectors",
         "layer-gaps-warnings",
     ):
         assert f'id="{control_id}" type="checkbox" checked' not in html
@@ -105,10 +104,18 @@ def test_reviewable_network_layer_defaults_and_semantics_are_explicit() -> None:
     assert 'id="reviewable-findings"' in html
     assert "endpoint geometry unavailable" in script
     assert "renderReviewableFindings()" in script
+    assert "const hasBackboneAndAccessNetwork = network.features.some(" in script
+    assert "!hasBackboneAndAccessNetwork && !hasReviewableRoutes" in script
+    assert '"layer-strategic-network": hasBackboneAndAccessNetwork' in script
     assert (
-        "const usesLegacyStrategicFallback = !hasEffectiveStrategicNetwork && !hasReviewableRoutes;"
-    ) in script
-    assert '"layer-strategic-network": hasReviewableRoutes' in script
+        '["strategic-spines", "spine-access-connections", "cross-spine-connectors", "gaps"]'
+        in script
+    )
+    assert 'id: "strategic-spines"' in script
+    assert '"layer-alignment-review": [' in script
+    assert '"reviewable-required-connections"' in script
+    assert script.count("Object.entries(controlLayerGroups).forEach") == 2
+    assert 'layout: { visibility: usesReviewableStrategicFallback ? "visible" : "none" }' in script
     assert 'usesLegacyStrategicFallback ? ["strategic-network"] : []' in script
     assert 'visibility: usesLegacyStrategicFallback ? "visible" : "none"' in script
     for label in (

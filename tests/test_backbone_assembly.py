@@ -1,5 +1,3 @@
-# ruff: noqa: E501 -- the exact static provenance contract is intentionally readable as JSON.
-
 from __future__ import annotations
 
 import dataclasses
@@ -29,41 +27,213 @@ PROJECT = Path(__file__).parents[1]
 PARALLEL_SPINE_PRE_INSTRUMENTATION_SEMANTIC_SNAPSHOT = {
     "access": [
         {
-            "obligation_id": "access-obligation-ea07bd160461", "obligation_kind": "community", "place_id": "hinterland", "place_name": "Hinterland", "root": "root:A1", "branch": "branch:A1",
-            "parent": {"role": "spine-access-connection", "place_id": "left-near", "branch": "branch:A1", "target": "access:left-near"},
-            "attachment_depth": 2, "network_role": "spine-access-connection", "status": "validated",
-            "source_ids": ["hinterland-feed", "strategic-spine-evidence-43b76ca0b781", "strategic-spine-sources-7023563c3d64"],
-            "provenance": {"access_connection_id": "access:hinterland", "branch_id": "branch:A1", "obligation_kind": "community", "parent_access_connection_id": "access:left-near", "parent_branch_id": "branch:A1", "parent_place_id": "left-near", "parent_role": "spine-access-connection", "parent_target_id": "access:left-near", "parent_target_name": "Left Near", "place_id": "hinterland", "root_evidence_id": "strategic-spine-evidence-43b76ca0b781", "root_source_id": "strategic-spine-sources-7023563c3d64", "root_spine_id": "root:A1", "source_ids": ["hinterland-feed", "strategic-spine-evidence-43b76ca0b781", "strategic-spine-sources-7023563c3d64"]},
+            "obligation_id": "access-obligation-ea07bd160461",
+            "obligation_kind": "community",
+            "place_id": "hinterland",
+            "place_name": "Hinterland",
+            "root": "root:A1",
+            "branch": "branch:A1",
+            "parent": {
+                "role": "spine-access-connection",
+                "place_id": "left-near",
+                "branch": "branch:A1",
+                "target": "access:left-near",
+            },
+            "attachment_depth": 2,
+            "network_role": "spine-access-connection",
+            "status": "validated",
+            "source_ids": [
+                "hinterland-feed",
+                "strategic-spine-evidence-43b76ca0b781",
+                "strategic-spine-sources-7023563c3d64",
+            ],
+            "provenance": {
+                "access_connection_id": "access:hinterland",
+                "branch_id": "branch:A1",
+                "obligation_kind": "community",
+                "parent_access_connection_id": "access:left-near",
+                "parent_branch_id": "branch:A1",
+                "parent_place_id": "left-near",
+                "parent_role": "spine-access-connection",
+                "parent_target_id": "access:left-near",
+                "parent_target_name": "Left Near",
+                "place_id": "hinterland",
+                "root_evidence_id": "strategic-spine-evidence-43b76ca0b781",
+                "root_source_id": "strategic-spine-sources-7023563c3d64",
+                "root_spine_id": "root:A1",
+                "source_ids": [
+                    "hinterland-feed",
+                    "strategic-spine-evidence-43b76ca0b781",
+                    "strategic-spine-sources-7023563c3d64",
+                ],
+            },
         },
         {
-            "obligation_id": "access-obligation-c3fd462181b2", "obligation_kind": "community", "place_id": "left-near", "place_name": "Left Near", "root": "root:A1", "branch": "branch:A1",
-            "parent": {"role": "strategic-spine", "place_id": None, "branch": None, "target": "root:A1"},
-            "attachment_depth": 1, "network_role": "spine-access-connection", "status": "validated",
-            "source_ids": ["left-feed", "strategic-spine-evidence-43b76ca0b781", "strategic-spine-sources-7023563c3d64"],
-            "provenance": {"access_connection_id": "access:left-near", "branch_id": "branch:A1", "obligation_kind": "community", "parent_access_connection_id": None, "parent_branch_id": None, "parent_place_id": None, "parent_role": "strategic-spine", "parent_target_id": "root:A1", "parent_target_name": "A1", "place_id": "left-near", "root_evidence_id": "strategic-spine-evidence-43b76ca0b781", "root_source_id": "strategic-spine-sources-7023563c3d64", "root_spine_id": "root:A1", "source_ids": ["left-feed", "strategic-spine-evidence-43b76ca0b781", "strategic-spine-sources-7023563c3d64"]},
+            "obligation_id": "access-obligation-c3fd462181b2",
+            "obligation_kind": "community",
+            "place_id": "left-near",
+            "place_name": "Left Near",
+            "root": "root:A1",
+            "branch": "branch:A1",
+            "parent": {
+                "role": "strategic-spine",
+                "place_id": None,
+                "branch": None,
+                "target": "root:A1",
+            },
+            "attachment_depth": 1,
+            "network_role": "spine-access-connection",
+            "status": "validated",
+            "source_ids": [
+                "left-feed",
+                "strategic-spine-evidence-43b76ca0b781",
+                "strategic-spine-sources-7023563c3d64",
+            ],
+            "provenance": {
+                "access_connection_id": "access:left-near",
+                "branch_id": "branch:A1",
+                "obligation_kind": "community",
+                "parent_access_connection_id": None,
+                "parent_branch_id": None,
+                "parent_place_id": None,
+                "parent_role": "strategic-spine",
+                "parent_target_id": "root:A1",
+                "parent_target_name": "A1",
+                "place_id": "left-near",
+                "root_evidence_id": "strategic-spine-evidence-43b76ca0b781",
+                "root_source_id": "strategic-spine-sources-7023563c3d64",
+                "root_spine_id": "root:A1",
+                "source_ids": [
+                    "left-feed",
+                    "strategic-spine-evidence-43b76ca0b781",
+                    "strategic-spine-sources-7023563c3d64",
+                ],
+            },
         },
         {
-            "obligation_id": "access-obligation-dbd66a5d950a", "obligation_kind": "community", "place_id": "right-near", "place_name": "Right Near", "root": "root:A2", "branch": "branch:A2",
-            "parent": {"role": "strategic-spine", "place_id": None, "branch": None, "target": "root:A2"},
-            "attachment_depth": 1, "network_role": "spine-access-connection", "status": "validated",
-            "source_ids": ["right-feed", "strategic-spine-evidence-cfdf45c2a36c", "strategic-spine-sources-e03825e2f853"],
-            "provenance": {"access_connection_id": "access:right-near", "branch_id": "branch:A2", "obligation_kind": "community", "parent_access_connection_id": None, "parent_branch_id": None, "parent_place_id": None, "parent_role": "strategic-spine", "parent_target_id": "root:A2", "parent_target_name": "A2", "place_id": "right-near", "root_evidence_id": "strategic-spine-evidence-cfdf45c2a36c", "root_source_id": "strategic-spine-sources-e03825e2f853", "root_spine_id": "root:A2", "source_ids": ["right-feed", "strategic-spine-evidence-cfdf45c2a36c", "strategic-spine-sources-e03825e2f853"]},
+            "obligation_id": "access-obligation-dbd66a5d950a",
+            "obligation_kind": "community",
+            "place_id": "right-near",
+            "place_name": "Right Near",
+            "root": "root:A2",
+            "branch": "branch:A2",
+            "parent": {
+                "role": "strategic-spine",
+                "place_id": None,
+                "branch": None,
+                "target": "root:A2",
+            },
+            "attachment_depth": 1,
+            "network_role": "spine-access-connection",
+            "status": "validated",
+            "source_ids": [
+                "right-feed",
+                "strategic-spine-evidence-cfdf45c2a36c",
+                "strategic-spine-sources-e03825e2f853",
+            ],
+            "provenance": {
+                "access_connection_id": "access:right-near",
+                "branch_id": "branch:A2",
+                "obligation_kind": "community",
+                "parent_access_connection_id": None,
+                "parent_branch_id": None,
+                "parent_place_id": None,
+                "parent_role": "strategic-spine",
+                "parent_target_id": "root:A2",
+                "parent_target_name": "A2",
+                "place_id": "right-near",
+                "root_evidence_id": "strategic-spine-evidence-cfdf45c2a36c",
+                "root_source_id": "strategic-spine-sources-e03825e2f853",
+                "root_spine_id": "root:A2",
+                "source_ids": [
+                    "right-feed",
+                    "strategic-spine-evidence-cfdf45c2a36c",
+                    "strategic-spine-sources-e03825e2f853",
+                ],
+            },
         },
     ],
     "meetings": [
         {
-            "endpoints": [{"place": "hinterland", "place_name": "Hinterland", "branch": "branch:A1", "root": "root:A1"}, {"place": "right-near", "place_name": "Right Near", "branch": "branch:A2", "root": "root:A2"}],
-            "network_role": "branch-meeting-connection", "status": "validated", "source_ids": ["middle-feed"],
-            "provenance": {"meeting_connection_id": "meeting:A1|A2:hinterland|right-near", "source_ids": ["middle-feed"], "endpoints": [{"branch": "branch:A1", "place": "hinterland", "root": "root:A1"}, {"branch": "branch:A2", "place": "right-near", "root": "root:A2"}]},
+            "endpoints": [
+                {
+                    "place": "hinterland",
+                    "place_name": "Hinterland",
+                    "branch": "branch:A1",
+                    "root": "root:A1",
+                },
+                {
+                    "place": "right-near",
+                    "place_name": "Right Near",
+                    "branch": "branch:A2",
+                    "root": "root:A2",
+                },
+            ],
+            "network_role": "branch-meeting-connection",
+            "status": "validated",
+            "source_ids": ["middle-feed"],
+            "provenance": {
+                "meeting_connection_id": "meeting:A1|A2:hinterland|right-near",
+                "source_ids": ["middle-feed"],
+                "endpoints": [
+                    {"branch": "branch:A1", "place": "hinterland", "root": "root:A1"},
+                    {"branch": "branch:A2", "place": "right-near", "root": "root:A2"},
+                ],
+            },
         }
     ],
     "connectors": [
         {
-            "roots": ["root:A1", "root:A2"], "meeting": "meeting:A1|A2:hinterland|right-near", "branches": ["branch:A1", "branch:A2"],
-            "connections": ["access:hinterland", "access:left-near", "access:right-near", "meeting:A1|A2:hinterland|right-near"],
-            "communities": ["hinterland", "left-near", "right-near"], "network_role": "cross-spine-connector", "status": "validated",
-            "source_ids": ["hinterland-feed", "left-feed", "middle-feed", "right-feed", "strategic-spine-evidence-43b76ca0b781", "strategic-spine-evidence-cfdf45c2a36c", "strategic-spine-sources-7023563c3d64", "strategic-spine-sources-e03825e2f853"],
-            "provenance": {"branch_ids": ["branch:A1", "branch:A2"], "community_ids": ["hinterland", "left-near", "right-near"], "connection_ids": ["access:hinterland", "access:left-near", "access:right-near", "meeting:A1|A2:hinterland|right-near"], "cross_spine_connector_id": "connector:A1|A2", "meeting_connection_id": "meeting:A1|A2:hinterland|right-near", "named_root_traversal": {"noded_segment_count": 1, "pruned_segment_count": 0, "selected_segment_count": 1, "root_distances_m": [("root:A1", 0.0), ("root:A2", 0.0)]}, "source_ids": ["hinterland-feed", "left-feed", "middle-feed", "right-feed", "strategic-spine-evidence-43b76ca0b781", "strategic-spine-evidence-cfdf45c2a36c", "strategic-spine-sources-7023563c3d64", "strategic-spine-sources-e03825e2f853"]},
+            "roots": ["root:A1", "root:A2"],
+            "meeting": "meeting:A1|A2:hinterland|right-near",
+            "branches": ["branch:A1", "branch:A2"],
+            "connections": [
+                "access:hinterland",
+                "access:left-near",
+                "access:right-near",
+                "meeting:A1|A2:hinterland|right-near",
+            ],
+            "communities": ["hinterland", "left-near", "right-near"],
+            "network_role": "cross-spine-connector",
+            "status": "validated",
+            "source_ids": [
+                "hinterland-feed",
+                "left-feed",
+                "middle-feed",
+                "right-feed",
+                "strategic-spine-evidence-43b76ca0b781",
+                "strategic-spine-evidence-cfdf45c2a36c",
+                "strategic-spine-sources-7023563c3d64",
+                "strategic-spine-sources-e03825e2f853",
+            ],
+            "provenance": {
+                "branch_ids": ["branch:A1", "branch:A2"],
+                "community_ids": ["hinterland", "left-near", "right-near"],
+                "connection_ids": [
+                    "access:hinterland",
+                    "access:left-near",
+                    "access:right-near",
+                    "meeting:A1|A2:hinterland|right-near",
+                ],
+                "cross_spine_connector_id": "connector:A1|A2",
+                "meeting_connection_id": "meeting:A1|A2:hinterland|right-near",
+                "named_root_traversal": {
+                    "noded_segment_count": 1,
+                    "pruned_segment_count": 0,
+                    "selected_segment_count": 1,
+                    "root_distances_m": [("root:A1", 0.0), ("root:A2", 0.0)],
+                },
+                "source_ids": [
+                    "hinterland-feed",
+                    "left-feed",
+                    "middle-feed",
+                    "right-feed",
+                    "strategic-spine-evidence-43b76ca0b781",
+                    "strategic-spine-evidence-cfdf45c2a36c",
+                    "strategic-spine-sources-7023563c3d64",
+                    "strategic-spine-sources-e03825e2f853",
+                ],
+            },
         }
     ],
 }
@@ -782,14 +952,12 @@ def assert_lazy_matches_eager_governed_contract(lazy: object, eager: object) -> 
             assert_same_runtime_governed_frame_equal(lazy_value, eager_value)
             continue
         if field_name == "agent_records":
-            assert [record.model_dump(mode="json", exclude={"created_at"}) for record in lazy_value] == [
-                record.model_dump(mode="json", exclude={"created_at"}) for record in eager_value
-            ]
+            assert [
+                record.model_dump(mode="json", exclude={"created_at"}) for record in lazy_value
+            ] == [record.model_dump(mode="json", exclude={"created_at"}) for record in eager_value]
             continue
         if field_name == "compilation_diagnostics":
-            assert {
-                key: value for key, value in lazy_value.items() if key != "cross_spine"
-            } == {
+            assert {key: value for key, value in lazy_value.items() if key != "cross_spine"} == {
                 key: value for key, value in eager_value.items() if key != "cross_spine"
             }
             lazy_diagnostics = lazy_value["cross_spine"]
@@ -807,9 +975,13 @@ def assert_lazy_matches_eager_governed_contract(lazy: object, eager: object) -> 
                 "root_pair_exact_distance_bounds",
             }
             assert {
-                key: value for key, value in lazy_diagnostics.items() if key not in optimisation_keys
+                key: value
+                for key, value in lazy_diagnostics.items()
+                if key not in optimisation_keys
             } == {
-                key: value for key, value in eager_diagnostics.items() if key not in optimisation_keys
+                key: value
+                for key, value in eager_diagnostics.items()
+                if key not in optimisation_keys
             }
             continue
         assert lazy_value == eager_value
@@ -962,9 +1134,11 @@ def test_semantic_fixture_golden_normalizes_generated_ids_and_meeting_orientatio
             if column == "geometry":
                 continue
             frame[column] = frame[column].map(
-                lambda value: json.dumps(rewrite_stable_root_ids(json.loads(value)), sort_keys=True)
-                if isinstance(value, str) and value[:1] in "[{"
-                else rewrite_stable_root_ids(value)
+                lambda value: (
+                    json.dumps(rewrite_stable_root_ids(json.loads(value)), sort_keys=True)
+                    if isinstance(value, str) and value[:1] in "[{"
+                    else rewrite_stable_root_ids(value)
+                )
             )
     assert governed_semantic_snapshot(changed_root_sources) != baseline
 
@@ -983,7 +1157,9 @@ def test_semantic_fixture_golden_normalizes_generated_ids_and_meeting_orientatio
             provenance["parent_target_name"] = renamed_place_name
             access.loc[index, "provenance"] = json.dumps(provenance, sort_keys=True)
     meetings = changed_place_relationship.branch_meeting_connections
-    meetings.loc[meetings["from_place_id"] == renamed_place_id, "from_place_name"] = renamed_place_name
+    meetings.loc[meetings["from_place_id"] == renamed_place_id, "from_place_name"] = (
+        renamed_place_name
+    )
     meetings.loc[meetings["to_place_id"] == renamed_place_id, "to_place_name"] = renamed_place_name
     assert governed_semantic_snapshot(changed_place_relationship) != baseline
 
@@ -1003,9 +1179,10 @@ def test_all_spines_seed_order_independent_growth_and_hinterland_chaining() -> N
 
     assert topology(first) == topology(reordered)
     assert cross_spine_topology(first) == cross_spine_topology(reordered)
-    assert first.compilation_diagnostics["cross_spine"] == reordered.compilation_diagnostics[
-        "cross_spine"
-    ]
+    assert (
+        first.compilation_diagnostics["cross_spine"]
+        == reordered.compilation_diagnostics["cross_spine"]
+    )
     assert len(first.spine_access_connections) == 3
     assert len(first.access_obligations) == 3
     assert set(first.access_obligations["service_status"]) == {"served"}
@@ -1124,16 +1301,12 @@ def test_compiler_progress_adapter_updates_real_heartbeat_without_changing_gover
     }
     diagnostics = compiled.compilation_diagnostics["cross_spine"]
     assert diagnostics["candidate_connectors"] == 1
-    assert diagnostics["typed_refinement_findings"] == {
-        "route-refinement-required": 0
-    }
+    assert diagnostics["typed_refinement_findings"] == {"route-refinement-required": 0}
     assert (
-        governed_semantic_snapshot(control)
-        == PARALLEL_SPINE_PRE_INSTRUMENTATION_SEMANTIC_SNAPSHOT
+        governed_semantic_snapshot(control) == PARALLEL_SPINE_PRE_INSTRUMENTATION_SEMANTIC_SNAPSHOT
     )
     assert (
-        governed_semantic_snapshot(compiled)
-        == PARALLEL_SPINE_PRE_INSTRUMENTATION_SEMANTIC_SNAPSHOT
+        governed_semantic_snapshot(compiled) == PARALLEL_SPINE_PRE_INSTRUMENTATION_SEMANTIC_SNAPSHOT
     )
     for frame_name in (
         "spine_access_connections",
@@ -1241,8 +1414,8 @@ def test_cross_spine_roles_publish_consistently_to_spatial_and_review_artifacts(
         for reference in record["derived_features"]
     )
     html = artifacts["review_map"].read_text()
-    assert 'id="layer-cross-spine-connectors"' in html
-    assert 'id="legend-cross-spine-connectors"' in html
+    assert 'id="layer-strategic-network" type="checkbox" checked' in html
+    assert "Cross-Spine Connectors" in html
 
 
 def test_direct_compile_publish_persists_the_canonical_empty_decision_contract(
@@ -1539,14 +1712,16 @@ def test_lazy_bounds_match_eager_for_fallback_discount_and_order_adversaries(
     assert_lazy_matches_eager_governed_contract(lazy, eager)
     lazy_diagnostics = lazy.compilation_diagnostics["cross_spine"]
     eager_diagnostics = eager.compilation_diagnostics["cross_spine"]
-    assert lazy_diagnostics["root_pair_route_searches"] <= eager_diagnostics[
-        "root_pair_route_searches"
-    ]
+    assert (
+        lazy_diagnostics["root_pair_route_searches"]
+        <= eager_diagnostics["root_pair_route_searches"]
+    )
     if lower_bound_factor == 0.0:
         # A disabled metric bound is conservative: no pair is silently omitted.
-        assert lazy_diagnostics["root_pair_candidate_searches"] == eager_diagnostics[
-            "root_pair_candidate_searches"
-        ]
+        assert (
+            lazy_diagnostics["root_pair_candidate_searches"]
+            == eager_diagnostics["root_pair_candidate_searches"]
+        )
 
 
 def test_lazy_bounds_match_eager_after_rejection_retry_and_supersession(
@@ -1571,14 +1746,16 @@ def test_lazy_bounds_match_eager_after_rejection_retry_and_supersession(
 
     assert_lazy_matches_eager_governed_contract(lazy, eager)
     lazy_records = [
-        record for record in lazy.agent_records if record.connection_id.startswith("branch-meeting-")
+        record
+        for record in lazy.agent_records
+        if record.connection_id.startswith("branch-meeting-")
     ]
     assert [record.decision for record in lazy_records].count("superseded") == 1
     lazy_diagnostics = lazy.compilation_diagnostics["cross_spine"]
     eager_diagnostics = eager.compilation_diagnostics["cross_spine"]
-    assert lazy_diagnostics["root_pair_route_searches"] < eager_diagnostics[
-        "root_pair_route_searches"
-    ]
+    assert (
+        lazy_diagnostics["root_pair_route_searches"] < eager_diagnostics["root_pair_route_searches"]
+    )
     assert lazy_diagnostics["root_pair_candidate_bounds_skipped_as_connected"] == 1
 
 
@@ -1592,7 +1769,9 @@ def test_missing_attachment_group_has_a_strictly_prior_safe_bound() -> None:
     missing["root_spine_id"] = "missing-root"
     missing["community_attachment_node"] = "missing-node"
     missing["place_id"] = "missing-place"
-    group = gpd.GeoDataFrame([missing], geometry="geometry", crs=compiled.spine_access_connections.crs)
+    group = gpd.GeoDataFrame(
+        [missing], geometry="geometry", crs=compiled.spine_access_connections.crs
+    )
 
     assert backbone_module._meeting_group_attachment_geometry(group, graph) is None
     assert backbone_module._meeting_candidate_bound_rank(
@@ -1620,7 +1799,10 @@ def test_lazy_and_eager_schedulers_preserve_output_with_a_missing_attachment_gro
     lazy = compile_network(config(), source, FakeAgentRuntime())
     eager = compile_eager_reference(monkeypatch, config(), source, FakeAgentRuntime())
     assert_lazy_matches_eager_governed_contract(lazy, eager)
-    assert lazy.compilation_diagnostics["cross_spine"]["root_pair_route_searches"] <= eager.compilation_diagnostics["cross_spine"]["root_pair_route_searches"]
+    assert (
+        lazy.compilation_diagnostics["cross_spine"]["root_pair_route_searches"]
+        <= eager.compilation_diagnostics["cross_spine"]["root_pair_route_searches"]
+    )
 
 
 def test_lazy_scheduler_skips_component_proven_unroutable_root_pairs(
@@ -1972,9 +2154,7 @@ def test_colocated_community_never_becomes_a_zero_length_access_route() -> None:
         (compiled.gaps["network_role"] == "spine-access-gap")
         & (compiled.gaps["from_place"] == "community-colocated")
     ]
-    obligation = compiled.access_obligations.set_index("place_id").loc[
-        "community-colocated"
-    ]
+    obligation = compiled.access_obligations.set_index("place_id").loc["community-colocated"]
     provenance = json.loads(obligation["provenance"])
 
     assert access.empty
@@ -1995,11 +2175,7 @@ def test_colocated_community_never_becomes_a_zero_length_access_route() -> None:
 
 def test_agent_gate_rejection_cannot_enter_validated_backbone_state() -> None:
     runtime = FakeAgentRuntime(
-        {
-            AgentRole.DECISION: [
-                {"request_id": "$request", "choice_id": "3"} for _ in range(6)
-            ]
-        }
+        {AgentRole.DECISION: [{"request_id": "$request", "choice_id": "3"} for _ in range(6)]}
     )
 
     council = config()
@@ -2150,10 +2326,7 @@ def test_growth_uses_lazy_bounds_to_avoid_redundant_searches_at_representative_s
     colocated = compiled.access_obligations.set_index("place_id").loc["community-00"]
     assert colocated["service_status"] == "served"
     assert pd.isna(colocated["access_connection_id"])
-    assert (
-        json.loads(colocated["provenance"])["service_kind"]
-        == "backbone-access-association"
-    )
+    assert json.loads(colocated["provenance"])["service_kind"] == "backbone-access-association"
     diagnostics = compiled.compilation_diagnostics
     # The first Community is already on the initial Spine. Its zero-edge association
     # becomes a frontier without publishing a route or searching a farther endpoint.

@@ -128,3 +128,11 @@ browser adapter enforce the semantic/interaction split. The presentation asset i
 included in the retained presentation dependency fingerprint; the Effective
 Strategic Network remains the sole selected state as defined by
 [ADR 0021](0021-effective-strategic-network-is-sole-selection-authority.md).
+
+The map's initial visibility is a presentation choice, not a second semantic
+projection. It shows the complete compiled Backbone-and-Access Network by default
+and exposes the fingerprinted selected-route core, halo and required connections
+as optional Alignment review detail. This preserves the closed Strategic Network
+publication projection while preventing that narrower inspection layer from
+obscuring the complete strategic structure. Changing either checkbox changes only
+browser visibility; it does not add, omit, select or mutate semantic records.

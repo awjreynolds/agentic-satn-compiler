@@ -77,7 +77,7 @@ A deliberately bounded, informative and inspectable layered picture showing the 
 _Avoid_: final scheme map, cycle-route inventory, undifferentiated linework
 
 **Strategic Network Route Layer**:
-The default-on selected SATN layer, including its required Community and destination connections. Its line core communicates Network Display State, while its halo communicates the primary Alignment Basis; details retain every basis and the evidence behind it. It is accompanied by quiet Places and prominent material gaps and officer–compiler divergences rather than an undifferentiated red backbone.
+The inspectable selected SATN alignment-detail layer, including its required Community and destination connections. Its line core communicates Network Display State, while its halo communicates the primary Alignment Basis; details retain every basis and the evidence behind it. The initial map instead shows the complete Backbone-and-Access Network so the selected-route projection cannot obscure the strategic structure. The selected layer is accompanied by quiet Places and prominent material gaps and officer–compiler divergences rather than an undifferentiated red backbone.
 _Avoid_: uniform-red route, hidden connectors, contextual asset inventory, colour-only meaning
 
 **Effective Strategic Network**:

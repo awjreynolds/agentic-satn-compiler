@@ -40,7 +40,7 @@ jobs:
           --cov=satn --cov=lcwip
           --cov-report=term-missing
           --cov-report=xml
-      - run: uv run playwright install --with-deps chromium
+      - run: uv run playwright install chromium
       - run: uv run pytest --browser -m browser tests/test_review_map_browser.py
       - run: uv build --no-sources
 

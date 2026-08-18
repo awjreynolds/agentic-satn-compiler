@@ -244,12 +244,7 @@ def test_gate_rejection_publishes_no_authoritative_alignment_selection() -> None
     config.compilation.agent.response_mode = "direct-runtime"
     config.compilation.agent.review_statuses = (TrafficLight.GREEN,)
     runtime = FakeAgentRuntime(
-        {
-            AgentRole.DECISION: [
-                {"request_id": "$request", "choice_id": "3"}
-                for _ in range(12)
-            ]
-        }
+        {AgentRole.DECISION: [{"request_id": "$request", "choice_id": "3"} for _ in range(12)]}
     )
 
     compiled = compile_network(config, source, runtime)
@@ -303,26 +298,23 @@ def test_retained_elevation_challenge_has_persistent_map_warning(tmp_path: Path)
         page.goto(artifacts["review_map"].as_uri())
         page.wait_for_function("document.documentElement.dataset.mapReady === 'true'")
 
-        legend = page.locator("#legend-spine-access-connections")
+        legend = page.locator("#legend-gaps-warnings")
         assert legend.is_hidden()
-        page.get_by_role("button", name="About Spine Access").click()
+        page.get_by_role("button", name="About route warnings").click()
         assert legend.is_visible()
         assert "Dashed amber marks a retained Elevation Challenge." in legend.inner_text()
         warning = page.locator(".connection.retained-topography")
         assert warning.count() == 1
         assert (
-            warning.locator(".topography-warning").text_content()
-            == "Elevation challenge retained"
+            warning.locator(".topography-warning").text_content() == "Elevation challenge retained"
         )
-        page.locator("#layer-spine-access-connections").uncheck()
+        page.locator("#layer-gaps-warnings").uncheck()
         page.wait_for_function(
-            "() => ['spine-access-connections', 'access-obligations', "
-            "'spine-access-topography-warnings'].every(layer => "
+            "() => ['crossing-warnings', 'spine-access-topography-warnings'].every(layer => "
             "window.SATN_REVIEW_MAP.getLayoutProperty(layer, 'visibility') === 'none')"
         )
         assert page.evaluate(
-            "() => ['spine-access-connections', 'access-obligations', "
-            "'spine-access-topography-warnings'].every(layer => "
+            "() => ['crossing-warnings', 'spine-access-topography-warnings'].every(layer => "
             "window.SATN_REVIEW_MAP.getLayoutProperty(layer, 'visibility') === 'none')"
         )
         assert legend.is_hidden()
