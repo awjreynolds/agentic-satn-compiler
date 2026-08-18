@@ -80,7 +80,7 @@ jobs:
       - name: Install packaged-map rendering validator
         run: uv sync --frozen --only-group test --no-install-project
       - name: Install Chromium for packaged-map validation
-        run: uv run --no-sync playwright install --with-deps chromium
+        run: uv run --no-sync playwright install chromium
       - name: Validate every packaged strategic network renders
         run: uv run --no-sync python scripts/validate_pages_rendering.py pages
       - name: Upload validated Pages artifact
