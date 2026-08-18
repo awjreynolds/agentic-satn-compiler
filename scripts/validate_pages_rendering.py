@@ -120,7 +120,6 @@ def _inspect_deployment(
                 failures.push("published network contains no strategic-spine geometry");
               }
               for (const [featureType, layerId] of expected) {
-                if (counts[featureType] === 0) continue;
                 if (!map.getLayer(layerId)) {
                   failures.push(`${layerId} layer is missing`);
                 } else if (map.getLayoutProperty(layerId, "visibility") === "none") {
@@ -131,6 +130,7 @@ def _inspect_deployment(
                 "reviewable-strategic-network-halo",
                 "reviewable-strategic-network-core",
                 "reviewable-route-labels",
+                "reviewable-required-connections",
               ]) {
                 if (map.getLayer(layerId) &&
                     map.getLayoutProperty(layerId, "visibility") !== "none") {

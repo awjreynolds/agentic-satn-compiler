@@ -112,7 +112,9 @@ def test_reviewable_network_layer_defaults_and_semantics_are_explicit() -> None:
         in script
     )
     assert 'id: "strategic-spines"' in script
-    assert '"layer-alignment-review": ["reviewable-strategic-network-halo"' in script
+    assert '"layer-alignment-review": [' in script
+    assert '"reviewable-required-connections"' in script
+    assert script.count("Object.entries(controlLayerGroups).forEach") == 2
     assert 'layout: { visibility: usesReviewableStrategicFallback ? "visible" : "none" }' in script
     assert 'usesLegacyStrategicFallback ? ["strategic-network"] : []' in script
     assert 'visibility: usesLegacyStrategicFallback ? "visible" : "none"' in script

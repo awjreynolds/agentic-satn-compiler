@@ -1979,41 +1979,47 @@
     });
   }
 
+  const controlLayerGroups = {
+    "layer-authority-boundaries": ["authority-boundaries"],
+    "layer-strategic-network": hasBackboneAndAccessNetwork
+      ? ["strategic-spines", "spine-access-connections", "cross-spine-connectors", "gaps"]
+      : usesReviewableStrategicFallback
+        ? ["reviewable-strategic-network-halo", "reviewable-strategic-network-core", "reviewable-route-labels"]
+        : usesLegacyStrategicFallback ? ["strategic-network"] : [],
+    "layer-alignment-review": [
+      "reviewable-strategic-network-halo",
+      "reviewable-strategic-network-core",
+      "reviewable-route-labels",
+      "reviewable-required-connections"
+    ],
+    "layer-reviewable-gaps": ["reviewable-gaps", "reviewable-gap-labels"],
+    "layer-officer-divergences": ["reviewable-divergences-halo", "reviewable-divergences"],
+    "layer-existing-assets": ["reviewable-existing-assets"],
+    "layer-upgradeable-assets": ["reviewable-upgradeable-assets"],
+    "layer-unselected-candidates": ["reviewable-unselected-candidates"],
+    "layer-dft-traffic": ["reviewable-dft-traffic", "reviewable-dft-traffic-points"],
+    "layer-urban-spines": ["urban-spines"],
+    "layer-urban-classification-unknowns": ["urban-classification-unknowns"],
+    "layer-low-traffic-areas": ["low-traffic-areas", "low-traffic-area-outlines"],
+    "layer-low-traffic-area-portals": ["low-traffic-area-portals"],
+    "layer-places": ["places"],
+    "layer-schools": ["schools", "school-access-obligations", "school-access-connections", "school-access-topography-warnings", "school-access-gaps"],
+    "layer-school-streets": ["school-street-assessments"],
+    "layer-gradient-sections": ["gradient-overview", "gradient-sections", "topography-unavailable"],
+    "layer-population-display-sections": ["population-display-sections"],
+    "layer-retail-centres": ["retail-centres"],
+    "layer-healthcare": ["healthcare"],
+    "layer-gaps-warnings": warningLayers,
+    "layer-atm": ["atm-reference"]
+  };
+
   function bindControls() {
     document.querySelector("#review-lens-close").addEventListener("click", closeReviewLens);
     document.querySelector("#review-gradient-details").addEventListener("click", toggleGradientDetails);
     document.querySelectorAll('input[name="section"]').forEach((input) => {
       input.addEventListener("change", () => renderCriteria(input.value));
     });
-    const groups = {
-      "layer-authority-boundaries": ["authority-boundaries"],
-      "layer-strategic-network": hasBackboneAndAccessNetwork
-        ? ["strategic-spines", "spine-access-connections", "cross-spine-connectors", "gaps"]
-        : usesReviewableStrategicFallback
-          ? ["reviewable-strategic-network-halo", "reviewable-strategic-network-core", "reviewable-route-labels"]
-          : usesLegacyStrategicFallback ? ["strategic-network"] : [],
-      "layer-alignment-review": ["reviewable-strategic-network-halo", "reviewable-strategic-network-core", "reviewable-route-labels", "reviewable-required-connections"],
-      "layer-reviewable-gaps": ["reviewable-gaps", "reviewable-gap-labels"],
-      "layer-officer-divergences": ["reviewable-divergences-halo", "reviewable-divergences"],
-      "layer-existing-assets": ["reviewable-existing-assets"],
-      "layer-upgradeable-assets": ["reviewable-upgradeable-assets"],
-      "layer-unselected-candidates": ["reviewable-unselected-candidates"],
-      "layer-dft-traffic": ["reviewable-dft-traffic", "reviewable-dft-traffic-points"],
-      "layer-urban-spines": ["urban-spines"],
-      "layer-urban-classification-unknowns": ["urban-classification-unknowns"],
-      "layer-low-traffic-areas": ["low-traffic-areas", "low-traffic-area-outlines"],
-      "layer-low-traffic-area-portals": ["low-traffic-area-portals"],
-      "layer-places": ["places"],
-      "layer-schools": ["schools", "school-access-obligations", "school-access-connections", "school-access-topography-warnings", "school-access-gaps"],
-      "layer-school-streets": ["school-street-assessments"],
-      "layer-gradient-sections": ["gradient-overview", "gradient-sections", "topography-unavailable"],
-      "layer-population-display-sections": ["population-display-sections"],
-      "layer-retail-centres": ["retail-centres"],
-      "layer-healthcare": ["healthcare"],
-      "layer-gaps-warnings": warningLayers,
-      "layer-atm": ["atm-reference"]
-    };
-    Object.entries(groups).forEach(([controlId, layers]) => {
+    Object.entries(controlLayerGroups).forEach(([controlId, layers]) => {
       const control = document.getElementById(controlId);
       if (!control) return;
       control.addEventListener("change", async () => {
@@ -2565,25 +2571,7 @@
         "line-opacity": .92
       }
     });
-    [
-      ["layer-authority-boundaries", ["authority-boundaries"]],
-      ["layer-gaps-warnings", ["crossing-warnings", "spine-access-topography-warnings"]],
-      ["layer-existing-assets", ["reviewable-existing-assets"]],
-      ["layer-upgradeable-assets", ["reviewable-upgradeable-assets"]],
-      ["layer-unselected-candidates", ["reviewable-unselected-candidates"]],
-      ["layer-dft-traffic", ["reviewable-dft-traffic", "reviewable-dft-traffic-points"]],
-      ["layer-alignment-review", [
-        "reviewable-strategic-network-halo",
-        "reviewable-strategic-network-core",
-        "reviewable-route-labels",
-        "reviewable-required-connections"
-      ]],
-      ["layer-reviewable-gaps", ["reviewable-gaps", "reviewable-gap-labels"]],
-      ["layer-officer-divergences", [
-        "reviewable-divergences-halo",
-        "reviewable-divergences"
-      ]]
-    ].forEach(([controlId, layerIds]) => {
+    Object.entries(controlLayerGroups).forEach(([controlId, layerIds]) => {
       if (document.getElementById(controlId)?.checked) return;
       layerIds.forEach((layerId) => {
         if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", "none");

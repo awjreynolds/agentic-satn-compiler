@@ -23,6 +23,62 @@ SPEC.loader.exec_module(VALIDATOR)
 validate_pages_rendering = VALIDATOR.validate_pages_rendering
 
 
+def _package_fixture(tmp_path: Path) -> tuple[Path, Path]:
+    fixture = tmp_path / "fixture"
+    shutil.copytree(
+        PROJECT / "examples" / "fixture",
+        fixture,
+        ignore=shutil.ignore_patterns("work", ".satn-cache"),
+    )
+    config = CouncilConfig.from_yaml(fixture / "council.yaml")
+    snapshot(config)
+    result = compile(config)
+
+    pages = tmp_path / "pages"
+    deployment = pages / "deployments" / "fixture"
+    shutil.copytree(result.artifacts["review_map"].parent, deployment)
+    catalogue = {
+        "schema_version": "satn-deployment-catalogue/v1",
+        "deployments": [
+            {
+                "deployment_id": "fixture",
+                "artifacts": {"review_map": "deployments/fixture/index.html"},
+            }
+        ],
+    }
+    (pages / "catalogue.json").write_text(json.dumps(catalogue), encoding="utf-8")
+    return pages, deployment
+
+
+def _remove_network_features(deployment: Path, feature_type: str) -> None:
+    network_path = deployment / "network.geojson"
+    network = json.loads(network_path.read_text(encoding="utf-8"))
+    network["features"] = [
+        feature
+        for feature in network["features"]
+        if feature.get("properties", {}).get("feature_type") != feature_type
+    ]
+    network_path.write_text(json.dumps(network), encoding="utf-8")
+    data_path = deployment / "data.js"
+    data_text = data_path.read_text(encoding="utf-8")
+    data_prefix = "window.SATN_DATA = "
+    assert data_text.startswith(data_prefix)
+    data = json.loads(data_text.removeprefix(data_prefix).rstrip(";\n"))
+    if isinstance(data.get("network"), dict):
+        data["network"]["features"] = network["features"]
+    data_path.write_text(data_prefix + json.dumps(data) + ";\n", encoding="utf-8")
+
+
+def _replace_review_map_asset(deployment: Path, needle: str, replacement: str) -> None:
+    changed = False
+    for asset in (deployment / "assets").glob("review-map*.js"):
+        text = asset.read_text(encoding="utf-8")
+        if needle in text:
+            asset.write_text(text.replace(needle, replacement), encoding="utf-8")
+            changed = True
+    assert changed
+
+
 @pytest.mark.browser
 def test_packaged_pages_gate_proves_the_strategic_network_renders(tmp_path: Path) -> None:
     fixture = tmp_path / "fixture"
@@ -102,3 +158,33 @@ def test_packaged_pages_gate_rejects_a_stale_network_projection(tmp_path: Path) 
 
     with pytest.raises(ValueError, match="published network contains no strategic-spine geometry"):
         validate_pages_rendering(pages)
+
+
+@pytest.mark.browser
+def test_packaged_pages_gate_rejects_hidden_zero_count_network_layer(tmp_path: Path) -> None:
+    pages, deployment = _package_fixture(tmp_path)
+    _remove_network_features(deployment, "spine-access-connection")
+    needle = (
+        'id: "spine-access-connections", type: "line", source: "network", '
+        'filter: ["==", ["get", "feature_type"], "spine-access-connection"], '
+        'layout: { visibility: hasBackboneAndAccessNetwork ? "visible" : "none" }'
+    )
+    _replace_review_map_asset(
+        deployment,
+        needle,
+        needle.replace(
+            'layout: { visibility: hasBackboneAndAccessNetwork ? "visible" : "none" }',
+            'layout: { visibility: "none" }',
+        ),
+    )
+
+    with pytest.raises(ValueError, match="spine-access-connections layer is hidden"):
+        validate_pages_rendering(pages)
+
+
+def test_packaged_pages_gate_checks_required_connection_detail() -> None:
+    validator = (PROJECT / "scripts" / "validate_pages_rendering.py").read_text(encoding="utf-8")
+    optional_layers = validator.split("for (const layerId of [", maxsplit=1)[1]
+    optional_layers = optional_layers.split("]) {", maxsplit=1)[0]
+    assert optional_layers.count('"reviewable-') == 4
+    assert '"reviewable-required-connections"' in optional_layers
