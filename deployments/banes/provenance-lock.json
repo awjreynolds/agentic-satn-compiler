@@ -61,7 +61,7 @@
       "size_bytes": 1638
     },
     "compiler-run.json": {
-      "sha256": "ce909a384e6660385df53838f821f86db346aca3e56993734fa4099f8942a0cc",
+      "sha256": "44e0d7fdb0313da8af9ca15b7d56f3fffd6e5702e56a1dfbd2bcb682a1622516",
       "size_bytes": 14953514
     },
     "data.js": {
@@ -105,8 +105,8 @@
       "size_bytes": 115
     },
     "index.html": {
-      "sha256": "58b94c065055cfb3920a99556881b16a227365661a2f24dbf6455d095ba5d8b6",
-      "size_bytes": 23955
+      "sha256": "9b2c451cb03bd22422730337d591eb42ea87ce8c86b9b7185781eeba1de65802",
+      "size_bytes": 24108
     },
     "layer-manifest.json": {
       "sha256": "04dbeafa0404d9963741ff9b5a6066dd192a4a403f46d7b351cdd2b68ca866bb",
