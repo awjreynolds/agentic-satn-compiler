@@ -6,7 +6,7 @@ import argparse
 import json
 import os
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -19,7 +19,7 @@ from playwright.sync_api import sync_playwright
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from playwright.sync_api import BrowserContext
+    from playwright.sync_api import BrowserContext, Page
 
 
 @dataclass(frozen=True)
@@ -34,6 +34,34 @@ class DeploymentRenderResult:
 class _PagesHandler(SimpleHTTPRequestHandler):
     def log_message(self, _format: str, *_args: object) -> None:
         return
+
+
+def _wait_for_rendered_strategic_spines(page: Page) -> int:
+    """Wait for MapLibre paint output, then return the rendered spine count."""
+    with suppress(PlaywrightTimeoutError):
+        page.wait_for_function(
+            """() => {
+              const map = window.SATN_REVIEW_MAP;
+              return Boolean(map?.getLayer("strategic-spines")) &&
+                map.queryRenderedFeatures({layers: ["strategic-spines"]}).length > 0;
+            }"""
+        )
+    return page.evaluate(
+        """() => {
+          const map = window.SATN_REVIEW_MAP;
+          return map.getLayer("strategic-spines")
+            ? map.queryRenderedFeatures({layers: ["strategic-spines"]}).length
+            : 0;
+        }"""
+    )
+
+
+def _rendered_strategic_spines_failure(deployment_id: str, rendered: int) -> str | None:
+    if rendered == 0:
+        return (
+            f"{deployment_id} strategic-spines has no rendered features after fitting its geometry"
+        )
+    return None
 
 
 @contextmanager
@@ -164,12 +192,11 @@ def _inspect_deployment(
             }"""
         )
         page.wait_for_function("!window.SATN_REVIEW_MAP.isMoving()")
-        rendered = page.evaluate(
-            "window.SATN_REVIEW_MAP.queryRenderedFeatures({layers: ['strategic-spines']}).length"
-        )
+        rendered = _wait_for_rendered_strategic_spines(page)
         failures = list(inspection["failures"])
-        if rendered == 0:
-            failures.append("strategic-spines has no rendered features after fitting its geometry")
+        rendered_failure = _rendered_strategic_spines_failure(deployment_id, rendered)
+        if rendered_failure:
+            failures.append(rendered_failure)
         failures.extend(f"browser error: {message}" for message in page_errors)
         if failures:
             raise ValueError(f"{deployment_id} map rendering failed: {'; '.join(failures)}")

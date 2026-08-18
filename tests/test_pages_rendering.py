@@ -79,6 +79,42 @@ def _replace_review_map_asset(deployment: Path, needle: str, replacement: str) -
     assert changed
 
 
+def test_rendering_gate_waits_for_paint_and_rejects_permanent_zero() -> None:
+    class _DelayedRenderedPage:
+        rendered = 0
+        wait_expression = ""
+
+        def wait_for_function(self, expression: str) -> None:
+            self.wait_expression = expression
+            self.rendered = 187
+
+        def evaluate(self, _expression: str) -> int:
+            return self.rendered
+
+    delayed_page = _DelayedRenderedPage()
+    assert VALIDATOR._wait_for_rendered_strategic_spines(delayed_page) == 187
+    assert "queryRenderedFeatures" in delayed_page.wait_expression
+
+    class _PermanentlyZeroRenderedPage:
+        wait_expression = ""
+
+        def wait_for_function(self, expression: str) -> None:
+            self.wait_expression = expression
+            raise VALIDATOR.PlaywrightTimeoutError("paint never arrived")
+
+        def evaluate(self, _expression: str) -> int:
+            return 0
+
+    page = _PermanentlyZeroRenderedPage()
+    rendered = VALIDATOR._wait_for_rendered_strategic_spines(page)
+
+    assert rendered == 0
+    assert "queryRenderedFeatures" in page.wait_expression
+    assert VALIDATOR._rendered_strategic_spines_failure("fixture", rendered) == (
+        "fixture strategic-spines has no rendered features after fitting its geometry"
+    )
+
+
 @pytest.mark.browser
 def test_packaged_pages_gate_proves_the_strategic_network_renders(tmp_path: Path) -> None:
     fixture = tmp_path / "fixture"
