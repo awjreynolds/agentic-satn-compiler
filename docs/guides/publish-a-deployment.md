@@ -31,12 +31,15 @@ After every declared deployment has a verified build:
 uv run python scripts/build_deployment_catalogue.py
 uv run python scripts/package_pages.py
 uv run python -I scripts/validate_pages_release.py build/satn-pages.zip build/validated-pages --catalogue deployments/catalogue.yaml
+uv run python scripts/validate_pages_rendering.py build/validated-pages
 ```
 
 Success: `build/satn-pages.zip` validates within the configured byte budget and the
 extracted catalogue contains only declared deployment roots. The Pages workflow uses
 the ZIP as temporary release transport and removes that archive after successful
-deployment.
+deployment. The final browser check opens every packaged review map, verifies that
+the complete strategic-spine, access-connection and cross-spine layers are visible,
+and proves that strategic-spine geometry produces rendered map features.
 
 ## Public versus local evidence
 
@@ -53,4 +56,6 @@ Before external publication, verify:
 - every output carries the experimental disclaimer;
 - source licences and attribution are present;
 - the deployment lock and root catalogue lock pass; and
-- the interactive map, PDF and downloads were inspected from the packaged bytes.
+- every packaged interactive map passes the automated strategic-network rendering
+  check; and
+- the PDF and downloads were inspected from the packaged bytes.

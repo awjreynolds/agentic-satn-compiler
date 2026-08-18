@@ -62,9 +62,7 @@ def test_public_api_runs_complete_fixture(tmp_path: Path) -> None:
     assert result.criteria["connections"]["mandatory_checks"] == "green"
     assert result.agent_records[0].decision == "accept"
     assert all(record.governing_status == "green" for record in result.agent_records)
-    assert all(
-        record.review_policy == ("amber", "red") for record in result.agent_records
-    )
+    assert all(record.review_policy == ("amber", "red") for record in result.agent_records)
     assert all(record.review_required is False for record in result.agent_records)
     assert set(result.artifacts) == {
         "geopackage",
@@ -103,9 +101,7 @@ def test_public_api_runs_complete_fixture(tmp_path: Path) -> None:
     )
     assert a_road["design_status"] == "strategic assumption; not a carriageway or final design"
     spine_access = gpd.read_file(result.artifacts["geopackage"], layer="spine_access_connections")
-    access_obligations = gpd.read_file(
-        result.artifacts["geopackage"], layer="access_obligations"
-    )
+    access_obligations = gpd.read_file(result.artifacts["geopackage"], layer="access_obligations")
     spine_branches = gpd.read_file(result.artifacts["geopackage"], layer="spine_access_branches")
     assert len(spine_access) == 2
     community_access = spine_access[spine_access["obligation_kind"] == "community"]
@@ -178,15 +174,13 @@ def test_public_api_runs_complete_fixture(tmp_path: Path) -> None:
     assert DISCLAIMER in html
     assert 'id="feature-details"' in html
     assert 'id="layer-community-connections"' not in html
-    assert 'id="layer-spine-access-connections"' in html
+    assert 'id="layer-alignment-review"' in html
     assert 'href="https://github.com/awjreynolds/agentic-satn-compiler"' in html
     assert 'id="layer-strategic-network" type="checkbox" checked' in html
-    assert 'id="layer-spine-access-connections"' in html
-    assert "A roads, established National Cycle Network routes" in html
-    assert "declassified NCN routes and Greenway cycleways" in html
-    assert "Spine Access Connection" in html
+    assert "complete compiled Backbone-and-Access Network" in html
+    assert "Strategic Spines, Spine Access Connections, Cross-Spine Connectors" in html
     assert 'id="legend-strategic-network"' in html
-    assert 'id="legend-spine-access-connections"' in html
+    assert 'id="legend-alignment-review"' in html
     assert 'id="layer-schools"' in html
     assert 'id="layer-retail-centres"' in html
     assert 'id="layer-healthcare"' in html
@@ -313,9 +307,7 @@ def test_public_compiler_applies_bounded_direct_runtime_choices(tmp_path: Path) 
     result = compile(config)
 
     assert result.status == "complete"
-    direct_records = [
-        record for record in result.agent_records if record.review_required
-    ]
+    direct_records = [record for record in result.agent_records if record.review_required]
     assert direct_records
     assert all(record.responder_mode == "direct-runtime" for record in direct_records)
     assert all(record.selected_choice_id == "1" for record in direct_records)
@@ -425,9 +417,7 @@ def test_public_route_compilation_reviews_only_configured_amber_decisions(
         [
             {
                 "boundary_id": "amber-route-fixture",
-                "geometry": Polygon(
-                    [(-0.01, -0.01), (0.11, -0.01), (0.11, 0.02), (-0.01, 0.02)]
-                ),
+                "geometry": Polygon([(-0.01, -0.01), (0.11, -0.01), (0.11, 0.02), (-0.01, 0.02)]),
             }
         ],
         geometry="geometry",
@@ -452,18 +442,14 @@ def test_public_route_compilation_reviews_only_configured_amber_decisions(
     config.compilation.agent.provider = "provider-that-must-not-be-constructed"
     skipped = compile(config)
     skipped_amber = [
-        record
-        for record in skipped.agent_records
-        if record.governing_status == TrafficLight.AMBER
+        record for record in skipped.agent_records if record.governing_status == TrafficLight.AMBER
     ]
 
     assert skipped_amber
     assert all(record.review_required is False for record in skipped_amber)
     assert all(record.runtime == "not-invoked" for record in skipped_amber)
     assert all(record.decision == "accept" for record in skipped_amber)
-    meetings = gpd.read_file(
-        skipped.artifacts["geopackage"], layer="branch_meeting_connections"
-    )
+    meetings = gpd.read_file(skipped.artifacts["geopackage"], layer="branch_meeting_connections")
     assert set(meetings["criterion_distance"]) == {"amber"}
 
 

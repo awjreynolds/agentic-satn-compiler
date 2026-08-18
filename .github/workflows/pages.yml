@@ -72,6 +72,17 @@ jobs:
             validator_args+=(--allow-non-production)
           fi
           python scripts/validate_pages_release.py "${validator_args[@]}"
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          enable-cache: true
+          version: "0.11.32"
+      - run: uv python install 3.12
+      - name: Install packaged-map rendering validator
+        run: uv sync --frozen --only-group test --no-install-project
+      - name: Install Chromium for packaged-map validation
+        run: uv run --no-sync playwright install --with-deps chromium
+      - name: Validate every packaged strategic network renders
+        run: uv run --no-sync python scripts/validate_pages_rendering.py pages
       - name: Upload validated Pages artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

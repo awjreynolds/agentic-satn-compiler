@@ -5669,8 +5669,6 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
         raise ValueError("review map disclaimer missing")
     for control in (
         "layer-strategic-network",
-        "layer-spine-access-connections",
-        "layer-cross-spine-connectors",
         "layer-urban-spines",
         "layer-low-traffic-areas",
         "layer-schools",
@@ -5684,6 +5682,13 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
     ):
         if f'id="{control}"' not in html:
             raise ValueError(f"review map control missing: {control}")
+    has_alignment_review_control = 'id="layer-alignment-review"' in html
+    has_legacy_backbone_controls = all(
+        f'id="{control}"' in html
+        for control in ("layer-spine-access-connections", "layer-cross-spine-connectors")
+    )
+    if not (has_alignment_review_control or has_legacy_backbone_controls):
+        raise ValueError("review map alignment/backbone controls missing")
     _validate_review_map_zip(output / "review-map.zip", output / "review-map")
     if not (output / "network-map.pdf").read_bytes().startswith(b"%PDF"):
         raise ValueError("invalid PDF output")

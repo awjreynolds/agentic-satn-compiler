@@ -14,6 +14,61 @@ PROJECT = Path(__file__).parents[1]
 
 
 @pytest.mark.browser
+def test_complete_strategic_network_is_the_rendered_default(tmp_path: Path) -> None:
+    fixture = tmp_path / "fixture"
+    shutil.copytree(
+        PROJECT / "examples" / "fixture",
+        fixture,
+        ignore=shutil.ignore_patterns("work", ".satn-cache"),
+    )
+    config = CouncilConfig.from_yaml(fixture / "council.yaml")
+    snapshot(config)
+    result = compile(config)
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.route("https://tile.openstreetmap.org/**", lambda route: route.abort())
+        page.goto(result.artifacts["review_map"].as_uri())
+        page.wait_for_function("document.documentElement.dataset.mapReady === 'true'")
+        page.wait_for_function("!window.SATN_REVIEW_MAP.isMoving()")
+
+        state = page.evaluate(
+            """() => {
+              const map = window.SATN_REVIEW_MAP;
+              const network = map.getSource("network")._data.features;
+              const counts = Object.fromEntries([
+                ["strategic-spine", "strategic-spines"],
+                ["spine-access-connection", "spine-access-connections"],
+                ["cross-spine-connector", "cross-spine-connectors"],
+              ].map(([featureType, layerId]) => [layerId, {
+                features: network.filter(
+                  (feature) => feature.properties?.feature_type === featureType
+                ).length,
+                visible: map.getLayoutProperty(layerId, "visibility") !== "none",
+              }]));
+              return {
+                counts,
+                reviewableCoreVisible: map.getLayer("reviewable-strategic-network-core")
+                  ? map.getLayoutProperty(
+                      "reviewable-strategic-network-core", "visibility"
+                    ) !== "none"
+                  : false,
+              };
+            }"""
+        )
+
+        assert state["counts"]["strategic-spines"]["features"] > 0
+        assert all(layer["visible"] for layer in state["counts"].values() if layer["features"] > 0)
+        assert not state["reviewableCoreVisible"]
+        assert page.evaluate(
+            "window.SATN_REVIEW_MAP.queryRenderedFeatures({layers: ['strategic-spines']})"
+            ".length > 0"
+        )
+        browser.close()
+
+
+@pytest.mark.browser
 def test_mobile_map_has_a_visible_compact_legend(tmp_path: Path) -> None:
     fixture = tmp_path / "fixture"
     shutil.copytree(
@@ -42,7 +97,7 @@ def test_mobile_map_has_a_visible_compact_legend(tmp_path: Path) -> None:
         assert all(
             label in legend_text
             for label in (
-                "Strategic network route",
+                "Strategic spine",
                 "Access connection",
                 "Cross-spine connector",
                 "Urban through-road",
@@ -395,9 +450,12 @@ def test_selecting_a_layer_only_changes_map_visibility(tmp_path: Path) -> None:
 
         control.check()
 
-        assert page.evaluate(
-            "window.SATN_REVIEW_MAP.getLayoutProperty('authority-boundaries', 'visibility')"
-        ) == "visible"
+        assert (
+            page.evaluate(
+                "window.SATN_REVIEW_MAP.getLayoutProperty('authority-boundaries', 'visibility')"
+            )
+            == "visible"
+        )
         assert popover.is_hidden()
         assert lens.is_hidden()
         assert map_legend.get_attribute("open") is None
