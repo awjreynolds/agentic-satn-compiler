@@ -23,6 +23,30 @@ from shapely.geometry import LineString, MultiLineString, mapping
 
 from satn.constants import DISCLAIMER, SCHEMA_VERSION
 from satn.evidence_contracts import evidence_geometry_fingerprint
+from satn.osm_active_travel import (
+    authoritative_cycleway_lineage as _authoritative_cycleway_lineage,
+)
+from satn.osm_active_travel import (
+    authoritative_lineage as _authoritative_lineage,
+)
+from satn.osm_active_travel import (
+    designation as _designation,
+)
+from satn.osm_active_travel import (
+    network_kind,
+)
+from satn.tags import (
+    canonical_tag_values as _tag_texts,
+)
+from satn.tags import (
+    source_identity,
+)
+from satn.tags import (
+    tag_identity as _tag_identity,
+)
+from satn.tags import (
+    tag_text as _tag_text,
+)
 
 _CONTEXT_KINDS = {
     "ncn-route": "current-ncn",
@@ -30,7 +54,12 @@ _CONTEXT_KINDS = {
     "declassified-ncn-route": "reclassified-ncn",
     "greenway-cycleway": "greenway",
     "cycleway": "cycle-track",
+    "road-cycleway": "road-cycleway",
+    "bicycle-priority-road": "bicycle-priority-road",
+    "bicycle-route": "bicycle-route",
+    "cycle-access-path": "cycle-access-path",
     "shared-use-path": "shared-use-path",
+    "bridleway": "public-bridleway",
     "public-footpath": "public-footpath",
     "public-bridleway": "public-bridleway",
     "restricted-byway": "restricted-byway",
@@ -39,25 +68,10 @@ _CONTEXT_KINDS = {
     "former-railway": "former-railway",
     "local-connector": "local-connector",
     "proposed-new-corridor": "proposed-new-corridor",
+    "proposed-cycleway": "proposed-new-corridor",
     "a-road-spine": "a-road",
     "b-road": "b-road",
     "unclassified-road": "unclassified-road",
-}
-_ROUTABLE_HIGHWAYS = {
-    "cycleway",
-    "path",
-    "track",
-    "footway",
-    "bridleway",
-    "steps",
-}
-_PROW_DESIGNATIONS = {
-    "public_footpath": "public-footpath",
-    "public_bridleway": "public-bridleway",
-    "bridleway": "public-bridleway",
-    "restricted_byway": "restricted-byway",
-    "byway_open_to_all_traffic": "byway-open-to-all-traffic",
-    "byway": "byway-open-to-all-traffic",
 }
 _VALID_EVIDENCE_STATES = {
     "supported",
@@ -70,6 +84,7 @@ _VALID_EVIDENCE_STATES = {
     "unknown",
 }
 _RAW_ATTRIBUTE_FIELDS = (
+    "name",
     "highway",
     "railway",
     "route_type",
@@ -98,6 +113,17 @@ _RAW_ATTRIBUTE_FIELDS = (
     "tags",
     "raw_tags",
     "osm_tags",
+    "osmid",
+    "osm_id",
+    "id",
+    "cycleway",
+    "bicycle_road",
+    "cyclestreet",
+    "route",
+    "lcn",
+    "rcn",
+    "ncn",
+    "icn",
 )
 
 # A complete export lineage is necessary but not sufficient to promote a row
@@ -105,63 +131,6 @@ _RAW_ATTRIBUTE_FIELDS = (
 # governed for the particular claim being asserted.  In particular, a
 # community-mapped observation may describe a mapped feature, but it cannot
 # establish statutory cycle-track status or a legal/physical connection.
-_AUTHORITY_ROLE_CLAIMS = {
-    "custodian": {
-        "cycling-access",
-        "continuity",
-        "current-cycling-provision",
-        "physical-connection",
-        "route-class",
-        "surface-condition",
-    },
-    "custodian-classification": {
-        "cycling-access",
-        "continuity",
-        "current-cycling-provision",
-        "physical-connection",
-        "route-class",
-        "surface-condition",
-    },
-    "highway-authority": {
-        "cycling-access",
-        "continuity",
-        "current-cycling-provision",
-        "physical-connection",
-        "route-class",
-        "surface-condition",
-    },
-    "legal-highway-record": {
-        "cycling-access",
-        "continuity",
-        "current-cycling-provision",
-        "physical-connection",
-        "route-class",
-    },
-    "asset-owner-record": {
-        "cycling-access",
-        "continuity",
-        "current-cycling-provision",
-        "physical-connection",
-        "surface-condition",
-    },
-    "scheme-delivery-record": {
-        "continuity",
-        "current-cycling-provision",
-        "physical-connection",
-        "surface-condition",
-    },
-    "authoritative-topography": {
-        "topography",
-        "surface-condition",
-    },
-}
-_CYCLEWAY_STATUS_CLAIMS = {
-    "cycling-access",
-    "continuity",
-    "current-cycling-provision",
-    "physical-connection",
-    "route-class",
-}
 
 # Classification is deliberately ordered as a governed precedence, rather than
 # inheriting the row order of a source export.  ``alignment_bases`` retains all
@@ -173,6 +142,10 @@ _ASSET_KIND_PRECEDENCE = (
     "reclassified-ncn",
     "greenway",
     "mapped-cycleway",
+    "road-cycleway",
+    "bicycle-priority-road",
+    "bicycle-route",
+    "cycle-access-path",
     "cycle-track",
     "shared-use-path",
     "public-footpath",
@@ -188,9 +161,7 @@ _ASSET_KIND_PRECEDENCE = (
     "unclassified-road",
     "proposed-new-corridor",
 )
-_ASSET_KIND_PRECEDENCE_INDEX = {
-    kind: index for index, kind in enumerate(_ASSET_KIND_PRECEDENCE)
-}
+_ASSET_KIND_PRECEDENCE_INDEX = {kind: index for index, kind in enumerate(_ASSET_KIND_PRECEDENCE)}
 
 
 def _json_value(value: object) -> object:
@@ -237,44 +208,6 @@ def _text(value: object) -> str | None:
     return text or None
 
 
-def _full_sha256(value: object) -> bool:
-    text = _text(value)
-    if text is None or len(text) != 64:
-        return False
-    try:
-        int(text, 16)
-    except ValueError:
-        return False
-    return True
-
-
-def _authoritative_lineage(row: pd.Series) -> bool:
-    """Return whether a supported claim carries a complete source lineage."""
-    source_export = row.get("source_export_sha256") or row.get("raw_bytes_sha256")
-    parser_contract = row.get("ingestion_contract") or row.get("parser_contract")
-    role = (_text(row.get("source_authority_role")) or "").lower().replace("_", "-")
-    claim = (_text(row.get("claim_type")) or "").lower().replace("_", "-")
-    allowed_claims = _AUTHORITY_ROLE_CLAIMS.get(role, set())
-    return bool(
-        _text(row.get("source_family"))
-        and _text(row.get("dataset"))
-        and _text(row.get("publisher"))
-        and _text(row.get("source_authority_role"))
-        and (_text(row.get("effective_date")) or _text(row.get("publisher_release")))
-        and _text(row.get("licence"))
-        and _full_sha256(source_export)
-        and claim in allowed_claims
-        and _text(row.get("evidence_mode"))
-        and _text(row.get("coverage_state"))
-        and (_text(parser_contract) or _text(row.get("parser_version")))
-    )
-
-
-def _authoritative_cycleway_lineage(row: pd.Series) -> bool:
-    claim = (_text(row.get("claim_type")) or "").lower().replace("_", "-")
-    return _authoritative_lineage(row) and claim in _CYCLEWAY_STATUS_CLAIMS
-
-
 def _merge_evidence_state(left: str, right: str) -> str:
     priority = {
         "provisional": 0,
@@ -314,7 +247,7 @@ def _derive_intervention_state(
     if kind in {"current-ncn", "ncn-link", "greenway", "cycle-track", "shared-use-path"} and any(
         item.get("observation_state") == "supported"
         and item.get("claim_type") in positive_claims
-        and item.get("raw_attributes", {}).get("bicycle") in {"yes", "designated"}
+        and set(_tag_texts(item.get("raw_attributes", {}).get("bicycle"))) & {"yes", "designated"}
         for item in provenance
     ):
         return "existing-provision"
@@ -343,9 +276,7 @@ def _canonical_metric_geometry(geometry: object) -> object:
             if index == 0 or item != coordinates[index - 1]
         ]
         if len(deduplicated) < 2:
-            raise ValueError(
-                "asset evidence line collapses after millimetre canonicalisation"
-            )
+            raise ValueError("asset evidence line collapses after millimetre canonicalisation")
         ordered = min(deduplicated, list(reversed(deduplicated)))
         return LineString([(x / 1000, y / 1000) for x, y in ordered])
     if isinstance(geometry, MultiLineString):
@@ -358,9 +289,7 @@ def _canonical_metric_geometry(geometry: object) -> object:
         if not parts:
             raise ValueError("asset evidence MultiLineString has no line members")
         return MultiLineString(parts)
-    raise ValueError(
-        "asset accounting only supports LineString and MultiLineString geometry"
-    )
+    raise ValueError("asset accounting only supports LineString and MultiLineString geometry")
 
 
 def _line_geometry(frame: gpd.GeoDataFrame, index: object, row: pd.Series) -> object | None:
@@ -370,16 +299,8 @@ def _line_geometry(frame: gpd.GeoDataFrame, index: object, row: pd.Series) -> ob
     return geometry
 
 
-def _designation(row: pd.Series) -> str | None:
-    for key in ("designation", "prow_class", "right_of_way", "route_type"):
-        value = _text(row.get(key))
-        if value:
-            return value.lower().replace(" ", "_")
-    return None
-
-
 def _context_kind(row: pd.Series) -> str | None:
-    feature_type = (_text(row.get("feature_type")) or "").lower().replace("_", "-")
+    feature_type = (_tag_text(row.get("feature_type")) or "").lower().replace("_", "-")
     if feature_type == "cycleway":
         # A cycleway label alone is mapped/provisional evidence.  Reserve the
         # legal-sounding cycle-track basis for a governed authoritative claim.
@@ -391,38 +312,6 @@ def _context_kind(row: pd.Series) -> str | None:
     return None
 
 
-def _network_kind(row: pd.Series) -> str | None:
-    ref = (_text(row.get("ref")) or "").upper()
-    if ref.startswith("A") and ref[1:].replace(" ", "").isdigit():
-        return "a-road"
-    if ref.startswith("B") and ref[1:].replace(" ", "").isdigit():
-        return "b-road"
-    railway = (_text(row.get("railway")) or "").lower()
-    if railway in {"abandoned", "disused", "historic"}:
-        return "former-railway"
-    designation = _designation(row)
-    if designation in _PROW_DESIGNATIONS:
-        return _PROW_DESIGNATIONS[designation]
-    highway = (_text(row.get("highway")) or "").lower()
-    if highway in {"unclassified", "residential", "living_street"}:
-        return "unclassified-road"
-    if highway in {"primary", "secondary", "tertiary", "trunk"}:
-        return "classified-unnumbered-road"
-    if highway not in _ROUTABLE_HIGHWAYS:
-        return None
-    if highway == "cycleway":
-        return "cycle-track" if _authoritative_cycleway_lineage(row) else "mapped-cycleway"
-    if highway in {"bridleway"}:
-        return "public-bridleway"
-    if highway in {"footway", "steps"}:
-        bicycle = (_text(row.get("bicycle")) or "").lower()
-        shared_use = (_text(row.get("shared_use")) or "").lower()
-        if bicycle in {"yes", "designated"} or shared_use in {"yes", "designated"}:
-            return "shared-use-path"
-        return None
-    return None
-
-
 def _evidence_row(
     row: pd.Series,
     *,
@@ -430,8 +319,11 @@ def _evidence_row(
     geometry_sha256: str | None,
     evidence_geometry_fingerprint_value: str | None,
 ) -> dict[str, object]:
-    evidence_id = _text(row.get("evidence_id"))
-    source_id = _text(row.get("source_id")) or _text(row.get("source_feature_id"))
+    evidence_id = _tag_identity(row.get("evidence_id"))
+    source_id = source_identity(
+        row,
+        ("source_id", "source_feature_id", "osmid", "osm_id", "id"),
+    )
     requested_state = _text(row.get("evidence_state")) or _text(row.get("observation_state"))
     observed_state = requested_state
     if observed_state not in _VALID_EVIDENCE_STATES:
@@ -449,9 +341,7 @@ def _evidence_row(
         {
             str(field): _json_value(value)
             for field, value in row.items()
-            if ":" in str(field)
-            and field != "geometry"
-            and _json_value(value) is not None
+            if ":" in str(field) and field != "geometry" and _json_value(value) is not None
         }
     )
     # Excluded and provisional observations remain reproducible from the raw
@@ -465,9 +355,7 @@ def _evidence_row(
             "raw_attributes": raw_attributes,
         }
     )
-    source_export_sha256 = _text(
-        row.get("source_export_sha256") or row.get("raw_bytes_sha256")
-    )
+    source_export_sha256 = _text(row.get("source_export_sha256") or row.get("raw_bytes_sha256"))
     return {
         "evidence_id": evidence_id,
         "source_id": source_id,
@@ -494,9 +382,7 @@ def _evidence_row(
         "coverage_state": _text(row.get("coverage_state")),
         "evidence_mode": _text(row.get("evidence_mode")),
         "observation_state": observed_state,
-        "authority_state": (
-            "authoritative" if _authoritative_lineage(row) else "unknown"
-        ),
+        "authority_state": ("authoritative" if _authoritative_lineage(row) else "unknown"),
     }
 
 
@@ -514,9 +400,7 @@ def _values(value: object) -> tuple[str, ...]:
         return (value,)
     if isinstance(value, Iterable):
         return tuple(
-            text
-            for item in value
-            if (text := _text(getattr(item, "value", item))) is not None
+            text for item in value if (text := _text(getattr(item, "value", item))) is not None
         )
     text = _text(getattr(value, "value", value))
     return (text,) if text is not None else ()
@@ -575,9 +459,7 @@ def _conflicting_provenance_identities(
             values = {
                 value
                 for item in items
-                if (
-                    value := _text(item.get("raw_attributes", {}).get(field))
-                ) is not None
+                if (value := _text(item.get("raw_attributes", {}).get(field))) is not None
             }
             normalized = {value.lower().replace("_", "-") for value in values}
             if normalized & positive and normalized & negative:
@@ -601,9 +483,7 @@ def _conflicting_provenance_identities(
             values = {
                 value.lower().replace("_", "-")
                 for item in family_records
-                if (
-                    value := _text(item.get("raw_attributes", {}).get(field))
-                ) is not None
+                if (value := _text(item.get("raw_attributes", {}).get(field))) is not None
             }
             if values & positive and values & negative:
                 return {
@@ -656,11 +536,7 @@ def _candidate_participation_disposition(
     candidate_id = _text(_field(candidate, "candidate_id"))
     admissions = _field(candidate_set, "admissions", ())
     admission = next(
-        (
-            item
-            for item in admissions or ()
-            if _text(_field(item, "candidate_id")) == candidate_id
-        ),
+        (item for item in admissions or () if _text(_field(item, "candidate_id")) == candidate_id),
         None,
     )
     admission_value = _field(admission, "disposition")
@@ -679,10 +555,15 @@ def _candidate_participation_disposition(
             "code": "candidate-evidence-incomplete",
             "preparation_disposition": preparation_disposition,
         }
-    if admission_disposition != "admitted" or preparation_disposition in {
-        "rejected",
-        "excluded",
-    } or preparation_disposition.startswith("rejected-"):
+    if (
+        admission_disposition != "admitted"
+        or preparation_disposition
+        in {
+            "rejected",
+            "excluded",
+        }
+        or preparation_disposition.startswith("rejected-")
+    ):
         rationale = _json_value(_field(admission, "rationale"))
         return "ineligible", {
             "code": "candidate-failed-admission-or-preparation",
@@ -700,9 +581,7 @@ def _candidate_participation_disposition(
         ):
             reason: dict[str, object] = {
                 "code": "effective-reviewable-selection",
-                "reviewable_result_fingerprint": _text(
-                    _field(reviewable, "result_fingerprint")
-                ),
+                "reviewable_result_fingerprint": _text(_field(reviewable, "result_fingerprint")),
             }
             officer_decision_id = _text(_field(selection, "officer_decision_id"))
             if officer_decision_id:
@@ -711,8 +590,7 @@ def _candidate_participation_disposition(
 
     scenario = _field(reviewable, "scenario")
     complementary_ids = {
-        _text(value)
-        for value in (_field(scenario, "complementary_candidate_ids", ()) or ())
+        _text(value) for value in (_field(scenario, "complementary_candidate_ids", ()) or ())
     }
     if candidate_id in complementary_ids:
         return "complementary", {
@@ -743,10 +621,7 @@ def _candidate_participation_disposition(
     return "eligible-not-selected", {
         "code": "eligible-candidate-not-selected",
         "comparison_disposition": comparison_reason,
-        "reviewable_result_fingerprint": _text(
-            _field(reviewable, "result_fingerprint")
-        )
-        or None,
+        "reviewable_result_fingerprint": _text(_field(reviewable, "result_fingerprint")) or None,
     }
 
 
@@ -868,9 +743,7 @@ def _exact_candidate_participations(
 ) -> list[dict[str, object]]:
     """Return only candidate records carrying an explicit source/evidence binding."""
     asset_identities = {
-        str(value)
-        for value in asset.get("governed_source_identities", ())
-        if value
+        str(value) for value in asset.get("governed_source_identities", ()) if value
     }
     if not asset_identities:
         return []
@@ -954,9 +827,7 @@ def _exact_candidate_participations(
                 "selection_reason": selection_reason,
                 "binding_basis": "explicit-governed-source-identity",
                 "binding_identities": unique_identities or matched_identities,
-                "preparation_disposition": _text(
-                    _field(record, "preparation_disposition")
-                ),
+                "preparation_disposition": _text(_field(record, "preparation_disposition")),
             }
         )
     return sorted(
@@ -982,7 +853,7 @@ def build_asset_accounting(
         if not isinstance(frame, gpd.GeoDataFrame) or frame.empty:
             continue
         for index, row in frame.sort_index().iterrows():
-            kind = _context_kind(row) if origin == "context" else _network_kind(row)
+            kind = _context_kind(row) if origin == "context" else network_kind(row)
             geometry = _line_geometry(frame, index, row)
             if geometry is None:
                 continue
@@ -1005,8 +876,7 @@ def build_asset_accounting(
                         "observation_state": "unknown",
                         "authority_state": "unknown",
                         "reason": (
-                            "source geometry CRS is missing or cannot be transformed "
-                            "to EPSG:27700"
+                            "source geometry CRS is missing or cannot be transformed to EPSG:27700"
                         ),
                     }
                 )
@@ -1164,9 +1034,7 @@ def build_asset_accounting(
                 str(item.get("source_sha256")),
             ),
         )
-        conflicting_provenance_ids = _conflicting_provenance_identities(
-            asset["source_provenance"]
-        )
+        conflicting_provenance_ids = _conflicting_provenance_identities(asset["source_provenance"])
         if conflicting_provenance_ids:
             # A duplicated source/evidence identity with divergent content is
             # itself a material contradiction.  Preserve every row, but make

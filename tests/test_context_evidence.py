@@ -177,6 +177,98 @@ def test_derives_declassified_ncn_and_greenway_cycle_route_evidence() -> None:
     assert route_evidence.loc["greenway-1", "name"] == "Local Greenway"
 
 
+def test_derives_array_shaped_cycleway_as_non_strategic_current_asset_context() -> None:
+    network = gpd.GeoDataFrame(
+        [
+            {
+                "osmid": np.array(["osm-norton-radstock-greenway"], dtype=object),
+                "name": ["Norton Radstock Greenway"],
+                "highway": np.array(["cycleway"], dtype=object),
+                "geometry": LineString([(0, 0), (0.02, 0)]),
+            }
+        ],
+        crs=4326,
+    )
+
+    context = derive_context_layers(network)
+
+    cycleway = context[context["feature_type"] == "cycleway"].iloc[0]
+    assert cycleway["source_id"] == "osm-norton-radstock-greenway"
+    assert cycleway["asset_kind"] == "mapped-cycleway"
+    assert cycleway["current_cycle_asset"]
+    assert (
+        not context["feature_type"].isin(["a-road-spine", "ncn-route", "greenway-cycleway"]).any()
+    )
+
+
+def test_road_active_travel_context_labels_preserve_signal_semantics() -> None:
+    network = gpd.GeoDataFrame(
+        [
+            {
+                "osmid": "road-cycleway",
+                "highway": "primary",
+                "cycleway:left": "track",
+                "geometry": LineString([(0, 0), (0.02, 0)]),
+            },
+            {
+                "osmid": "priority-road",
+                "highway": "residential",
+                "bicycle_road": "yes",
+                "geometry": LineString([(0, 0.01), (0.02, 0.01)]),
+            },
+            {
+                "osmid": "signed-route-road",
+                "highway": "unclassified",
+                "route": "bicycle",
+                "geometry": LineString([(0, 0.02), (0.02, 0.02)]),
+            },
+        ],
+        crs=4326,
+    )
+
+    context = derive_context_layers(network).set_index("source_id")
+
+    assert context.loc["road-cycleway", "feature_type"] == "road-cycleway"
+    assert context.loc["road-cycleway", "asset_kind"] == "road-cycleway"
+    assert context.loc["priority-road", "feature_type"] == "bicycle-priority-road"
+    assert context.loc["priority-road", "asset_kind"] == "bicycle-priority-road"
+    assert context.loc["signed-route-road", "feature_type"] == "bicycle-route"
+    assert context.loc["signed-route-road", "asset_kind"] == "bicycle-route"
+    assert context.loc[
+        ["road-cycleway", "priority-road", "signed-route-road"], "current_cycle_asset"
+    ].all()
+
+
+def test_derives_planned_cycleway_as_non_current_context_evidence() -> None:
+    network = gpd.GeoDataFrame(
+        [
+            {
+                "osmid": "osm-planned-cycleway",
+                "highway": "construction",
+                "cycleway": "lane",
+                "geometry": LineString([(0, 0), (0.02, 0)]),
+            },
+            {
+                "osmid": "osm-proposed-cycleway",
+                "highway": "proposed",
+                "cycleway": "proposed",
+                "geometry": LineString([(0, 0.01), (0.02, 0.01)]),
+            },
+        ],
+        crs=4326,
+    )
+
+    context = derive_context_layers(network)
+
+    planned = context[context["feature_type"] == "proposed-cycleway"]
+    assert set(planned["source_id"]) == {
+        "osm-planned-cycleway",
+        "osm-proposed-cycleway",
+    }
+    assert not planned["current_cycle_asset"].any()
+    assert not context["feature_type"].isin({"ncn-route", "greenway-cycleway"}).any()
+
+
 def test_governed_urban_extent_splits_strategic_evidence_into_typed_parts() -> None:
     network = gpd.GeoDataFrame(
         [
@@ -398,9 +490,7 @@ def test_mark_ncn_edges_uses_one_shared_spatial_query(monkeypatch) -> None:
             {
                 "osmid": f"edge-{index}",
                 "highway": "unclassified",
-                "geometry": LineString(
-                    [(0, index / 10_000), (0.01, index / 10_000)]
-                ),
+                "geometry": LineString([(0, index / 10_000), (0.01, index / 10_000)]),
             }
             for index in range(20)
         ],

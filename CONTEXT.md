@@ -160,6 +160,14 @@ _Avoid_: council name, jurisdiction switch, source footprint, compilation failur
 The stable compiler record for one physical reusable asset assembled from Evidence Observations under a configured claim-specific authority hierarchy. Conflicting observations remain attached; they are not collapsed into an unsupported best answer, and unavailable optional evidence never removes the asset.
 _Avoid_: source feature copy, verified condition, globally preferred dataset
 
+**OSM Active Travel Asset**:
+A routable way in a pinned OpenStreetMap snapshot whose explicit tags identify existing active-travel infrastructure or cycle access. It enters Asset Accounting automatically with OSM provenance; condition, access, strategic participation and intervention need remain separate claims and never determine whether the asset exists.
+_Avoid_: unverified cycleway, NCN-only asset, candidate route
+
+**Cycle Access Path**:
+An OSM path, footway, pedestrian way or track with explicit bicycle access but without enough evidence to call it a designed Shared-Use Path. It is an OSM Active Travel Asset and normally an upgrade opportunity; permissive access remains visibly revocable.
+_Avoid_: Shared-Use Path, Cycle Track, excluded path
+
 **Asset Accounting**:
 The exhaustive result record for every governed asset, keeping scope state, opportunity state and evidence states independent from zero or more Candidate Participation records. An in-scope asset with no candidate participation carries an explicit non-participation reason.
 _Avoid_: selected-assets list, global candidate disposition, silent omission

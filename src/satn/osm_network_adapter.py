@@ -41,6 +41,7 @@ from satn.evidence_contracts import (
     SourceExport,
     evidence_fingerprint,
 )
+from satn.osm_active_travel import OSM_ACTIVE_TRAVEL_WAY_TAGS
 
 SOURCE_LAYER: Final = "openstreetmap/lines"
 SOURCE_FAMILY: Final = "openstreetmap"
@@ -60,22 +61,16 @@ ATTRIBUTES: Final = (
     "highway",
     "ref",
     "oneway",
-    "surface",
+    *OSM_ACTIVE_TRAVEL_WAY_TAGS,
     "access",
-    "bicycle",
-    "foot",
-    "cycleway",
     "service",
-    "tracktype",
     "bridge",
     "tunnel",
     "junction",
     "maxspeed",
     "lanes",
     "width",
-    "lit",
     "ele",
-    "incline",
 )
 _PROMOTED_ATTRIBUTES: Final = frozenset({"name", "highway"})
 _READ_COLUMNS: Final = ("osm_id", "name", "highway", "other_tags")

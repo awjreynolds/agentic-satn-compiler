@@ -9,10 +9,12 @@ from datetime import date
 from pathlib import Path
 
 import geopandas as gpd
+import numpy as np
 import pytest
 from shapely.geometry import LineString, MultiLineString
 
 import satn.spine_access_candidate_preparation as preparation
+from satn.evidence import derive_osm_active_travel_assets
 from satn.models import CouncilConfig, SourceConfig
 from satn.network_selection import NetworkSelectionProfile
 from satn.pipeline import compilation_governed_input_fingerprint
@@ -124,9 +126,7 @@ def routing_graph(*, include_b_road: bool = False) -> RoadGraph:
                     "ref": "B3116",
                     "oneway": False,
                     "satn_ncn": False,
-                    "geometry": LineString(
-                        [(400000, 170000), (400500, 170200)]
-                    ),
+                    "geometry": LineString([(400000, 170000), (400500, 170200)]),
                 },
                 {
                     "u": "b-mid",
@@ -137,9 +137,7 @@ def routing_graph(*, include_b_road: bool = False) -> RoadGraph:
                     "ref": "B3116",
                     "oneway": False,
                     "satn_ncn": False,
-                    "geometry": LineString(
-                        [(400500, 170200), (401000, 170000)]
-                    ),
+                    "geometry": LineString([(400500, 170200), (401000, 170000)]),
                 },
             ]
         )
@@ -154,6 +152,51 @@ def routing_graph(*, include_b_road: bool = False) -> RoadGraph:
         for row in list(rows)
     )
     return RoadGraph(gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:27700"))
+
+
+def test_road_graph_preserves_collection_valued_osm_edge_identity() -> None:
+    graph = RoadGraph(
+        gpd.GeoDataFrame(
+            [
+                {
+                    "u": "start",
+                    "v": "end",
+                    "osmid": np.array(["osm-cycleway-1"], dtype=object),
+                    "source_id": ["source-cycleway-1"],
+                    "highway": np.array(["cycleway"], dtype=object),
+                    "oneway": False,
+                    "geometry": LineString([(400000, 170000), (401000, 170000)]),
+                }
+            ],
+            geometry="geometry",
+            crs="EPSG:27700",
+        )
+    )
+
+    assert graph.edge_ids_for_node("start") == ("osm-cycleway-1",)
+    assert graph.graph["start"]["end"]["edge_id"] == "osm-cycleway-1"
+
+
+def test_road_graph_excludes_bicycle_no_edges_from_cycling_routes() -> None:
+    graph = RoadGraph(
+        gpd.GeoDataFrame(
+            [
+                {
+                    "u": "start",
+                    "v": "end",
+                    "osmid": "osm-cycleway-no",
+                    "highway": "cycleway",
+                    "bicycle": np.array(["no"], dtype=object),
+                    "oneway": False,
+                    "geometry": LineString([(400000, 170000), (401000, 170000)]),
+                }
+            ],
+            geometry="geometry",
+            crs="EPSG:27700",
+        )
+    )
+
+    assert graph.option("start", "end", "direct") is None
 
 
 def connections() -> gpd.GeoDataFrame:
@@ -172,8 +215,8 @@ def connections() -> gpd.GeoDataFrame:
             "community_attachment_node": "community-node",
             "target_attachment_node": "target-node",
             "spine_attachment_node": "target-node",
-            "source_ids": "[\"source-route-1\"]",
-            "provenance": "{\"source_ids\":[\"source-route-1\"]}",
+            "source_ids": '["source-route-1"]',
+            "provenance": '{"source_ids":["source-route-1"]}',
             "geometry": LineString([(400000, 170000), (401000, 170000)]),
         },
         {
@@ -215,7 +258,7 @@ def spines() -> gpd.GeoDataFrame:
                 "spine_kind": "a-road",
                 "source_id": "strategic-source-exact",
                 "evidence_id": "strategic-evidence-exact",
-                "provenance": "{\"evidence_ids\":[\"original-evidence-7\"]}",
+                "provenance": '{"evidence_ids":["original-evidence-7"]}',
                 "geometry": LineString([(400900, 169900), (401100, 170100)]),
             }
         ],
@@ -232,9 +275,7 @@ def current_asset_context() -> gpd.GeoDataFrame:
                 "ncn_evidence_role": "established-route",
                 "evidence_id": "current-ncn-evidence",
                 "source_id": "official-ncn-source",
-                "geometry": LineString(
-                    [(400000, 170000), (400500, 169900), (401000, 170000)]
-                ),
+                "geometry": LineString([(400000, 170000), (400500, 169900), (401000, 170000)]),
             },
             {
                 "feature_type": "declassified-ncn-route",
@@ -259,9 +300,7 @@ def official_b_roads() -> gpd.GeoDataFrame:
                 "effective_date": "2026-04-01",
                 "licence": "Open Government Licence v3.0",
                 "content_fingerprint": "b" * 64,
-                "geometry": LineString(
-                    [(400000, 170000), (400500, 170200), (401000, 170000)]
-                ),
+                "geometry": LineString([(400000, 170000), (400500, 170200), (401000, 170000)]),
             }
         ],
         geometry="geometry",
@@ -363,9 +402,7 @@ def test_preparation_matches_pinned_traffic_before_candidate_identity() -> None:
         for item in baseline.prepared_spine_access_connections[0].candidate_set.candidates
     }
     assert any(item.candidate_id not in baseline_ids for item in candidates)
-    assert result.evidence_lineage["traffic_matching"]["evidence_state_fingerprint"] == (
-        "c" * 64
-    )
+    assert result.evidence_lineage["traffic_matching"]["evidence_state_fingerprint"] == ("c" * 64)
 
 
 def test_maps_current_ncn_a_road_and_other_without_declassified_advantage() -> None:
@@ -382,20 +419,58 @@ def test_maps_current_ncn_a_road_and_other_without_declassified_advantage() -> N
         for item in prepared.candidate_records
         if item.candidate.source_class.value == "verified-existing-asset"
     )
-    assert {
-        evidence["evidence_id"] for evidence in current["current_asset_evidence"]
-    } == {"current-ncn-evidence"}
+    assert {evidence["evidence_id"] for evidence in current["current_asset_evidence"]} == {
+        "current-ncn-evidence"
+    }
     assert prepared.strategic_source_id == "strategic-source-exact"
     assert prepared.strategic_evidence_id == "strategic-evidence-exact"
-    assert prepared.strategic_provenance == (
-        "{\"evidence_ids\":[\"original-evidence-7\"]}"
-    )
+    assert prepared.strategic_provenance == ('{"evidence_ids":["original-evidence-7"]}')
     result_scope = prepare_without_evidence().diagnostics["scope"]
     assert result_scope == "spine-access-candidate-preparation"
     assert all(
-        "selected" not in item["rationale"].lower()
-        and "preferred" not in item["rationale"].lower()
+        "selected" not in item["rationale"].lower() and "preferred" not in item["rationale"].lower()
         for item in prepared.candidate_generation_rationales
+    )
+
+
+def test_generic_cycleway_is_verified_existing_asset_without_ncn_evidence() -> None:
+    raw_network = gpd.GeoDataFrame(
+        [
+            {
+                "osmid": np.array(["osm-way-cycleway"], dtype=object),
+                "name": ["Norton Radstock Greenway"],
+                "highway": np.array(["cycleway"], dtype=object),
+                "geometry": LineString([(400000, 170000), (401000, 170000)]),
+            }
+        ],
+        geometry="geometry",
+        crs="EPSG:27700",
+    )
+    context = derive_osm_active_travel_assets(raw_network)
+
+    result = prepare_spine_access_candidates(
+        profile(),
+        road_graph=routing_graph(),
+        spine_access_connections=connections(),
+        access_obligations=obligations(),
+        strategic_spines=spines(),
+        context=context,
+        official_road_classification=None,
+        source_config=empty_source_config(),
+        config_directory=Path.cwd(),
+    )
+    prepared = result.prepared_spine_access_connections[0]
+
+    verified = [
+        item
+        for item in prepared.candidate_records
+        if item.candidate.source_class.value == "verified-existing-asset"
+    ]
+    assert verified
+    assert any(
+        evidence["source_id"] == "osm-way-cycleway" and evidence["current_cycle_asset"]
+        for item in verified
+        for evidence in item.canonical()["current_asset_evidence"]
     )
 
 
@@ -440,8 +515,7 @@ def test_routing_deduplication_is_recorded_and_admission_enforces_profile_limit(
 
     assert sum(item.disposition.value == "admitted" for item in candidate_set.admissions) == 2
     assert any(
-        item.rationale.value == "profile-candidate-limit"
-        for item in candidate_set.admissions
+        item.rationale.value == "profile-candidate-limit" for item in candidate_set.admissions
     )
     assert any(
         item.reason == "exact-equivalent-routing-geometry"
@@ -531,9 +605,7 @@ def test_material_clustering_prevents_profile_limit_dangling_duplicate_crash(
 ) -> None:
     ncn = RouteOption(
         role="ncn-informed",
-        geometry=LineString(
-            [(400000, 170000), (400500, 169900), (401000, 170000)]
-        ),
+        geometry=LineString([(400000, 170000), (400500, 169900), (401000, 170000)]),
         length_km=1.2,
         edge_ids=["ncn-left", "ncn-right"],
         a_road_share=0.0,
@@ -546,9 +618,7 @@ def test_material_clustering_prevents_profile_limit_dangling_duplicate_crash(
     )
     a_road = RouteOption(
         role="strategic-spine",
-        geometry=LineString(
-            [(400000, 170000), (400500, 170100), (401000, 170000)]
-        ),
+        geometry=LineString([(400000, 170000), (400500, 170100), (401000, 170000)]),
         length_km=1.1,
         edge_ids=["a-left", "a-right"],
         a_road_share=1.0,
@@ -561,9 +631,7 @@ def test_material_clustering_prevents_profile_limit_dangling_duplicate_crash(
     )
     shifted_other = RouteOption(
         role="direct",
-        geometry=LineString(
-            [(400000, 170000.01), (400500, 170100.01), (401000, 170000.01)]
-        ),
+        geometry=LineString([(400000, 170000.01), (400500, 170100.01), (401000, 170000.01)]),
         length_km=1.1,
         edge_ids=["direct"],
         a_road_share=0.0,
@@ -671,9 +739,7 @@ def test_topology_unsatisfied_ncn_cannot_suppress_valid_direct_candidate(
         "other-routable"
     ]
     invalid_record = next(
-        item
-        for item in prepared.candidate_records
-        if item.route_role == "ncn-informed"
+        item for item in prepared.candidate_records if item.route_role == "ncn-informed"
     )
     assert invalid_record.preparation_disposition == "rejected-topology-unsatisfied"
     assert invalid_record.rejection_reason == "topology-unsatisfied"
@@ -699,9 +765,7 @@ def test_unknown_topology_never_beats_satisfied_material_candidate_by_precedence
     )
     unknown_payload["source_class"] = "verified-existing-asset"
     unknown_payload["topology_state"] = "unknown"
-    unknown_candidate = preparation.AlignmentCandidateInput.model_validate(
-        unknown_payload
-    )
+    unknown_candidate = preparation.AlignmentCandidateInput.model_validate(unknown_payload)
     unknown_record = replace(
         satisfied_record,
         candidate=unknown_candidate,
@@ -779,9 +843,7 @@ def test_missing_parent_place_is_an_explicit_unresolved_roster_gap(
 ) -> None:
     frame = connections()
     frame["parent_place_id"] = frame["parent_place_id"].astype(object)
-    frame.loc[frame["obligation_kind"].eq("community"), "parent_place_id"] = (
-        parent_place_id
-    )
+    frame.loc[frame["obligation_kind"].eq("community"), "parent_place_id"] = parent_place_id
 
     result = prepare_spine_access_candidates(
         profile(),
@@ -848,10 +910,9 @@ def test_enabled_b_road_candidate_requires_and_retains_official_evidence() -> No
 
     assert b_candidate["route_role"] == "b-road-corridor"
     assert b_candidate["official_b_road_share"] > 0
-    assert {
-        item["official_feature_id"]
-        for item in b_candidate["official_b_road_evidence"]
-    } == {"official-b3116"}
+    assert {item["official_feature_id"] for item in b_candidate["official_b_road_evidence"]} == {
+        "official-b3116"
+    }
 
 
 def test_unverified_b_road_is_a_complete_immutable_rejected_record() -> None:
@@ -889,9 +950,7 @@ def test_unverified_b_road_is_a_complete_immutable_rejected_record() -> None:
     assert canonical["generation_rationale"]
     assert canonical["connection"]["access_connection_id"] == "access-connection-1"
     issue = next(
-        item
-        for item in result.generation_issues
-        if item.reason == "b-road-evidence-unverified"
+        item for item in result.generation_issues if item.reason == "b-road-evidence-unverified"
     )
     assert issue.candidate_id == rejected.candidate.candidate_id
     assert issue.source_class == "other-routable"
@@ -945,9 +1004,7 @@ def test_disconnected_multipart_route_is_an_explicit_generation_issue(
 
     result = prepare_without_evidence()
 
-    assert (
-        result.prepared_spine_access_connections[0].candidate_set.candidates == ()
-    )
+    assert result.prepared_spine_access_connections[0].candidate_set.candidates == ()
     assert result.generation_issues[0].reason == "disconnected-multipart-route"
 
 
@@ -978,17 +1035,17 @@ def council_with_population_files(
         "output_area_geometry": artifact(
             tmp_path / "oa.geojson",
             source_id="oa-geometry",
-            content=b"{\"oa\":1}",
+            content=b'{"oa":1}',
         ),
         "population_weighted_centroids": artifact(
             tmp_path / "pwc.geojson",
             source_id="oa-pwc",
-            content=b"{\"pwc\":2}",
+            content=b'{"pwc":2}',
         ),
         "usual_resident_counts": artifact(
             tmp_path / "counts.json",
             source_id="oa-counts",
-            content=b"{\"counts\":3}",
+            content=b'{"counts":3}',
         ),
     }
     return CouncilConfig(
@@ -1016,7 +1073,7 @@ def test_psa_file_bytes_enter_reuse_identity_before_publication_reuse(tmp_path: 
     )
     configured = council.source.population_reach_evidence
     assert configured is not None
-    configured.output_area_geometry.path.write_bytes(b"{\"oa\":\"changed\"}")
+    configured.output_area_geometry.path.write_bytes(b'{"oa":"changed"}')
 
     changed = compilation_governed_input_fingerprint(
         council,
@@ -1049,7 +1106,7 @@ def test_no_profile_does_not_promote_psa_file_bytes_into_legacy_reuse_identity(
     )
     configured = council.source.population_reach_evidence
     assert configured is not None
-    configured.output_area_geometry.path.write_bytes(b"{\"oa\":\"changed\"}")
+    configured.output_area_geometry.path.write_bytes(b'{"oa":"changed"}')
 
     assert (
         compilation_governed_input_fingerprint(
@@ -1118,7 +1175,7 @@ def test_admissions_artifact_requires_its_own_freshness_window(tmp_path: Path) -
         "admissions": artifact(
             tmp_path / "admissions.json",
             source_id="admissions",
-            content=b"{\"schema\":\"fixture\"}",
+            content=b'{"schema":"fixture"}',
         )
     }
     with pytest.raises(

@@ -21,7 +21,7 @@ import hashlib
 import json
 import math
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
@@ -167,12 +167,8 @@ class PreparedCandidateRecord:
             "source_class": self.candidate.source_class.value,
             "topology_state": self.candidate.topology_state.value,
             "endpoints": list(self.candidate.endpoints),
-            "served_network_place_ids": list(
-                self.candidate.served_network_place_ids
-            ),
-            "served_access_obligation_ids": list(
-                self.candidate.served_access_obligation_ids
-            ),
+            "served_network_place_ids": list(self.candidate.served_network_place_ids),
+            "served_access_obligation_ids": list(self.candidate.served_access_obligation_ids),
             "served_strategic_destination_ids": list(
                 self.candidate.served_strategic_destination_ids
             ),
@@ -184,9 +180,7 @@ class PreparedCandidateRecord:
             "current_asset_share": self.current_asset_share,
             "current_asset_evidence": json.loads(self.current_asset_evidence_json),
             "official_b_road_share": self.official_b_road_share,
-            "official_b_road_evidence": json.loads(
-                self.official_b_road_evidence_json
-            ),
+            "official_b_road_evidence": json.loads(self.official_b_road_evidence_json),
             "connection": json.loads(self.connection_json),
             "strategic_spine": json.loads(self.strategic_spine_json),
             "preparation_disposition": self.preparation_disposition,
@@ -321,9 +315,7 @@ def prepare_spine_access_candidates(
 
     profile = NetworkSelectionProfile.model_validate(profile.model_dump(mode="json"))
     traffic_policy = (
-        TrafficMatchPolicy.model_validate(
-            profile.traffic_match_policy.model_dump(mode="json")
-        )
+        TrafficMatchPolicy.model_validate(profile.traffic_match_policy.model_dump(mode="json"))
         if profile.traffic_match_policy is not None
         else None
     )
@@ -416,8 +408,7 @@ def prepare_spine_access_candidates(
     diagnostics = {
         "candidate_set_count": len(prepared_spine_access_connections),
         "candidate_count": sum(
-            len(item.candidate_set.candidates)
-            for item in prepared_spine_access_connections
+            len(item.candidate_set.candidates) for item in prepared_spine_access_connections
         ),
         "spine_access_connection_count": int(
             (
@@ -435,8 +426,7 @@ def prepare_spine_access_candidates(
             item.disposition.startswith("prepared-") for item in connection_roster
         ),
         "out_of_scope_connection_count": sum(
-            item.disposition == "out-of-scope-direct-strategic-spine"
-            for item in connection_roster
+            item.disposition == "out-of-scope-direct-strategic-spine" for item in connection_roster
         ),
         "unresolved_connection_count": sum(
             item.disposition == "unresolved-gap" for item in connection_roster
@@ -746,10 +736,10 @@ def _prepare_spine_access_candidate_sets(
                 option,
                 road_graph,
                 current_asset_share=current_asset_share,
+                current_asset_evidence=existing_rows,
                 official_b_road_share=official_b_road_share,
                 b_road_enabled=(
-                    CandidateSourceClass.B_ROAD_CORRIDOR
-                    in profile.candidate_source_precedence
+                    CandidateSourceClass.B_ROAD_CORRIDOR in profile.candidate_source_precedence
                 ),
             )
             b_road_evidence_unverified = (
@@ -781,9 +771,7 @@ def _prepare_spine_access_candidate_sets(
             if traffic_result is not None:
                 option_payload["traffic_match_state"] = traffic_result.match_state.value
                 option_payload["traffic_match_proof"] = dict(traffic_result.match_proof)
-                option_payload["traffic_match_state_fingerprint"] = (
-                    traffic_result.state_fingerprint
-                )
+                option_payload["traffic_match_state_fingerprint"] = traffic_result.state_fingerprint
             provenance_ids = tuple(
                 sorted(
                     {
@@ -809,9 +797,7 @@ def _prepare_spine_access_candidate_sets(
                 evidence_fingerprints=(_fingerprint(option_payload),),
                 provenance_ids=provenance_ids,
                 topology_state=(
-                    CriterionState.SATISFIED
-                    if option.bidirectional
-                    else CriterionState.UNSATISFIED
+                    CriterionState.SATISFIED if option.bidirectional else CriterionState.UNSATISFIED
                 ),
                 served_network_place_ids=(endpoint_left, endpoint_right),
                 served_access_obligation_ids=obligation_ids,
@@ -841,9 +827,7 @@ def _prepare_spine_access_candidate_sets(
                     evidence_quality=max(current_asset_share, official_b_road_share),
                     record=record,
                     pre_admission_rejection_reason=(
-                        "b-road-evidence-unverified"
-                        if b_road_evidence_unverified
-                        else None
+                        "b-road-evidence-unverified" if b_road_evidence_unverified else None
                     ),
                 )
             )
@@ -1032,9 +1016,7 @@ def _material_representatives(
             (
                 representative
                 for representative in representatives
-                if representative.candidate.geometry.materially_equivalent(
-                    item.candidate.geometry
-                )
+                if representative.candidate.geometry.materially_equivalent(item.candidate.geometry)
             ),
             None,
         )
@@ -1045,10 +1027,7 @@ def _material_representatives(
             )
             representatives.append(item)
             continue
-        exact = (
-            retained.candidate.geometry.fingerprint
-            == item.candidate.geometry.fingerprint
-        )
+        exact = retained.candidate.geometry.fingerprint == item.candidate.geometry.fingerprint
         reason = (
             "exact-equivalent-routing-geometry"
             if exact
@@ -1075,10 +1054,7 @@ def _material_representatives(
                 source_class=item.candidate.source_class.value,
             )
         )
-    if any(
-        item.candidate.topology_state == CriterionState.SATISFIED
-        for item in representatives
-    ):
+    if any(item.candidate.topology_state == CriterionState.SATISFIED for item in representatives):
         admissible_representatives: list[_GeneratedCandidate] = []
         for item in representatives:
             if item.candidate.topology_state != CriterionState.UNKNOWN:
@@ -1120,8 +1096,7 @@ def _canonical_geometry(
         return (
             CanonicalLineString(
                 coordinates=tuple(
-                    (float(coordinate[0]), float(coordinate[1]))
-                    for coordinate in projected.coords
+                    (float(coordinate[0]), float(coordinate[1])) for coordinate in projected.coords
                 )
             ),
             None,
@@ -1135,10 +1110,14 @@ def _candidate_source_class(
     graph: RoadGraph,
     *,
     current_asset_share: float,
+    current_asset_evidence: Sequence[dict[str, object]] | None = None,
     official_b_road_share: float,
     b_road_enabled: bool,
 ) -> CandidateSourceClass:
-    if option.role == "ncn-informed" and current_asset_share > 0:
+    has_generic_cycle_asset = any(
+        bool(item.get("current_cycle_asset")) for item in (current_asset_evidence or ())
+    )
+    if current_asset_share > 0 and (option.role == "ncn-informed" or has_generic_cycle_asset):
         return CandidateSourceClass.VERIFIED_EXISTING_ASSET
     refs = _option_refs(option, graph)
     if option.role == "strategic-spine" and any(
@@ -1243,12 +1222,44 @@ def _current_asset_evidence(
 ) -> tuple[list[dict[str, object]], float]:
     if not isinstance(geometry, LineString) or context.empty:
         return [], 0.0
-    required = {"feature_type", "ncn_evidence_role", "evidence_id", "source_id"}
+    required = {"feature_type", "evidence_id", "source_id"}
     if not required.issubset(context.columns):
         return [], 0.0
+    feature_type = context["feature_type"].fillna("").astype(str)
+    ncn_evidence_role = (
+        context.get(
+            "ncn_evidence_role",
+            pd.Series("", index=context.index, dtype=object),
+        )
+        .fillna("")
+        .astype(str)
+    )
+    asset_kind = (
+        context.get(
+            "asset_kind",
+            pd.Series("", index=context.index, dtype=object),
+        )
+        .fillna("")
+        .astype(str)
+    )
+    explicit_cycle_asset = (
+        context.get(
+            "current_cycle_asset",
+            pd.Series(False, index=context.index, dtype=bool),
+        )
+        .fillna(False)
+        .astype(bool)
+    )
     current = context[
-        context["feature_type"].isin(_CURRENT_ASSET_TYPES)
-        & context["ncn_evidence_role"].isin(_CURRENT_ASSET_ROLES)
+        (
+            feature_type.eq("cycleway")
+            | asset_kind.eq("mapped-cycleway")
+            | explicit_cycle_asset
+            | (
+                feature_type.isin(_CURRENT_ASSET_TYPES)
+                & ncn_evidence_role.isin(_CURRENT_ASSET_ROLES)
+            )
+        )
         & context["evidence_id"].notna()
         & context["source_id"].notna()
     ]
@@ -1269,6 +1280,11 @@ def _current_asset_evidence(
                 "source_id": _json_safe(original.get("source_id")),
                 "feature_type": _json_safe(original.get("feature_type")),
                 "ncn_evidence_role": _json_safe(original.get("ncn_evidence_role")),
+                "current_cycle_asset": bool(
+                    str(original.get("feature_type") or "") == "cycleway"
+                    or str(original.get("asset_kind") or "") == "mapped-cycleway"
+                    or bool(original.get("current_cycle_asset"))
+                ),
                 "geometry_wkb": original.geometry.wkb_hex,
             }
         )
@@ -1402,9 +1418,7 @@ def _candidate_generation_rationale(route_role: str) -> str:
         "ncn-informed": (
             "Generated by weighting edges associated with current cycle-route assets."
         ),
-        "low-traffic": (
-            "Generated by weighting lower-traffic routable highway classes."
-        ),
+        "low-traffic": ("Generated by weighting lower-traffic routable highway classes."),
     }.get(route_role, "Generated as a deterministic routable alternative.")
 
 
@@ -1475,9 +1489,7 @@ def _evidence_lineage(
             "source": population.source.canonical(),
             "source_content_sha256": population.source.content_sha256,
             "frame_content_sha256": population.frame_content_sha256,
-            "artifact_lineage": [
-                item.canonical() for item in population.artifact_lineage
-            ],
+            "artifact_lineage": [item.canonical() for item in population.artifact_lineage],
         }
     if education is not None:
         lineage["education"] = {

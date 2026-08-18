@@ -291,6 +291,23 @@ def test_read_partitions_scans_once_preserves_full_ways_and_fans_requested_cells
         "bicycle": "yes",
         "foot": "designated",
         "cycleway": "lane",
+        "cycleway:left": None,
+        "cycleway:right": None,
+        "cycleway:both": None,
+        "segregated": None,
+        "designation": None,
+        "bicycle_road": None,
+        "cyclestreet": None,
+        "route": None,
+        "network": None,
+        "lcn": None,
+        "rcn": None,
+        "ncn": None,
+        "icn": None,
+        "railway": None,
+        "prow_class": None,
+        "right_of_way": None,
+        "shared_use": None,
         "service": None,
         "tracktype": "grade1",
         "bridge": "no",
@@ -409,3 +426,45 @@ def test_other_tags_parser_is_closed_and_never_evaluates_tag_text() -> None:
         adapter._parse_other_tags('"ref"=>__import__("os")')
     with pytest.raises(ValueError, match="unsupported escape"):
         adapter._parse_other_tags(r'"ref"=>"bad\n"')
+
+
+def test_normalise_attributes_preserves_active_travel_way_tags() -> None:
+    attrs = adapter._normalise_attributes(
+        {
+            "name": "Planned way",
+            "highway": "construction",
+            "other_tags": (
+                '"cycleway:left"=>"lane","cycleway:right"=>"no",'
+                '"bicycle_road"=>"yes","cyclestreet"=>"yes",'
+                '"route"=>"bicycle","network"=>"rcn",'
+                '"lcn"=>"yes","rcn"=>"yes","ncn"=>"no","icn"=>"no"'
+            ),
+        }
+    )
+
+    assert {
+        key: attrs[key]
+        for key in (
+            "cycleway:left",
+            "cycleway:right",
+            "bicycle_road",
+            "cyclestreet",
+            "route",
+            "network",
+            "lcn",
+            "rcn",
+            "ncn",
+            "icn",
+        )
+    } == {
+        "cycleway:left": "lane",
+        "cycleway:right": "no",
+        "bicycle_road": "yes",
+        "cyclestreet": "yes",
+        "route": "bicycle",
+        "network": "rcn",
+        "lcn": "yes",
+        "rcn": "yes",
+        "ncn": "no",
+        "icn": "no",
+    }
