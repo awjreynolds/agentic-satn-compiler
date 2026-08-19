@@ -150,6 +150,7 @@ def _inspect_deployment(
               const map = window.SATN_REVIEW_MAP;
               const source = map.getSource("network");
               const features = source?._data?.features || [];
+              const reviewableFeatures = map.getSource("reviewable")?._data?.features || [];
               const expected = [
                 ["strategic-spine", "strategic-spines"],
                 ["spine-access-connection", "spine-access-connections"],
@@ -165,6 +166,13 @@ def _inspect_deployment(
                   feature.properties?.feature_type === featureType
                 ).length,
               ]));
+              counts["urban-spine"] = features.filter((feature) =>
+                feature.properties?.feature_type === "urban-spine"
+              ).length;
+              counts["urban-main-road-spine"] = reviewableFeatures.filter((feature) =>
+                feature.properties?.feature_type === "reviewable-selected-route" &&
+                feature.properties?.network_role === "urban-main-road-spine"
+              ).length;
               const invalidGeometry = expected.flatMap(([featureType]) =>
                 features
                   .filter((feature) => feature.properties?.feature_type === featureType)
@@ -206,6 +214,11 @@ def _inspect_deployment(
               }
               if (counts["strategic-spine"] === 0) {
                 failures.push("published network contains no strategic-spine geometry");
+              }
+              if (counts["urban-spine"] > 0 && counts["urban-main-road-spine"] === 0) {
+                failures.push(
+                  "governed urban spines are missing from the Effective Strategic Network"
+                );
               }
               for (const [featureType, layerId] of expected) {
                 if (!map.getLayer(layerId)) {

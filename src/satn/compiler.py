@@ -1194,6 +1194,7 @@ def _compile_network(
             ),
             area_definition_path=config.config_path,
             officer_decisions=officer_decisions,
+            urban_spines=compiled.urban_spines,
         )
     compiled.asset_accounting = build_asset_accounting(asset_context, source["network"], compiled)
     # ``compile_network`` is also a supported public entry point.  Its output

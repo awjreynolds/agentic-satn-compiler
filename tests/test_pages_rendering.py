@@ -197,6 +197,55 @@ def test_packaged_pages_gate_rejects_a_stale_network_projection(tmp_path: Path) 
 
 
 @pytest.mark.browser
+def test_packaged_pages_gate_requires_urban_strategic_sections(
+    tmp_path: Path,
+) -> None:
+    pages, deployment = _package_fixture(tmp_path)
+    network_path = deployment / "network.geojson"
+    network = json.loads(network_path.read_text(encoding="utf-8"))
+    strategic = next(
+        feature
+        for feature in network["features"]
+        if feature.get("properties", {}).get("feature_type") == "strategic-spine"
+    )
+    urban = json.loads(json.dumps(strategic))
+    urban["id"] = "urban-spine-release-gate-fixture"
+    urban["properties"]["feature_type"] = "urban-spine"
+    network["features"].append(urban)
+    network_path.write_text(json.dumps(network), encoding="utf-8")
+    data_path = deployment / "data.js"
+    data_prefix = "window.SATN_DATA = "
+    data_text = data_path.read_text(encoding="utf-8")
+    data = json.loads(data_text.removeprefix(data_prefix).rstrip(";\n"))
+    data["network"]["features"].append(urban)
+    data_path.write_text(data_prefix + json.dumps(data) + ";\n", encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match="governed urban spines are missing from the Effective Strategic Network",
+    ):
+        validate_pages_rendering(pages)
+
+    reviewable = data.get("reviewable_network") or data["reviewable"]
+    urban_selected = {
+        "type": "Feature",
+        "id": "urban-main-road-spine-release-gate-fixture",
+        "geometry": urban["geometry"],
+        "properties": {
+            "feature_type": "reviewable-selected-route",
+            "network_role": "urban-main-road-spine",
+            "selection_disposition": "selected",
+            "display_state": "upgrade-required",
+            "intervention_state": "upgrade-required",
+        },
+    }
+    reviewable["features"].append(urban_selected)
+    data_path.write_text(data_prefix + json.dumps(data) + ";\n", encoding="utf-8")
+
+    assert validate_pages_rendering(pages)[0].rendered_strategic_spines > 0
+
+
+@pytest.mark.browser
 def test_packaged_pages_gate_rejects_hidden_zero_count_network_layer(tmp_path: Path) -> None:
     pages, deployment = _package_fixture(tmp_path)
     _remove_network_features(deployment, "spine-access-connection")

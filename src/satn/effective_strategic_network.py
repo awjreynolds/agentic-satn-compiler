@@ -14,12 +14,15 @@ import json
 from collections.abc import Iterable
 from dataclasses import dataclass, fields, is_dataclass
 from enum import StrEnum
+from itertools import pairwise
 from typing import TYPE_CHECKING, Any
 
 import geopandas as gpd
 import networkx as nx
+import pandas as pd
 from shapely.errors import ShapelyError
-from shapely.geometry import LineString
+from shapely.geometry import LineString, Point
+from shapely.ops import substring
 
 from satn.alignment_selection import admit_candidate_set
 from satn.candidate_discovery import (
@@ -42,12 +45,14 @@ from satn.planning_graph import (
     PlanningNodeRecord,
 )
 from satn.routing import (
+    RoadGraph,
     _coordinate_id,
     _directed_edge_identity,
     _present,
     _truthy,
 )
 from satn.strategic_corridors import StrategicCorridorPreparationResult
+from satn.urban import URBAN_SPINE_TERMINUS_TOLERANCE_M
 
 if TYPE_CHECKING:
     from satn.strategic_network_planning import (
@@ -85,6 +90,7 @@ class EffectiveStrategicNetworkRequest:
     area_fingerprint: str | None = None
     snapshot_fingerprint: str | None = None
     officer_decisions: tuple[object, ...] = ()
+    urban_spines: gpd.GeoDataFrame | None = None
 
     def __post_init__(self) -> None:
         if self.routable_network is not None and not isinstance(
@@ -95,6 +101,11 @@ class EffectiveStrategicNetworkRequest:
             raise ValueError("effective strategic request area fingerprint must be SHA-256")
         if self.snapshot_fingerprint is not None and not _is_sha256(self.snapshot_fingerprint):
             raise ValueError("effective strategic request snapshot fingerprint must be SHA-256")
+        if self.urban_spines is not None:
+            if not isinstance(self.urban_spines, gpd.GeoDataFrame):
+                raise ValueError("effective strategic request urban spines must be a GeoDataFrame")
+            if self.urban_spines.crs is None:
+                raise ValueError("effective strategic request urban spines require an explicit CRS")
         object.__setattr__(self, "officer_decisions", tuple(self.officer_decisions))
 
     @property
@@ -126,11 +137,11 @@ def _canonical(value: object) -> object:
 
 
 def _source_edge_id(row: object, index: object) -> str:
-    if "osmid" in row:
+    if "osmid" in row and _present(row.get("osmid")):
         return str(row.get("osmid"))
-    if "source_id" in row:
+    if "source_id" in row and _present(row.get("source_id")):
         return str(row.get("source_id"))
-    if "edge_id" in row:
+    if "edge_id" in row and _present(row.get("edge_id")):
         return str(row.get("edge_id"))
     return str(index)
 
@@ -154,7 +165,7 @@ def planning_graph_from_compiler_edges(
     drafts: list[dict[str, object]] = []
     diagnostics: list[GraphDiagnostic] = []
     seen: set[str] = set()
-    directed = nx.DiGraph()
+    directed = nx.MultiDiGraph()
     source_rows: list[tuple[object, object, object, str, str, str]] = []
     for index, row in projected.iterrows():
         geometry = row.geometry
@@ -773,6 +784,238 @@ def _evaluate_planning_request(
     return EffectiveStrategicNetworkState.evaluated(compile_strategic_network(request))
 
 
+def _planning_graph_with_urban_spines(
+    routable_network: gpd.GeoDataFrame,
+    urban_spines: gpd.GeoDataFrame | None,
+    *,
+    source_export_fingerprint: str,
+):
+    from satn.strategic_network_planning import (
+        EffectiveStrategicSection,
+        PlanningAuthority,
+    )
+
+    if urban_spines is None or urban_spines.empty:
+        return (
+            planning_graph_from_compiler_edges(
+                routable_network,
+                source_export_fingerprint=source_export_fingerprint,
+            ),
+            (),
+        )
+
+    urban_for_graph = urban_spines.to_crs(routable_network.crs)
+    urban_projected = urban_spines.to_crs(27700)
+    routable_projected = routable_network.to_crs(27700)
+    road_graph = RoadGraph(routable_network)
+
+    # ``RoadGraph.nodes_near`` intentionally only knows about source vertices.
+    # An urban spine can, however, terminate on the interior of a source edge.
+    # Materialise deterministic split overlays for those exact on-edge points so
+    # the urban node belongs to the same weak component as the source topology.
+    # Keep the original source edge too: prepared candidate routes retain their
+    # source edge identities while the overlay supplies the attachment topology.
+    urban_endpoint_points: dict[str, Point] = {}
+    for row in urban_projected.sort_values("structure_id").itertuples():
+        geometry = row.geometry
+        if isinstance(geometry, LineString) and not geometry.is_empty:
+            for coordinate in (geometry.coords[0], geometry.coords[-1]):
+                point = Point(coordinate)
+                urban_endpoint_points.setdefault(_coordinate_id(coordinate), point)
+
+    source_endpoint_nodes: dict[str, str] = {}
+    interior_nodes: set[str] = set()
+    attachment_rows: list[dict[str, object]] = []
+    source_interiors: dict[int, list[tuple[float, str, Point]]] = {}
+    source_index = routable_projected.geometry.sindex
+    for point_id, point in urban_endpoint_points.items():
+        for position in source_index.query(
+            point.buffer(URBAN_SPINE_TERMINUS_TOLERANCE_M), predicate="intersects"
+        ):
+            source_position = int(position)
+            geometry = routable_projected.geometry.iloc[source_position]
+            if not isinstance(geometry, LineString):
+                continue
+            if geometry.distance(point) > URBAN_SPINE_TERMINUS_TOLERANCE_M:
+                continue
+            distance_along = float(geometry.project(point))
+            if distance_along <= 0.0 or distance_along >= float(geometry.length):
+                continue
+            source_interiors.setdefault(source_position, []).append(
+                (distance_along, point_id, point)
+            )
+            interior_nodes.add(point_id)
+
+    for position, (index, row) in enumerate(routable_projected.iterrows()):
+        geometry = row.geometry
+        if not isinstance(geometry, LineString) or len(geometry.coords) < 2:
+            continue
+        source_edge_id = _source_edge_id(row, index)
+        start_node = (
+            str(row.get("u"))
+            if _present(row.get("u"))
+            else _coordinate_id(tuple(geometry.coords[0]))
+        )
+        end_node = (
+            str(row.get("v"))
+            if _present(row.get("v"))
+            else _coordinate_id(tuple(geometry.coords[-1]))
+        )
+        source_endpoint_nodes.setdefault(_coordinate_id(geometry.coords[0]), start_node)
+        source_endpoint_nodes.setdefault(_coordinate_id(geometry.coords[-1]), end_node)
+        interior = source_interiors.get(position, [])
+        if not interior:
+            continue
+        ordered_points = sorted(interior, key=lambda item: (item[0], item[1]))
+        boundaries = (
+            [(0.0, start_node)]
+            + [(distance_along, point_id) for distance_along, point_id, _point in ordered_points]
+            + [(float(geometry.length), end_node)]
+        )
+        for segment_index, ((start, from_node), (end, to_node)) in enumerate(pairwise(boundaries)):
+            segment = substring(geometry, start, end)
+            if not isinstance(segment, LineString) or segment.is_empty:
+                continue
+            segment_row = row.to_dict()
+            segment_row["u"] = from_node
+            segment_row["v"] = to_node
+            segment_row["geometry"] = (
+                gpd.GeoSeries([segment], crs=27700).to_crs(routable_network.crs).iloc[0]
+            )
+            segment_row["source_id"] = (
+                f"urban-attachment:{source_edge_id}:{index!s}:{segment_index}"
+            )
+            segment_row["osmid"] = None
+            attachment_rows.append(segment_row)
+
+    attachment_node_by_coordinate = {point_id: point_id for point_id in interior_nodes}
+
+    def urban_node(point: Point) -> str:
+        projected_point = gpd.GeoSeries([point], crs=routable_network.crs).to_crs(27700).iloc[0]
+        point_id = _coordinate_id(tuple(projected_point.coords[0]))
+        if point_id in attachment_node_by_coordinate:
+            return attachment_node_by_coordinate[point_id]
+        if point_id in source_endpoint_nodes:
+            return source_endpoint_nodes[point_id]
+        matches = road_graph.nodes_near(point, URBAN_SPINE_TERMINUS_TOLERANCE_M)
+        return matches[0][0] if matches else point_id
+
+    combined = routable_network.copy()
+    if "osmid" in combined.columns:
+        source_key = "osmid"
+    elif "source_id" in combined.columns:
+        source_key = "source_id"
+    elif "edge_id" in combined.columns:
+        source_key = "edge_id"
+    else:
+        source_key = "source_id"
+        combined[source_key] = combined.index.map(str)
+
+    highway_by_classification = {
+        "a-road": "primary",
+        "b-road": "secondary",
+        "classified-unnumbered": "tertiary",
+    }
+    urban_rows: list[dict[str, object]] = []
+    classification_by_id: dict[str, str] = {}
+    for _, row in urban_for_graph.sort_values("structure_id").iterrows():
+        geometry = row.geometry
+        if not isinstance(geometry, LineString) or geometry.is_empty:
+            raise ValueError("urban strategic spine geometry must be a non-empty line")
+        section_id = str(row["structure_id"])
+        classification = str(row["official_classification"])
+        if classification not in highway_by_classification:
+            raise ValueError(f"unsupported urban strategic classification: {classification}")
+        if section_id in classification_by_id:
+            raise ValueError(f"duplicate urban strategic section ID: {section_id}")
+        classification_by_id[section_id] = classification
+        urban_rows.append(
+            {
+                source_key: section_id,
+                "u": urban_node(Point(geometry.coords[0])),
+                "v": urban_node(Point(geometry.coords[-1])),
+                "highway": highway_by_classification[classification],
+                "oneway": False,
+                "geometry": geometry,
+            }
+        )
+    urban_edges = gpd.GeoDataFrame(
+        [*attachment_rows, *urban_rows],
+        geometry="geometry",
+        crs=routable_network.crs,
+    )
+    combined = gpd.GeoDataFrame(
+        pd.concat([combined, urban_edges], ignore_index=True, sort=False),
+        geometry="geometry",
+        crs=routable_network.crs,
+    )
+    graph = planning_graph_from_compiler_edges(
+        combined,
+        source_export_fingerprint=source_export_fingerprint,
+    )
+    edge_by_source = {
+        edge.source_edge_id: edge
+        for edge in graph.edge_records
+        if edge.source_edge_id in classification_by_id
+    }
+    if set(edge_by_source) != set(classification_by_id):
+        missing = sorted(set(classification_by_id) - set(edge_by_source))
+        raise ValueError(f"urban strategic section has no exact planning edge: {missing[0]}")
+    basis_by_classification = {
+        "a-road": "a-road",
+        "b-road": "b-road",
+        "classified-unnumbered": "classified-unnumbered-road",
+    }
+    required_sections = tuple(
+        EffectiveStrategicSection(
+            section_id=section_id,
+            obligation_id=f"urban-structure:{section_id}",
+            candidate_id=None,
+            network_role="urban-main-road-spine",
+            routing_edge_ids=(edge_by_source[section_id].directed_edge_id,),
+            reverse_routing_edge_ids=(),
+            geometry_wkt=edge_by_source[section_id].geometry_wkt,
+            authority=PlanningAuthority.COMPILER,
+            alignment_bases=(basis_by_classification[classification_by_id[section_id]],),
+            primary_alignment_basis=basis_by_classification[classification_by_id[section_id]],
+            intervention_state="upgrade-required",
+            display_state="upgrade-required",
+        )
+        for section_id in sorted(classification_by_id)
+    )
+    original_source_ids = {
+        _source_edge_id(row, index)
+        for index, row in routable_network.iterrows()
+        if isinstance(row.geometry, LineString) and len(row.geometry.coords) >= 2
+    }
+    original_edge_ids = {
+        edge.directed_edge_id
+        for edge in graph.edge_records
+        if edge.source_edge_id in original_source_ids
+    }
+    weak_component_by_edge = {
+        edge_id: component
+        for component in graph.component_records
+        if component.kind == "weak"
+        for edge_id in component.directed_edge_ids
+    }
+    for section in required_sections:
+        component = next(
+            (
+                weak_component_by_edge[edge_id]
+                for edge_id in section.routing_edge_ids
+                if edge_id in weak_component_by_edge
+            ),
+            None,
+        )
+        if component is None or not original_edge_ids.intersection(component.directed_edge_ids):
+            raise ValueError(
+                "unattachable urban strategic section: "
+                f"{section.section_id} has no routable-network attachment"
+            )
+    return graph, required_sections
+
+
 def compile_effective_strategic_network(
     request: EffectiveStrategicNetworkRequest | None,
 ) -> EffectiveStrategicNetworkState:
@@ -793,12 +1036,19 @@ def compile_effective_strategic_network(
         return EffectiveStrategicNetworkState.unavailable()
 
     if isinstance(request.routable_network, PlanningGraphSnapshot):
+        if request.urban_spines is not None and not request.urban_spines.empty:
+            raise ValueError(
+                "urban strategic sections require the routable GeoDataFrame, "
+                "not a prebuilt snapshot"
+            )
         graph = request.routable_network
+        required_sections = ()
         if graph.source_export_fingerprint != request.snapshot_fingerprint:
             return EffectiveStrategicNetworkState.unavailable("governed-identity-mismatch")
     else:
-        graph = planning_graph_from_compiler_edges(
+        graph, required_sections = _planning_graph_with_urban_spines(
             request.routable_network,
+            request.urban_spines,
             source_export_fingerprint=request.snapshot_fingerprint,
         )
     discovery = discovery_from_preparation(request.preparation, graph)
@@ -833,6 +1083,7 @@ def compile_effective_strategic_network(
             prepared_candidate_sets,
         ),
         officer_decisions=None,
+        required_sections=required_sections,
     )
     return _evaluate_planning_request(planning_request)
 

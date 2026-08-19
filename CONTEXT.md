@@ -81,7 +81,7 @@ The inspectable selected SATN alignment-detail layer, including its required Com
 _Avoid_: uniform-red route, hidden connectors, contextual asset inventory, colour-only meaning
 
 **Effective Strategic Network**:
-The single fingerprinted selected network state produced by the authoritative network-selection step for one exact compilation request. It includes the selected strategic sections and their governed result identity; finite Alignment Candidates and preparation rosters are inputs, while publication artifacts and Review Lens interaction state are projections or views. Downstream consumers use this stored result and never select again.
+The single fingerprinted network state produced by the authoritative network-selection step for one exact compilation request. It includes selected alignment sections and governed Urban Main-Road Spines as required strategic structure; finite Alignment Candidates and preparation rosters are inputs, while publication artifacts and Review Lens interaction state are projections or views. Downstream consumers use this stored result and never select again.
 _Avoid_: candidate set, preparation roster, published map, review selection, route winner
 
 **Alignment Basis**:
@@ -549,7 +549,7 @@ A highest-priority requirement for a rural School to have a valid Spine Access C
 _Avoid_: School Network Place, mandatory backbone waypoint, alignment veto, school-to-school route, school-to-Community route
 
 **Urban Main-Road Spine**:
-An urban A Road, B Road or Classified Unnumbered Road assigned to carry through motor traffic, bound Low-Traffic Areas and provide protected cycling infrastructure along the corridor. It is shown by default as strategic road structure, without claiming that cycle provision already exists.
+An urban A Road, B Road or Classified Unnumbered Road assigned to carry through motor traffic, bound Low-Traffic Areas and provide protected cycling infrastructure along the corridor. It is required strategic structure within the Effective Strategic Network and is shown without claiming that cycle provision already exists.
 _Avoid_: shared-use default, unprotected carriageway route, residential-street cycle route
 
 **Urban NCN Evidence**:

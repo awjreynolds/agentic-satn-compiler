@@ -127,6 +127,7 @@ class StrategicNetworkPlanningRequest:
     compiler_preferred_candidate_ids: tuple[tuple[str, str], ...] = ()
     routing_endpoint_bindings: tuple[tuple[str, tuple[str, str]], ...] = ()
     officer_candidate_choices: tuple[tuple[str, str], ...] = ()
+    required_sections: tuple[EffectiveStrategicSection, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.graph, PlanningGraphSnapshot):
@@ -195,10 +196,16 @@ class StrategicNetworkPlanningRequest:
                 key=lambda item: (item[0], item[1]),
             )
         )
+        required_sections = tuple(sorted(self.required_sections, key=lambda item: item.section_id))
+        if any(not isinstance(item, EffectiveStrategicSection) for item in required_sections):
+            raise ValueError("required strategic sections must be effective section records")
+        if len({item.section_id for item in required_sections}) != len(required_sections):
+            raise ValueError("required strategic section IDs must be unique")
         object.__setattr__(self, "reference_routes", routes)
         object.__setattr__(self, "compiler_preferred_candidate_ids", preferences)
         object.__setattr__(self, "routing_endpoint_bindings", endpoint_bindings)
         object.__setattr__(self, "officer_candidate_choices", officer_choices)
+        object.__setattr__(self, "required_sections", required_sections)
 
     @property
     def fingerprint(self) -> str:
@@ -225,6 +232,7 @@ class StrategicNetworkPlanningRequest:
                 "compiler_preferred_candidate_ids": self.compiler_preferred_candidate_ids,
                 "routing_endpoint_bindings": self.routing_endpoint_bindings,
                 "officer_candidate_choices": self.officer_candidate_choices,
+                "required_sections": self.required_sections,
             }
         )
 
@@ -821,9 +829,9 @@ def compile_strategic_network(
     selections: list[EffectiveReviewableSelection] = []
     divergences: list[OfficerCompilerDivergence] = []
     dispositions: list[CandidateDisposition] = []
-    sections: list[EffectiveStrategicSection] = []
+    sections: list[EffectiveStrategicSection] = list(request.required_sections)
     selected_ids: set[str] = set()
-    effective_roles: set[str] = set()
+    effective_roles: set[str] = {section.network_role for section in request.required_sections}
 
     profile_fingerprints = {item.profile_fingerprint for item in candidate_sets}
     if len(profile_fingerprints) > 1:
