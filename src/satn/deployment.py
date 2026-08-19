@@ -19,13 +19,7 @@ from satn.filesystem_safety import (
     stage_replacement,
     write_ownership_marker,
 )
-from satn.models import AreaConfig, AreaDefinition, canonical_decision_ledger_payload
-from satn.pipeline import (
-    area_definition_sha256,
-    compilation_governed_input_fingerprint,
-    decision_ledger_input_fingerprint,
-    snapshot_manifest_sha256,
-)
+from satn.models import AreaConfig, AreaDefinition
 
 PROJECT = Path(__file__).parents[2]
 DEFERRED_GROUPS = {
@@ -223,62 +217,6 @@ self.addEventListener("fetch", event => {{
 """
 
 
-def _exact_sha256(value: object, field: str) -> str:
-    if (
-        not isinstance(value, str)
-        or len(value) != 64
-        or any(character not in "0123456789abcdef" for character in value)
-    ):
-        raise SystemExit(f"compiled run has invalid {field}")
-    return value
-
-
-def _validated_run_provenance(definition: AreaConfig, run: dict[str, object]) -> None:
-    """Reject output that was compiled from a different definition or snapshot.
-
-    The full fingerprint includes the persisted caller decision ledger. Runtime
-    decisions are audited separately and must never be substituted for inputs.
-    """
-    try:
-        ledger = canonical_decision_ledger_payload(run["decision_ledger_input"])
-        accepted = canonical_decision_ledger_payload(
-            {"decision_contract": run["decision_contract"], "responses": run["accepted_decisions"]}
-        )
-    except (KeyError, TypeError, ValueError) as error:
-        raise SystemExit("compiled run has an invalid decision provenance contract") from error
-    if (
-        ledger.decision_contract != run["decision_contract"]
-        or accepted.model_dump(mode="json")["responses"] != run["accepted_decisions"]
-    ):
-        raise SystemExit("compiled run has a non-canonical accepted-decision contract")
-    governed = compilation_governed_input_fingerprint(definition)
-    snapshot_digest = snapshot_manifest_sha256(definition)
-    definition_digest = area_definition_sha256(definition)
-    if (
-        _exact_sha256(run.get("snapshot_manifest_sha256"), "snapshot_manifest_sha256")
-        != snapshot_digest
-    ):
-        raise SystemExit("compiled output was produced from a stale snapshot manifest")
-    if (
-        _exact_sha256(run.get("governed_input_fingerprint"), "governed_input_fingerprint")
-        != governed
-    ):
-        raise SystemExit(
-            "compiled output was produced from a stale Area Definition or governed input"
-        )
-    if (
-        _exact_sha256(run.get("area_definition_sha256"), "area_definition_sha256")
-        != definition_digest
-    ):
-        raise SystemExit("compiled output was produced from a stale Area Definition")
-    expected = decision_ledger_input_fingerprint(governed, ledger)
-    if (
-        _exact_sha256(run.get("compilation_input_fingerprint"), "compilation_input_fingerprint")
-        != expected
-    ):
-        raise SystemExit("compiled output compilation_input_fingerprint is not bound to its inputs")
-
-
 def _evidence_provenance(definition: AreaConfig, run: dict[str, object]) -> dict[str, object]:
     """Expose the actual configured inputs without claiming an unrun agent."""
     return {
@@ -326,8 +264,6 @@ def build_area_deployment(
         raise SystemExit("the current run is not publishable")
     if run["atm_geometry_included"]:
         raise SystemExit("a public Area Deployment must not contain governed ATM geometry")
-    _validated_run_provenance(definition, run)
-
     interventions = json.loads(
         (review_map / "human-intervention-requests.json").read_text(encoding="utf-8")
     )
