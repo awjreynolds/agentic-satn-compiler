@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import shutil
 from pathlib import Path
 
@@ -54,6 +55,7 @@ def test_manifest_is_explicit_complete_and_records_component_digests() -> None:
     assert "satn/local_evidence_store.py" in components
     assert "satn/open_roads_adapter.py" not in components
     assert "satn/osm_network_adapter.py" not in components
+    assert "satn/osm_active_travel.py" in components
     assert "satn/assets/review-map.js" not in components
     excluded = {component["path"] for component in manifest["excluded_components"]}
     assert {
@@ -84,6 +86,19 @@ def test_manifest_is_explicit_complete_and_records_component_digests() -> None:
         == "deterministic Preferred Strategic Alignment selection contract"
     )
     assert all(not path.startswith("src/") for path in components)
+    osm_component = next(
+        component
+        for component in manifest["components"]
+        if component["path"] == "satn/osm_active_travel.py"
+    )
+    assert (
+        osm_component["sha256"]
+        == hashlib.sha256(
+            dependencies._normalized_component_bytes(
+                PROJECT / "src" / "satn" / "osm_active_travel.py"
+            )
+        ).hexdigest()
+    )
     runtime_components = {component["path"]: component for component in manifest["components"]}
     for distribution in ("openai", "httpx"):
         assert runtime_components[f"runtime-distribution/{distribution}"]["version"] == (

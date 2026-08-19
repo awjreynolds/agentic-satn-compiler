@@ -128,6 +128,10 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
     ),
     "satn/identifiers.py": ("module", "stable compiled feature identifiers"),
     "satn/models.py": ("module", "Area Definition and compiled model semantics"),
+    "satn/osm_active_travel.py": (
+        "module",
+        "shared OSM active-travel classification and way-tag semantics",
+    ),
     "satn/network_selection.py": (
         "module",
         "frozen Network Selection Profile validation and fingerprinting",
