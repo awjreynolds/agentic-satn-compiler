@@ -285,6 +285,18 @@
     return ensureEvidenceGroupLoadedForScope(group, controlId, "viewport");
   }
 
+  async function loadDefaultEvidenceForCurrentView() {
+    const selected = Object.entries(deferredControls).flatMap(([group, controlIds]) =>
+      controlIds
+        .filter((controlId) => document.getElementById(controlId)?.checked)
+        .map((controlId) => ({ group, controlId }))
+    );
+    if (!data.layer_manifest_url || !selected.length) return;
+    await Promise.all(selected.map(({ group, controlId }) =>
+      ensureEvidenceGroupLoaded(group, controlId)
+    ));
+  }
+
   function evidenceEntriesForTypes(metadata, featureTypes) {
     const entries = featureTypes.flatMap((featureType) =>
       metadata.types?.[featureType]?.shards || []
@@ -1119,6 +1131,68 @@
     return String(value(item));
   }
 
+  function artifactPresentation(artifact) {
+    const properties = artifact.feature.properties || {};
+    const featureType = properties.feature_type;
+    const layerId = artifact.layerId;
+    if (layerId === "cross-spine-connectors" || featureType === "cross-spine-connector") {
+      return {
+        colour: "Purple",
+        meaning: "Selected network — a cross-spine connector joining access branches rooted in different Strategic Spines. It is not the road or cycleway shown underneath."
+      };
+    }
+    if (layerId === "spine-access-connections" || featureType === "spine-access-connection") {
+      return {
+        colour: "Dashed teal",
+        meaning: "Selected network — an access connection from a served Place to a Strategic Spine."
+      };
+    }
+    if (layerId === "urban-spines" || featureType === "urban-spine") {
+      return {
+        colour: "Dark purple",
+        meaning: "Strategic road structure — an urban main road carrying through traffic, where protected active-travel provision may be required."
+      };
+    }
+    if (
+      layerId === "mapped-active-travel-assets" ||
+      (featureType === "asset-upgrade-required" && properties.asset_kind === "mapped-cycleway")
+    ) {
+      return {
+        colour: "Dashed orange",
+        meaning: "Mapped asset evidence — OSM records cycle infrastructure here. It is retained for improvement or officer review, but is not currently part of the selected strategic alignment."
+      };
+    }
+    if (layerId === "reviewable-existing-assets" || featureType === "asset-existing-provision") {
+      return {
+        colour: "Dotted green",
+        meaning: "Mapped asset evidence — existing active-travel provision retained by the compiler."
+      };
+    }
+    if (layerId === "reviewable-upgradeable-assets" || featureType === "asset-upgrade-required") {
+      return {
+        colour: "Dashed orange",
+        meaning: "Mapped asset evidence — infrastructure retained for improvement or officer review."
+      };
+    }
+    const spineKind = properties.spine_kind || {
+      "ncn-route": "ncn",
+      "declassified-ncn-route": "declassified-ncn",
+      "greenway-cycleway": "greenway",
+      "a-road-spine": "a-road"
+    }[featureType];
+    const spines = {
+      ncn: ["Teal", "Selected Strategic Spine — current National Cycle Network."],
+      "declassified-ncn": ["Green-teal", "Selected Strategic Spine — a former NCN alignment retained as strategic evidence."],
+      greenway: ["Green", "Selected Strategic Spine — a governed Greenway cycleway."],
+      "a-road": ["Blue-grey", "Selected Strategic Spine — an A-road corridor; this describes strategic structure, not existing cycle provision."]
+    };
+    if (layerId === "strategic-spines" || spines[spineKind]) {
+      const [colour, meaning] = spines[spineKind] || spines["a-road"];
+      return { colour, meaning };
+    }
+    return null;
+  }
+
   function sourceFeatures(sourceId) {
     if (sourceId === "topography") sourceId = "network";
     const sourceArtifacts = lensCatalog.sources[sourceId];
@@ -1272,13 +1346,16 @@
         )
     );
     const list = document.createElement("dl");
-    addDefinition(list, "Stable ID", artifact.id);
     const addAvailable = (label, ...candidates) => {
       const raw = candidates.find((candidate) =>
         candidate !== null && candidate !== undefined && candidate !== ""
       );
       if (raw !== undefined) addDefinition(list, label, contextualText(raw));
     };
+    const presentation = artifactPresentation(artifact);
+    addAvailable("Line colour", presentation?.colour);
+    addAvailable("Map meaning", presentation?.meaning);
+    addDefinition(list, "Stable ID", artifact.id);
     addAvailable("Type", properties.kind, properties.feature_type, artifact.layerId);
     addAvailable("Status", properties.disposition, properties.status, properties.display_state);
     addAvailable("Category", properties.category);
@@ -1994,6 +2071,7 @@
     ],
     "layer-reviewable-gaps": ["reviewable-gaps", "reviewable-gap-labels"],
     "layer-officer-divergences": ["reviewable-divergences-halo", "reviewable-divergences"],
+    "layer-mapped-active-travel-assets": ["mapped-active-travel-assets"],
     "layer-existing-assets": ["reviewable-existing-assets"],
     "layer-upgradeable-assets": ["reviewable-upgradeable-assets"],
     "layer-unselected-candidates": ["reviewable-unselected-candidates"],
@@ -2419,6 +2497,17 @@
       }
     });
     map.addLayer({
+      id: "mapped-active-travel-assets",
+      type: "line",
+      source: "reviewable",
+      filter: ["all",
+        ["==", ["get", "feature_type"], "asset-upgrade-required"],
+        ["==", ["get", "asset_kind"], "mapped-cycleway"]
+      ],
+      layout: { visibility: "visible" },
+      paint: { "line-color": "#ef6c00", "line-width": 4, "line-dasharray": [2, 1], "line-opacity": .9 }
+    });
+    map.addLayer({
       id: "reviewable-existing-assets",
       type: "line",
       source: "reviewable",
@@ -2632,6 +2721,18 @@
         });
       }
     });
+    const markDefaultEvidenceReady = () => {
+      loadDefaultEvidenceForCurrentView().then(() => {
+        document.documentElement.dataset.defaultEvidenceReady = "true";
+      }).catch((error) => {
+        document.documentElement.dataset.defaultEvidenceReady = "failed";
+        document.querySelector("#deployment-status").textContent =
+          `Default map evidence is unavailable. ${error.message}`;
+      });
+    };
+    document.documentElement.dataset.defaultEvidenceReady = "loading";
+    if (map.isMoving()) map.once("moveend", markDefaultEvidenceReady);
+    else markDefaultEvidenceReady();
     document.documentElement.dataset.mapReady = "true";
   });
 

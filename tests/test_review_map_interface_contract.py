@@ -66,7 +66,12 @@ def test_reviewable_network_layer_defaults_and_semantics_are_explicit() -> None:
     html = (ASSETS / "review-map.html").read_text(encoding="utf-8")
     script = (ASSETS / "review-map.js").read_text(encoding="utf-8")
     css = (ASSETS / "review-map.css").read_text(encoding="utf-8")
-    for control_id in ("layer-strategic-network", "layer-places"):
+    for control_id in (
+        "layer-strategic-network",
+        "layer-mapped-active-travel-assets",
+        "layer-urban-spines",
+        "layer-places",
+    ):
         assert f'id="{control_id}" type="checkbox" checked' in html
     for control_id in (
         "layer-alignment-review",
@@ -112,6 +117,13 @@ def test_reviewable_network_layer_defaults_and_semantics_are_explicit() -> None:
         in script
     )
     assert 'id: "strategic-spines"' in script
+    assert 'id: "mapped-active-travel-assets"' in script
+    assert '"asset_kind"], "mapped-cycleway"' in script
+    assert '"layer-mapped-active-travel-assets": ["mapped-active-travel-assets"]' in script
+    assert 'addAvailable("Line colour"' in script
+    assert 'addAvailable("Map meaning"' in script
+    assert "loadDefaultEvidenceForCurrentView" in script
+    assert 'dataset.defaultEvidenceReady = "true"' in script
     assert '"layer-alignment-review": [' in script
     assert '"reviewable-required-connections"' in script
     assert script.count("Object.entries(controlLayerGroups).forEach") == 2
