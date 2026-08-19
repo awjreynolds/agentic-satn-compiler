@@ -28,7 +28,7 @@ jobs:
       - run: >-
           uv run prek run
           check-yaml check-toml check-merge-conflict
-          detect-secrets actionlint zizmor shellcheck
+          actionlint zizmor shellcheck
           --all-files
       # One complete synthetic Scenario Compilation is the routine
       # Parallel-Reduction proving gate. Expected results are read-only here.

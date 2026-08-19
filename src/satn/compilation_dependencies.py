@@ -292,7 +292,6 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     ),
     "satn/deployment.py": "isolated deployment assembly",
     "satn/deployment_catalogue.py": "deployment catalogue assembly",
-    "satn/deployment_provenance.py": "deployment lock validation",
     "satn/deployment_scenario_cli.py": "post-compile officer-scenario command adapter",
     "satn/deployment_scenarios.py": ("post-compile clean-baseline and officer-scenario assembly"),
     "satn/ea_raster_evidence.py": (

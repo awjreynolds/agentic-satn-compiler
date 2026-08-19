@@ -807,7 +807,7 @@ The lightweight index of available Area Deployments and their stable publication
 _Avoid_: combined network, monolithic site bundle, B&NES landing page
 
 **Progressive Evidence Layer**:
-A published contextual or analytical layer whose size, feature count and loading state are declared before its content-addressed spatial shards are fetched for the active view. Cache absence or shard failure remains visible and never changes the compiled network.
+A published contextual or analytical layer whose size, feature count and loading state are declared before its deterministic spatial shards are fetched for the active view. Shard names support stable viewport loading but do not claim cryptographic release provenance. Cache absence or shard failure remains visible and never changes the compiled network.
 _Avoid_: initial payload, opaque download, required browser cache
 
 **Compiled Connection**:

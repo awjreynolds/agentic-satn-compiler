@@ -881,8 +881,8 @@ stable authority IDs and source queries); fetch the exact official WFS response;
 then acquire the 10 m evidence and add the existing `national_elevation` local-GeoJSON
 block only for the final retained-core snapshot. The authority artifact must be
 derived from an official boundary download with its stable source IDs and exact
-source query retained; labels alone are not sufficient. Do not alter the provenance
-lock by hand: the release process regenerates it from that final snapshot.
+source query retained; labels alone are not sufficient. The final Area Definition
+retains this source lineage; do not manually copy or rewrite a snapshot directory.
 The final Area Definition uses a different immutable snapshot ID and declares the
 historical bootstrap `snapshot_id` plus its exact `snapshot.json` SHA-256 under
 `source.retained_core_source`. `satn snapshot ... --retain-core` verifies that source,
@@ -1275,7 +1275,7 @@ The Pages root is a lightweight
 for one authority. Each Area Deployment has a stable interactive map, printable A2/A3
 PDF and portable Review Map ZIP. The initial map loads only the strategic network and
 named constituent-authority boundaries. Optional contextual and gradient evidence is
-split into content-addressed spatial shards, loaded for the active view when selected,
+split into deterministic indexed spatial shards, loaded for the active view when selected,
 and cached by the browser on a best-effort basis.
 
 Build each validated Area Deployment independently, then assemble the ignored Pages
@@ -1287,27 +1287,13 @@ uv run python scripts/publish_site.py deployments/weca/area.yaml
 uv run python scripts/package_pages.py
 ```
 
-`build/satn-pages.zip` is used as temporary release transport by the Pages workflow
-and deleted from the public release after a successful deployment. Generated
-snapshots, compiled outputs, deployment directories, PDFs, ZIPs and Pages trees are
-reproducible process artifacts and are not committed to Git. The
-packager fails before publication if the configured Pages size budget would be
-exceeded. Runtime-governance and urban-road evidence remain published and
-provenance-bound for inspection, but their review status does not block publication
-of this public proof of concept.
-
-Canonical Pages publication always runs the production release gate; manual dispatch
-cannot bypass it. To inspect a non-production package locally, use the standalone
-validator's explicit review exception:
-
-```shell
-uv run python -I scripts/validate_pages_release.py build/satn-pages.zip \
-  build/validated-pages-review --catalogue deployments/catalogue.yaml \
-  --allow-non-production
-```
-
-This local exception does not publish, approve the runtime or turn the deployment
-into a production SATN. The interface is designed and recommended for desktop use;
+`build/satn-pages.zip` is temporary release transport for the Pages workflow and is
+deleted from the public release after a successful deployment. Generated snapshots,
+compiled outputs, deployment directories, PDFs, ZIPs and Pages trees are reproducible
+process artifacts and are not committed to Git. The packager fails before publication
+if the configured Pages size budget is exceeded. At release time Pages extracts the
+archive, runs the Chromium strategic-network rendering gate, and only then uploads
+the validated tree. The interface is designed and recommended for desktop use;
 smaller devices receive the same data contract without being the primary supported
 experience.
 

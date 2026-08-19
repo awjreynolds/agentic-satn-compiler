@@ -401,8 +401,8 @@ temporary directory, then performs one atomic directory replacement. A failure
 removes the temporary work and leaves the last valid publication in place.
 
 The Area Deployment layer can then package these compiler artifacts into isolated,
-progressively loaded public deployments with content-addressed evidence shards and a
-tracked provenance lock. Hosting is an adapter; it is not part of network identity.
+progressively loaded public deployments with deterministic indexed evidence shards.
+Hosting is an adapter; it is not part of network identity.
 
 ## 7. Inputs, trust boundaries and failure controls
 

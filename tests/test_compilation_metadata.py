@@ -7,7 +7,6 @@ from pathlib import Path
 from bath_saltford_fixture import configured_bath_saltford
 
 from satn.deployment import build_area_deployment
-from satn.deployment_provenance import generate_lock, verify_lock
 from satn.filesystem_safety import publication_destination_authority
 from satn.pipeline import compile
 from satn.sources import snapshot
@@ -44,7 +43,7 @@ def test_area_deployment_preserves_compilation_metadata(tmp_path: Path) -> None:
     authority = publication_destination_authority(workspace_root=tmp_path)
     result = compile(config, publication_authority=authority)
     deployment = tmp_path / "deployment"
-    build_area_deployment(config, deployment, bootstrap=True, publication_authority=authority)
+    build_area_deployment(config, deployment, publication_authority=authority)
 
     run = json.loads((result.output_dir / "run.json").read_text(encoding="utf-8"))
     publication = json.loads((deployment / "publication.json").read_text(encoding="utf-8"))
@@ -59,6 +58,4 @@ def test_area_deployment_preserves_compilation_metadata(tmp_path: Path) -> None:
         payload = json.loads(path.read_text(encoding="utf-8"))
         assert path.read_bytes() == json.dumps(payload, separators=(",", ":")).encode()
 
-    lock_path = tmp_path / "provenance-lock.json"
-    generate_lock(config, path=lock_path, deployment=deployment)
-    verify_lock(config, path=lock_path, deployment=deployment)
+    assert not (deployment / "provenance-lock.json").exists()

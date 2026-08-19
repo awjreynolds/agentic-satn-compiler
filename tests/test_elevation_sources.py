@@ -474,9 +474,18 @@ def test_weca_bootstrap_and_final_definitions_are_separate_parseable_workflow_st
 
     assert bootstrap.source.national_elevation is None
     assert bootstrap.source.snapshot_id != final.source.snapshot_id
-    assert final.source.retained_core_source == RetainedCoreSourceConfig(
-        snapshot_id=("weca-classification-elevation-2026-07-31-v14-fp-20260731T092920522968Z-02"),
-        manifest_sha256=("63f9724a47c1913050ac3a0a59a3a54c2616659e18d6b6582dbf0f59233c095e"),
+    retained = final.source.retained_core_source
+    assert retained is not None
+    assert retained.snapshot_id == (
+        "weca-classification-elevation-2026-07-31-v14-fp-20260731T092920522968Z-02-"
+        "fp-20260809T123804416841Z-01"
+    )
+    retained_snapshot = final.source.snapshot_dir / retained.snapshot_id / "snapshot.json"
+    assert retained_snapshot.is_file()
+    assert retained.manifest_sha256 == hashlib.sha256(retained_snapshot.read_bytes()).hexdigest()
+    assert final.source.snapshot_id == (
+        "weca-classification-elevation-2026-07-31-v14-fp-20260731T092920522968Z-02-"
+        "fp-20260809T123804416841Z-01-fp-20260819T011108973323Z-01"
     )
     assert bootstrap.publication.output_dir != final.publication.output_dir
     assert final.source.national_elevation is not None

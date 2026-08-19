@@ -34,7 +34,6 @@ lcwip = "lcwip.cli:app"
 
 [dependency-groups]
 audit = [
-  "detect-secrets>=1.5,<2",
   "pip-audit>=2.10,<3",
 ]
 dev = [

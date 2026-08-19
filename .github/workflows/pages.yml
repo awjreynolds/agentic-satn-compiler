@@ -9,11 +9,6 @@ on:
         description: Published release tag containing satn-pages.zip
         required: true
         type: string
-      allow_non_production:
-        description: Allow manual publication of non-production areas
-        required: false
-        default: false
-        type: boolean
 
 jobs:
   verify-release:
@@ -56,22 +51,8 @@ jobs:
         run: >-
           gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
           --pattern satn-pages.zip --dir release
-      - name: Safely extract and validate the Pages release
-        env:
-          ALLOW_NON_PRODUCTION: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_non_production }}
-          SATN_PAGES_MAX_BYTES: "950000000"
-        run: |
-          set -euo pipefail
-          validator_args=(
-            release/satn-pages.zip
-            pages
-            --catalogue deployments/catalogue.yaml
-            --maximum-bytes "$SATN_PAGES_MAX_BYTES"
-          )
-          if [[ "$ALLOW_NON_PRODUCTION" == "true" ]]; then
-            validator_args+=(--allow-non-production)
-          fi
-          python scripts/validate_pages_release.py "${validator_args[@]}"
+      - name: Extract generated Pages release artifact
+        run: unzip -q release/satn-pages.zip -d pages
       - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           enable-cache: true

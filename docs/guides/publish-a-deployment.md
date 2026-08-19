@@ -3,43 +3,40 @@
 Publication is a separate authority boundary after compilation and review. These
 steps create reproducible static artifacts; they do not adopt or approve a network.
 
-## One deployment: non-circular provenance
+## Build one Area Deployment
 
 Working directory: repository root. Replace the Area Definition path consistently.
 
 ```shell
-uv run python scripts/publish_site.py path/to/area.yaml --bootstrap
-uv run python scripts/deployment_provenance.py generate path/to/area.yaml --deployment build/deployments/DEPLOYMENT_ID
+uv run satn snapshot path/to/area.yaml
+uv run satn compile path/to/area.yaml --full
 uv run python scripts/publish_site.py path/to/area.yaml
-uv run python scripts/deployment_provenance.py verify path/to/area.yaml --deployment build/deployments/DEPLOYMENT_ID
 ```
 
-Why there are four steps:
-
-1. the lock-free build determines the exact publication bytes;
-2. lock generation fingerprints those bytes;
-3. the normal build embeds the tracked lock; and
-4. verification proves the final output and lock agree.
-
-Never edit a provenance lock or copy another deployment's lock.
+Compilation validates the authoritative output and replaces it atomically. The Area
+Deployment command then copies that validated output into the ignored deployment
+bundle used by the catalogue and release package.
 
 ## Catalogue and release package
 
-After every declared deployment has a verified build:
+After each declared deployment has a validated Area Deployment:
 
 ```shell
 uv run python scripts/build_deployment_catalogue.py
 uv run python scripts/package_pages.py
-uv run python -I scripts/validate_pages_release.py build/satn-pages.zip build/validated-pages --catalogue deployments/catalogue.yaml
-uv run python scripts/validate_pages_rendering.py build/validated-pages
 ```
 
-Success: `build/satn-pages.zip` validates within the configured byte budget and the
-extracted catalogue contains only declared deployment roots. The Pages workflow uses
-the ZIP as temporary release transport and removes that archive after successful
-deployment. The final browser check opens every packaged review map, verifies that
-the complete strategic-spine, access-connection and cross-spine layers are visible,
-and proves that strategic-spine geometry produces rendered map features.
+`package_pages.py` assembles the declared deployment roots, validates required files,
+progressive manifests, WGS84 geometry and the configured hosting-size budget, then
+writes `build/satn-pages.zip`. It also generates the catalogue root, so the separate
+catalogue command is only useful when inspecting that root locally.
+
+When the release is published, GitHub Pages downloads and extracts that archive,
+installs Chromium, and runs `scripts/validate_pages_rendering.py pages`. The gate
+opens every packaged review map, verifies that the complete strategic-spine,
+access-connection and cross-spine layers are visible, and proves that strategic-spine
+geometry produces rendered map features before the validated tree is uploaded and
+deployed.
 
 ## Public versus local evidence
 
@@ -52,10 +49,8 @@ session without uploading or republishing it.
 Before external publication, verify:
 
 - the Area Definition and deployment catalogue identities agree;
-- runtime governance permits the intended publication class;
 - every output carries the experimental disclaimer;
 - source licences and attribution are present;
-- the deployment lock and root catalogue lock pass; and
 - every packaged interactive map passes the automated strategic-network rendering
-  check; and
+  check before Pages upload; and
 - the PDF and downloads were inspected from the packaged bytes.

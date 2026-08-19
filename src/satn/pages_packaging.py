@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import os
 import shutil
-import stat
 import tempfile
 import zipfile
 from dataclasses import dataclass
@@ -24,10 +22,6 @@ DEFAULT_MAXIMUM_BYTES = 950_000_000
 RELEASE_ARTIFACT_NAME = "satn-pages.zip"
 SCHEMA_VERSION = "satn-deployment-catalogue/v1"
 DISCLAIMER = "Experimental SATN POC — not an adopted plan."
-LOCK_NAME = "provenance-lock.json"
-LOCK_SCHEMA_VERSION = "satn-deployment-provenance-lock/v2"
-CYCLIC_RUNTIME_FILES = frozenset({LOCK_NAME, "review-map.zip"})
-MAX_NESTED_COMPRESSION_RATIO = 100
 
 
 @dataclass(frozen=True)
@@ -93,82 +87,8 @@ def _write_zip(
             )
 
 
-def _validate_review_map_zip(deployment: Path) -> None:
-    """The portable ZIP must be a safe, byte-for-byte mirror of the deployment."""
-    archive_path = deployment / "review-map.zip"
-    if archive_path.is_symlink() or not archive_path.is_file():
-        raise ValueError("deployment is missing review-map.zip")
-    expected = {
-        item.relative_to(deployment).as_posix(): item
-        for item in _files(deployment)
-        if item.relative_to(deployment).as_posix() != "review-map.zip"
-    }
-    with zipfile.ZipFile(archive_path) as archive:
-        actual: dict[str, zipfile.ZipInfo] = {}
-        declared_size = 0
-        for info in archive.infolist():
-            name = info.filename
-            parsed = PurePosixPath(name)
-            mode = info.external_attr >> 16
-            if (
-                not name.startswith("review-map/")
-                or "\\" in name
-                or parsed.is_absolute()
-                or ".." in parsed.parts
-                or "." in parsed.parts
-                or stat.S_ISLNK(mode)
-                or (not info.is_dir() and stat.S_IFMT(mode) and not stat.S_ISREG(mode))
-            ):
-                raise ValueError(f"review-map.zip contains unsafe member: {name!r}")
-            if info.is_dir():
-                raise ValueError("review-map.zip must contain only regular file members")
-            relative = name.removeprefix("review-map/")
-            if not relative or relative in actual:
-                raise ValueError("review-map.zip contains duplicate or invalid members")
-            expected_path = expected.get(relative)
-            if expected_path is None or info.file_size != expected_path.stat().st_size:
-                raise ValueError("review-map.zip does not exactly mirror the locked deployment")
-            if info.file_size and (
-                not info.compress_size
-                or info.file_size > info.compress_size * MAX_NESTED_COMPRESSION_RATIO
-            ):
-                raise ValueError("review-map.zip contains an unsafe high-compression member")
-            declared_size += info.file_size
-            actual[relative] = info
-        if set(actual) != set(expected) or declared_size != sum(
-            item.stat().st_size for item in expected.values()
-        ) or declared_size > DEFAULT_MAXIMUM_BYTES:
-            raise ValueError("review-map.zip does not exactly mirror the locked deployment")
-        for relative, info in actual.items():
-            expected_path = expected[relative]
-            with archive.open(info) as source, expected_path.open("rb") as target:
-                while True:
-                    archived = source.read(64 * 1024)
-                    locked = target.read(64 * 1024)
-                    if archived != locked:
-                        raise ValueError(
-                            "review-map.zip does not exactly mirror the locked deployment"
-                        )
-                    if not archived:
-                        break
-    if set(actual) != set(expected):
-        raise ValueError("review-map.zip does not exactly mirror the locked deployment")
-
-
 def _directory_size(directory: Path) -> int:
     return sum(item.stat().st_size for item in _files(directory))
-
-
-def _runtime_artifacts(deployment: Path) -> dict[str, dict[str, object]]:
-    """Digest every deployable file, excluding only documented cyclic files."""
-    return {
-        item.relative_to(deployment).as_posix(): {
-            "sha256": hashlib.sha256(item.read_bytes()).hexdigest(),
-            "size_bytes": item.stat().st_size,
-        }
-        for item in _files(deployment)
-        if item.relative_to(deployment).as_posix() not in CYCLIC_RUNTIME_FILES
-    }
 
 
 def _validate_budget(maximum_bytes: int) -> None:
@@ -211,16 +131,6 @@ def _relative_file_path(value: object, field: str) -> Path:
     ):
         raise ValueError(f"{field} must be a relative file path without traversal")
     return Path(*parsed.parts)
-
-
-def _sha256(value: object, field: str) -> str:
-    if (
-        not isinstance(value, str)
-        or len(value) != 64
-        or any(character not in "0123456789abcdef" for character in value)
-    ):
-        raise ValueError(f"{field} must be a lowercase SHA-256 hex digest")
-    return value
 
 
 def _feature_collection(path: Path, field: str) -> list[dict[str, object]]:
@@ -313,11 +223,6 @@ def _validate_shard_entries(
         if shard.is_symlink() or not shard.is_file():
             raise ValueError(f"{field}[{index}] shard is missing or unsafe: {path}")
         contents = shard.read_bytes()
-        digest = _sha256(entry.get("sha256"), f"{field}[{index}].sha256")
-        if hashlib.sha256(contents).hexdigest() != digest:
-            raise ValueError(f"{field}[{index}] shard content hash does not match: {path}")
-        if shard.name != f"{shard.stem.rsplit('-', 1)[0]}-{digest[:16]}.geojson":
-            raise ValueError(f"{field}[{index}] shard filename is not content-addressed")
         if entry.get("size_bytes") != len(contents):
             raise ValueError(f"{field}[{index}] shard size does not match: {path}")
         features = _feature_collection(shard, f"{field}[{index}] shard")
@@ -355,16 +260,13 @@ def _validate_progressive_manifests(deployment: Path, publication: dict[str, Any
             raise ValueError(f"layer group {name} aggregate counts do not match shards")
         types = group.get("types")
         if not isinstance(types, dict) or not all(
-            isinstance(feature_type, str) and feature_type.strip()
-            and isinstance(metadata, dict)
+            isinstance(feature_type, str) and feature_type.strip() and isinstance(metadata, dict)
             for feature_type, metadata in types.items()
         ):
             raise ValueError(f"layer group {name} types must be named objects")
         expected_types = DEFERRED_GROUPS[name]
         if set(types) != expected_types:
-            raise ValueError(
-                f"layer group {name} types must exactly match canonical feature types"
-            )
+            raise ValueError(f"layer group {name} types must exactly match canonical feature types")
         declared_types = group.get("feature_types")
         if declared_types != sorted(expected_types):
             raise ValueError(
@@ -543,78 +445,12 @@ def _data_payload(path: Path) -> dict[str, Any]:
     return payload
 
 
-def _provenance_lock(path: Path, deployment_id: str) -> dict[str, Any]:
-    lock = _json_object(path, "tracked deployment provenance lock")
-    if lock.get("schema_version") != LOCK_SCHEMA_VERSION:
-        raise ValueError("tracked deployment provenance lock schema_version is invalid")
-    if lock.get("deployment_id") != deployment_id:
-        raise ValueError("tracked deployment provenance lock deployment_id is invalid")
-    for field in (
-        "area_definition_sha256",
-        "snapshot_manifest_sha256",
-        "governed_input_fingerprint",
-        "decision_ledger_input_sha256",
-        "decision_contract_sha256",
-        "accepted_decisions_sha256",
-        "compilation_input_fingerprint",
-    ):
-        _sha256(lock.get(field), f"provenance lock {field}")
-    if "runtime_governance_sha256" in lock:
-        _sha256(
-            lock.get("runtime_governance_sha256"),
-            "provenance lock runtime_governance_sha256",
-        )
-    if lock.get("status") not in {"complete", "reviewable"}:
-        raise ValueError("tracked deployment provenance lock is not publishable")
-    if not isinstance(lock.get("artifacts"), dict):
-        raise ValueError("tracked deployment provenance lock artifacts must be an object")
-    if lock.get("cyclic_runtime_files") != sorted(CYCLIC_RUNTIME_FILES):
-        raise ValueError("tracked deployment provenance lock cyclic_runtime_files are invalid")
-    return lock
-
-
-def _validate_runtime_lock(deployment: Path, lock: dict[str, Any]) -> None:
-    artifacts = lock["artifacts"]
-    assert isinstance(artifacts, dict)
-    if artifacts != _runtime_artifacts(deployment):
-        raise ValueError("deployment runtime files do not exactly match the provenance lock")
-
-
-def _verify_locked_artifact(
-    deployment: Path, lock: dict[str, Any], source: str, target: str
-) -> None:
-    artifacts = lock["artifacts"]
-    assert isinstance(artifacts, dict)
-    entry = artifacts.get(source)
-    if not isinstance(entry, dict):
-        raise ValueError(f"provenance lock is missing compiled artifact {source}")
-    digest = _sha256(entry.get("sha256"), f"provenance lock artifacts.{source}.sha256")
-    path = deployment / target
-    if (
-        not path.is_file()
-        or path.is_symlink()
-        or hashlib.sha256(path.read_bytes()).hexdigest() != digest
-    ):
-        raise ValueError(f"public deployment {target} does not match locked compiled artifact")
-    if entry.get("size_bytes") != path.stat().st_size:
-        raise ValueError(f"public deployment {target} size does not match locked compiled artifact")
-
-
-def _validate_publication(
+def _validate_publication_shape(
     deployment: Path,
     deployment_id: str,
     *,
     expected_area_id: str,
-    expected_area_definition_sha256: str,
-    expected_title: str,
-    expected_scope: dict[str, str],
-    expected_evidence_provenance: dict[str, object],
-    expected_compilation_input_fingerprint: str | None = None,
-    expected_snapshot_manifest_sha256: str | None = None,
-    expected_lock: dict[str, Any] | None = None,
 ) -> None:
-    from satn.models import canonical_decision_ledger_payload
-
     publication_path = deployment / "publication.json"
     if not publication_path.is_file():
         raise ValueError(f"generated deployment {deployment_id} is missing publication.json")
@@ -631,190 +467,24 @@ def _validate_publication(
         )
     if publication.get("disclaimer") != DISCLAIMER:
         raise ValueError(f"deployment publication disclaimer does not match: {publication_path}")
-    if publication.get("area_definition_sha256") != expected_area_definition_sha256:
-        raise ValueError(
-            "deployment publication area_definition_sha256 does not match the "
-            f"tracked Area Definition: {publication_path}"
-        )
-    if expected_lock is None:
-        raise ValueError("a tracked deployment provenance lock is required")
-    for field in (
-        "area_id",
-        "area_name",
-        "title",
-        "scope",
-        "area_definition_sha256",
-        "run_id",
-        "status",
-        "criteria",
-        "layer_counts",
-    ):
-        if publication.get(field) != expected_lock.get(field):
-            raise ValueError(
-                f"deployment publication {field} does not match tracked provenance lock"
-            )
-    if publication.get("title") != expected_title:
-        raise ValueError(
-            "deployment publication title does not match the tracked Area Definition: "
-            f"{publication_path}"
-        )
-    if publication.get("scope") != expected_scope:
-        raise ValueError(
-            "deployment publication scope does not match the tracked Area Definition: "
-            f"{publication_path}"
-        )
-    provenance = publication.get("evidence_provenance")
-    if not isinstance(provenance, dict):
-        raise ValueError(
-            f"deployment publication evidence_provenance must be an object: {publication_path}"
-        )
-    for key, expected in expected_evidence_provenance.items():
-        actual = provenance.get(key)
-        matches = (
-            isinstance(expected, dict)
-            and isinstance(actual, dict)
-            and all(
-                actual.get(nested_key) == nested_expected
-                for nested_key, nested_expected in expected.items()
-            )
-        ) or actual == expected
-        if not matches:
-            raise ValueError(
-                "deployment publication evidence_provenance does not match the "
-                f"tracked Area Definition at {key}: {publication_path}"
-            )
-    snapshot = provenance.get("snapshot")
-    run = provenance.get("run")
-    if (
-        not isinstance(snapshot, dict)
-        or not isinstance(snapshot.get("manifest_sha256"), str)
-        or _sha256(snapshot["manifest_sha256"], "snapshot manifest_sha256")
-        != snapshot["manifest_sha256"]
-        or not isinstance(run, dict)
-        or run.get("run_id") != publication.get("run_id")
-        or run.get("status") != publication.get("status")
-    ):
-        raise ValueError(
-            "deployment publication evidence_provenance run/snapshot identity is invalid: "
-            f"{publication_path}"
-        )
     if publication.get("status") not in {"complete", "reviewable"}:
         raise ValueError(f"deployment publication status is not publishable: {publication_path}")
-    if (
-        expected_snapshot_manifest_sha256 is not None
-        and snapshot["manifest_sha256"] != expected_snapshot_manifest_sha256
-    ):
-        raise ValueError(
-            "deployment publication snapshot digest does not match the compiled input: "
-            f"{publication_path}"
-        )
-    compiler_run = _json_object(
-        deployment / _relative_file_path(publication.get("compiler_run"), "compiler_run"),
-        "compiler run",
-    )
-    try:
-        input_ledger = canonical_decision_ledger_payload(compiler_run["decision_ledger_input"])
-        accepted_ledger = canonical_decision_ledger_payload(
-            {
-                "decision_contract": compiler_run["decision_contract"],
-                "responses": compiler_run["accepted_decisions"],
-            }
-        )
-    except (KeyError, TypeError, ValueError) as error:
-        raise ValueError("compiler run has an invalid decision provenance contract") from error
-    if input_ledger.decision_contract != compiler_run["decision_contract"] or (
-        accepted_ledger.model_dump(mode="json")["responses"]
-        != compiler_run["accepted_decisions"]
-    ):
-        raise ValueError("compiler run has a non-canonical accepted-decision contract")
-    for field in ("run_id", "status", "compilation_input_fingerprint"):
-        if compiler_run.get(field) != publication.get(field):
-            raise ValueError(f"compiler run {field} does not match deployment publication")
-    if "runtime_governance_sha256" in expected_lock:
-        runtime_governance = compiler_run.get("runtime_governance")
-        if not isinstance(runtime_governance, dict):
-            raise ValueError("compiler run runtime governance must be an object")
-        if publication.get("runtime_governance") != runtime_governance:
-            raise ValueError(
-                "deployment publication runtime governance does not match compiler run"
-            )
-        runtime_governance_digest = hashlib.sha256(
-            json.dumps(runtime_governance, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
-        if runtime_governance_digest != expected_lock["runtime_governance_sha256"]:
-            raise ValueError(
-                "compiler run runtime governance does not match tracked provenance lock"
-            )
-    if publication.get("compilation_input_fingerprint") != expected_lock.get(
-        "compilation_input_fingerprint"
-    ):
-        raise ValueError(
-            "deployment publication compilation_input_fingerprint does not match "
-            "tracked provenance lock"
-        )
-    if compiler_run.get("disclaimer") != DISCLAIMER:
-        raise ValueError("compiler run disclaimer does not match")
-    if compiler_run.get("snapshot_manifest_sha256") != snapshot["manifest_sha256"]:
-        raise ValueError("compiler run snapshot digest does not match evidence provenance")
-    if compiler_run.get("area_definition_sha256") != expected_area_definition_sha256:
-        raise ValueError("compiler run area definition digest does not match tracked definition")
-    for field in (
-        "run_id",
-        "status",
-        "area_definition_sha256",
-        "snapshot_manifest_sha256",
-        "governed_input_fingerprint",
-        "compilation_input_fingerprint",
-        "decision_contract",
-        "decision_ledger_input",
-        "accepted_decisions",
-    ):
-        # The decision payloads are bound through their canonical lock digests below.
-        if field in expected_lock and compiler_run.get(field) != expected_lock[field]:
-            raise ValueError(f"compiler run {field} does not match tracked provenance lock")
-    for field, run_field in (
-        ("decision_ledger_input_sha256", "decision_ledger_input"),
-        ("decision_contract_sha256", "decision_contract"),
-        ("accepted_decisions_sha256", "accepted_decisions"),
-    ):
-        value = json.dumps(
-            compiler_run.get(run_field), sort_keys=True, separators=(",", ":")
-        ).encode()
-        if hashlib.sha256(value).hexdigest() != expected_lock[field]:
-            raise ValueError(f"compiler run {run_field} does not match tracked provenance lock")
-    if expected_compilation_input_fingerprint is not None:
-        if (
-            publication.get("compilation_input_fingerprint")
-            != expected_compilation_input_fingerprint
-        ):
-            raise ValueError("deployment publication compilation input fingerprint is stale")
-        if (
-            compiler_run.get("compilation_input_fingerprint")
-            != expected_compilation_input_fingerprint
-        ):
-            raise ValueError("compiler run compilation input fingerprint is stale")
-    _sha256(publication.get("compilation_input_fingerprint"), "compilation_input_fingerprint")
+    required_paths = {
+        "compiler_run": publication.get("compiler_run"),
+        "layer_manifest": publication.get("layer_manifest"),
+        "topography_manifest": publication.get("topography_manifest"),
+        "topography_profile_evidence_index": publication.get("topography_profile_evidence_index"),
+    }
+    for field, value in required_paths.items():
+        path = deployment / _relative_file_path(value, field)
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"deployment {deployment_id} is missing {field}: {path}")
+    for name in ("index.html", "data.js", "network.geojson"):
+        path = deployment / name
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"deployment {deployment_id} is missing required file: {path}")
+
     data = _data_payload(deployment / "data.js")
-    public_data_fields = (
-        "title",
-        "area_id",
-        "area_name",
-        "scope",
-        "evidence_provenance",
-        "run_id",
-        "status",
-        "area_definition_sha256",
-        "compilation_input_fingerprint",
-        "criteria",
-        "layer_counts",
-        "connection_count",
-        "gap_count",
-        "disclaimer",
-    )
-    if "runtime_governance_sha256" in expected_lock:
-        public_data_fields += ("runtime_governance",)
-    if any(data.get(field) != publication.get(field) for field in public_data_fields):
-        raise ValueError("generated data.js does not match the validated publication contract")
     for field, expected in (
         ("network_url", "network.geojson"),
         ("layer_manifest_url", "layer-manifest.json"),
@@ -823,57 +493,13 @@ def _validate_publication(
     ):
         if data.get(field) != expected:
             raise ValueError(f"generated data.js {field} must be {expected}")
-    expected_data_lock = {
-        key: expected_lock[key]
-        for key in (
-            "schema_version", "deployment_id", "run_id", "status", "area_definition_sha256",
-            "snapshot_manifest_sha256", "compilation_input_fingerprint",
-        )
-    }
-    if data.get("provenance_lock") != expected_data_lock:
-        raise ValueError("generated data.js provenance_lock does not match tracked provenance lock")
-    copied_lock = _provenance_lock(deployment / LOCK_NAME, deployment_id)
-    if copied_lock != expected_lock:
-        raise ValueError("public deployment provenance lock does not exactly match tracked lock")
-    if (
-        publication.get("connection_count") != expected_lock.get("connection_count")
-        or publication.get("gap_count") != expected_lock.get("gap_count")
-    ):
-        raise ValueError("deployment publication counts do not match tracked provenance lock")
     _validate_progressive_manifests(deployment, publication)
-    _validate_runtime_lock(deployment, expected_lock)
-
-
-def _expected_compilation_provenance(definition_path: Path, deployment: Path) -> tuple[str, str]:
-    """Recompute the full input binding while compiler inputs are still local.
-
-    The snapshot manifest itself is deliberately not put in the public release:
-    it is a compiler input, not a user-facing map artefact.  The release instead
-    carries its digest and a compiler-run record; this packaging-time check binds
-    those values to the local immutable manifest before the archive is made.
-    """
-    from satn.models import AreaDefinition, canonical_decision_ledger_payload
-    from satn.pipeline import (
-        compilation_governed_input_fingerprint,
-        decision_ledger_input_fingerprint,
-        snapshot_manifest_sha256,
-    )
-
-    definition = AreaDefinition.from_yaml(definition_path)
-    run = _json_object(deployment / "compiler-run.json", "compiler run")
-    try:
-        ledger = canonical_decision_ledger_payload(run["decision_ledger_input"])
-    except (KeyError, TypeError, ValueError) as error:
-        raise ValueError("compiler run has an invalid decision-ledger input") from error
-    governed = compilation_governed_input_fingerprint(definition)
-    return decision_ledger_input_fingerprint(governed, ledger), snapshot_manifest_sha256(definition)
 
 
 def _copy_deployments(
     catalogue: DeploymentCatalogue,
     deployments_root: Path,
     pages: Path,
-    catalogue_root: Path,
 ) -> None:
     for entry in catalogue.deployments:
         expected_path = _deployment_destination(entry.deployment_id)
@@ -888,26 +514,6 @@ def _copy_deployments(
             raise ValueError(f"missing generated deployment for {entry.deployment_id}: {source}")
         _files(source)
         shutil.copytree(source, target, ignore=shutil.ignore_patterns("review-map.zip"))
-        lock = _provenance_lock(
-            catalogue_root / Path(entry.area_definition).parent / LOCK_NAME,
-            entry.deployment_id,
-        )
-        expected_input, expected_snapshot = _expected_compilation_provenance(
-            catalogue_root / entry.area_definition, target
-        )
-
-        _validate_publication(
-            target,
-            entry.deployment_id,
-            expected_area_id=entry.area_id,
-            expected_area_definition_sha256=entry.area_definition_sha256,
-            expected_title=entry.title,
-            expected_scope=entry.scope,
-            expected_evidence_provenance=entry.evidence_provenance,
-            expected_compilation_input_fingerprint=expected_input,
-            expected_snapshot_manifest_sha256=expected_snapshot,
-            expected_lock=lock,
-        )
         _validate_wgs84_map_artifacts(target)
 
         for name, artifact in entry.artifacts.items():
@@ -919,92 +525,8 @@ def _copy_deployments(
                 )
 
 
-
-def _catalogue_root_lock(
-    catalogue_path: Path, catalogue: DeploymentCatalogue
-) -> dict[str, object]:
-    """Read the tag-tracked lock for the two executable Pages root files."""
-
-    from satn.deployment_catalogue import (
-        ROOT_LOCK_NAME,
-        ROOT_LOCK_SCHEMA_VERSION,
-        catalogue_lock_payload,
-    )
-
-    lock_path = catalogue_path.resolve().parent / ROOT_LOCK_NAME
-    lock = _json_object(lock_path, "Pages root catalogue lock")
-    expected = catalogue_lock_payload(catalogue)
-    if lock != expected or lock.get("schema_version") != ROOT_LOCK_SCHEMA_VERSION:
-        raise ValueError("Pages root catalogue lock does not exactly match tracked catalogue")
-    return lock
-
-
-def _validate_exact_pages_file_set(
-    pages: Path,
-    catalogue: DeploymentCatalogue,
-    root_lock: dict[str, object],
-) -> None:
-    root_files = root_lock.get("root_files")
-    deployment_roots = root_lock.get("deployment_roots")
-    if not isinstance(root_files, dict) or set(root_files) != {"index.html", "catalogue.json"}:
-        raise ValueError("Pages root catalogue lock root_files are invalid")
-    if not isinstance(deployment_roots, list):
-        raise ValueError("Pages root catalogue lock deployment_roots are invalid")
-    expected_roots = [f"deployments/{entry.deployment_id}" for entry in catalogue.deployments]
-    if deployment_roots != expected_roots:
-        raise ValueError("Pages root catalogue lock deployment_roots are invalid")
-
-    expected_files = set(root_files)
-    for name, metadata in root_files.items():
-        if not isinstance(metadata, dict):
-            raise ValueError("Pages root catalogue lock root file metadata is invalid")
-        target = pages / name
-        if not target.is_file() or target.is_symlink():
-            raise ValueError(f"Pages root file is missing: {name}")
-        if metadata != {
-            "sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
-            "size_bytes": target.stat().st_size,
-        }:
-            raise ValueError(f"Pages root file does not match tracked catalogue lock: {name}")
-
-    for entry in catalogue.deployments:
-        deployment = pages / _deployment_destination(entry.deployment_id)
-        lock = _provenance_lock(deployment / LOCK_NAME, entry.deployment_id)
-        artifacts = lock.get("artifacts")
-        if not isinstance(artifacts, dict):
-            raise ValueError("tracked provenance lock artifacts are invalid")
-        expected_files.update(
-            f"deployments/{entry.deployment_id}/{_relative_file_path(name, 'artifact')}"
-            for name in artifacts
-        )
-        expected_files.update(
-            {
-                f"deployments/{entry.deployment_id}/{LOCK_NAME}",
-            }
-        )
-    actual_files = {item.relative_to(pages).as_posix() for item in _files(pages)}
-    if actual_files != expected_files:
-        raise ValueError("Pages package has undeclared or missing files")
-    expected_directories = {"deployments"}
-    for name in expected_files:
-        parent = PurePosixPath(name).parent
-        while parent != PurePosixPath("."):
-            expected_directories.add(parent.as_posix())
-            parent = parent.parent
-    actual_directories: set[str] = set()
-    for root, directory_names, _ in os.walk(pages, followlinks=False):
-        current = Path(root)
-        for name in directory_names:
-            item = current / name
-            if item.is_symlink():
-                raise ValueError(f"Pages package must not contain symlinks: {item}")
-            actual_directories.add(item.relative_to(pages).as_posix())
-    if actual_directories != expected_directories:
-        raise ValueError("Pages package has undeclared deployment directories")
-
-
 def _validate_pages_directory(
-    pages: Path, maximum_bytes: int, catalogue: DeploymentCatalogue, catalogue_path: Path
+    pages: Path, maximum_bytes: int, catalogue: DeploymentCatalogue
 ) -> int:
     """Validate a fully assembled Pages tree without trusting its producer."""
 
@@ -1029,6 +551,7 @@ def _validate_pages_directory(
         raise ValueError("Pages catalogue must contain deployments")
 
     seen_ids: set[str] = set()
+    expected_ids = {entry.deployment_id for entry in catalogue.deployments}
     for entry in entries:
         if not isinstance(entry, dict):
             raise ValueError("each Pages catalogue deployment must be an object")
@@ -1043,7 +566,7 @@ def _validate_pages_directory(
                 f"catalogue deployment_path must match deployment_id: {deployment_path}"
             )
         _nonblank_text(entry.get("area_name"), "catalogue area_name")
-        title = _nonblank_text(entry.get("title"), "catalogue title")
+        _nonblank_text(entry.get("title"), "catalogue title")
         scope = entry.get("scope")
         if not isinstance(scope, dict):
             raise ValueError("catalogue scope must be an object")
@@ -1051,24 +574,13 @@ def _validate_pages_directory(
         if not isinstance(evidence_provenance, dict):
             raise ValueError("catalogue evidence_provenance must be an object")
         area_id = _nonblank_text(entry.get("area_id"), "catalogue area_id")
-        area_definition = _nonblank_text(entry.get("area_definition"), "area_definition")
-        _relative_file_path(area_definition, "area_definition")
-        area_definition_sha256 = _nonblank_text(
-            entry.get("area_definition_sha256"), "area_definition_sha256"
-        )
-
         deployment = pages / expected_directory
         if deployment.is_symlink() or not deployment.is_dir():
             raise ValueError(f"Pages catalogue deployment is missing: {deployment}")
-        _validate_publication(
+        _validate_publication_shape(
             deployment,
             deployment_id,
             expected_area_id=area_id,
-            expected_area_definition_sha256=area_definition_sha256,
-            expected_title=title,
-            expected_scope=scope,
-            expected_evidence_provenance=evidence_provenance,
-            expected_lock=_provenance_lock(deployment / LOCK_NAME, deployment_id),
         )
         artifacts = entry.get("artifacts")
         if not isinstance(artifacts, dict):
@@ -1087,9 +599,11 @@ def _validate_pages_directory(
                     f"Pages catalogue deployment {deployment_id} is missing {name}: {artifact_path}"
                 )
 
-    _validate_exact_pages_file_set(
-        pages, catalogue, _catalogue_root_lock(catalogue_path, catalogue)
-    )
+    if seen_ids != expected_ids:
+        raise ValueError("Pages catalogue deployments do not match the tracked catalogue")
+    for item in _files(pages):
+        if item.name in {"provenance-lock.json", "catalogue-lock.json"}:
+            raise ValueError(f"Pages package contains an obsolete lock: {item}")
     return pages_size
 
 
@@ -1100,7 +614,6 @@ def package_pages(
     release_artifact: str | Path,
     *,
     maximum_bytes: int = DEFAULT_MAXIMUM_BYTES,
-    promote_production: bool = False,
 ) -> PagesPackage:
     """Assemble a Pages tree and its standalone release archive from local bundles.
 
@@ -1135,13 +648,11 @@ def package_pages(
     try:
         pages = temporary_root / "pages"
         pages.mkdir()
-        _copy_deployments(catalogue, bundles, pages, Path(catalogue_path).resolve().parent)
+        _copy_deployments(catalogue, bundles, pages)
         from satn.deployment_catalogue import build_deployment_catalogue
 
         build_deployment_catalogue(catalogue_path, pages)
-        pages_size = _validate_pages_directory(
-            pages, maximum_bytes, catalogue, Path(catalogue_path)
-        )
+        pages_size = _validate_pages_directory(pages, maximum_bytes, catalogue)
 
         temporary_release = temporary_root / RELEASE_ARTIFACT_NAME
         _write_zip(temporary_release, pages)

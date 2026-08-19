@@ -63,4 +63,5 @@ uv run python -c "from satn.models import AreaDefinition; a=AreaDefinition.from_
 ```
 
 Changing a governed input, profile or evidence fingerprint produces a new compilation
-identity. Never keep a previous provenance lock by hand after such a change.
+identity. Re-run snapshot and compile for the changed definition; do not reuse an
+older generated deployment directory.
