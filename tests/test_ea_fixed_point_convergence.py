@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import shlex
 from pathlib import Path
 from types import SimpleNamespace
@@ -41,6 +42,8 @@ SPEC.loader.exec_module(acquisition)
 def _production_acquisition_case(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    configured_evidence_name: str = "elevation.geojson",
 ) -> tuple[
     EAFixedPointProductionOperations,
     EAFixedPointSnapshot,
@@ -55,7 +58,7 @@ def _production_acquisition_case(
     config.publication.output_dir = tmp_path / "compiled" / "weca"
     config.source.snapshot_dir = tmp_path / "snapshots"
     assert config.source.national_elevation is not None
-    configured_evidence = tmp_path / "elevation" / "elevation.geojson"
+    configured_evidence = tmp_path / "elevation" / configured_evidence_name
     config.source.national_elevation.path = configured_evidence
     configured_evidence.parent.mkdir(parents=True)
     configured_evidence.write_text("sealed-governed-evidence", encoding="utf-8")
@@ -402,6 +405,120 @@ def test_acquisition_writes_a_hash_bound_sibling_without_touching_governed_evide
     assert commands[0][20] == str(supplemental)
     assert configured_evidence.read_text(encoding="utf-8") == "sealed-governed-evidence"
     assert result.evidence_path == expected
+
+
+def test_acquisition_normalizes_prior_fixed_point_suffixes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_stem = "ea-lidar-dtm-1m-weca-recovery-v14"
+    configured_name = f"{base_stem}.fixed-point-{'a' * 64}.fixed-point-{'b' * 64}.geojson"
+    (
+        operations,
+        snapshot,
+        compilation,
+        configured_evidence,
+        _supplemental,
+        routes,
+    ) = _production_acquisition_case(
+        tmp_path,
+        monkeypatch,
+        configured_evidence_name=configured_name,
+    )
+
+    commands: list[tuple[str, ...]] = []
+
+    def run(command: tuple[str, ...], **_kwargs: object) -> SimpleNamespace:
+        commands.append(command)
+        _write_completed_acquisition_output(
+            Path(command[5]),
+            routes,
+            governed_input_fingerprint=command[18],
+        )
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("satn.ea_fixed_point_operations.subprocess.run", run)
+
+    result = operations.acquire(snapshot, compilation)
+
+    expected = configured_evidence.with_name(
+        f"{base_stem}.fixed-point-"
+        "8cd099f39e067bdee532480bc0e117e7a34e3c29b072a7c936f10fb01f7826ff"
+        ".geojson"
+    )
+    assert commands[0][5] == str(expected)
+    assert result.evidence_path == expected
+    assert expected.stem.count(".fixed-point-") == 1
+    assert max(
+        len(path.name.encode())
+        for path in (
+            expected,
+            expected.with_suffix(".manifest.json"),
+            expected.with_name(f"{expected.stem}.sample-ledger.jsonl"),
+            expected.with_name(f"{expected.stem}.sampled-routes.geojson"),
+        )
+    ) <= os.pathconf(expected.parent, "PC_NAME_MAX")
+
+
+def test_acquisition_bounds_a_near_component_limit_evidence_stem(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    component_limit = os.pathconf(tmp_path, "PC_NAME_MAX")
+    base_stem = "e" * (component_limit - len(".geojson") - 1)
+    (
+        operations,
+        snapshot,
+        compilation,
+        configured_evidence,
+        _supplemental,
+        routes,
+    ) = _production_acquisition_case(
+        tmp_path,
+        monkeypatch,
+        configured_evidence_name=f"{base_stem}.geojson",
+    )
+
+    commands: list[tuple[str, ...]] = []
+
+    def run(command: tuple[str, ...], **_kwargs: object) -> SimpleNamespace:
+        commands.append(command)
+        _write_completed_acquisition_output(
+            Path(command[5]),
+            routes,
+            governed_input_fingerprint=command[18],
+        )
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("satn.ea_fixed_point_operations.subprocess.run", run)
+
+    result = operations.acquire(snapshot, compilation)
+
+    identity = "8cd099f39e067bdee532480bc0e117e7a34e3c29b072a7c936f10fb01f7826ff"
+    expected_tail = f".fixed-point-{identity}"
+    family_tail_bytes = max(
+        len(f"{expected_tail}{suffix}".encode())
+        for suffix in (
+            ".geojson",
+            ".manifest.json",
+            ".sample-ledger.jsonl",
+            ".sampled-routes.geojson",
+        )
+    )
+    available_stem_bytes = component_limit - family_tail_bytes
+    expected_stem = base_stem.encode()[:available_stem_bytes].decode()
+    expected = configured_evidence.with_name(f"{expected_stem}{expected_tail}.geojson")
+    assert commands[0][5] == str(expected)
+    assert result.evidence_path == expected
+    assert all(
+        len(path.name.encode()) <= component_limit
+        for path in (
+            expected,
+            expected.with_suffix(".manifest.json"),
+            expected.with_name(f"{expected.stem}.sample-ledger.jsonl"),
+            expected.with_name(f"{expected.stem}.sampled-routes.geojson"),
+        )
+    )
 
 
 def test_acquisition_identity_separates_distinct_governed_inputs(

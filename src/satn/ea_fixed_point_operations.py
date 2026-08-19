@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import re
 import shlex
 import subprocess
 import threading
@@ -64,10 +66,19 @@ from satn.sources import snapshot as create_snapshot
 
 _COMPILER_TIMING_LOCK = threading.Lock()
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_FIXED_POINT_EVIDENCE_SUFFIX = re.compile(r"\.fixed-point-[0-9a-f]{64}$")
 
 
 def _sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _stable_evidence_stem(path: Path) -> str:
+    """Remove prior canonical iteration suffixes from a recovery evidence stem."""
+    stem = path.stem
+    while match := _FIXED_POINT_EVIDENCE_SUFFIX.search(stem):
+        stem = stem[: match.start()]
+    return stem
 
 
 def _sample_route_inventory(path: Path) -> tuple[str, ...]:
@@ -86,9 +97,7 @@ def _sample_route_inventory(path: Path) -> tuple[str, ...]:
             continue
         feature_id = str(row.get("feature_id") or row.get("id") or position)
         try:
-            identities.add(
-                canonical_network_geometry_fingerprint(row.geometry, metric.crs)
-            )
+            identities.add(canonical_network_geometry_fingerprint(row.geometry, metric.crs))
         except ValueError as error:
             raise ValueError(
                 "EA retained sampled route "
@@ -110,13 +119,9 @@ def _snapshot_state(
     manifest_path = snapshot_dir / "snapshot.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     try:
-        primary = manifest["evidence_sources"]["elevation"][
-            "pre_elevation_network_sha256"
-        ]
+        primary = manifest["evidence_sources"]["elevation"]["pre_elevation_network_sha256"]
     except (KeyError, TypeError) as error:
-        raise ValueError(
-            "EA convergence snapshot lacks its primary route fingerprint"
-        ) from error
+        raise ValueError("EA convergence snapshot lacks its primary route fingerprint") from error
     governed_files = manifest.get("provenance_file_sha256")
     if not isinstance(governed_files, dict):
         raise ValueError("EA convergence snapshot lacks governed source identities")
@@ -167,11 +172,7 @@ def _compiler_stage_timings() -> Iterator[dict[str, int]]:
             try:
                 return function(*args, **kwargs)
             finally:
-                key = (
-                    "topography_ms"
-                    if name == "build_topography_profiles"
-                    else "urban_access_ms"
-                )
+                key = "topography_ms" if name == "build_topography_profiles" else "urban_access_ms"
                 timings[key] += (time.perf_counter_ns() - started) // 1_000_000
 
         return wrapper
@@ -195,9 +196,7 @@ class EAFixedPointProductionOperations:
         self._base_snapshot_id = config.source.snapshot_id
         self._run_token = run_token
         elevation = config.source.national_elevation
-        self._base_evidence_path = (
-            elevation.path.resolve() if elevation is not None else None
-        )
+        self._base_evidence_path = elevation.path.resolve() if elevation is not None else None
 
     def initial_snapshot(self) -> EAFixedPointSnapshot:
         return _snapshot_state(next(iter(self._configs.values())))
@@ -217,9 +216,7 @@ class EAFixedPointProductionOperations:
             config.source.national_elevation.path = snapshot.elevation_evidence_path
         restored = _snapshot_state(config)
         if restored != snapshot:
-            raise ValueError(
-                "EA convergence checkpoint differs from its immutable snapshot"
-            )
+            raise ValueError("EA convergence checkpoint differs from its immutable snapshot")
         self._configs[snapshot.snapshot_id] = config
 
     def compile(self, snapshot: EAFixedPointSnapshot) -> EAFixedPointCompilation:
@@ -237,21 +234,16 @@ class EAFixedPointProductionOperations:
                     raise
                 status = _validated_candidate_status(config, snapshot, candidate)
                 return EAFixedPointCompilation(
-                    expected_fingerprint=status[
-                        "expected_eligible_route_fingerprint"
-                    ],
+                    expected_fingerprint=status["expected_eligible_route_fingerprint"],
                     actual_fingerprint=status["actual_eligible_route_fingerprint"],
                     candidate_network=candidate / EA_FIXED_POINT_CANDIDATE_NETWORK,
                     urban_access_ms=timings["urban_access_ms"],
                     topography_ms=timings["topography_ms"],
-                    acquisition_command=tuple(
-                        shlex.split(status["next_step_command"])
-                    ),
+                    acquisition_command=tuple(shlex.split(status["next_step_command"])),
                 )
         if result.status not in {"reviewable", "complete"}:
             raise ValueError(
-                "EA convergence compile requires a publishable result, "
-                f"not {result.status}"
+                f"EA convergence compile requires a publishable result, not {result.status}"
             )
         network = result.output_dir / "network.geojson"
         actual = fixed_point_route_fingerprint(gpd.read_file(network))
@@ -289,8 +281,7 @@ class EAFixedPointProductionOperations:
             )
             if completed.returncode != 0:
                 raise ValueError(
-                    "EA governed acquisition failed "
-                    f"with exit status {completed.returncode}"
+                    f"EA governed acquisition failed with exit status {completed.returncode}"
                 )
             if not all(path.is_file() and not path.is_symlink() for path in family):
                 raise ValueError("EA immutable acquisition output family is incomplete")
@@ -308,9 +299,7 @@ class EAFixedPointProductionOperations:
     ) -> EAFixedPointSnapshotCreation:
         previous_config = self._config(previous)
         config = previous_config.model_copy(deep=True)
-        config.source.snapshot_id = (
-            f"{self._base_snapshot_id}-fp-{self._run_token}-{iteration:02d}"
-        )
+        config.source.snapshot_id = f"{self._base_snapshot_id}-fp-{self._run_token}-{iteration:02d}"
         config.source.retained_core_source = RetainedCoreSourceConfig(
             snapshot_id=previous.snapshot_id,
             manifest_sha256=previous.manifest_sha256,
@@ -326,14 +315,10 @@ class EAFixedPointProductionOperations:
         if not target.exists():
             seal_started = time.perf_counter_ns()
             create_snapshot(config, retain_core=True)
-            snapshot_seal_ms = (
-                time.perf_counter_ns() - seal_started
-            ) // 1_000_000
+            snapshot_seal_ms = (time.perf_counter_ns() - seal_started) // 1_000_000
         validation_started = time.perf_counter_ns()
         state = _snapshot_state(config, expected_parent=previous)
-        snapshot_validation_ms = (
-            time.perf_counter_ns() - validation_started
-        ) // 1_000_000
+        snapshot_validation_ms = (time.perf_counter_ns() - validation_started) // 1_000_000
         if (
             state.primary_fingerprint != acquisition.primary_fingerprint
             or state.route_inventory != acquisition.route_inventory
@@ -352,9 +337,7 @@ class EAFixedPointProductionOperations:
         try:
             return self._configs[snapshot.snapshot_id]
         except KeyError as error:
-            raise ValueError(
-                f"unknown EA convergence snapshot: {snapshot.snapshot_id}"
-            ) from error
+            raise ValueError(f"unknown EA convergence snapshot: {snapshot.snapshot_id}") from error
 
 
 def _validated_acquisition_command(
@@ -422,9 +405,8 @@ def _validated_acquisition_command(
         or sample_routes != replay_inputs["sample_routes"].resolve()
     ):
         raise ValueError("EA governed acquisition replay paths are not reproducible")
-    if (
-        len(command[18]) != 64
-        or any(character not in "0123456789abcdef" for character in command[18])
+    if len(command[18]) != 64 or any(
+        character not in "0123456789abcdef" for character in command[18]
     ):
         raise ValueError("EA governed acquisition fingerprint is malformed")
     if not candidate_path.is_file():
@@ -441,9 +423,9 @@ def _validated_acquisition_command(
             separators=(",", ":"),
         ).encode()
     ).hexdigest()
+    bounded_stem = _bounded_evidence_stem(base_evidence, iteration_identity)
     iteration_evidence = base_evidence.with_name(
-        f"{base_evidence.stem}.fixed-point-{iteration_identity}"
-        f"{base_evidence.suffix}"
+        f"{bounded_stem}.fixed-point-{iteration_identity}{base_evidence.suffix}"
     )
     command = (*command[:5], str(iteration_evidence), *command[6:])
     return command, iteration_evidence
@@ -458,15 +440,30 @@ def _acquisition_output_family(evidence_path: Path) -> tuple[Path, ...]:
     )
 
 
+def _bounded_evidence_stem(path: Path, iteration_identity: str) -> str:
+    stable_stem = _stable_evidence_stem(path)
+    candidate = path.with_name(f"{stable_stem}.fixed-point-{iteration_identity}{path.suffix}")
+    component_limit = os.pathconf(path.parent, "PC_NAME_MAX")
+    stable_stem_bytes = len(stable_stem.encode())
+    family_tail_bytes = max(
+        len(member.name.encode()) - stable_stem_bytes
+        for member in _acquisition_output_family(candidate)
+    )
+    available_stem_bytes = component_limit - family_tail_bytes
+    if available_stem_bytes < 0:
+        raise ValueError(
+            "EA fixed-point acquisition output family exceeds the filesystem component-name limit"
+        )
+    return stable_stem.encode()[:available_stem_bytes].decode("utf-8", errors="ignore")
+
+
 def _validated_acquisition_output(
     evidence_path: Path,
     compilation: EAFixedPointCompilation,
     *,
     governed_input_fingerprint: str,
 ) -> EAFixedPointAcquisition:
-    evidence, manifest_path, ledger, sampled_routes = _acquisition_output_family(
-        evidence_path
-    )
+    evidence, manifest_path, ledger, sampled_routes = _acquisition_output_family(evidence_path)
     if not all(
         path.is_file() and not path.is_symlink()
         for path in (evidence, manifest_path, ledger, sampled_routes)
@@ -612,14 +609,10 @@ def _finalize_terminal_convergence(
     )
     snapshot_root = config.source.snapshot_dir.resolve()
     snapshot_target = config.source.snapshot_dir / snapshot_id
-    if snapshot_target.is_symlink() or not snapshot_target.resolve().is_relative_to(
-        snapshot_root
-    ):
+    if snapshot_target.is_symlink() or not snapshot_target.resolve().is_relative_to(snapshot_root):
         raise ValueError("EA terminal snapshot target is outside its governed root")
     snapshot_manifest = snapshot_target / "snapshot.json"
-    if _regular_file_sha256(
-        snapshot_manifest, "snapshot manifest"
-    ) != snapshot.manifest_sha256:
+    if _regular_file_sha256(snapshot_manifest, "snapshot manifest") != snapshot.manifest_sha256:
         raise ValueError("EA terminal snapshot manifest SHA-256 differs")
     if not evidence.resolve().is_relative_to(_PROJECT_ROOT.resolve()):
         raise ValueError("EA terminal elevation evidence is outside the project")
@@ -720,10 +713,7 @@ def _finalize_terminal_convergence(
         config_path=config_path,
     )
     promoted_sha256 = hashlib.sha256(promoted).hexdigest()
-    if (
-        closure_exists
-        and promoted_sha256 != closure["promoted_configuration_sha256"]
-    ):
+    if closure_exists and promoted_sha256 != closure["promoted_configuration_sha256"]:
         raise ValueError("EA terminal promoted configuration identity differs")
     _revalidate_terminal_snapshot(snapshot_target)
     if not closure_exists:
