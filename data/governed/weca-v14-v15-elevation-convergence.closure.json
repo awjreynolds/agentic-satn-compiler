@@ -1,0 +1,18 @@
+{
+  "convergence_record_sha256": "ab021cfe82d1e71ea505491712759738f7d582ec2db99558327f0b61db10aa06",
+  "elevation_evidence_sha256": "cd254764b467d8f9de793da99daf90ea031cc7d41360ac28bd05b915b2e466f5",
+  "fixed_point_closure": {
+    "actual_eligible_route_fingerprint": "cea9a52b917911e1589991518cf39e8bcbf50fb5c01bad6852220d921af2e435",
+    "candidate_network_sha256": "bb45bb2ba265ae7fd34c4ddec9dc488301db087b8fd82e7f725c77b04d14544b",
+    "expected_eligible_route_fingerprint": "cea9a52b917911e1589991518cf39e8bcbf50fb5c01bad6852220d921af2e435",
+    "governed_input_fingerprint": "d25fda695dfaf284d352e38b3e1c7c30e69322b5e4c8d557aa0ca781c1d47fe5",
+    "manifest_elevation_primary_fingerprint": "cea9a52b917911e1589991518cf39e8bcbf50fb5c01bad6852220d921af2e435",
+    "schema_version": "ea-recovery-closure-proof/v1",
+    "target_manifest_sha256": "8c06135baa56a5dcb7d1ed7acf6ac309cbeeae8d09840b6a4ad85740cc123024",
+    "target_snapshot_id": "weca-classification-elevation-2026-07-31-v14-fp-20260731T092920522968Z-02-fp-20260809T123804416841Z-01-fp-20260819T011108973323Z-01"
+  },
+  "original_configuration_sha256": "4db4c2c1f4b80299c5d4064a0d963561f16d9d6c08b322e2172a57cf0e708eae",
+  "promoted_configuration_sha256": "5c568c60bab74fea01315300a33362bff7a44f3c901c8fbc17b82c3bcae4a34c",
+  "schema_version": "ea-fixed-point-finalization/v1",
+  "terminal_run_manifest_sha256": "9e1a774221c6fa56977d4b9f27dc9b9b90dd3fd03a45f041395919d1f5704f50"
+}
