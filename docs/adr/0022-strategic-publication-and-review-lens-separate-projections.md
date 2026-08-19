@@ -50,7 +50,8 @@ changing the selected network.
 ### Geometry and diagnostic contracts
 
 - Strategic Network line features come only from the stored effective sections;
-  a Network Gap is an endpoint marker, never indicative route geometry.
+  this includes its required Urban Main-Road Spine sections. A Network Gap is an
+  endpoint marker, never indicative route geometry.
 - A gap endpoint is projected to a governed Place Point when that Place exists.
   Null geometry is permitted only when the gap endpoint Place is genuinely absent;
   other feature rows must have valid geometry or be omitted under their source

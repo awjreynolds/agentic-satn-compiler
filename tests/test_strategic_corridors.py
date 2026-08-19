@@ -5,8 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import geopandas as gpd
+import pandas as pd
 from bath_saltford_fixture import configured_bath_saltford
 from shapely.affinity import translate
+from shapely.geometry import LineString, Point
 
 from satn.agents import FakeAgentRuntime
 from satn.compiler import compile_network, governed_input_binding
@@ -135,6 +137,7 @@ def test_bath_prepares_separate_interurban_and_destination_units(tmp_path: Path)
     assert {candidate.source_class.value for candidate in destination.candidate_set.candidates} == {
         "a-road-corridor"
     }
+
     destination_record = destination.candidate_records[0]
     assert destination_record.routing_edge_ids == ("a4-campus-forward",)
     assert destination_record.reverse_routing_edge_ids == ("a4-campus-reverse",)
@@ -208,6 +211,90 @@ def test_bath_prepares_separate_interurban_and_destination_units(tmp_path: Path)
         columns=evidence.columns,
     )
     assert {item.corridor_distance_m for item in reach.summaries} == {500.0, 1000.0}
+
+
+def test_compiler_carries_governed_urban_spine_into_effective_network(tmp_path: Path) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    source = load_snapshot(config)
+    urban_geometry = LineString([(-2.39, 51.37), (-2.365, 51.425)])
+    urban_place = gpd.GeoDataFrame(
+        [
+            {
+                "place_id": "bristol-urban-fixture",
+                "name": "Bristol urban fixture",
+                "kind": "community",
+                "population": 100_000,
+                "place_class": "town",
+                "source_id": "bristol-urban-fixture",
+                "geometry": Point(-2.365, 51.425),
+            }
+        ],
+        geometry="geometry",
+        crs=source["places"].crs,
+    )
+    source["places"] = gpd.GeoDataFrame(
+        pd.concat([source["places"], urban_place], ignore_index=True, sort=False),
+        geometry="geometry",
+        crs=source["places"].crs,
+    )
+    urban_edges = gpd.GeoDataFrame(
+        [
+            {
+                "source_id": "urban-a4-forward",
+                "u": "a4-root",
+                "v": "bristol-urban-fixture",
+                "highway": "primary",
+                "ref": "A4",
+                "geometry": urban_geometry,
+            },
+            {
+                "source_id": "urban-a4-reverse",
+                "u": "bristol-urban-fixture",
+                "v": "a4-root",
+                "highway": "primary",
+                "ref": "A4",
+                "geometry": urban_geometry.reverse(),
+            },
+        ],
+        geometry="geometry",
+        crs=source["network"].crs,
+    )
+    source["network"] = gpd.GeoDataFrame(
+        pd.concat([source["network"], urban_edges], ignore_index=True, sort=False),
+        geometry="geometry",
+        crs=source["network"].crs,
+    )
+    source["official_road_classification"] = gpd.GeoDataFrame(
+        [
+            {
+                "official_feature_id": "official-urban-a4",
+                "official_classification": "a-road",
+                "official_road_number": "A4",
+                "source_id": "synthetic-official-roads",
+                "effective_date": "2026-08-19",
+                "licence": "Synthetic fixture",
+                "content_fingerprint": "a" * 64,
+                "geometry": urban_geometry,
+            }
+        ],
+        geometry="geometry",
+        crs=source["network"].crs,
+    )
+
+    compiled = compile_network(config, source, FakeAgentRuntime())
+
+    assert not compiled.urban_spines.empty
+    strategic = compiled.strategic_network_planning
+    assert strategic is not None
+    urban_sections = [
+        section
+        for section in strategic.effective_network.sections
+        if section.network_role == "urban-main-road-spine"
+    ]
+    assert urban_sections
+    assert all(section.routing_edge_ids for section in urban_sections)
+    assert all(section.primary_alignment_basis == "a-road" for section in urban_sections)
 
 
 def test_preloaded_officer_route_is_applied_and_divergence_remains_visible(

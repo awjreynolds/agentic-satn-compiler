@@ -44,6 +44,12 @@ Divergences, Evidence Requests, diagnostics and planning lineage together. The
 state's fingerprint is derived from the stored result; it is not recomputed from
 whatever a downstream adapter happens to display.
 
+The result also contains governed Urban Main-Road Spines as required strategic
+sections. They are bound to exact Planning Graph edges and enter through this
+authority boundary without pretending that a mandatory urban road structure was
+chosen from a Candidate Set. This keeps one continuous rural-and-urban network;
+the publisher does not splice the urban geometry into it later.
+
 ### Adapter and compiler boundary
 
 The effective-network adapter may translate a routable frame into the lossless
@@ -76,6 +82,9 @@ new fingerprinted effective state.
   later projections.
 - Candidate and preparation evidence remains complete for inspection without
   allowing a review layer to mutate the selected network.
+- Cities remain part of the same Effective Strategic Network while residential
+  street fabric continues to be represented by Candidate Low-Traffic Areas rather
+  than selected centreline routes.
 
 ## Rejected alternatives
 

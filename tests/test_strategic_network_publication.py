@@ -83,6 +83,31 @@ def test_selected_network_and_places_are_the_only_default_layers() -> None:
     )
 
 
+def test_required_urban_spine_is_published_as_selected_strategic_geometry() -> None:
+    urban = SimpleNamespace(
+        section_id="urban-spine-bristol-a4",
+        obligation_id="urban-structure:urban-spine-bristol-a4",
+        candidate_id=None,
+        network_role="urban-main-road-spine",
+        routing_edge_ids=("urban-edge-a4",),
+        reverse_routing_edge_ids=(),
+        geometry_wkt="LINESTRING (100000 200000, 100100 200100)",
+        authority="compiler",
+        alignment_bases=("a-road",),
+        primary_alignment_basis="a-road",
+        intervention_state="upgrade-required",
+        display_state="upgrade-required",
+    )
+
+    projection = project_strategic_network(_result(urban))
+
+    feature = projection.layers["Strategic Network"]["features"][0]
+    assert feature["id"] == "urban-spine-bristol-a4"
+    assert feature["properties"]["network_role"] == "urban-main-road-spine"
+    assert feature["properties"]["selection_disposition"] == "selected"
+    assert feature["properties"]["display_state"] == "upgrade-required"
+
+
 def test_reference_and_divergence_are_explicit_non_grey_variants() -> None:
     reference = _section(
         "reference", authority="governed-reference-provisional", display="reference-route"

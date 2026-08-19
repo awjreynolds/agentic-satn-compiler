@@ -35,8 +35,9 @@ When the release is published, GitHub Pages downloads and extracts that archive,
 installs Chromium, and runs `scripts/validate_pages_rendering.py pages`. The gate
 opens every packaged review map, verifies that the complete strategic-spine,
 access-connection and cross-spine layers are visible, and proves that strategic-spine
-geometry produces rendered map features before the validated tree is uploaded and
-deployed.
+geometry produces rendered map features. Where governed urban main-road spines are
+present, it also rejects a package unless they are represented in the Effective
+Strategic Network before the validated tree is uploaded and deployed.
 
 ## Public versus local evidence
 

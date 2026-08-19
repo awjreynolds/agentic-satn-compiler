@@ -71,6 +71,7 @@ def compile_prepared_effective_strategic_network(
     snapshot_manifest_path: Path,
     area_definition_path: Path,
     officer_decisions: tuple[object, ...] = (),
+    urban_spines: gpd.GeoDataFrame | None = None,
 ) -> EffectiveStrategicNetworkState:
     """Hash governed paths, then delegate one complete request to the seam."""
 
@@ -85,6 +86,7 @@ def compile_prepared_effective_strategic_network(
             area_fingerprint=area_fingerprint,
             snapshot_fingerprint=source_fingerprint,
             officer_decisions=officer_decisions,
+            urban_spines=urban_spines,
         )
     )
 
@@ -96,6 +98,7 @@ def compile_prepared_strategic_network(
     snapshot_manifest_path: Path,
     area_definition_path: Path,
     officer_decisions: tuple[object, ...] = (),
+    urban_spines: gpd.GeoDataFrame | None = None,
 ) -> StrategicNetworkPlanningResult | None:
     """Legacy result view; selection is performed only by the canonical seam."""
 
@@ -105,6 +108,7 @@ def compile_prepared_strategic_network(
         snapshot_manifest_path=snapshot_manifest_path,
         area_definition_path=area_definition_path,
         officer_decisions=officer_decisions,
+        urban_spines=urban_spines,
     ).result
 
 
