@@ -7,6 +7,7 @@ from pathlib import Path
 from bath_saltford_fixture import configured_bath_saltford
 
 from satn.deployment import build_area_deployment
+from satn.deployment_provenance import generate_lock, verify_lock
 from satn.filesystem_safety import publication_destination_authority
 from satn.pipeline import compile
 from satn.sources import snapshot
@@ -48,6 +49,16 @@ def test_area_deployment_preserves_compilation_metadata(tmp_path: Path) -> None:
     run = json.loads((result.output_dir / "run.json").read_text(encoding="utf-8"))
     publication = json.loads((deployment / "publication.json").read_text(encoding="utf-8"))
     assert publication["compilation_metadata"] == run["compilation_metadata"]
-    assert _satn_data(deployment / "data.js")["compilation_metadata"] == run[
-        "compilation_metadata"
-    ]
+    assert _satn_data(deployment / "data.js")["compilation_metadata"] == run["compilation_metadata"]
+    for relative_path in (
+        "compiler-run.json",
+        "publication.json",
+        "strategic-network.json",
+    ):
+        path = deployment / relative_path
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert path.read_bytes() == json.dumps(payload, separators=(",", ":")).encode()
+
+    lock_path = tmp_path / "provenance-lock.json"
+    generate_lock(config, path=lock_path, deployment=deployment)
+    verify_lock(config, path=lock_path, deployment=deployment)

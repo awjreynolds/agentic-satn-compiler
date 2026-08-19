@@ -64,6 +64,11 @@ def _write_collection(path: Path, features: list[dict[str, object]]) -> int:
     return len(payload)
 
 
+def _compact_json_file(path: Path) -> None:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+
+
 def _coordinates(geometry: dict[str, object] | None) -> list[tuple[float, float]]:
     if not geometry:
         return []
@@ -245,9 +250,10 @@ def _validated_run_provenance(definition: AreaConfig, run: dict[str, object]) ->
         )
     except (KeyError, TypeError, ValueError) as error:
         raise SystemExit("compiled run has an invalid decision provenance contract") from error
-    if ledger.decision_contract != run["decision_contract"] or accepted.model_dump(mode="json")[
-        "responses"
-    ] != run["accepted_decisions"]:
+    if (
+        ledger.decision_contract != run["decision_contract"]
+        or accepted.model_dump(mode="json")["responses"] != run["accepted_decisions"]
+    ):
         raise SystemExit("compiled run has a non-canonical accepted-decision contract")
     governed = compilation_governed_input_fingerprint(definition)
     snapshot_digest = snapshot_manifest_sha256(definition)
@@ -349,6 +355,7 @@ def build_area_deployment(
     )
     temporary = staging.temporary
     try:
+
         def ignore_redundant_audits(source: str, names: list[str]) -> set[str]:
             # The compiler publication and review-map ZIP retain the complete
             # audit files.  The Area Deployment adapter only needs to omit the
@@ -365,6 +372,10 @@ def build_area_deployment(
         )
         content = temporary
         shutil.copy2(run_path, content / "compiler-run.json")
+        _compact_json_file(content / "compiler-run.json")
+        strategic_network_path = content / "strategic-network.json"
+        if strategic_network_path.is_file():
+            _compact_json_file(strategic_network_path)
         if lock is not None:
             shutil.copy2(definition.config_path.parent / LOCK_NAME, content / LOCK_NAME)
         network_path = content / "network.geojson"
@@ -439,9 +450,7 @@ def build_area_deployment(
                     "shards": typed_entries,
                 }
             expected_entries = [
-                entry
-                for feature_type in sorted(types)
-                for entry in types[feature_type]["shards"]
+                entry for feature_type in sorted(types) for entry in types[feature_type]["shards"]
             ]
             if entries != expected_entries:
                 raise AssertionError("typed layer shards must preserve the group shard order")
@@ -456,11 +465,10 @@ def build_area_deployment(
                 raise AssertionError(
                     "typed layer shards must contain only their declared feature type"
                 )
-            if (
-                sum(int(metadata["feature_count"]) for metadata in types.values())
-                != len(deferred[group])
-                or sum(int(metadata["size_bytes"]) for metadata in types.values())
-                != sum(int(entry["size_bytes"]) for entry in entries)
+            if sum(int(metadata["feature_count"]) for metadata in types.values()) != len(
+                deferred[group]
+            ) or sum(int(metadata["size_bytes"]) for metadata in types.values()) != sum(
+                int(entry["size_bytes"]) for entry in entries
             ):
                 raise AssertionError("typed layer manifest totals must match the group totals")
             groups[group] = {
@@ -618,7 +626,7 @@ def build_area_deployment(
         if "compilation_metadata" in run:
             publication["compilation_metadata"] = run["compilation_metadata"]
         (content / "publication.json").write_text(
-            json.dumps(publication, indent=2), encoding="utf-8"
+            json.dumps(publication, separators=(",", ":")), encoding="utf-8"
         )
         # data.js is a first-class public contract, not an unbound convenience
         # payload.  Keep every user-facing provenance and scope field identical.
