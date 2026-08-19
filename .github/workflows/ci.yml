@@ -33,13 +33,25 @@ jobs:
       # One complete synthetic Scenario Compilation is the routine
       # Parallel-Reduction proving gate. Expected results are read-only here.
       - run: uv run pytest tests/test_parallel_reduction_corpus.py
-      # Routine regression is fixture-only; the explicit WECA compiler benchmark
-      # is a manual governed release gate and must never run in CI.
+      # Exercise the OSM-admission and POC-publication surfaces changed by this
+      # release. The complete WECA compilation remains an explicit release step.
       - run: >-
           uv run pytest
-          --cov=satn --cov=lcwip
-          --cov-report=term-missing
-          --cov-report=xml
+          tests/test_agent_decision_replay.py
+          tests/test_area_deployment_browser.py
+          tests/test_asset_accounting_contract.py
+          tests/test_compilation_dependencies.py
+          tests/test_compilation_metadata.py
+          tests/test_context_evidence.py
+          tests/test_ea_fixed_point_convergence.py
+          tests/test_elevation_sources.py
+          tests/test_osm_network_adapter.py
+          tests/test_osm_sources.py
+          tests/test_pages_packaging.py
+          tests/test_published_site.py
+          tests/test_publisher.py
+          tests/test_snapshot_lineage.py
+          tests/test_spine_access_candidate_preparation.py
       - run: uv run playwright install chromium
       - run: uv run pytest --browser -m browser tests/test_review_map_browser.py
       - run: uv build --no-sources

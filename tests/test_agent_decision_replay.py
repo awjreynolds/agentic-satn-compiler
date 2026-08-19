@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from satn import compile
 from satn.deployment import build_area_deployment
+from satn.filesystem_safety import publication_destination_authority
 from satn.models import (
     AgentDecisionAction,
     AgentDecisionChoice,
@@ -406,7 +407,7 @@ def test_direct_runtime_publishes_a_canonical_multi_decision_audit(tmp_path: Pat
     )
 
 
-def test_area_deployment_rejects_a_reordered_caller_ledger_run(tmp_path: Path) -> None:
+def test_area_deployment_does_not_replay_a_caller_ledger(tmp_path: Path) -> None:
     config = prepared_config(tmp_path)
     completed, _ledger = complete_with_first_choices(config)
     run_path = completed.artifacts["run"]
@@ -414,8 +415,17 @@ def test_area_deployment_rejects_a_reordered_caller_ledger_run(tmp_path: Path) -
     run["decision_ledger_input"]["responses"].reverse()
     run_path.write_text(json.dumps(run), encoding="utf-8")
 
-    with pytest.raises(SystemExit, match="decision provenance"):
-        build_area_deployment(config, tmp_path / "deployment")
+    deployment = tmp_path / "deployment"
+    authority = publication_destination_authority(workspace_root=tmp_path)
+
+    assert (
+        build_area_deployment(
+            config,
+            deployment,
+            publication_authority=authority,
+        )
+        == deployment
+    )
 
 
 def test_cli_accepts_a_json_ledger_and_exits_at_the_next_request(tmp_path: Path) -> None:
