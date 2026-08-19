@@ -97,7 +97,7 @@ The map-facing union of the three routable Intervention States and `unresolved-g
 _Avoid_: route score, colour-only state, alignment source
 
 **Existing and Upgradeable Assets Layer**:
-An optional inventory layer containing every governed in-scope reusable asset whether selected, complementary, unselected, incomplete or topologically unconnected. An unselected existing asset retains its basis identity rather than becoming an anonymous grey alternative.
+An inventory layer containing every governed in-scope reusable asset whether selected, complementary, unselected, incomplete or topologically unconnected. Its exhaustive controls are optional, while OSM-mapped cycleway assets are shown by default as separately styled contextual evidence. An unselected existing asset retains its basis identity rather than becoming an anonymous grey alternative and never masquerades as selected network geometry.
 _Avoid_: selected network, hidden asset loss, feasibility inventory
 
 **Unselected Candidates Layer**:
@@ -549,7 +549,7 @@ A highest-priority requirement for a rural School to have a valid Spine Access C
 _Avoid_: School Network Place, mandatory backbone waypoint, alignment veto, school-to-school route, school-to-Community route
 
 **Urban Main-Road Spine**:
-An urban A Road, B Road or Classified Unnumbered Road assigned to carry through motor traffic, bound Low-Traffic Areas and provide protected cycling infrastructure along the corridor.
+An urban A Road, B Road or Classified Unnumbered Road assigned to carry through motor traffic, bound Low-Traffic Areas and provide protected cycling infrastructure along the corridor. It is shown by default as strategic road structure, without claiming that cycle provision already exists.
 _Avoid_: shared-use default, unprotected carriageway route, residential-street cycle route
 
 **Urban NCN Evidence**:

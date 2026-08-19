@@ -116,6 +116,35 @@ def _inspect_deployment(
                 f"{deployment_id} map rendering did not become ready{suffix}"
             ) from error
         page.wait_for_function("!window.SATN_REVIEW_MAP.isMoving()")
+        try:
+            page.wait_for_function(
+                "['true', 'failed'].includes(document.documentElement.dataset.defaultEvidenceReady)"
+            )
+        except PlaywrightTimeoutError as error:
+            raise ValueError(
+                f"{deployment_id} default map evidence did not finish loading"
+            ) from error
+        with suppress(PlaywrightTimeoutError):
+            page.wait_for_function(
+                """() => {
+                  const map = window.SATN_REVIEW_MAP;
+                  const network = map.getSource("network")?._data?.features || [];
+                  const reviewable = map.getSource("reviewable")?._data?.features || [];
+                  const expected = [
+                    [network, "urban-spine", "urban-spines"],
+                    [reviewable, "asset-upgrade-required", "mapped-active-travel-assets",
+                     (feature) => feature.properties?.asset_kind === "mapped-cycleway"],
+                  ];
+                  return expected.every(([features, featureType, layerId, predicate]) => {
+                    const count = features.filter((feature) =>
+                      feature.properties?.feature_type === featureType &&
+                      (!predicate || predicate(feature))
+                    ).length;
+                    return count === 0 ||
+                      map.queryRenderedFeatures({layers: [layerId]}).length > 0;
+                  });
+                }"""
+            )
         inspection = page.evaluate(
             """() => {
               const map = window.SATN_REVIEW_MAP;
@@ -127,6 +156,9 @@ def _inspect_deployment(
                 ["cross-spine-connector", "cross-spine-connectors"],
               ];
               const failures = [];
+              if (document.documentElement.dataset.defaultEvidenceReady !== "true") {
+                failures.push("default map evidence failed to load");
+              }
               const counts = Object.fromEntries(expected.map(([featureType]) => [
                 featureType,
                 features.filter((feature) =>
@@ -143,6 +175,34 @@ def _inspect_deployment(
               );
               if (!document.querySelector("#layer-strategic-network")?.checked) {
                 failures.push("Strategic Active Travel Network control is not selected");
+              }
+              for (const [controlId, layerId] of [
+                ["layer-urban-spines", "urban-spines"],
+                ["layer-mapped-active-travel-assets", "mapped-active-travel-assets"],
+              ]) {
+                if (!document.querySelector(`#${controlId}`)?.checked) {
+                  failures.push(`${controlId} default control is not selected`);
+                }
+                if (!map.getLayer(layerId)) {
+                  failures.push(`${layerId} default layer is missing`);
+                } else if (map.getLayoutProperty(layerId, "visibility") === "none") {
+                  failures.push(`${layerId} default layer is hidden`);
+                }
+              }
+              const contextualDefaults = [
+                [features, "urban-spine", "urban-spines"],
+                [map.getSource("reviewable")?._data?.features || [],
+                 "asset-upgrade-required", "mapped-active-travel-assets",
+                 (feature) => feature.properties?.asset_kind === "mapped-cycleway"],
+              ];
+              for (const [sourceFeatures, featureType, layerId, predicate] of contextualDefaults) {
+                const count = sourceFeatures.filter((feature) =>
+                  feature.properties?.feature_type === featureType &&
+                  (!predicate || predicate(feature))
+                ).length;
+                if (count > 0 && map.queryRenderedFeatures({layers: [layerId]}).length === 0) {
+                  failures.push(`${layerId} has data but no rendered features`);
+                }
               }
               if (counts["strategic-spine"] === 0) {
                 failures.push("published network contains no strategic-spine geometry");

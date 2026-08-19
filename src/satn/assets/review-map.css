@@ -197,6 +197,7 @@ nav { display: flex; flex-wrap: wrap; gap: .4rem; font-size: .78rem; }
 .map-key.access { border-color: #16a085; border-top-style: dashed; }
 .map-key.cross-spine { border-color: #8e44ad; }
 .map-key.urban { border-color: #5b2c6f; }
+.map-key.mapped-asset { border-color: #ef6c00; border-top-style: dashed; }
 .map-key.authority { border-color: #243447; border-top-style: dashed; }
 .map-key.area { height: .75rem; border: 1px solid #2f6474; }
 .map-key.lta { background: rgb(127 184 201 / 24%); }

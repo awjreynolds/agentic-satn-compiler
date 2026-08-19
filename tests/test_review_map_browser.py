@@ -248,6 +248,10 @@ def test_any_visible_map_artifact_can_pin_its_context(tmp_path: Path) -> None:
         route_preview_text = lens.inner_text()
         assert route_preview["name"] in route_preview_text
         assert route_preview["id"] in route_preview_text
+        assert "Line colour" in route_preview_text
+        assert "Teal" in route_preview_text
+        assert "Map meaning" in route_preview_text
+        assert "Selected Strategic Spine" in route_preview_text
         assert "Not available" not in route_preview_text
         page.mouse.move(map_box["x"] + 2, map_box["y"] + 2)
         assert lens.is_hidden()
