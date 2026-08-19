@@ -128,6 +128,10 @@ COMPILATION_COMPONENTS: Final[dict[str, tuple[str, str]]] = {
     ),
     "satn/identifiers.py": ("module", "stable compiled feature identifiers"),
     "satn/models.py": ("module", "Area Definition and compiled model semantics"),
+    "satn/osm_active_travel.py": (
+        "module",
+        "shared OSM active-travel classification and way-tag semantics",
+    ),
     "satn/network_selection.py": (
         "module",
         "frozen Network Selection Profile validation and fingerprinting",
@@ -288,7 +292,6 @@ EXCLUDED_COMPONENTS: Final[dict[str, str]] = {
     ),
     "satn/deployment.py": "isolated deployment assembly",
     "satn/deployment_catalogue.py": "deployment catalogue assembly",
-    "satn/deployment_provenance.py": "deployment lock validation",
     "satn/deployment_scenario_cli.py": "post-compile officer-scenario command adapter",
     "satn/deployment_scenarios.py": ("post-compile clean-baseline and officer-scenario assembly"),
     "satn/ea_raster_evidence.py": (

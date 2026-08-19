@@ -17,7 +17,6 @@ from playwright.sync_api import Page, sync_playwright
 
 from satn.constants import DISCLAIMER
 from satn.deployment import build_area_deployment
-from satn.deployment_provenance import generate_lock
 from satn.filesystem_safety import publication_destination_authority
 from satn.models import CouncilConfig
 from satn.pipeline import compile
@@ -115,9 +114,7 @@ def _split_school_shards(deployment: Path) -> tuple[str, str, str, str, str, str
         first_entry["size_bytes"] + second_entry["size_bytes"] + third_entry["size_bytes"]
     )
     group["shards"] = [
-        entry
-        for type_metadata in group["types"].values()
-        for entry in type_metadata["shards"]
+        entry for type_metadata in group["types"].values() for entry in type_metadata["shards"]
     ]
     group["feature_count"] = sum(
         type_metadata["feature_count"] for type_metadata in group["types"].values()
@@ -136,9 +133,7 @@ def _split_school_shards(deployment: Path) -> tuple[str, str, str, str, str, str
     )
 
 
-def _split_retail_shards(
-    deployment: Path, manifest: dict[str, object]
-) -> list[str]:
+def _split_retail_shards(deployment: Path, manifest: dict[str, object]) -> list[str]:
     group = manifest["groups"]["amenities"]
     retail_type = group["types"]["retail-centre"]
     source_entry = retail_type["shards"][0]
@@ -157,9 +152,7 @@ def _split_retail_shards(
     retail_type["feature_count"] = len(entries)
     retail_type["size_bytes"] = sum(entry["size_bytes"] for entry in entries)
     group["shards"] = [
-        entry
-        for type_metadata in group["types"].values()
-        for entry in type_metadata["shards"]
+        entry for type_metadata in group["types"].values() for entry in type_metadata["shards"]
     ]
     group["feature_count"] = sum(
         type_metadata["feature_count"] for type_metadata in group["types"].values()
@@ -246,13 +239,6 @@ def test_area_deployment_batches_deferred_shards_before_updating_map_source(
     build_area_deployment(
         definition,
         deployment,
-        bootstrap=True,
-        publication_authority=deployment_authority,
-    )
-    generate_lock(definition, deployment=deployment)
-    deployment = build_area_deployment(
-        definition,
-        deployment,
         publication_authority=deployment_authority,
     )
     template = (PROJECT / "src" / "satn" / "assets" / "review-map.html").read_text()
@@ -261,6 +247,7 @@ def test_area_deployment_batches_deferred_shards_before_updating_map_source(
         "__DISCLAIMER__": DISCLAIMER,
         "__REVIEW_MAP_CSS__": "review-map.css",
         "__REVIEW_MAP_JS__": "review-map.js",
+        "__REVIEW_LENS_STATE_JS__": "review-lens-state.js",
         "__ATM_STATE__": "disabled",
         "__ATM_STATUS__": "No governed local ATM data loaded.",
         "__GENTLE_MAX_PCT__": "3",
@@ -274,6 +261,10 @@ def test_area_deployment_batches_deferred_shards_before_updating_map_source(
     (deployment / "assets" / "review-map.js").write_text(
         (PROJECT / "src" / "satn" / "assets" / "review-map.js").read_text(),
         encoding="utf-8",
+    )
+    shutil.copy2(
+        PROJECT / "src" / "satn" / "assets" / "review-lens-state.js",
+        deployment / "assets" / "review-lens-state.js",
     )
     manifest_path = deployment / "layer-manifest.json"
     manifest = json.loads(manifest_path.read_text())
@@ -336,13 +327,6 @@ def test_area_deployment_progressive_loading_recovers_without_losing_data(
     build_area_deployment(
         definition,
         deployment,
-        bootstrap=True,
-        publication_authority=deployment_authority,
-    )
-    generate_lock(definition, deployment=deployment)
-    deployment = build_area_deployment(
-        definition,
-        deployment,
         publication_authority=deployment_authority,
     )
     template = (PROJECT / "src" / "satn" / "assets" / "review-map.html").read_text()
@@ -351,6 +335,7 @@ def test_area_deployment_progressive_loading_recovers_without_losing_data(
         "__DISCLAIMER__": DISCLAIMER,
         "__REVIEW_MAP_CSS__": "review-map.css",
         "__REVIEW_MAP_JS__": "review-map.js",
+        "__REVIEW_LENS_STATE_JS__": "review-lens-state.js",
         "__ATM_STATE__": "disabled",
         "__ATM_STATUS__": "No governed local ATM data loaded.",
         "__GENTLE_MAX_PCT__": "3",
@@ -364,6 +349,10 @@ def test_area_deployment_progressive_loading_recovers_without_losing_data(
     (deployment / "assets" / "review-map.js").write_text(
         (PROJECT / "src" / "satn" / "assets" / "review-map.js").read_text(),
         encoding="utf-8",
+    )
+    shutil.copy2(
+        PROJECT / "src" / "satn" / "assets" / "review-lens-state.js",
+        deployment / "assets" / "review-lens-state.js",
     )
     (
         first_school_shard,
@@ -388,8 +377,7 @@ def test_area_deployment_progressive_loading_recovers_without_losing_data(
         for entry in manifest["groups"]["amenities"]["types"]["retail-centre"]["shards"]
     ]
     healthcare_paths = [
-        entry["path"]
-        for entry in manifest["groups"]["amenities"]["types"]["healthcare"]["shards"]
+        entry["path"] for entry in manifest["groups"]["amenities"]["types"]["healthcare"]["shards"]
     ]
     # A stale/older manifest can legitimately lack an optional logical type.
     # Its control must make no sibling request, rather than falling back to the
@@ -475,9 +463,12 @@ def test_area_deployment_progressive_loading_recovers_without_losing_data(
         )
         partial_status = page.locator("#complete-region-status").inner_text()
         assert "2 features" in partial_status
-        assert _format_bytes(
-            school_shard_sizes[first_school_shard] + school_shard_sizes[second_school_shard]
-        ) in partial_status
+        assert (
+            _format_bytes(
+                school_shard_sizes[first_school_shard] + school_shard_sizes[second_school_shard]
+            )
+            in partial_status
+        )
         assert server.request_counts[f"/{second_school_shard}"] == 1
         assert server.request_counts[f"/{third_school_shard}"] == 1
         assert (

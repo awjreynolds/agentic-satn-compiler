@@ -149,7 +149,7 @@ flowchart LR
     run --> gpkg["Authoritative multi-layer GeoPackage"]
     run --> pdf["Printable network PDF"]
     run --> audit["Decisions · divergences · gaps · asset accounting"]
-    run --> provenance["Fingerprints · manifests · provenance lock"]
+    run --> provenance["Fingerprints · manifests · compiler records"]
 ```
 
 The [artifact reference](../reference/artifacts.md) explains which file to use for
@@ -193,7 +193,7 @@ time, alongside the run ID, status and fingerprints. A reused publication preser
 that original provenance rather than pretending a new compilation occurred.
 
 The repository keeps a tiny deterministic fixture for a five-minute smoke test,
-versioned B&NES and WECA definitions and provenance locks, and governed acquisition
+versioned B&NES and WECA definitions, and governed acquisition
 instructions for their larger retained snapshots. B&NES is the quality example and
 WECA is the regional-scale benchmark. Routine CI runs the light fixture and regression gates; the
 parallel-reduction deep corpus is an explicit deep workflow. These are reference
@@ -208,9 +208,9 @@ The repeatable workflow is:
 
 `snapshot` validates and fingerprints governed bytes; `compile` derives the
 network, gaps, evidence and decisions; `review` uses the interactive map, GIS,
-PDF and audit records; and `publish` packages an isolated deployment only after
-cross-artifact validation and provenance-lock checks. Hosting is a delivery adapter,
-not a source of network authority.
+PDF and audit records; and `publish` packages an isolated deployment after the
+compiler's atomic validation. Hosting is a delivery adapter, not a source of network
+authority.
 
 The B&NES deployment is the high-quality worked example: a real council-scale
 snapshot, rich urban and rural evidence and an interactive review map. WECA is the

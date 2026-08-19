@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from satn import compile
 from satn.deployment import build_area_deployment
+from satn.filesystem_safety import publication_destination_authority
 from satn.models import (
     AgentDecisionAction,
     AgentDecisionChoice,
@@ -146,26 +147,20 @@ def test_choice_three_publishes_the_same_gap_audit_to_every_spatial_surface(
     gap = next(
         feature
         for feature in geojson["features"]
-        if feature["properties"].get("agent_decision_request_id")
-        == first_request.request_id
+        if feature["properties"].get("agent_decision_request_id") == first_request.request_id
     )
     assert gap["properties"]["feature_type"] == "gap"
     assert gap["properties"]["agent_decision_choice_id"] == "3"
     geopackage_gaps = gpd.read_file(result.artifacts["geopackage"], layer="gaps")
-    row = geopackage_gaps.set_index("agent_decision_request_id").loc[
-        first_request.request_id
-    ]
+    row = geopackage_gaps.set_index("agent_decision_request_id").loc[first_request.request_id]
     assert row["agent_decision_choice_id"] == "3"
     review = json.loads(
-        (result.artifacts["review_map"].parent / "network.geojson").read_text(
-            encoding="utf-8"
-        )
+        (result.artifacts["review_map"].parent / "network.geojson").read_text(encoding="utf-8")
     )
     review_gap = next(
         feature
         for feature in review["features"]
-        if feature["properties"].get("agent_decision_request_id")
-        == first_request.request_id
+        if feature["properties"].get("agent_decision_request_id") == first_request.request_id
     )
     assert review_gap["properties"]["agent_decision_choice_id"] == "3"
 
@@ -178,9 +173,7 @@ def test_unknown_choice_and_stale_fingerprint_cannot_advance_compilation(
 
     unknown = compile(
         config,
-        decision_ledger=AgentDecisionLedger(
-            responses=(response_for(request, choice_id="99"),)
-        ),
+        decision_ledger=AgentDecisionLedger(responses=(response_for(request, choice_id="99"),)),
     )
     stale = compile(
         config,
@@ -292,38 +285,33 @@ def test_complete_replay_is_stable_and_published_records_agree(tmp_path: Path) -
     assert repeated.run_id == completed.run_id
     assert repeated.metadata["publication_reused"] is True
     run = json.loads(completed.artifacts["run"].read_text(encoding="utf-8"))
-    records = json.loads(
-        completed.artifacts["agents"].read_text(encoding="utf-8")
-    )["records"]
+    records = json.loads(completed.artifacts["agents"].read_text(encoding="utf-8"))["records"]
     applied = [record for record in records if record["responder_mode"] == "caller"]
     assert applied
     assert run["decision_contract"] == "agent-decision-menu/v1"
     assert run["decision_ledger_input"] == ledger.model_dump(mode="json")
-    assert run["accepted_decisions"] == sorted([
-        {
-            "request_id": record["decision_request"]["request_id"],
-            "dependency_fingerprint": record["decision_request"][
-                "dependency_fingerprint"
-            ],
-            "choice_id": record["selected_choice_id"],
-        }
-        for record in applied
-    ], key=lambda response: response["request_id"])
+    assert run["accepted_decisions"] == sorted(
+        [
+            {
+                "request_id": record["decision_request"]["request_id"],
+                "dependency_fingerprint": record["decision_request"]["dependency_fingerprint"],
+                "choice_id": record["selected_choice_id"],
+            }
+            for record in applied
+        ],
+        key=lambda response: response["request_id"],
+    )
     assert {
         (record["decision_request"]["request_id"], record["selected_choice_id"])
         for record in applied
     } == {(response.request_id, response.choice_id) for response in ledger.responses}
     network = json.loads(completed.artifacts["geojson"].read_text(encoding="utf-8"))
-    spatial = {
-        str(feature["id"]): feature["properties"] for feature in network["features"]
-    }
+    spatial = {str(feature["id"]): feature["properties"] for feature in network["features"]}
     for record in applied:
         if record["decision"] != "accept":
             continue
         properties = spatial[record["connection_id"]]
-        assert properties["agent_decision_request_id"] == record["decision_request"][
-            "request_id"
-        ]
+        assert properties["agent_decision_request_id"] == record["decision_request"]["request_id"]
         assert properties["agent_decision_choice_id"] == record["selected_choice_id"]
         assert properties["agent_decision_action"] == record["mapped_action"]["kind"]
         assert properties["agent_decision_responder_mode"] == record["responder_mode"]
@@ -351,9 +339,7 @@ def test_complete_replay_is_stable_and_published_records_agree(tmp_path: Path) -
     first_network = forced.artifacts["geojson"].read_bytes()
     forced_again = compile(config, decision_ledger=ledger)
     assert forced_again.run_id == forced.run_id
-    repeated_run = json.loads(
-        forced_again.artifacts["run"].read_text(encoding="utf-8")
-    )
+    repeated_run = json.loads(forced_again.artifacts["run"].read_text(encoding="utf-8"))
     repeated_run.pop("compilation_metadata")
     assert repeated_run == first_run
     assert forced_again.artifacts["agents"].read_bytes() == first_records
@@ -421,7 +407,7 @@ def test_direct_runtime_publishes_a_canonical_multi_decision_audit(tmp_path: Pat
     )
 
 
-def test_area_deployment_rejects_a_reordered_caller_ledger_run(tmp_path: Path) -> None:
+def test_area_deployment_does_not_replay_a_caller_ledger(tmp_path: Path) -> None:
     config = prepared_config(tmp_path)
     completed, _ledger = complete_with_first_choices(config)
     run_path = completed.artifacts["run"]
@@ -429,8 +415,17 @@ def test_area_deployment_rejects_a_reordered_caller_ledger_run(tmp_path: Path) -
     run["decision_ledger_input"]["responses"].reverse()
     run_path.write_text(json.dumps(run), encoding="utf-8")
 
-    with pytest.raises(SystemExit, match="decision provenance"):
-        build_area_deployment(config, tmp_path / "deployment", bootstrap=True)
+    deployment = tmp_path / "deployment"
+    authority = publication_destination_authority(workspace_root=tmp_path)
+
+    assert (
+        build_area_deployment(
+            config,
+            deployment,
+            publication_authority=authority,
+        )
+        == deployment
+    )
 
 
 def test_cli_accepts_a_json_ledger_and_exits_at_the_next_request(tmp_path: Path) -> None:
@@ -442,9 +437,7 @@ def test_cli_accepts_a_json_ledger_and_exits_at_the_next_request(tmp_path: Path)
     config_path.write_text(yaml_text, encoding="utf-8")
     ledger_path = tmp_path / "decisions.json"
     ledger_path.write_text(
-        AgentDecisionLedger(
-            responses=(response_for(request),)
-        ).model_dump_json(indent=2),
+        AgentDecisionLedger(responses=(response_for(request),)).model_dump_json(indent=2),
         encoding="utf-8",
     )
 

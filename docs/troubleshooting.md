@@ -63,17 +63,19 @@ uv run python -m http.server 8000 --directory path/to/review-map
 Return to the default strategic network and Places view, then add one optional evidence
 layer at a time. Whole-region optional loading can transfer large data volumes.
 
-## Provenance and packaging
+## Packaging and Pages
 
-**Symptom:** provenance verification fails after a rebuild.
+**Symptom:** packaging rejects the deployment.
 
-Repeat the documented bootstrap → generate lock → normal build → verify sequence. Do
-not edit hashes or copy another deployment's lock.
+Read the first required-file, catalogue identity, WGS84, progressive-manifest or
+package-size error. Packaging is intentionally fail-closed; do not weaken it to
+publish partial bytes.
 
-**Symptom:** Pages validation rejects the archive.
+**Symptom:** the Pages workflow rejects a release after extraction.
 
-Read the first identity, manifest, undeclared-root, package-size or artifact mismatch.
-Validation is intentionally fail-closed; do not weaken it to publish partial bytes.
+Inspect the Chromium gate output for the first map that failed to load or render.
+The archive is uploaded only after every packaged review map shows the complete
+strategic network.
 
 ## Report a defect
 

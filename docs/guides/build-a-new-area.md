@@ -1,7 +1,7 @@
 # Build a map for a new area
 
 This guide creates a new compiler input and Reviewable Network. It does not copy a
-council identity, snapshot ID or provenance lock from B&NES.
+council identity or snapshot ID from B&NES.
 
 ## 1. Start with a valid local template
 
@@ -89,7 +89,7 @@ Record new officer decisions as versioned scenario input. They do not expire. A
 recompile may disagree, but must show the divergence rather than silently replace the
 decision.
 
-## 7. Bind provenance and optionally publish
+## 7. Package and optionally publish
 
 Local compilation is already a successful map build. If the deployment is intended
 for a catalogue or Pages, follow [Package and publish](publish-a-deployment.md).

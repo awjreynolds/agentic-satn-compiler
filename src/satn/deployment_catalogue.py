@@ -15,8 +15,6 @@ import yaml
 from satn.models import AreaDefinition
 
 SCHEMA_VERSION = "satn-deployment-catalogue/v1"
-ROOT_LOCK_NAME = "catalogue-lock.json"
-ROOT_LOCK_SCHEMA_VERSION = "satn-pages-root-lock/v1"
 _AREA_ID = re.compile(r"^[a-z][a-z0-9-]*$")
 _ARTIFACTS = ("review_map", "network_map_pdf", "review_map_zip")
 
@@ -42,10 +40,7 @@ class DeploymentEntry:
     evidence_provenance: dict[str, object]
 
     def publication_links(self) -> dict[str, str]:
-        return {
-            name: f"{self.deployment_path}{path}"
-            for name, path in self.artifacts.items()
-        }
+        return {name: f"{self.deployment_path}{path}" for name, path in self.artifacts.items()}
 
 
 @dataclass(frozen=True)
@@ -125,9 +120,7 @@ def load_deployment_catalogue(path: str | Path) -> DeploymentCatalogue:
             raise ValueError("each deployment catalogue entry must be a mapping")
         deployment_id = _text(raw_entry.get("deployment_id"), "deployment_id")
         if not _AREA_ID.fullmatch(deployment_id):
-            raise ValueError(
-                "deployment_id must use lowercase letters, digits, and hyphens"
-            )
+            raise ValueError("deployment_id must use lowercase letters, digits, and hyphens")
         if deployment_id in seen_ids:
             raise ValueError("deployment catalogue deployment_ids must be unique")
         deployment_path = _relative_path(
@@ -141,8 +134,7 @@ def load_deployment_catalogue(path: str | Path) -> DeploymentCatalogue:
         if not isinstance(raw_artifacts, dict) or set(raw_artifacts) != set(_ARTIFACTS):
             raise ValueError(f"artifacts must contain exactly: {', '.join(_ARTIFACTS)}")
         artifacts = {
-            name: _relative_path(raw_artifacts[name], f"artifacts.{name}")
-            for name in _ARTIFACTS
+            name: _relative_path(raw_artifacts[name], f"artifacts.{name}") for name in _ARTIFACTS
         }
         area_id = _text(raw_entry.get("area_id"), "area_id")
         if not _AREA_ID.fullmatch(area_id):
@@ -158,9 +150,7 @@ def load_deployment_catalogue(path: str | Path) -> DeploymentCatalogue:
             raise ValueError("area_definition must resolve under deployments/")
         if not resolved_definition.is_file():
             raise ValueError(f"area_definition must be a file: {definition_path}")
-        area_definition_sha256 = hashlib.sha256(
-            resolved_definition.read_bytes()
-        ).hexdigest()
+        area_definition_sha256 = hashlib.sha256(resolved_definition.read_bytes()).hexdigest()
         definition = AreaDefinition.from_yaml(resolved_definition)
         if definition.deployment_slug != deployment_id:
             raise ValueError(
@@ -169,13 +159,11 @@ def load_deployment_catalogue(path: str | Path) -> DeploymentCatalogue:
             )
         if definition.area_id != area_id:
             raise ValueError(
-                "area_definition area_id must match catalogue area_id: "
-                f"{definition_path}"
+                f"area_definition area_id must match catalogue area_id: {definition_path}"
             )
         if definition.area_name != area_name:
             raise ValueError(
-                "area_definition area_name must match catalogue area_name: "
-                f"{definition_path}"
+                f"area_definition area_name must match catalogue area_name: {definition_path}"
             )
         deployments.append(
             DeploymentEntry(
@@ -253,32 +241,6 @@ def catalogue_runtime_files(catalogue: DeploymentCatalogue) -> dict[str, bytes]:
         "catalogue.json": (json.dumps(catalogue.as_publication(), indent=2) + "\n").encode(),
         "index.html": _html(catalogue).encode(),
     }
-
-
-def catalogue_lock_payload(catalogue: DeploymentCatalogue) -> dict[str, object]:
-    """Create the tag-tracked trust root for Pages' executable root files."""
-
-    files = catalogue_runtime_files(catalogue)
-    return {
-        "schema_version": ROOT_LOCK_SCHEMA_VERSION,
-        "root_files": {
-            name: {"sha256": hashlib.sha256(content).hexdigest(), "size_bytes": len(content)}
-            for name, content in files.items()
-        },
-        "deployment_roots": [
-            f"deployments/{entry.deployment_id}" for entry in catalogue.deployments
-        ],
-    }
-
-
-def generate_catalogue_lock(catalogue_path: str | Path, path: str | Path | None = None) -> Path:
-    """Write the small tracked lock that binds the root catalogue page to its tag."""
-
-    source = Path(catalogue_path)
-    target = Path(path) if path is not None else source.parent / ROOT_LOCK_NAME
-    payload = catalogue_lock_payload(load_deployment_catalogue(source))
-    target.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return target
 
 
 def build_deployment_catalogue(catalogue_path: str | Path, destination: str | Path) -> Path:

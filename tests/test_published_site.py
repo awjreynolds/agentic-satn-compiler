@@ -10,7 +10,6 @@ import pytest
 
 from satn.constants import DISCLAIMER
 from satn.deployment import build_area_deployment
-from satn.deployment_provenance import generate_lock
 from satn.filesystem_safety import publication_destination_authority
 from satn.models import CouncilConfig
 from satn.pipeline import compile
@@ -30,7 +29,7 @@ def test_area_deployment_requires_explicit_authority_outside_definition_workspac
     external = tmp_path / "external-deployment"
 
     with pytest.raises(ValueError, match="outside the declared publication workspace"):
-        build_area_deployment(definition, external, bootstrap=True)
+        build_area_deployment(definition, external)
 
     assert not external.exists()
 
@@ -42,7 +41,6 @@ def test_area_deployment_requires_explicit_authority_outside_definition_workspac
         build_area_deployment(
             definition,
             external,
-            bootstrap=True,
             publication_authority=authority,
         )
         == external
@@ -69,13 +67,6 @@ def test_area_deployment_is_progressive_portable_and_not_git_path_bound(
         workspace_root=tmp_path,
     )
     build_area_deployment(
-        definition,
-        deployment,
-        bootstrap=True,
-        publication_authority=deployment_authority,
-    )
-    generate_lock(definition, deployment=deployment)
-    deployment = build_area_deployment(
         definition,
         deployment,
         publication_authority=deployment_authority,
@@ -136,7 +127,7 @@ def test_area_deployment_is_progressive_portable_and_not_git_path_bound(
         for entry in group["shards"]
     )
     assert all(
-        len(entry["sha256"]) == 64
+        "sha256" not in entry
         for group in layer_manifest["groups"].values()
         for entry in group["shards"]
     )
@@ -349,7 +340,6 @@ def test_area_deployment_omits_redundant_standalone_audits_but_keeps_embedded_re
     build_area_deployment(
         definition,
         deployment,
-        bootstrap=True,
         publication_authority=deployment_authority,
     )
 
@@ -371,58 +361,4 @@ def test_area_deployment_omits_redundant_standalone_audits_but_keeps_embedded_re
     assert (deployment / "compiler-run.json").is_file()
     assert (deployment / "publication.json").is_file()
 
-    generate_lock(definition, deployment=deployment)
-    build_area_deployment(
-        definition,
-        deployment,
-        publication_authority=deployment_authority,
-    )
-    assert (deployment / "provenance-lock.json").is_file()
-
-
-def test_area_deployment_rejects_stale_snapshot_and_tampered_compiler_fingerprint(
-    tmp_path: Path,
-) -> None:
-    fixture = tmp_path / "fixture"
-    shutil.copytree(PROJECT / "examples" / "fixture", fixture)
-    definition = CouncilConfig.from_yaml(fixture / "council.yaml")
-    definition.publication.output_dir = tmp_path / "compiled"
-    definition.source.snapshot_dir = tmp_path / "snapshots"
-    authority = publication_destination_authority(
-        workspace_root=fixture,
-        approved_external_destination=definition.publication.output_dir,
-    )
-    snapshot(definition)
-    compile(definition, publication_authority=authority)
-    bootstrap = tmp_path / "deployments" / "bootstrap"
-    bootstrap_authority = publication_destination_authority(
-        workspace_root=tmp_path,
-    )
-    build_area_deployment(
-        definition,
-        bootstrap,
-        bootstrap=True,
-        publication_authority=bootstrap_authority,
-    )
-    generate_lock(definition, deployment=bootstrap)
-
-    snapshot_path = definition.source.snapshot_dir / definition.source.snapshot_id / "snapshot.json"
-    snapshot_path.write_text('{"snapshot_id":"stale"}', encoding="utf-8")
-    with pytest.raises(SystemExit, match="stale snapshot manifest"):
-        build_area_deployment(definition, tmp_path / "deployments" / "tiny")
-
-    snapshot(definition)
-    compile(definition, publication_authority=authority)
-    build_area_deployment(
-        definition,
-        bootstrap,
-        bootstrap=True,
-        publication_authority=bootstrap_authority,
-    )
-    generate_lock(definition, deployment=bootstrap)
-    run_path = definition.publication.output_dir / "run.json"
-    run = json.loads(run_path.read_text(encoding="utf-8"))
-    run["compilation_input_fingerprint"] = "0" * 64
-    run_path.write_text(json.dumps(run), encoding="utf-8")
-    with pytest.raises(SystemExit, match="compilation_input_fingerprint"):
-        build_area_deployment(definition, tmp_path / "deployments" / "tiny")
+    assert not (deployment / "provenance-lock.json").exists()

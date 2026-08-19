@@ -11,7 +11,6 @@ from collections import defaultdict
 from pathlib import Path
 
 from satn.constants import DISCLAIMER
-from satn.deployment_provenance import LOCK_NAME, SCHEMA_VERSION, verify_lock
 from satn.filesystem_safety import (
     PublicationDestinationAuthority,
     commit_replacement,
@@ -20,13 +19,7 @@ from satn.filesystem_safety import (
     stage_replacement,
     write_ownership_marker,
 )
-from satn.models import AreaConfig, AreaDefinition, canonical_decision_ledger_payload
-from satn.pipeline import (
-    area_definition_sha256,
-    compilation_governed_input_fingerprint,
-    decision_ledger_input_fingerprint,
-    snapshot_manifest_sha256,
-)
+from satn.models import AreaConfig, AreaDefinition
 
 PROJECT = Path(__file__).parents[2]
 DEFERRED_GROUPS = {
@@ -51,7 +44,6 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--publication-workspace-root", type=Path)
     parser.add_argument("--approved-external-publication-destination", type=Path)
     parser.add_argument("--expected-prior-run-fingerprint")
-    parser.add_argument("--bootstrap", action="store_true")
     return parser.parse_args()
 
 
@@ -62,6 +54,11 @@ def _write_collection(path: Path, features: list[dict[str, object]]) -> int:
     ).encode()
     path.write_bytes(payload)
     return len(payload)
+
+
+def _compact_json_file(path: Path) -> None:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
 
 
 def _coordinates(geometry: dict[str, object] | None) -> list[tuple[float, float]]:
@@ -142,18 +139,16 @@ def _write_shards(
 ) -> list[dict[str, object]]:
     directory.mkdir(parents=True, exist_ok=True)
     entries = []
-    for chunk in _spatial_chunks(features, maximum_features=maximum_features):
+    for index, chunk in enumerate(_spatial_chunks(features, maximum_features=maximum_features)):
         encoded = json.dumps(
             {"type": "FeatureCollection", "features": chunk},
             separators=(",", ":"),
         ).encode()
-        digest = hashlib.sha256(encoded).hexdigest()
-        filename = f"{prefix}-{digest[:16]}.geojson"
+        filename = f"{prefix}-{index:04d}.geojson"
         (directory / filename).write_bytes(encoded)
         entries.append(
             {
                 "path": f"{directory.name}/{filename}",
-                "sha256": digest,
                 "size_bytes": len(encoded),
                 "feature_count": len(chunk),
                 "bbox": _bbox(chunk),
@@ -222,61 +217,6 @@ self.addEventListener("fetch", event => {{
 """
 
 
-def _exact_sha256(value: object, field: str) -> str:
-    if (
-        not isinstance(value, str)
-        or len(value) != 64
-        or any(character not in "0123456789abcdef" for character in value)
-    ):
-        raise SystemExit(f"compiled run has invalid {field}")
-    return value
-
-
-def _validated_run_provenance(definition: AreaConfig, run: dict[str, object]) -> None:
-    """Reject output that was compiled from a different definition or snapshot.
-
-    The full fingerprint includes the persisted caller decision ledger. Runtime
-    decisions are audited separately and must never be substituted for inputs.
-    """
-    try:
-        ledger = canonical_decision_ledger_payload(run["decision_ledger_input"])
-        accepted = canonical_decision_ledger_payload(
-            {"decision_contract": run["decision_contract"], "responses": run["accepted_decisions"]}
-        )
-    except (KeyError, TypeError, ValueError) as error:
-        raise SystemExit("compiled run has an invalid decision provenance contract") from error
-    if ledger.decision_contract != run["decision_contract"] or accepted.model_dump(mode="json")[
-        "responses"
-    ] != run["accepted_decisions"]:
-        raise SystemExit("compiled run has a non-canonical accepted-decision contract")
-    governed = compilation_governed_input_fingerprint(definition)
-    snapshot_digest = snapshot_manifest_sha256(definition)
-    definition_digest = area_definition_sha256(definition)
-    if (
-        _exact_sha256(run.get("snapshot_manifest_sha256"), "snapshot_manifest_sha256")
-        != snapshot_digest
-    ):
-        raise SystemExit("compiled output was produced from a stale snapshot manifest")
-    if (
-        _exact_sha256(run.get("governed_input_fingerprint"), "governed_input_fingerprint")
-        != governed
-    ):
-        raise SystemExit(
-            "compiled output was produced from a stale Area Definition or governed input"
-        )
-    if (
-        _exact_sha256(run.get("area_definition_sha256"), "area_definition_sha256")
-        != definition_digest
-    ):
-        raise SystemExit("compiled output was produced from a stale Area Definition")
-    expected = decision_ledger_input_fingerprint(governed, ledger)
-    if (
-        _exact_sha256(run.get("compilation_input_fingerprint"), "compilation_input_fingerprint")
-        != expected
-    ):
-        raise SystemExit("compiled output compilation_input_fingerprint is not bound to its inputs")
-
-
 def _evidence_provenance(definition: AreaConfig, run: dict[str, object]) -> dict[str, object]:
     """Expose the actual configured inputs without claiming an unrun agent."""
     return {
@@ -304,7 +244,6 @@ def build_area_deployment(
     definition: AreaConfig,
     destination: Path,
     *,
-    bootstrap: bool = False,
     publication_authority: PublicationDestinationAuthority | None = None,
 ) -> Path:
     destination = Path(destination)
@@ -318,15 +257,6 @@ def build_area_deployment(
     pdf_map = output / "network-map.pdf"
     if not run_path.exists() or not (review_map / "index.html").exists() or not pdf_map.exists():
         raise SystemExit(f"compile {definition.config_path} before building its Area Deployment")
-    lock: dict[str, object] | None = None
-    if not bootstrap:
-        try:
-            # This validates the compiler source, current Area Definition,
-            # snapshot and accepted decision ledger. The recreated runtime is
-            # checked against the lock immediately before publication.
-            lock = verify_lock(definition)
-        except ValueError as error:
-            raise SystemExit(f"compiled provenance lock verification failed: {error}") from error
     run = json.loads(run_path.read_text(encoding="utf-8"))
     if run["council_id"] != definition.area_id:
         raise SystemExit("compiled artifacts do not match the requested Area Definition")
@@ -334,8 +264,6 @@ def build_area_deployment(
         raise SystemExit("the current run is not publishable")
     if run["atm_geometry_included"]:
         raise SystemExit("a public Area Deployment must not contain governed ATM geometry")
-    _validated_run_provenance(definition, run)
-
     interventions = json.loads(
         (review_map / "human-intervention-requests.json").read_text(encoding="utf-8")
     )
@@ -349,6 +277,7 @@ def build_area_deployment(
     )
     temporary = staging.temporary
     try:
+
         def ignore_redundant_audits(source: str, names: list[str]) -> set[str]:
             # The compiler publication and review-map ZIP retain the complete
             # audit files.  The Area Deployment adapter only needs to omit the
@@ -365,8 +294,10 @@ def build_area_deployment(
         )
         content = temporary
         shutil.copy2(run_path, content / "compiler-run.json")
-        if lock is not None:
-            shutil.copy2(definition.config_path.parent / LOCK_NAME, content / LOCK_NAME)
+        _compact_json_file(content / "compiler-run.json")
+        strategic_network_path = content / "strategic-network.json"
+        if strategic_network_path.is_file():
+            _compact_json_file(strategic_network_path)
         network_path = content / "network.geojson"
         network = json.loads(network_path.read_text(encoding="utf-8"))
         gradients: list[dict[str, object]] = []
@@ -439,9 +370,7 @@ def build_area_deployment(
                     "shards": typed_entries,
                 }
             expected_entries = [
-                entry
-                for feature_type in sorted(types)
-                for entry in types[feature_type]["shards"]
+                entry for feature_type in sorted(types) for entry in types[feature_type]["shards"]
             ]
             if entries != expected_entries:
                 raise AssertionError("typed layer shards must preserve the group shard order")
@@ -456,11 +385,10 @@ def build_area_deployment(
                 raise AssertionError(
                     "typed layer shards must contain only their declared feature type"
                 )
-            if (
-                sum(int(metadata["feature_count"]) for metadata in types.values())
-                != len(deferred[group])
-                or sum(int(metadata["size_bytes"]) for metadata in types.values())
-                != sum(int(entry["size_bytes"]) for entry in entries)
+            if sum(int(metadata["feature_count"]) for metadata in types.values()) != len(
+                deferred[group]
+            ) or sum(int(metadata["size_bytes"]) for metadata in types.values()) != sum(
+                int(entry["size_bytes"]) for entry in entries
             ):
                 raise AssertionError("typed layer manifest totals must match the group totals")
             groups[group] = {
@@ -518,8 +446,7 @@ def build_area_deployment(
                 {"type": "FeatureCollection", "features": chunk},
                 separators=(",", ":"),
             ).encode()
-            digest = hashlib.sha256(encoded).hexdigest()
-            filename = f"topography-profiles-{digest[:16]}.geojson"
+            filename = f"topography-profiles-{index // 200:04d}.geojson"
             (evidence_directory / filename).write_bytes(encoded)
             evidence_chunks.append(
                 {
@@ -527,7 +454,6 @@ def build_area_deployment(
                     "profile_ids": [feature["properties"].get("profile_id") for feature in chunk],
                     "profile_count": len(chunk),
                     "size_bytes": len(encoded),
-                    "sha256": digest,
                     "feature_count": len(chunk),
                     "bbox": _bbox(chunk),
                 }
@@ -618,7 +544,7 @@ def build_area_deployment(
         if "compilation_metadata" in run:
             publication["compilation_metadata"] = run["compilation_metadata"]
         (content / "publication.json").write_text(
-            json.dumps(publication, indent=2), encoding="utf-8"
+            json.dumps(publication, separators=(",", ":")), encoding="utf-8"
         )
         # data.js is a first-class public contract, not an unbound convenience
         # payload.  Keep every user-facing provenance and scope field identical.
@@ -642,15 +568,6 @@ def build_area_deployment(
             data[field] = publication[field]
         if "compilation_metadata" in publication:
             data["compilation_metadata"] = publication["compilation_metadata"]
-        data["provenance_lock"] = {
-            "schema_version": SCHEMA_VERSION,
-            "deployment_id": definition.deployment_slug,
-            "run_id": run["run_id"],
-            "status": run["status"],
-            "area_definition_sha256": run["area_definition_sha256"],
-            "snapshot_manifest_sha256": run["snapshot_manifest_sha256"],
-            "compilation_input_fingerprint": run["compilation_input_fingerprint"],
-        }
         data_path.write_text(
             f"{prefix}{json.dumps(data, separators=(',', ':')).replace('</', '<\\/')};\n",
             encoding="utf-8",
@@ -659,13 +576,6 @@ def build_area_deployment(
             content,
             owner_kind=f"area-deployment:{definition.deployment_slug}",
         )
-        if lock is not None:
-            try:
-                verify_lock(definition, deployment=content)
-            except ValueError as error:
-                raise SystemExit(
-                    f"Area Deployment does not match provenance lock: {error}"
-                ) from error
         commit_replacement(
             staging,
             authority=authority,
@@ -701,7 +611,6 @@ def main() -> None:
         build_area_deployment(
             definition,
             destination,
-            bootstrap=args.bootstrap,
             publication_authority=authority,
         )
     )

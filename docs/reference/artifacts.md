@@ -19,14 +19,15 @@ Compilation publishes atomically into `publication.output_dir`.
 
 ## Deployment artifacts
 
-`scripts/publish_site.py` builds `build/deployments/DEPLOYMENT_ID/` with a
-`publication.json`, compiler run, progressive layer/topography/evidence manifests,
-content-addressed shards, downloads and a copied provenance lock.
+`scripts/publish_site.py` builds `build/deployments/DEPLOYMENT_ID/` from the already
+validated compiler publication. It contains `publication.json`, the compiler run,
+progressive layer/topography/evidence manifests, indexed shards and downloads.
 
-`scripts/package_pages.py` builds a validated catalogue tree and temporary
-`build/satn-pages.zip` release transport. The release validator checks catalogue
-identity, allowed roots, artifact hashes, manifests, publication status and package
-size before Pages can deploy it.
+`scripts/package_pages.py` assembles the declared deployment roots into a validated
+catalogue tree and temporary `build/satn-pages.zip` release transport. Packaging
+checks catalogue/deployment identity, required files, WGS84 geometry, progressive
+manifest shape and the configured package-size budget. The Pages workflow extracts
+the archive and runs the Chromium rendering gate before upload and deployment.
 
 ## Reading provenance and timing
 
@@ -34,11 +35,9 @@ size before Pages can deploy it.
 compilation fingerprints, `compilation_metadata.completed_at_utc` and
 `compilation_metadata.duration_seconds` identify when compilation finished and
 publication began, and how much monotonic compiler time elapsed before that boundary.
-`compiler-run.json` carries the criteria, authoritative
-feature roles and diagnostics; `provenance-lock.json` binds the packaged bytes and
-governed source identities. A changed snapshot, configuration, accepted decision or
-active compiler dependency produces a new compilation identity rather than silently
-reusing an old result.
+`compiler-run.json` carries the criteria, authoritative feature roles and diagnostics.
+A changed snapshot, configuration, accepted decision or active compiler dependency
+produces a new compilation identity rather than silently reusing an old result.
 
 The interactive deployment opens the Strategic Network and Places layers. Optional
 layers include discarded candidates, existing/upgradeable assets, officer divergence,

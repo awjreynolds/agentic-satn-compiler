@@ -43,11 +43,19 @@ def test_area_deployment_preserves_compilation_metadata(tmp_path: Path) -> None:
     authority = publication_destination_authority(workspace_root=tmp_path)
     result = compile(config, publication_authority=authority)
     deployment = tmp_path / "deployment"
-    build_area_deployment(config, deployment, bootstrap=True, publication_authority=authority)
+    build_area_deployment(config, deployment, publication_authority=authority)
 
     run = json.loads((result.output_dir / "run.json").read_text(encoding="utf-8"))
     publication = json.loads((deployment / "publication.json").read_text(encoding="utf-8"))
     assert publication["compilation_metadata"] == run["compilation_metadata"]
-    assert _satn_data(deployment / "data.js")["compilation_metadata"] == run[
-        "compilation_metadata"
-    ]
+    assert _satn_data(deployment / "data.js")["compilation_metadata"] == run["compilation_metadata"]
+    for relative_path in (
+        "compiler-run.json",
+        "publication.json",
+        "strategic-network.json",
+    ):
+        path = deployment / relative_path
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert path.read_bytes() == json.dumps(payload, separators=(",", ":")).encode()
+
+    assert not (deployment / "provenance-lock.json").exists()

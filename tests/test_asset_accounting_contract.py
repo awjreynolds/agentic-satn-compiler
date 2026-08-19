@@ -5,9 +5,12 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import geopandas as gpd
+import numpy as np
+import pytest
 from shapely.geometry import LineString, Polygon
 
 from satn.asset_accounting import build_asset_accounting
+from satn.evidence import derive_context_layers
 from satn.network_selection import TrafficProfileConfig
 from satn.traffic_evidence import TrafficFreshnessState
 
@@ -45,6 +48,166 @@ def test_raw_cycleway_is_retained_without_claiming_a_governed_cycle_track() -> N
     assert accounting["excluded_observations"] == []
 
 
+def test_numpy_and_list_osm_cycleway_tags_bind_mapped_asset_provenance() -> None:
+    network = _frame(
+        [
+            {
+                "osmid": np.array(["way-norton-radstock-greenway"], dtype=object),
+                "name": ["Norton Radstock Greenway"],
+                "highway": np.array(["cycleway"], dtype=object),
+                "geometry": LineString([(-2.5, 51.4), (-2.49, 51.4)]),
+            }
+        ]
+    )
+
+    accounting = build_asset_accounting(_frame([]), network, None)
+
+    assert accounting["asset_count"] == 1
+    asset = accounting["records"][0]
+    assert asset["asset_kind"] == "mapped-cycleway"
+    observation = asset["source_provenance"][0]
+    assert observation["source_id"] == "way-norton-radstock-greenway"
+    assert observation["raw_attributes"]["name"] == ["Norton Radstock Greenway"]
+    assert observation["raw_attributes"]["osmid"] == ["way-norton-radstock-greenway"]
+    assert accounting["excluded_observations"] == []
+
+
+@pytest.mark.parametrize(
+    ("tags", "expected_kind"),
+    [
+        ({"highway": "bridleway"}, "public-bridleway"),
+        ({"highway": "path", "bicycle": "designated"}, "cycle-access-path"),
+        (
+            {"highway": "path", "bicycle": "designated", "foot": "designated"},
+            "shared-use-path",
+        ),
+        ({"highway": "footway", "bicycle": "permissive"}, "cycle-access-path"),
+        ({"highway": "pedestrian", "bicycle": "yes"}, "cycle-access-path"),
+        ({"highway": "track", "bicycle": ["designated"]}, "cycle-access-path"),
+        ({"highway": "residential", "cycleway:left": "track"}, "road-cycleway"),
+        ({"highway": "residential", "cycleway:surface": "asphalt"}, None),
+        (
+            {"highway": "primary", "ref": "A4", "cycleway:left": "track"},
+            "road-cycleway",
+        ),
+        (
+            {"highway": "residential", "bicycle_road": "yes"},
+            "bicycle-priority-road",
+        ),
+        ({"highway": "unclassified", "cyclestreet": "yes"}, "bicycle-priority-road"),
+        (
+            {"highway": "residential", "route": np.array(["bicycle"], dtype=object)},
+            "bicycle-route",
+        ),
+    ],
+)
+def test_explicit_osm_cycle_signals_are_admitted_as_assets(
+    tags: dict[str, object], expected_kind: str | None
+) -> None:
+    network = _frame(
+        [
+            {
+                "source_id": "explicit-cycle-signal",
+                **tags,
+                "geometry": LineString([(-2.5, 51.4), (-2.49, 51.4)]),
+            }
+        ]
+    )
+
+    accounting = build_asset_accounting(_frame([]), network, None)
+
+    if expected_kind is None:
+        assert accounting["asset_count"] == 0
+    else:
+        assert accounting["asset_count"] == 1
+        assert accounting["records"][0]["asset_kind"] == expected_kind
+
+
+def test_bare_and_explicitly_noncycling_paths_remain_out_of_cycle_asset_accounting() -> None:
+    network = _frame(
+        [
+            {
+                "source_id": "bare-path",
+                "highway": ["path"],
+                "geometry": LineString([(-2.5, 51.4), (-2.49, 51.4)]),
+            },
+            {
+                "source_id": "noncycling-path",
+                "highway": np.array(["path"], dtype=object),
+                "bicycle": np.array(["no"], dtype=object),
+                "geometry": LineString([(-2.5, 51.41), (-2.49, 51.41)]),
+            },
+        ]
+    )
+
+    accounting = build_asset_accounting(_frame([]), network, None)
+
+    assert accounting["asset_count"] == 0
+    assert {item["source_id"] for item in accounting["excluded_observations"]} == {
+        "bare-path",
+        "noncycling-path",
+    }
+
+
+def test_non_bicycle_route_tag_does_not_create_cycle_asset() -> None:
+    network = _frame(
+        [
+            {
+                "source_id": "bus-route",
+                "highway": "residential",
+                "route": "bus",
+                "geometry": LineString([(-2.5, 51.4), (-2.49, 51.4)]),
+            }
+        ]
+    )
+
+    accounting = build_asset_accounting(_frame([]), network, None)
+
+    assert accounting["asset_count"] == 0
+    assert accounting["excluded_observations"][0]["source_id"] == "bus-route"
+
+
+def test_bicycle_no_does_not_erase_mapped_cycleway_geometry() -> None:
+    network = _frame(
+        [
+            {
+                "source_id": "cycleway-no-claim",
+                "highway": "cycleway",
+                "bicycle": "no",
+                "geometry": LineString([(-2.5, 51.4), (-2.49, 51.4)]),
+            }
+        ]
+    )
+
+    accounting = build_asset_accounting(_frame([]), network, None)
+
+    assert accounting["asset_count"] == 1
+    assert accounting["records"][0]["asset_kind"] == "mapped-cycleway"
+
+
+def test_road_attached_cycleway_keeps_a_road_and_cycle_asset_bases() -> None:
+    network = _frame(
+        [
+            {
+                "osmid": "a4-cycleway",
+                "highway": "primary",
+                "ref": "A4",
+                "cycleway:left": "track",
+                "geometry": LineString([(-2.5, 51.4), (-2.49, 51.4)]),
+            }
+        ]
+    )
+
+    accounting = build_asset_accounting(derive_context_layers(network), network, None)
+
+    assert accounting["asset_count"] == 1
+    assert accounting["records"][0]["asset_kind"] == "road-cycleway"
+    assert set(accounting["records"][0]["alignment_bases"]) == {
+        "a-road",
+        "road-cycleway",
+    }
+
+
 def test_supported_claim_without_authoritative_lineage_remains_provisional() -> None:
     context = _frame(
         [
@@ -78,9 +241,7 @@ def test_raw_context_cycleway_is_not_promoted_to_legal_cycle_track() -> None:
     accounting = build_asset_accounting(context, _frame([]), None)
 
     assert accounting["records"][0]["asset_kind"] == "mapped-cycleway"
-    assert accounting["records"][0]["source_provenance"][0]["authority_state"] == (
-        "unknown"
-    )
+    assert accounting["records"][0]["source_provenance"][0]["authority_state"] == ("unknown")
 
 
 def test_community_mapped_cycleway_claim_cannot_establish_authoritative_cycle_track() -> None:
@@ -318,9 +479,7 @@ def test_aggregate_conflict_keeps_conflicting_observation_visible() -> None:
     }
     conflicting = dict(authoritative, source_id="conflict", evidence_state="conflicting")
 
-    accounting = build_asset_accounting(
-        _frame([authoritative, conflicting]), _frame([]), None
-    )
+    accounting = build_asset_accounting(_frame([authoritative, conflicting]), _frame([]), None)
 
     record = accounting["records"][0]
     assert record["evidence_state"] == "conflicting"
@@ -488,9 +647,7 @@ def test_configured_freshness_without_as_at_year_is_unknown_and_diagnostic() -> 
     assert profile.freshness_for(2024, TrafficFreshnessState.FRESH) is (
         TrafficFreshnessState.UNKNOWN
     )
-    assert profile.freshness_configuration_diagnostic == (
-        "max-observation-age-without-as-at-year"
-    )
+    assert profile.freshness_configuration_diagnostic == ("max-observation-age-without-as-at-year")
 
 
 def test_candidate_participation_uses_final_reviewable_selection_dispositions() -> None:
@@ -563,8 +720,7 @@ def test_candidate_participation_uses_final_reviewable_selection_dispositions() 
     accounting = build_asset_accounting(context, _frame([]), compiled)
 
     participations = {
-        item["candidate_id"]: item
-        for item in accounting["records"][0]["candidate_participations"]
+        item["candidate_id"]: item for item in accounting["records"][0]["candidate_participations"]
     }
     assert participations["candidate-selected"]["selection_disposition"] == "selected"
     assert participations["candidate-selected"]["selection_reason"] == {
@@ -572,17 +728,13 @@ def test_candidate_participation_uses_final_reviewable_selection_dispositions() 
         "officer_decision_id": "officer-1",
         "reviewable_result_fingerprint": "b" * 64,
     }
-    assert (
-        participations["candidate-complementary"]["selection_disposition"]
-        == "complementary"
-    )
+    assert participations["candidate-complementary"]["selection_disposition"] == "complementary"
     assert participations["candidate-complementary"]["selection_reason"] == {
         "code": "scenario-complementary-selection",
         "scenario_fingerprint": "c" * 64,
     }
     assert (
-        participations["candidate-unselected"]["selection_disposition"]
-        == "eligible-not-selected"
+        participations["candidate-unselected"]["selection_disposition"] == "eligible-not-selected"
     )
     assert participations["candidate-unselected"]["selection_reason"]["code"] == (
         "eligible-candidate-not-selected"

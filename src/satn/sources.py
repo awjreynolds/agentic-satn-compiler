@@ -64,6 +64,7 @@ from satn.ea_elevation import (
 )
 from satn.evidence import (
     derive_context_layers,
+    derive_osm_active_travel_assets,
     empty_context,
     govern_network_scope_for_urban_communities,
 )
@@ -75,6 +76,7 @@ from satn.models import (
     OfficialRoadClassification,
     safe_snapshot_id,
 )
+from satn.osm_active_travel import OSM_ACTIVE_TRAVEL_WAY_TAGS
 from satn.remote_endpoints import open_configured_https
 from satn.settlement import assess_community_urban_eligibility
 from satn.streaming_geojson import iter_geojson_features
@@ -544,6 +546,10 @@ class OSMnxAdapter:
             **ox.settings.requests_kwargs,
             "allow_redirects": False,
         }
+        existing_way_tags = getattr(ox.settings, "useful_tags_way", ()) or ()
+        ox.settings.useful_tags_way = sorted(
+            {str(tag) for tag in existing_way_tags} | set(OSM_ACTIVE_TRAVEL_WAY_TAGS)
+        )
         queries = config.source.boundary_queries
         query: str | list[str] = queries[0] if len(queries) == 1 else list(queries)
         geocoded = ox.geocode_to_gdf(query).to_crs(4326)
@@ -3263,6 +3269,7 @@ def _read_snapshot_frames(path: Path) -> dict[str, gpd.GeoDataFrame]:
     context = (
         gpd.read_file(context_path) if context_path.exists() else derive_context_layers(network)
     )
+    context = _merge_snapshot_active_travel_context(context, network)
     if context.empty:
         context = empty_context(network.crs)
     else:
@@ -3324,6 +3331,28 @@ def _read_snapshot_frames(path: Path) -> dict[str, gpd.GeoDataFrame]:
         ),
         "elevation_corroboration": _osm_elevation_corroboration(network),
     }
+
+
+def _merge_snapshot_active_travel_context(
+    context: gpd.GeoDataFrame,
+    network: gpd.GeoDataFrame,
+) -> gpd.GeoDataFrame:
+    """Add OSM asset context generated from network when a snapshot is stale."""
+
+    derived = derive_osm_active_travel_assets(network)
+    if derived.empty:
+        return context
+    derived_types = set(derived["feature_type"].astype(str))
+    retained = (
+        context.loc[~context["feature_type"].astype(str).isin(derived_types)]
+        if "feature_type" in context
+        else context
+    )
+    return gpd.GeoDataFrame(
+        pd.concat([retained, derived], ignore_index=True, sort=False),
+        geometry="geometry",
+        crs=network.crs,
+    )
 
 
 def _osm_elevation_corroboration(network: gpd.GeoDataFrame) -> gpd.GeoDataFrame:

@@ -23,6 +23,7 @@ from satn.sources import (
     _features_from_tag_groups,
     _load_ncn_features,
     _load_reclassified_ncn_features,
+    _read_snapshot_frames,
     _scope_cycle_route_context,
     derive_network_places,
     snapshot,
@@ -182,6 +183,22 @@ def test_area_definition_accepts_multiple_boundary_queries_and_unions_acquisitio
         "allow_redirects": False,
         "verify": True,
     }
+    assert set(FakeOSMnx.settings.useful_tags_way).issuperset(
+        {
+            "cycleway",
+            "cycleway:left",
+            "cycleway:right",
+            "cycleway:both",
+            "bicycle_road",
+            "cyclestreet",
+            "route",
+            "network",
+            "lcn",
+            "rcn",
+            "ncn",
+            "icn",
+        }
+    )
     assert list(acquired.boundary["name"]) == ["First Council", "Second Council"]
     assert list(acquired.boundary["source_query"]) == ["First Council", "Second Council"]
     assert acquired.boundary.geometry.union_all().equals(first.union(second))
@@ -414,6 +431,60 @@ def test_retained_cycle_route_context_is_scoped_without_rewriting_other_evidence
         .iloc[0]
         .equals(context.loc[context["evidence_id"] == "outside-road", "geometry"].iloc[0])
     )
+
+
+def test_snapshot_load_augments_stale_context_from_pinned_network(tmp_path: Path) -> None:
+    boundary = gpd.GeoDataFrame(
+        [{"geometry": Polygon([(-2.6, 51.3), (-2.4, 51.3), (-2.4, 51.5), (-2.6, 51.3)])}],
+        crs=4326,
+    )
+    network = gpd.GeoDataFrame(
+        [
+            {
+                "osmid": "osm-norton-radstock-greenway",
+                "name": "Norton Radstock Greenway",
+                "highway": "cycleway",
+                "geometry": LineString([(-2.55, 51.35), (-2.52, 51.36)]),
+            }
+        ],
+        crs=4326,
+    )
+    stale_context = gpd.GeoDataFrame(
+        [
+            {
+                "evidence_id": "old-road",
+                "feature_type": "a-road-spine",
+                "source_id": "old-road",
+                "geometry": LineString([(-2.55, 51.35), (-2.52, 51.36)]),
+            },
+            {
+                "evidence_id": "stale-cycleway",
+                "feature_type": "cycleway",
+                "source_id": "osm-norton-radstock-greenway",
+                "name": "Stale cycleway label",
+                "geometry": LineString([(-2.55, 51.35), (-2.52, 51.36)]),
+            },
+        ],
+        crs=4326,
+    )
+    places = gpd.GeoDataFrame(
+        [{"place_id": "community-a", "kind": "community", "geometry": Point(-2.54, 51.35)}],
+        crs=4326,
+    )
+    for name, frame in (
+        ("boundary.geojson", boundary),
+        ("network.geojson", network),
+        ("context.geojson", stale_context),
+        ("places.geojson", places),
+    ):
+        frame.to_file(tmp_path / name, driver="GeoJSON")
+
+    loaded = _read_snapshot_frames(tmp_path)
+
+    cycleway = loaded["context"]
+    cycleway = cycleway[cycleway["feature_type"] == "cycleway"]
+    assert list(cycleway["source_id"]) == ["osm-norton-radstock-greenway"]
+    assert list(cycleway["name"]) == ["Norton Radstock Greenway"]
 
 
 def test_ncn_pagination_rejects_a_transfer_limit_page_without_progress(

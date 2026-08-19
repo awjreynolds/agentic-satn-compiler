@@ -14,6 +14,11 @@ from shapely.geometry import LineString, MultiLineString, MultiPolygon, Point, P
 from shapely.ops import linemerge
 
 from satn.models import NetworkScope
+from satn.osm_active_travel import (
+    OSM_ACTIVE_TRAVEL_ASSET_KINDS,
+    network_kind,
+)
+from satn.tags import canonical_tag_values, source_identity
 from satn.tags import tag_values as _tag_values
 
 SUBSTANTIAL_CIRCULATION_BOUNDARY_M = 250.0
@@ -38,6 +43,8 @@ CONTEXT_COLUMNS = [
     "feature_count",
     "network_scope",
     "ncn_evidence_role",
+    "asset_kind",
+    "current_cycle_asset",
     "school_kind",
     "school_obligation_eligible",
     "access_point_status",
@@ -100,7 +107,7 @@ def derive_context_layers(
     circulation_boundaries: gpd.GeoDataFrame | None = None,
 ) -> gpd.GeoDataFrame:
     """Build the map hierarchy from OSM road, route and amenity evidence."""
-    frames = [derive_a_road_spines(network)]
+    frames = [derive_a_road_spines(network), derive_osm_active_travel_assets(network)]
     if ncn_features is not None and not ncn_features.empty:
         frames.append(derive_ncn_routes(ncn_features, network.crs))
     if facilities is not None and not facilities.empty:
@@ -116,6 +123,56 @@ def derive_context_layers(
         geometry="geometry",
         crs=network.crs,
     ).sort_values("evidence_id")
+
+
+def derive_osm_active_travel_assets(network: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Expose explicitly cycle-capable OSM ways as non-strategic context assets."""
+    rows: list[dict[str, object]] = []
+    for index, edge in network.iterrows():
+        kind = network_kind(edge)
+        if kind not in OSM_ACTIVE_TRAVEL_ASSET_KINDS:
+            continue
+        geometry = edge.geometry
+        if not isinstance(geometry, (LineString, MultiLineString)) or geometry.is_empty:
+            continue
+        source_id = _source_id(edge, index)
+        feature_type = {
+            "mapped-cycleway": "cycleway",
+            "cycle-track": "cycleway",
+            "road-cycleway": "road-cycleway",
+            "bicycle-priority-road": "bicycle-priority-road",
+            "bicycle-route": "bicycle-route",
+            "cycle-access-path": "cycle-access-path",
+            "shared-use-path": "shared-use-path",
+            "public-bridleway": "bridleway",
+            "proposed-new-corridor": "proposed-cycleway",
+        }[kind]
+        rows.append(
+            _row(
+                feature_type,
+                source_id,
+                _text(edge.get("name")) or f"Mapped {feature_type}",
+                "Mapped OSM active-travel asset",
+                source_id,
+                geometry,
+                asset_kind=kind,
+                current_cycle_asset=kind
+                in {
+                    "mapped-cycleway",
+                    "cycle-track",
+                    "road-cycleway",
+                    "bicycle-priority-road",
+                    "bicycle-route",
+                    "cycle-access-path",
+                    "shared-use-path",
+                }
+                or (
+                    kind == "public-bridleway"
+                    and "no" not in {value.lower() for value in _tag_values(edge.get("bicycle"))}
+                ),
+            )
+        )
+    return _frame(rows, network.crs)
 
 
 def govern_a_road_context(
@@ -170,9 +227,7 @@ def govern_a_road_context(
         if populated
         else empty_context(context.crs)
     )
-    disagreements = _road_classification_disagreements(
-        osm_a_roads, official_classification
-    )
+    disagreements = _road_classification_disagreements(osm_a_roads, official_classification)
     return governed_context, [disagreement.canonical() for disagreement in disagreements]
 
 
@@ -713,8 +768,7 @@ def mark_ncn_edges(network: gpd.GeoDataFrame, context: gpd.GeoDataFrame) -> gpd.
     projected = result.to_crs(27700)
     corridor = ncn.to_crs(27700).geometry.buffer(20).union_all()
     candidate_positions = sorted(
-        int(position)
-        for position in projected.sindex.query(corridor, predicate="intersects")
+        int(position) for position in projected.sindex.query(corridor, predicate="intersects")
     )
     marked = [False] * len(result)
     if candidate_positions:
@@ -850,21 +904,15 @@ def continuous_linework(geometry: object) -> list[LineString]:
 
 
 def _source_id(row: pd.Series, fallback: object) -> str:
-    for key in ("SegmentID", "GlobalID", "FID", "osmid", "osm_id", "id", "element_type"):
-        value = row.get(key)
-        if _text(value):
-            return str(value)
-    return str(fallback)
+    return str(
+        source_identity(
+            row,
+            ("SegmentID", "GlobalID", "FID", "osmid", "osm_id", "id", "element_type"),
+            fallback,
+        )
+    )
 
 
 def _text(value: object) -> str | None:
-    if value is None:
-        return None
-    if isinstance(value, (list, tuple, set)):
-        text = ",".join(str(item) for item in value).strip()
-        return text or None
-    missing = pd.isna(value)
-    if not hasattr(missing, "__iter__") and bool(missing):
-        return None
-    text = str(value).strip()
-    return text or None
+    values = canonical_tag_values(value)
+    return ",".join(values) or None

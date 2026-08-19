@@ -200,9 +200,7 @@ def test_reviewable_map_projection_keeps_rejected_routes_and_projects_assets_to_
     assert {
         feature["properties"]["candidate_id"]
         for feature in by_type["reviewable-unselected-candidate"]
-    } == {
-        "rejected-route"
-    }
+    } == {"rejected-route"}
     assert (
         by_type["reviewable-unselected-candidate"][0]["properties"]["admission_disposition"]
         == "rejected"
@@ -221,12 +219,8 @@ def test_reviewable_map_projection_keeps_rejected_routes_and_projects_assets_to_
     }
     assert {"selected-route", "spine-a-road", "spine-ncn"} <= set(selected_routes)
     assert selected_routes["spine-a-road"]["properties"]["display_state"] == "undetermined"
-    assert selected_routes["spine-a-road"]["properties"]["primary_alignment_basis"] == (
-        "a-road"
-    )
-    assert selected_routes["spine-ncn"]["properties"]["display_state"] == (
-        "existing-provision"
-    )
+    assert selected_routes["spine-a-road"]["properties"]["primary_alignment_basis"] == ("a-road")
+    assert selected_routes["spine-ncn"]["properties"]["display_state"] == ("existing-provision")
     asset = by_type["asset-upgrade-required"][0]
     coordinates = asset["geometry"]["coordinates"][0]
     assert -180 <= coordinates[0] <= 180
@@ -374,17 +368,13 @@ def test_public_compile_exhaustively_publishes_reusable_asset_accounting(
     assert accounting["schema_version"]
     assert accounting["asset_count"] == len(accounting["records"])
     assert accounting["records"]
-    assert {record["asset_kind"] for record in accounting["records"]} >= {
-        "current-ncn"
-    }
+    assert {record["asset_kind"] for record in accounting["records"]} >= {"current-ncn"}
     assert all(len(record["asset_identity_sha256"]) == 64 for record in accounting["records"])
     assert all("candidate_participations" in record for record in accounting["records"])
     network_source_ids = {
         str(value)
         for value in gpd.read_file(
-            result.output_dir.parent.parent
-            / "source"
-            / "network.geojson"
+            result.output_dir.parent.parent / "source" / "network.geojson"
         ).get("source_id", [])
         if value is not None
     }
@@ -427,47 +417,43 @@ def test_public_compile_accounts_reusable_source_classes_and_canonical_geometry(
                 context,
                 gpd.GeoDataFrame(
                     [
-                            {
-                                "evidence_id": evidence_id,
-                                "feature_type": feature_type,
-                                "name": evidence_id,
-                                "source_id": evidence_id,
-                                "source_family": (
-                                    "officer-local-connector"
-                                    if evidence_id == "local-connector"
-                                    else None
-                                ),
-                                "dataset": (
-                                    "governed-local-connector"
-                                    if evidence_id == "local-connector"
-                                    else None
-                                ),
-                                "publisher_release": (
-                                    "2026-08-02"
-                                    if evidence_id == "local-connector"
-                                    else None
-                                ),
-                                "effective_date": (
-                                    "2026-08-01"
-                                    if evidence_id == "local-connector"
-                                    else None
-                                ),
-                                "licence": (
-                                    "Open Government Licence v3.0"
-                                    if evidence_id == "local-connector"
-                                    else None
-                                ),
-                                "evidence_mode": (
-                                    "observed" if evidence_id == "local-connector" else None
-                                ),
-                                "coverage_state": (
-                                    "available" if evidence_id == "local-connector" else None
-                                ),
-                                "evidence_state": (
-                                    "supported" if evidence_id == "local-connector" else None
-                                ),
-                                "geometry": geometry,
-                            }
+                        {
+                            "evidence_id": evidence_id,
+                            "feature_type": feature_type,
+                            "name": evidence_id,
+                            "source_id": evidence_id,
+                            "source_family": (
+                                "officer-local-connector"
+                                if evidence_id == "local-connector"
+                                else None
+                            ),
+                            "dataset": (
+                                "governed-local-connector"
+                                if evidence_id == "local-connector"
+                                else None
+                            ),
+                            "publisher_release": (
+                                "2026-08-02" if evidence_id == "local-connector" else None
+                            ),
+                            "effective_date": (
+                                "2026-08-01" if evidence_id == "local-connector" else None
+                            ),
+                            "licence": (
+                                "Open Government Licence v3.0"
+                                if evidence_id == "local-connector"
+                                else None
+                            ),
+                            "evidence_mode": (
+                                "observed" if evidence_id == "local-connector" else None
+                            ),
+                            "coverage_state": (
+                                "available" if evidence_id == "local-connector" else None
+                            ),
+                            "evidence_state": (
+                                "supported" if evidence_id == "local-connector" else None
+                            ),
+                            "geometry": geometry,
+                        }
                         for evidence_id, feature_type, geometry in (
                             (
                                 "declassified",
@@ -532,11 +518,11 @@ def test_public_compile_accounts_reusable_source_classes_and_canonical_geometry(
                             "designation": "public_bridleway",
                             "geometry": LineString([(-2.50, 51.411), (-2.49, 51.412)]),
                         },
-                            {
-                                "source_id": "former-railway-network",
-                                "railway": "abandoned",
-                                "evidence_state": "conflicting",
-                                "geometry": class_geometries["former-railway"].reverse(),
+                        {
+                            "source_id": "former-railway-network",
+                            "railway": "abandoned",
+                            "evidence_state": "conflicting",
+                            "geometry": class_geometries["former-railway"].reverse(),
                         },
                     ],
                     crs=network.crs,
@@ -559,8 +545,7 @@ def test_public_compile_accounts_reusable_source_classes_and_canonical_geometry(
     assert {
         "current-ncn",
         "reclassified-ncn",
-        "cycle-track",
-        "public-footpath",
+        "mapped-cycleway",
         "public-bridleway",
         "former-railway",
         "local-connector",
@@ -568,6 +553,7 @@ def test_public_compile_accounts_reusable_source_classes_and_canonical_geometry(
     allowed_bases = {
         "current-ncn",
         "reclassified-ncn",
+        "mapped-cycleway",
         "cycle-track",
         "public-footpath",
         "public-bridleway",
@@ -611,17 +597,18 @@ def test_public_compile_accounts_reusable_source_classes_and_canonical_geometry(
     assert "claim_type" in local["source_provenance"][0]
     assert "ingestion_contract" in local["source_provenance"][0]
     assert "raw_attributes" in local["source_provenance"][0]
+    mapped_cycleway = by_kind["mapped-cycleway"]
+    assert any(item["source_id"] == "cycleway" for item in mapped_cycleway["source_provenance"])
     former = by_kind["former-railway"]
-    assert len(former["source_provenance"]) == 2
+    assert len(former["source_provenance"]) == 1
     assert len({item["evidence_geometry_fingerprint"] for item in former["source_provenance"]}) == 1
-    assert former["evidence_state"] == "conflicting"
-    assert "former-railway-network" in former["conflict_roster"]
+    assert former["evidence_state"] == "provisional"
+    assert former["conflict_roster"] == []
     serialized_metric = gpd.GeoSeries([shape(former["geometry"])], crs=4326).to_crs(27700).iloc[0]
     assert tuple(serialized_metric.coords[0]) <= tuple(serialized_metric.coords[-1])
     assert all(record["candidate_participations"] == [] for record in records)
     assert all(
-        record["non_participation_reason"] == "no-governed-candidate-binding"
-        for record in records
+        record["non_participation_reason"] == "no-governed-candidate-binding" for record in records
     )
 
 
@@ -732,23 +719,26 @@ def test_public_compile_aggregates_same_asset_independently_of_source_order(
                 "order-greenway-cycleway",
                 "order-ncn-route",
             }
-            <= {
-                item["source_id"]
-                for item in record["source_provenance"]
-            }
+            <= {item["source_id"] for item in record["source_provenance"]}
         )
 
     first_record = shared_record(first)
     second_record = shared_record(second)
     assert first_record["asset_id"] == second_record["asset_id"]
     assert first_record["asset_kind"] == second_record["asset_kind"] == "current-ncn"
-    assert first_record["primary_alignment_basis"] == second_record[
-        "primary_alignment_basis"
-    ] == "current-ncn"
-    assert first_record["alignment_bases"] == second_record["alignment_bases"] == [
-        "current-ncn",
-        "greenway",
-    ]
+    assert (
+        first_record["primary_alignment_basis"]
+        == second_record["primary_alignment_basis"]
+        == "current-ncn"
+    )
+    assert (
+        first_record["alignment_bases"]
+        == second_record["alignment_bases"]
+        == [
+            "current-ncn",
+            "greenway",
+        ]
+    )
 
 
 def test_public_compile_requires_supported_cycling_access_for_existing_provision(
@@ -821,19 +811,16 @@ def test_public_compile_requires_supported_cycling_access_for_existing_provision
         item["source_id"]: record
         for record in accounting["records"]
         for item in record["source_provenance"]
-        if item.get("source_id") in {
+        if item.get("source_id")
+        in {
             "continuity-permissive",
             "cycling-access-designated",
         }
     }
 
+    assert records_by_source["continuity-permissive"]["intervention_state"] == "upgrade-required"
     assert (
-        records_by_source["continuity-permissive"]["intervention_state"]
-        == "upgrade-required"
-    )
-    assert (
-        records_by_source["cycling-access-designated"]["intervention_state"]
-        == "existing-provision"
+        records_by_source["cycling-access-designated"]["intervention_state"] == "existing-provision"
     )
 
 

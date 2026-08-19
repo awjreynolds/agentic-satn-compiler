@@ -27,6 +27,7 @@ from satn.route_controls import (
     RouteControlSet,
     RouteEdgeBinding,
 )
+from satn.tags import source_identity
 from satn.tags import tag_values as _tag_values
 
 LOW_TRAFFIC = {
@@ -190,7 +191,7 @@ class RoadGraph:
             geometry = row.geometry
             if not isinstance(geometry, LineString) or len(geometry.coords) < 2:
                 continue
-            source_edge_id = str(row.get("osmid", row.get("source_id", index)))
+            source_edge_id = _source_edge_id(row, index)
             source_id_counts[source_edge_id] = source_id_counts.get(source_edge_id, 0) + 1
         for index, row, projected_length_m, projected_geometry in sorted(
             edge_rows,
@@ -205,7 +206,7 @@ class RoadGraph:
             self.node_points.setdefault(v, Point(geometry.coords[-1]))
             source_length = row.get("length")
             length_m = float(source_length) if _present(source_length) else projected_length_m
-            source_edge_id = str(row.get("osmid", row.get("source_id", index)))
+            source_edge_id = _source_edge_id(row, index)
             directed_edge_id = _directed_edge_identity(
                 source_edge_id,
                 u,
@@ -221,6 +222,7 @@ class RoadGraph:
                 "length_m": length_m,
                 "projected_length_m": projected_length_m,
                 "highway": _tag_values(row.get("highway")),
+                "bicycle": _tag_values(row.get("bicycle")),
                 "ref": _tag_values(row.get("ref")),
                 "oneway": _truthy(row.get("oneway")),
                 "alongside": str(row.get("satn_alongside", "possible")),
@@ -259,11 +261,8 @@ class RoadGraph:
         self._routing_graph = nx.subgraph_view(
             self.graph,
             filter_edge=lambda left, right: (
-                (
-                    str(left),
-                    str(right),
-                )
-                not in self._routing_excluded_pairs
+                not self._bicycle_prohibited(left, right)
+                and (str(left), str(right)) not in self._routing_excluded_pairs
             ),
         )
         self._strategic_graph = nx.subgraph_view(
@@ -321,6 +320,10 @@ class RoadGraph:
             crs=self.crs,
         ).to_crs(27700)
         self._projected_edge_index = self._projected_edges.sindex
+
+    def _bicycle_prohibited(self, left: object, right: object) -> bool:
+        bicycle_values = self.graph.edges[left, right].get("bicycle", ())
+        return "no" in {str(value).lower() for value in bicycle_values}
 
     def edge_ids_for_node(self, node_id: str) -> tuple[str, ...]:
         """Return the canonical source edge identities incident to a graph node."""
@@ -1773,6 +1776,11 @@ def _present(value: object) -> bool:
     return value is not None and str(value).lower() not in {"nan", "none", ""}
 
 
+def _source_edge_id(row: pd.Series, fallback: object) -> str:
+    """Return one stable identity for scalar or collection-valued OSM IDs."""
+    return str(source_identity(row, ("osmid", "source_id", "osm_id", "id"), fallback))
+
+
 def _edge_row_sort_key(item: tuple[object, pd.Series]) -> tuple[str, ...]:
     index, row = item
     geometry = row.geometry
@@ -1785,7 +1793,7 @@ def _edge_row_sort_key(item: tuple[object, pd.Series]) -> tuple[str, ...]:
     return (
         u,
         v,
-        str(row.get("osmid", row.get("source_id", index))),
+        _source_edge_id(row, index),
         geometry_key,
         str(index),
     )
