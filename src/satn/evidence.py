@@ -14,7 +14,10 @@ from shapely.geometry import LineString, MultiLineString, MultiPolygon, Point, P
 from shapely.ops import linemerge
 
 from satn.models import NetworkScope
-from satn.osm_active_travel import network_kind
+from satn.osm_active_travel import (
+    OSM_ACTIVE_TRAVEL_ASSET_KINDS,
+    network_kind,
+)
 from satn.tags import canonical_tag_values, source_identity
 from satn.tags import tag_values as _tag_values
 
@@ -127,16 +130,7 @@ def derive_osm_active_travel_assets(network: gpd.GeoDataFrame) -> gpd.GeoDataFra
     rows: list[dict[str, object]] = []
     for index, edge in network.iterrows():
         kind = network_kind(edge)
-        if kind not in {
-            "mapped-cycleway",
-            "road-cycleway",
-            "bicycle-priority-road",
-            "bicycle-route",
-            "cycle-access-path",
-            "shared-use-path",
-            "public-bridleway",
-            "proposed-new-corridor",
-        }:
+        if kind not in OSM_ACTIVE_TRAVEL_ASSET_KINDS:
             continue
         geometry = edge.geometry
         if not isinstance(geometry, (LineString, MultiLineString)) or geometry.is_empty:
@@ -144,6 +138,7 @@ def derive_osm_active_travel_assets(network: gpd.GeoDataFrame) -> gpd.GeoDataFra
         source_id = _source_id(edge, index)
         feature_type = {
             "mapped-cycleway": "cycleway",
+            "cycle-track": "cycleway",
             "road-cycleway": "road-cycleway",
             "bicycle-priority-road": "bicycle-priority-road",
             "bicycle-route": "bicycle-route",
@@ -164,6 +159,7 @@ def derive_osm_active_travel_assets(network: gpd.GeoDataFrame) -> gpd.GeoDataFra
                 current_cycle_asset=kind
                 in {
                     "mapped-cycleway",
+                    "cycle-track",
                     "road-cycleway",
                     "bicycle-priority-road",
                     "bicycle-route",

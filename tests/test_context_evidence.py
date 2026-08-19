@@ -4,6 +4,7 @@ import geopandas as gpd
 import numpy as np
 from shapely.geometry import LineString, Point, Polygon
 
+from satn.asset_accounting import build_asset_accounting
 from satn.evidence import derive_context_layers, govern_network_scope, mark_ncn_edges
 from satn.routing import RoadGraph, choose_alignment
 
@@ -199,6 +200,67 @@ def test_derives_array_shaped_cycleway_as_non_strategic_current_asset_context() 
     assert (
         not context["feature_type"].isin(["a-road-spine", "ncn-route", "greenway-cycleway"]).any()
     )
+
+
+def test_generic_routing_roads_are_not_active_travel_context_or_assets() -> None:
+    network = gpd.GeoDataFrame(
+        [
+            {
+                "osmid": "generic-a-road",
+                "highway": "primary",
+                "ref": "A4",
+                "geometry": LineString([(0, 0), (0.02, 0)]),
+            },
+            {
+                "osmid": "generic-b-road",
+                "highway": "secondary",
+                "ref": "B311",
+                "geometry": LineString([(0, 0.01), (0.02, 0.01)]),
+            },
+            {
+                "osmid": "generic-residential",
+                "highway": "residential",
+                "geometry": LineString([(0, 0.02), (0.02, 0.02)]),
+            },
+            {
+                "osmid": "explicit-cycleway",
+                "highway": "cycleway",
+                "geometry": LineString([(0, 0.03), (0.02, 0.03)]),
+            },
+            {
+                "osmid": "explicit-road-cycleway",
+                "highway": "residential",
+                "cycleway:left": "track",
+                "geometry": LineString([(0, 0.04), (0.02, 0.04)]),
+            },
+            {
+                "osmid": "explicit-bicycle-path",
+                "highway": "path",
+                "bicycle": "designated",
+                "geometry": LineString([(0, 0.05), (0.02, 0.05)]),
+            },
+        ],
+        crs=4326,
+    )
+
+    context = derive_context_layers(network)
+    active_context = context[context["category"] == "Mapped OSM active-travel asset"]
+    assert set(active_context["source_id"]) == {
+        "explicit-cycleway",
+        "explicit-road-cycleway",
+        "explicit-bicycle-path",
+    }
+
+    accounting = build_asset_accounting(
+        gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs=4326),
+        network,
+        None,
+    )
+    assert {record["source_provenance"][0]["source_id"] for record in accounting["records"]} == {
+        "explicit-cycleway",
+        "explicit-road-cycleway",
+        "explicit-bicycle-path",
+    }
 
 
 def test_road_active_travel_context_labels_preserve_signal_semantics() -> None:

@@ -24,6 +24,10 @@ from shapely.geometry import LineString, MultiLineString, mapping
 from satn.constants import DISCLAIMER, SCHEMA_VERSION
 from satn.evidence_contracts import evidence_geometry_fingerprint
 from satn.osm_active_travel import (
+    OSM_ACTIVE_TRAVEL_ASSET_KINDS,
+    network_kind,
+)
+from satn.osm_active_travel import (
     authoritative_cycleway_lineage as _authoritative_cycleway_lineage,
 )
 from satn.osm_active_travel import (
@@ -31,9 +35,6 @@ from satn.osm_active_travel import (
 )
 from satn.osm_active_travel import (
     designation as _designation,
-)
-from satn.osm_active_travel import (
-    network_kind,
 )
 from satn.tags import (
     canonical_tag_values as _tag_texts,
@@ -854,6 +855,8 @@ def build_asset_accounting(
             continue
         for index, row in frame.sort_index().iterrows():
             kind = _context_kind(row) if origin == "context" else network_kind(row)
+            if origin == "network" and kind not in OSM_ACTIVE_TRAVEL_ASSET_KINDS:
+                kind = None
             geometry = _line_geometry(frame, index, row)
             if geometry is None:
                 continue

@@ -85,7 +85,7 @@ def test_numpy_and_list_osm_cycleway_tags_bind_mapped_asset_provenance() -> None
         ({"highway": "pedestrian", "bicycle": "yes"}, "cycle-access-path"),
         ({"highway": "track", "bicycle": ["designated"]}, "cycle-access-path"),
         ({"highway": "residential", "cycleway:left": "track"}, "road-cycleway"),
-        ({"highway": "residential", "cycleway:surface": "asphalt"}, "unclassified-road"),
+        ({"highway": "residential", "cycleway:surface": "asphalt"}, None),
         (
             {"highway": "primary", "ref": "A4", "cycleway:left": "track"},
             "road-cycleway",
@@ -102,7 +102,7 @@ def test_numpy_and_list_osm_cycleway_tags_bind_mapped_asset_provenance() -> None
     ],
 )
 def test_explicit_osm_cycle_signals_are_admitted_as_assets(
-    tags: dict[str, object], expected_kind: str
+    tags: dict[str, object], expected_kind: str | None
 ) -> None:
     network = _frame(
         [
@@ -116,8 +116,11 @@ def test_explicit_osm_cycle_signals_are_admitted_as_assets(
 
     accounting = build_asset_accounting(_frame([]), network, None)
 
-    assert accounting["asset_count"] == 1
-    assert accounting["records"][0]["asset_kind"] == expected_kind
+    if expected_kind is None:
+        assert accounting["asset_count"] == 0
+    else:
+        assert accounting["asset_count"] == 1
+        assert accounting["records"][0]["asset_kind"] == expected_kind
 
 
 def test_bare_and_explicitly_noncycling_paths_remain_out_of_cycle_asset_accounting() -> None:
@@ -160,8 +163,8 @@ def test_non_bicycle_route_tag_does_not_create_cycle_asset() -> None:
 
     accounting = build_asset_accounting(_frame([]), network, None)
 
-    assert accounting["asset_count"] == 1
-    assert accounting["records"][0]["asset_kind"] == "unclassified-road"
+    assert accounting["asset_count"] == 0
+    assert accounting["excluded_observations"][0]["source_id"] == "bus-route"
 
 
 def test_bicycle_no_does_not_erase_mapped_cycleway_geometry() -> None:

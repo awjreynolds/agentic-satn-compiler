@@ -120,6 +120,19 @@ _CYCLEWAY_STATUS_CLAIMS = {
     "physical-connection",
     "route-class",
 }
+OSM_ACTIVE_TRAVEL_ASSET_KINDS = frozenset(
+    {
+        "mapped-cycleway",
+        "road-cycleway",
+        "bicycle-priority-road",
+        "bicycle-route",
+        "cycle-access-path",
+        "shared-use-path",
+        "cycle-track",
+        "public-bridleway",
+        "proposed-new-corridor",
+    }
+)
 
 
 def _text(row: Mapping[str, object], key: str) -> str | None:
