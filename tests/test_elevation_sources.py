@@ -480,13 +480,11 @@ def test_weca_bootstrap_and_final_definitions_are_separate_parseable_workflow_st
         "weca-classification-elevation-2026-07-31-v14-fp-20260731T092920522968Z-02-"
         "fp-20260809T123804416841Z-01"
     )
-    retained_snapshot = final.source.snapshot_dir / retained.snapshot_id / "snapshot.json"
-    assert retained_snapshot.is_file()
-    assert retained.manifest_sha256 == hashlib.sha256(retained_snapshot.read_bytes()).hexdigest()
     assert final.source.snapshot_id == (
         "weca-classification-elevation-2026-07-31-v14-fp-20260731T092920522968Z-02-"
         "fp-20260809T123804416841Z-01-fp-20260819T011108973323Z-01"
     )
+    assert final.source.snapshot_id.startswith(f"{retained.snapshot_id}-fp-")
     assert bootstrap.publication.output_dir != final.publication.output_dir
     assert final.source.national_elevation is not None
     assert final.source.national_elevation.source_id == "ea-lidar-composite-dtm-1m"

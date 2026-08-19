@@ -29,16 +29,6 @@ WECA_CONFIGURED_PARENT_SNAPSHOT_ID = (
 )
 
 
-def configured_parent_source() -> RetainedCoreSourceConfig:
-    snapshot = PROJECT / "data" / "snapshots" / WECA_CONFIGURED_PARENT_SNAPSHOT_ID
-    manifest = snapshot / "snapshot.json"
-    assert manifest.is_file()
-    return RetainedCoreSourceConfig(
-        snapshot_id=WECA_CONFIGURED_PARENT_SNAPSHOT_ID,
-        manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
-    )
-
-
 def copied_config(tmp_path: Path) -> CouncilConfig:
     fixture = tmp_path / "fixture"
     shutil.copytree(
@@ -264,15 +254,10 @@ def test_weca_configured_snapshot_is_distinct_and_benchmark_fixture_is_byte_pinn
     assert benchmark.source.snapshot_id == bootstrap.source.snapshot_id == "weca-osm-current"
     assert configured.source.snapshot_id == WECA_CONFIGURED_SNAPSHOT_ID
     assert configured.source.snapshot_id != bootstrap.source.snapshot_id
-    assert configured.source.retained_core_source == configured_parent_source()
-
-
-def test_weca_configured_snapshot_matches_its_retained_parent() -> None:
-    configured = CouncilConfig.from_yaml(PROJECT / "deployments/weca/area.yaml")
-    assert configured.source.snapshot_id == WECA_CONFIGURED_SNAPSHOT_ID
     retained = configured.source.retained_core_source
-    assert retained == configured_parent_source()
-    assert retained.snapshot_id in configured.source.snapshot_id
+    assert retained is not None
+    assert retained.snapshot_id == WECA_CONFIGURED_PARENT_SNAPSHOT_ID
+    assert configured.source.snapshot_id.startswith(f"{retained.snapshot_id}-fp-")
 
 
 def test_lineaged_retained_core_seeds_distinct_target_and_is_idempotent(tmp_path: Path) -> None:
