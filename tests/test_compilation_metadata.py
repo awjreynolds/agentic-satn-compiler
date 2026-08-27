@@ -52,10 +52,10 @@ def test_area_deployment_preserves_compilation_metadata(tmp_path: Path) -> None:
     for relative_path in (
         "compiler-run.json",
         "publication.json",
-        "strategic-network.json",
     ):
         path = deployment / relative_path
         payload = json.loads(path.read_text(encoding="utf-8"))
         assert path.read_bytes() == json.dumps(payload, separators=(",", ":")).encode()
 
     assert not (deployment / "provenance-lock.json").exists()
+    assert not (deployment / "strategic-network.json").exists()

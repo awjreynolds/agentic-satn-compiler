@@ -18,48 +18,14 @@ def test_catalogue_builds_a_small_root_selector_with_stable_area_links(tmp_path:
     )
 
     publication = json.loads((destination / "catalogue.json").read_text(encoding="utf-8"))
-    banes_definition = PROJECT / "deployments" / "banes" / "area.yaml"
     weca_definition = PROJECT / "deployments" / "weca" / "area.yaml"
     wiltshire_definition = PROJECT / "deployments" / "wiltshire" / "area.yaml"
-    banes_snapshot_id = AreaDefinition.from_yaml(banes_definition).source.snapshot_id
     weca_snapshot_id = AreaDefinition.from_yaml(weca_definition).source.snapshot_id
     wiltshire_snapshot_id = AreaDefinition.from_yaml(wiltshire_definition).source.snapshot_id
     assert publication["schema_version"] == "satn-deployment-catalogue/v1"
     assert publication["title"] == "Agentic SATN Compiler deployments"
     published = {entry["deployment_id"]: entry for entry in publication["deployments"]}
-    assert set(published) == {"banes", "weca", "wiltshire"}
-    assert published["banes"] == {
-        "deployment_id": "banes",
-        "area_id": "bath-and-north-east-somerset",
-        "area_name": "Bath and North East Somerset",
-        "area_definition": "banes/area.yaml",
-        "area_definition_sha256": hashlib.sha256(banes_definition.read_bytes()).hexdigest(),
-        "deployment_path": "deployments/banes/",
-        "artifacts": {
-            "review_map": "deployments/banes/index.html",
-            "network_map_pdf": "deployments/banes/network-map.pdf",
-        },
-        "title": "B&NES Strategic Active Travel Network Review",
-        "scope": {
-            "area_id": "bath-and-north-east-somerset",
-            "area_name": "Bath and North East Somerset",
-            "audience": "public",
-        },
-        "evidence_provenance": {
-            "source": {
-                "kind": "osm",
-                "authority_boundary_queries": [
-                    "Bath and North East Somerset, England, United Kingdom"
-                ],
-            },
-            "snapshot": {"snapshot_id": banes_snapshot_id},
-            "agent_runtime": {
-                "response_mode": "direct-runtime",
-                "provider": "fake",
-                "model": None,
-            },
-        },
-    }
+    assert set(published) == {"weca", "wiltshire"}
     assert published["weca"] == {
         "deployment_id": "weca",
         "area_id": "west-of-england",
@@ -126,8 +92,8 @@ def test_catalogue_builds_a_small_root_selector_with_stable_area_links(tmp_path:
         },
     }
     page = (destination / "index.html").read_text(encoding="utf-8")
-    assert "Bath and North East Somerset" in page
-    assert 'href="deployments/banes/index.html"' in page
+    assert "Bath and North East Somerset" not in page
+    assert 'href="deployments/banes/index.html"' not in page
     assert 'href="deployments/weca/network-map.pdf"' in page
     assert "Wiltshire Council" in page
     assert 'href="deployments/wiltshire/index.html"' in page

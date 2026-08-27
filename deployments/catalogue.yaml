@@ -3,15 +3,6 @@ title: Agentic SATN Compiler deployments
 # deployment_id is the stable published identity and Pages path. The referenced
 # Area Definition supplies the geographical area_id written to publication.json.
 deployments:
-  - deployment_id: banes
-    area_id: bath-and-north-east-somerset
-    area_name: Bath and North East Somerset
-    area_definition: banes/area.yaml
-    deployment_path: deployments/banes/
-    artifacts:
-      review_map: index.html
-      network_map_pdf: network-map.pdf
-      review_map_zip: review-map.zip
   - deployment_id: weca
     area_id: west-of-england
     area_name: West of England Combined Authority area
