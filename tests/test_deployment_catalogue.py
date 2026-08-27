@@ -20,85 +20,117 @@ def test_catalogue_builds_a_small_root_selector_with_stable_area_links(tmp_path:
     publication = json.loads((destination / "catalogue.json").read_text(encoding="utf-8"))
     banes_definition = PROJECT / "deployments" / "banes" / "area.yaml"
     weca_definition = PROJECT / "deployments" / "weca" / "area.yaml"
+    wiltshire_definition = PROJECT / "deployments" / "wiltshire" / "area.yaml"
     banes_snapshot_id = AreaDefinition.from_yaml(banes_definition).source.snapshot_id
     weca_snapshot_id = AreaDefinition.from_yaml(weca_definition).source.snapshot_id
+    wiltshire_snapshot_id = AreaDefinition.from_yaml(wiltshire_definition).source.snapshot_id
     assert publication["schema_version"] == "satn-deployment-catalogue/v1"
     assert publication["title"] == "Agentic SATN Compiler deployments"
     published = {entry["deployment_id"]: entry for entry in publication["deployments"]}
-    assert set(published) == {"banes", "weca"}
+    assert set(published) == {"banes", "weca", "wiltshire"}
     assert published["banes"] == {
-            "deployment_id": "banes",
+        "deployment_id": "banes",
+        "area_id": "bath-and-north-east-somerset",
+        "area_name": "Bath and North East Somerset",
+        "area_definition": "banes/area.yaml",
+        "area_definition_sha256": hashlib.sha256(banes_definition.read_bytes()).hexdigest(),
+        "deployment_path": "deployments/banes/",
+        "artifacts": {
+            "review_map": "deployments/banes/index.html",
+            "network_map_pdf": "deployments/banes/network-map.pdf",
+        },
+        "title": "B&NES Strategic Active Travel Network Review",
+        "scope": {
             "area_id": "bath-and-north-east-somerset",
             "area_name": "Bath and North East Somerset",
-            "area_definition": "banes/area.yaml",
-            "area_definition_sha256": hashlib.sha256(banes_definition.read_bytes()).hexdigest(),
-            "deployment_path": "deployments/banes/",
-            "artifacts": {
-                "review_map": "deployments/banes/index.html",
-                "network_map_pdf": "deployments/banes/network-map.pdf",
+            "audience": "public",
+        },
+        "evidence_provenance": {
+            "source": {
+                "kind": "osm",
+                "authority_boundary_queries": [
+                    "Bath and North East Somerset, England, United Kingdom"
+                ],
             },
-            "title": "B&NES Strategic Active Travel Network Review",
-            "scope": {
-                "area_id": "bath-and-north-east-somerset",
-                "area_name": "Bath and North East Somerset",
-                "audience": "public",
+            "snapshot": {"snapshot_id": banes_snapshot_id},
+            "agent_runtime": {
+                "response_mode": "direct-runtime",
+                "provider": "fake",
+                "model": None,
             },
-            "evidence_provenance": {
-                "source": {
-                    "kind": "osm",
-                    "authority_boundary_queries": [
-                        "Bath and North East Somerset, England, United Kingdom"
-                    ],
-                },
-                "snapshot": {"snapshot_id": banes_snapshot_id},
-                "agent_runtime": {
-                    "response_mode": "direct-runtime",
-                    "provider": "fake",
-                    "model": None,
-                },
-            },
-        }
+        },
+    }
     assert published["weca"] == {
-            "deployment_id": "weca",
+        "deployment_id": "weca",
+        "area_id": "west-of-england",
+        "area_name": "West of England Combined Authority area",
+        "area_definition": "weca/area.yaml",
+        "area_definition_sha256": hashlib.sha256(weca_definition.read_bytes()).hexdigest(),
+        "deployment_path": "deployments/weca/",
+        "artifacts": {
+            "review_map": "deployments/weca/index.html",
+            "network_map_pdf": "deployments/weca/network-map.pdf",
+        },
+        "title": "West of England Strategic Active Travel Network Review",
+        "scope": {
             "area_id": "west-of-england",
             "area_name": "West of England Combined Authority area",
-            "area_definition": "weca/area.yaml",
-            "area_definition_sha256": hashlib.sha256(weca_definition.read_bytes()).hexdigest(),
-            "deployment_path": "deployments/weca/",
-            "artifacts": {
-                "review_map": "deployments/weca/index.html",
-                "network_map_pdf": "deployments/weca/network-map.pdf",
+            "audience": "public",
+        },
+        "evidence_provenance": {
+            "source": {
+                "kind": "osm",
+                "authority_boundary_queries": [
+                    "Bath and North East Somerset, England, United Kingdom",
+                    "Bristol, England, United Kingdom",
+                    "North Somerset, England, United Kingdom",
+                    "South Gloucestershire, England, United Kingdom",
+                ],
             },
-            "title": "West of England Strategic Active Travel Network Review",
-            "scope": {
-                "area_id": "west-of-england",
-                "area_name": "West of England Combined Authority area",
-                "audience": "public",
+            "snapshot": {"snapshot_id": weca_snapshot_id},
+            "agent_runtime": {
+                "response_mode": "direct-runtime",
+                "provider": "fake",
+                "model": None,
             },
-            "evidence_provenance": {
-                "source": {
-                    "kind": "osm",
-                    "authority_boundary_queries": [
-                        "Bath and North East Somerset, England, United Kingdom",
-                        "Bristol, England, United Kingdom",
-                        "North Somerset, England, United Kingdom",
-                        "South Gloucestershire, England, United Kingdom",
-                    ],
-                },
-                "snapshot": {
-                    "snapshot_id": weca_snapshot_id
-                },
-                "agent_runtime": {
-                    "response_mode": "direct-runtime",
-                    "provider": "fake",
-                    "model": None,
-                },
+        },
+    }
+    assert published["wiltshire"] == {
+        "deployment_id": "wiltshire",
+        "area_id": "wiltshire",
+        "area_name": "Wiltshire Council",
+        "area_definition": "wiltshire/area.yaml",
+        "area_definition_sha256": hashlib.sha256(wiltshire_definition.read_bytes()).hexdigest(),
+        "deployment_path": "deployments/wiltshire/",
+        "artifacts": {
+            "review_map": "deployments/wiltshire/index.html",
+            "network_map_pdf": "deployments/wiltshire/network-map.pdf",
+        },
+        "title": "Wiltshire Strategic Active Travel Network Review",
+        "scope": {
+            "area_id": "wiltshire",
+            "area_name": "Wiltshire Council",
+            "audience": "public",
+        },
+        "evidence_provenance": {
+            "source": {
+                "kind": "fixture",
+                "authority_boundary_queries": [],
             },
-        }
+            "snapshot": {"snapshot_id": wiltshire_snapshot_id},
+            "agent_runtime": {
+                "response_mode": "direct-runtime",
+                "provider": "fake",
+                "model": None,
+            },
+        },
+    }
     page = (destination / "index.html").read_text(encoding="utf-8")
     assert "Bath and North East Somerset" in page
     assert 'href="deployments/banes/index.html"' in page
     assert 'href="deployments/weca/network-map.pdf"' in page
+    assert "Wiltshire Council" in page
+    assert 'href="deployments/wiltshire/index.html"' in page
     assert ".zip" not in page
     assert set(path.name for path in destination.iterdir()) == {"catalogue.json", "index.html"}
 
@@ -107,15 +139,12 @@ def test_tracked_area_definitions_are_valid_and_write_only_to_ignored_build() ->
     for deployment_id, area_id in (
         ("banes", "bath-and-north-east-somerset"),
         ("weca", "west-of-england"),
+        ("wiltshire", "wiltshire"),
     ):
-        definition = AreaDefinition.from_yaml(
-            PROJECT / "deployments" / deployment_id / "area.yaml"
-        )
+        definition = AreaDefinition.from_yaml(PROJECT / "deployments" / deployment_id / "area.yaml")
         assert definition.area_id == area_id
         assert definition.deployment_slug == deployment_id
-        assert definition.publication.output_dir == (
-            PROJECT / "build" / "compiled" / deployment_id
-        )
+        assert definition.publication.output_dir == (PROJECT / "build" / "compiled" / deployment_id)
 
 
 def test_catalogue_rejects_a_deployment_path_outside_pages_layout(tmp_path: Path) -> None:

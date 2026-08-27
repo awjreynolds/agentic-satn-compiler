@@ -21,3 +21,12 @@ deployments:
       review_map: index.html
       network_map_pdf: network-map.pdf
       review_map_zip: review-map.zip
+  - deployment_id: wiltshire
+    area_id: wiltshire
+    area_name: Wiltshire Council
+    area_definition: wiltshire/area.yaml
+    deployment_path: deployments/wiltshire/
+    artifacts:
+      review_map: index.html
+      network_map_pdf: network-map.pdf
+      review_map_zip: review-map.zip

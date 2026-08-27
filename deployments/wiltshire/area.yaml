@@ -1,0 +1,24 @@
+# Governed Wiltshire Area Definition. Outputs are generated below ignored
+# build/ and assembled into the Pages deployment during release packaging.
+area_id: wiltshire
+area_name: Wiltshire Council
+deployment_id: wiltshire
+source:
+  kind: fixture
+  fixture_dir: ../../examples/wiltshire/source
+  source_identifier: "ons-ctyua-december-2025 + osm-wiltshire-extract-2026-07-24"
+  source_attribution: "Office for National Statistics; OpenStreetMap contributors (ODbL); OSM extract via GEO2day"
+  snapshot_dir: ../../data/snapshots
+  snapshot_id: wiltshire-osm-2026-07-24-ons-2025
+compilation:
+  max_connection_km: 15
+  criteria_version: "1"
+  agent:
+    provider: fake
+    response_mode: direct-runtime
+    review_statuses: [amber, red]
+publication:
+  output_dir: ../../build/compiled/wiltshire
+  title: Wiltshire Strategic Active Travel Network Review
+  pdf_page_size: A2
+  audience: public

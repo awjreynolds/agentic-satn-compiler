@@ -131,7 +131,8 @@ def _inspect_deployment(
                   const network = map.getSource("network")?._data?.features || [];
                   const reviewable = map.getSource("reviewable")?._data?.features || [];
                   const expected = [
-                    [network, "urban-spine", "urban-spines"],
+                    [reviewable, "reviewable-selected-route", "reviewable-urban-strategic-network",
+                     (feature) => feature.properties?.network_role === "urban-main-road-spine"],
                     [reviewable, "asset-upgrade-required", "mapped-active-travel-assets",
                      (feature) => feature.properties?.asset_kind === "mapped-cycleway"],
                   ];
@@ -185,7 +186,6 @@ def _inspect_deployment(
                 failures.push("Strategic Active Travel Network control is not selected");
               }
               for (const [controlId, layerId] of [
-                ["layer-urban-spines", "urban-spines"],
                 ["layer-mapped-active-travel-assets", "mapped-active-travel-assets"],
               ]) {
                 if (!document.querySelector(`#${controlId}`)?.checked) {
@@ -197,8 +197,18 @@ def _inspect_deployment(
                   failures.push(`${layerId} default layer is hidden`);
                 }
               }
+              if (counts["urban-main-road-spine"] > 0 && counts["strategic-spine"] > 0) {
+                if (!map.getLayer("reviewable-urban-strategic-network")) {
+                  failures.push("reviewable-urban-strategic-network default layer is missing");
+                } else if (
+                  map.getLayoutProperty(
+                    "reviewable-urban-strategic-network", "visibility"
+                  ) === "none"
+                ) {
+                  failures.push("reviewable-urban-strategic-network default layer is hidden");
+                }
+              }
               const contextualDefaults = [
-                [features, "urban-spine", "urban-spines"],
                 [map.getSource("reviewable")?._data?.features || [],
                  "asset-upgrade-required", "mapped-active-travel-assets",
                  (feature) => feature.properties?.asset_kind === "mapped-cycleway"],
