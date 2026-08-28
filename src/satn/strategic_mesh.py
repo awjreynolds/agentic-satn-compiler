@@ -157,6 +157,7 @@ class CandidateRouteSection:
     corridor_class: str = "other"
     network_role: str = "main"
     is_access_support: bool = False
+    network_scope: MeshScope = "urban"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "section_id", _text(self.section_id, "section id"))
@@ -169,6 +170,10 @@ class CandidateRouteSection:
         object.__setattr__(self, "network_role", _token(self.network_role, "network role"))
         if not isinstance(self.is_access_support, bool):
             raise ValueError("is_access_support must be boolean")
+        scope = _token(self.network_scope, "network scope")
+        if scope not in {"urban", "rural"}:
+            raise ValueError("network scope must be urban or rural")
+        object.__setattr__(self, "network_scope", scope)
 
     @property
     def geometry(self) -> LineString:
@@ -200,6 +205,7 @@ class CandidateRouteSection:
             "corridor_class": self.corridor_class,
             "network_role": self.network_role,
             "is_access_support": self.is_access_support,
+            "network_scope": self.network_scope,
         }
 
 
@@ -435,14 +441,15 @@ def _covered_point_ids(
     )
 
 
-def derive_urban_mesh_coverage_points(
+def derive_mesh_coverage_points(
     sections: Sequence[CandidateRouteSection],
     *,
-    maximum_width_m: float = 500.0,
+    profile: StrategicMainNetworkProfile | None = None,
+    maximum_width_m: float | None = None,
 ) -> tuple[MeshCoveragePoint, ...]:
-    """Derive deterministic urban proof points from every supplied route line.
+    """Derive deterministic proof points from every supplied route line.
 
-    The interval is one quarter of the maximum mesh width and each generated
+    Each scope's interval is one quarter of its profile maximum mesh width and each generated
     point is admitted at three eighths of that width.  Consequently every
     source-line position is within one eighth of that width (by line arclength)
     of a point, so the triangle inequality proves a selected union within half
@@ -450,11 +457,17 @@ def derive_urban_mesh_coverage_points(
     geometry used by the seam.
     """
 
-    width = _positive(maximum_width_m, "maximum mesh width")
-    spacing = width / 4.0
-    proof_radius = 3.0 * width / 8.0
+    profile = profile or StrategicMainNetworkProfile()
     points: list[MeshCoveragePoint] = []
     for section in sorted(sections, key=lambda item: item.section_id):
+        width = _positive(
+            maximum_width_m
+            if maximum_width_m is not None
+            else profile.maximum_width_m(section.network_scope),
+            "maximum mesh width",
+        )
+        spacing = width / 4.0
+        proof_radius = 3.0 * width / 8.0
         line = section.geometry
         interval_count = max(1, math.ceil(line.length / spacing))
         for index in range(interval_count + 1):
@@ -464,11 +477,21 @@ def derive_urban_mesh_coverage_points(
                 MeshCoveragePoint(
                     point_id=f"{section.section_id}@{index}",
                     coordinates=(float(point.x), float(point.y)),
-                    scope="urban",
+                    scope=section.network_scope,
                     proof_radius_m=proof_radius,
                 )
             )
     return tuple(points)
+
+
+def derive_urban_mesh_coverage_points(
+    sections: Sequence[CandidateRouteSection],
+    *,
+    maximum_width_m: float = 500.0,
+) -> tuple[MeshCoveragePoint, ...]:
+    """Backward-compatible urban-specialized proof-point helper."""
+
+    return derive_mesh_coverage_points(sections, maximum_width_m=maximum_width_m)
 
 
 def _selection_score(
@@ -784,5 +807,6 @@ __all__ = [
     "StrategicMainNetworkRequest",
     "StrategicMainNetworkResult",
     "assemble_strategic_main_network",
+    "derive_mesh_coverage_points",
     "derive_urban_mesh_coverage_points",
 ]

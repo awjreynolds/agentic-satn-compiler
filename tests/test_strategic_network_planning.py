@@ -28,7 +28,10 @@ from satn.planning_graph import (
     PlanningGraphSnapshot,
     PlanningNodeRecord,
 )
+from satn.strategic_mesh import StrategicMainNetworkProfile
 from satn.strategic_network_planning import (
+    EffectiveStrategicSection,
+    PlanningAuthority,
     ReferenceRoute,
     StrategicNetworkPlanningRequest,
     StrategicPlanningFallbackProfile,
@@ -165,6 +168,157 @@ def request(
         selection_profile=selection_profile,
         compiler_preferred_candidate_ids=compiler_preferred_candidate_ids,
     )
+
+
+def test_rural_mesh_reduces_avoidable_b_road_and_retains_access_support() -> None:
+    graph = fixture_graph()
+    graph = replace(
+        graph,
+        edge_records=(
+            *graph.edge_records,
+            edge(
+                "rural-a",
+                "R0",
+                "R1",
+                "LINESTRING (0 0, 3000 0)",
+                highway="primary",
+                ref="A1",
+                length_m=3000,
+            ),
+            edge(
+                "rural-b",
+                "R2",
+                "R3",
+                "LINESTRING (0 500, 3000 500)",
+                highway="secondary",
+                ref="B1",
+                length_m=3000,
+            ),
+            edge(
+                "rural-support",
+                "R4",
+                "R5",
+                "LINESTRING (0 200, 3000 200)",
+                highway="residential",
+                length_m=3000,
+            ),
+        ),
+        graph_fingerprint="4" * 64,
+    )
+    discovered = discovery(graph, CorridorObligation("corridor-a-d", "A", "D"))
+    profile = StrategicMainNetworkProfile()
+    required_sections = (
+        EffectiveStrategicSection(
+            "rural-a",
+            "rural-a",
+            None,
+            "interurban-spine",
+            ("rural-a",),
+            (),
+            "LINESTRING (0 0, 3000 0)",
+            PlanningAuthority.COMPILER,
+            ("a-road",),
+            "a-road",
+            "upgrade-required",
+            "upgrade-required",
+            "rural",
+        ),
+        EffectiveStrategicSection(
+            "rural-b",
+            "rural-b",
+            None,
+            "interurban-spine",
+            ("rural-b",),
+            (),
+            "LINESTRING (0 500, 3000 500)",
+            PlanningAuthority.COMPILER,
+            ("b-road",),
+            "b-road",
+            "upgrade-required",
+            "upgrade-required",
+            "rural",
+        ),
+        EffectiveStrategicSection(
+            "rural-support",
+            "rural-support",
+            None,
+            "community-access",
+            ("rural-support",),
+            (),
+            "LINESTRING (0 200, 3000 200)",
+            PlanningAuthority.COMPILER,
+            ("local-connector",),
+            "local-connector",
+            "upgrade-required",
+            "upgrade-required",
+            "rural",
+        ),
+    )
+
+    result = compile_strategic_network(
+        StrategicNetworkPlanningRequest(
+            graph=graph,
+            discovery=discovered,
+            area_fingerprint="a" * 64,
+            required_sections=required_sections,
+            mesh_profile=profile,
+            mesh_profile_fingerprint=profile.fingerprint,
+        )
+    )
+
+    assert tuple(
+        section.section_id
+        for section in result.effective_network.sections
+        if section.section_id.startswith("rural-")
+    ) == ("rural-a", "rural-support")
+    assert result.lineage.mesh_profile_fingerprint == profile.fingerprint
+    assert not any(
+        diagnostic.code == "strategic-mesh-access-support-excluded"
+        and diagnostic.subject_id == "rural-support"
+        for diagnostic in result.diagnostics
+    )
+    assert any(
+        diagnostic.code == "strategic-mesh-section-omitted" and diagnostic.subject_id == "rural-b"
+        for diagnostic in result.diagnostics
+    )
+
+
+def test_materialized_rural_candidate_reduction_keeps_selection_roster_consistent() -> None:
+    graph = fixture_graph()
+    discovered = discovery(
+        graph,
+        CorridorObligation("first-rural-corridor", "A", "D"),
+        CorridorObligation("second-rural-corridor", "A", "D"),
+    )
+
+    result = compile_strategic_network(
+        StrategicNetworkPlanningRequest(
+            graph=graph,
+            discovery=discovered,
+            area_fingerprint="a" * 64,
+        )
+    )
+
+    rural_sections = tuple(
+        section
+        for section in result.effective_network.sections
+        if section.network_role == "interurban-spine"
+    )
+    assert len(rural_sections) == 1
+    assert rural_sections[0].network_scope == "rural"
+    assert len(result.selections) == 1
+    assert result.selections[0].effective_candidate_id == rural_sections[0].candidate_id
+    assert result.selections[0].authority is not PlanningAuthority.GAP
+    effective_dispositions = tuple(
+        item for item in result.unselected_candidates if item.disposition == "effective"
+    )
+    mesh_dispositions = tuple(
+        item
+        for item in result.unselected_candidates
+        if item.reason == "omitted by Strategic Main Network mesh"
+    )
+    assert len(effective_dispositions) == 1
+    assert len(mesh_dispositions) == 1
 
 
 def test_governed_compiler_preference_is_applied_without_reordering_candidates() -> None:

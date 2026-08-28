@@ -5,7 +5,6 @@ import sys
 import geopandas as gpd
 import pytest
 from shapely.geometry import LineString
-from shapely.wkt import loads as load_wkt
 from test_strategic_network_planning import discovery, fixture_graph, request
 
 from satn.candidate_discovery import CorridorObligation
@@ -204,7 +203,7 @@ def test_complete_routable_snapshot_and_preparation_use_one_canonical_selector()
     assert not state.gaps
 
 
-def test_governed_urban_main_roads_are_required_effective_strategic_sections() -> None:
+def test_redundant_urban_main_roads_are_omitted_by_authoritative_mesh_selection() -> None:
     routable_network = _fixture_routable_network()
     graph = planning_graph_from_compiler_edges(
         routable_network,
@@ -243,23 +242,18 @@ def test_governed_urban_main_roads_are_required_effective_strategic_sections() -
         for section in state.effective_network.sections
         if section.network_role == "urban-main-road-spine"
     )
-    assert [section.section_id for section in urban_sections] == [
-        "urban-spine-bristol-a4",
-    ]
-    assert all(section.candidate_id is None for section in urban_sections)
-    assert all(section.routing_edge_ids for section in urban_sections)
-    assert all(section.intervention_state == "upgrade-required" for section in urban_sections)
-    assert [section.primary_alignment_basis for section in urban_sections] == [
-        "a-road",
-    ]
+    assert urban_sections == ()
     selected_route = next(
         section
         for section in state.effective_network.sections
         if section.network_role == "interurban-spine"
     )
-    assert load_wkt(urban_sections[0].geometry_wkt).intersects(
-        load_wkt(selected_route.geometry_wkt)
-    )
+    assert selected_route.primary_alignment_basis == "mapped-cycleway"
+    assert {
+        diagnostic.subject_id
+        for diagnostic in state.diagnostics
+        if diagnostic.code == "strategic-mesh-section-omitted"
+    } >= {"urban-spine-bristol-a4", "urban-spine-bristol-b4051"}
 
 
 def test_effective_network_reduces_avoidable_dense_urban_b_road_mesh_candidate() -> None:
@@ -272,22 +266,6 @@ def test_effective_network_reduces_avoidable_dense_urban_b_road_mesh_candidate()
                 "highway": "primary",
                 "ref": "A1",
                 "geometry": LineString([(0, 0), (1000, 0)]),
-            },
-            {
-                "source_id": "cycle-ab",
-                "u": "A",
-                "v": "B",
-                "highway": "cycleway",
-                "bicycle": "designated",
-                "geometry": LineString([(0, 0), (0, 60)]),
-            },
-            {
-                "source_id": "cycle-bd",
-                "u": "B",
-                "v": "D",
-                "highway": "cycleway",
-                "bicycle": "designated",
-                "geometry": LineString([(0, 60), (1000, 0)]),
             },
             {
                 "source_id": "b-road",
@@ -367,7 +345,12 @@ def test_effective_network_reduces_avoidable_dense_urban_b_road_mesh_candidate()
         section.section_id
         for section in state.effective_network.sections
         if section.network_role == "urban-main-road-spine"
-    ) == ("urban-main-a1", "urban-main-a2")
+    ) == ("urban-main-a1",)
+    assert any(diagnostic.code == "strategic-mesh-gap" for diagnostic in state.diagnostics)
+    assert any(
+        gap.network_role == "strategic-main-network" and "mesh coverage is not proved" in gap.reason
+        for gap in state.gaps
+    )
 
 
 def test_urban_spine_interior_endpoints_are_attached_to_routable_topology() -> None:

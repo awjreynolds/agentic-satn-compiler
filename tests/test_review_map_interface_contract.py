@@ -117,11 +117,22 @@ def test_reviewable_network_layer_defaults_and_semantics_are_explicit() -> None:
     assert "endpoint geometry unavailable" in script
     assert "renderReviewableFindings()" in script
     assert "const hasBackboneAndAccessNetwork = network.features.some(" in script
+    assert "const hasSemanticStrategicMainNetwork = reviewable.features.some(" in script
+    assert "const hasSemanticAccessSupport = reviewable.features.some(" in script
+    assert 'feature.properties?.layer === "Strategic Main Network"' in script
+    assert 'feature.properties?.layer === "Access Support"' in script
     assert "!hasBackboneAndAccessNetwork && !hasReviewableRoutes" in script
-    assert '"layer-strategic-network": hasBackboneAndAccessNetwork' in script
+    assert 'id: "reviewable-strategic-main-network"' in script
+    assert '["==", ["get", "layer"], "Strategic Main Network"]' in script
+    assert '"layer-strategic-network": hasSemanticStrategicMainNetwork' in script
     assert (
-        '"layer-access-support": ["reviewable-access-support", "spine-access-connections", '
-        '"cross-spine-connectors", "gaps"]' in script
+        '"layer-strategic-network": hasSemanticStrategicMainNetwork\n'
+        '      ? ["reviewable-strategic-main-network"]' in script
+    )
+    assert '"layer-access-support": hasSemanticAccessSupport' in script
+    assert (
+        '"layer-access-support": hasSemanticAccessSupport\n'
+        '      ? ["reviewable-access-support"]' in script
     )
     assert '["strategic-spines", "reviewable-urban-strategic-network"]' in script
     assert 'id: "strategic-spines"' in script

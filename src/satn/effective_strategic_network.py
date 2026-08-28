@@ -53,11 +53,7 @@ from satn.routing import (
 )
 from satn.strategic_corridors import StrategicCorridorPreparationResult
 from satn.strategic_mesh import (
-    CandidateRouteSection,
     StrategicMainNetworkProfile,
-    StrategicMainNetworkRequest,
-    assemble_strategic_main_network,
-    derive_urban_mesh_coverage_points,
 )
 from satn.urban import URBAN_SPINE_TERMINUS_TOLERANCE_M
 
@@ -796,62 +792,6 @@ def _evaluate_planning_request(
     return EffectiveStrategicNetworkState.evaluated(compile_strategic_network(request))
 
 
-def _reduce_urban_mesh_sections(
-    graph: PlanningGraphSnapshot,
-    required_sections: tuple[object, ...],
-    profile: StrategicMainNetworkProfile,
-) -> tuple[object, ...]:
-    """Reduce only required urban sections against their own dense proof points.
-
-    The graph is deliberately not edited.  Every required section is converted
-    to a candidate using its exact planning edge and explicit endpoint IDs;
-    ``assemble_strategic_main_network`` can therefore remove an avoidable
-    lower-priority corridor while all source edges remain in ``graph``.
-    ``derive_urban_mesh_coverage_points`` uses a profile-derived quarter-width
-    interval, and the reducer's endpoint connectivity check never treats a
-    visual intersection as a junction.
-    """
-
-    if not required_sections:
-        return ()
-    edge_by_id = {edge.directed_edge_id: edge for edge in graph.edge_records}
-    candidates: list[CandidateRouteSection] = []
-    for section in required_sections:
-        if len(section.routing_edge_ids) != 1:
-            raise ValueError(
-                "urban strategic mesh reduction requires one exact planning edge per section"
-            )
-        edge_id = section.routing_edge_ids[0]
-        if edge_id not in edge_by_id:
-            raise ValueError(f"urban strategic mesh section edge is absent: {edge_id}")
-        edge = edge_by_id[edge_id]
-        corridor_class = "a-road" if section.primary_alignment_basis == "a-road" else "other"
-        candidates.append(
-            CandidateRouteSection(
-                section_id=section.section_id,
-                start_node_id=edge.from_node_id,
-                end_node_id=edge.to_node_id,
-                coordinates=_wkt_coords(section.geometry_wkt),
-                corridor_class=corridor_class,
-                network_role=section.network_role,
-            )
-        )
-    coverage_points = derive_urban_mesh_coverage_points(
-        candidates,
-        maximum_width_m=profile.urban_max_width_m,
-    )
-    assembly = assemble_strategic_main_network(
-        StrategicMainNetworkRequest(
-            route_sections=tuple(candidates),
-            coverage_points=coverage_points,
-            profile=profile,
-            preserve_connected_components=True,
-        )
-    )
-    selected_ids = set(assembly.selected_section_ids)
-    return tuple(section for section in required_sections if section.section_id in selected_ids)
-
-
 def _planning_graph_with_urban_spines(
     routable_network: gpd.GeoDataFrame,
     urban_spines: gpd.GeoDataFrame | None,
@@ -1048,6 +988,7 @@ def _planning_graph_with_urban_spines(
             primary_alignment_basis=basis_by_classification[classification_by_id[section_id]],
             intervention_state="upgrade-required",
             display_state="upgrade-required",
+            network_scope="urban",
         )
         for section_id in sorted(classification_by_id)
     )
@@ -1119,11 +1060,6 @@ def compile_effective_strategic_network(
             request.urban_spines,
             source_export_fingerprint=request.snapshot_fingerprint,
         )
-        required_sections = _reduce_urban_mesh_sections(
-            graph,
-            required_sections,
-            request.mesh_profile,
-        )
     discovery = discovery_from_preparation(request.preparation, graph)
     prepared_candidate_sets = discovery.candidate_sets
     from satn.strategic_network_planning import StrategicNetworkPlanningRequest
@@ -1157,6 +1093,7 @@ def compile_effective_strategic_network(
         ),
         officer_decisions=None,
         required_sections=required_sections,
+        mesh_profile=request.mesh_profile,
         mesh_profile_fingerprint=request.mesh_profile.fingerprint,
     )
     return _evaluate_planning_request(planning_request)

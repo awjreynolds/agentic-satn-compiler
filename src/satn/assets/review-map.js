@@ -59,6 +59,12 @@
     (feature) => feature.properties?.feature_type === "reviewable-selected-route" &&
       feature.properties?.network_role === "urban-main-road-spine"
   );
+  const hasSemanticStrategicMainNetwork = reviewable.features.some(
+    (feature) => feature.properties?.layer === "Strategic Main Network"
+  );
+  const hasSemanticAccessSupport = reviewable.features.some(
+    (feature) => feature.properties?.layer === "Access Support"
+  );
   const hasBackboneAndAccessNetwork = network.features.some(
     (feature) => feature.properties?.feature_type === "strategic-spine"
   );
@@ -2067,12 +2073,20 @@
 
   const controlLayerGroups = {
     "layer-authority-boundaries": ["authority-boundaries"],
-    "layer-strategic-network": hasBackboneAndAccessNetwork
-      ? ["strategic-spines", "reviewable-urban-strategic-network"]
+    "layer-strategic-network": hasSemanticStrategicMainNetwork
+      ? ["reviewable-strategic-main-network"]
+      : hasBackboneAndAccessNetwork
+        ? ["strategic-spines", "reviewable-urban-strategic-network"]
       : usesReviewableStrategicFallback
         ? ["reviewable-strategic-network-halo", "reviewable-strategic-network-core", "reviewable-route-labels"]
         : usesLegacyStrategicFallback ? ["strategic-network"] : [],
-    "layer-access-support": ["reviewable-access-support", "spine-access-connections", "cross-spine-connectors", "gaps"],
+    "layer-access-support": hasSemanticAccessSupport
+      ? ["reviewable-access-support"]
+      : hasBackboneAndAccessNetwork
+        ? ["spine-access-connections", "cross-spine-connectors", "gaps"]
+        : usesReviewableStrategicFallback
+          ? ["reviewable-required-connections"]
+          : [],
     "layer-alignment-review": [
       "reviewable-strategic-network-halo",
       "reviewable-strategic-network-core",
@@ -2383,6 +2397,10 @@
       reviewableSelectedRouteFilter,
       ["==", ["get", "network_role"], "urban-main-road-spine"]
     ];
+    const reviewableStrategicMainNetworkFilter = ["all",
+      reviewableSelectedRouteFilter,
+      ["==", ["get", "layer"], "Strategic Main Network"]
+    ];
     const reviewableAccessSupportFilter = ["all",
       reviewableSelectedRouteFilter,
       ["==", ["get", "layer"], "Access Support"]
@@ -2478,6 +2496,7 @@
       filter: reviewableUrbanStrategicRouteFilter,
       layout: {
         visibility: hasBackboneAndAccessNetwork &&
+          !hasSemanticStrategicMainNetwork &&
           hasEffectiveStrategicNetwork &&
           hasReviewableUrbanStrategicRoutes ? "visible" : "none"
       },
@@ -2485,6 +2504,24 @@
         "line-color": "#513a63",
         "line-width": ["interpolate", ["linear"], ["zoom"], 8, 3, 13, 4.75],
         "line-opacity": .92
+      }
+    });
+    map.addLayer({
+      id: "reviewable-strategic-main-network",
+      type: "line",
+      source: "reviewable",
+      filter: reviewableStrategicMainNetworkFilter,
+      layout: { visibility: hasSemanticStrategicMainNetwork ? "visible" : "none" },
+      paint: {
+        "line-color": reviewableCoreColour,
+        "line-width": ["interpolate", ["linear"], ["zoom"], 7, 3, 13, 6],
+        "line-dasharray": ["match", ["get", "display_state"],
+          "existing-provision", ["literal", [1, 0]],
+          "upgrade-required", ["literal", [1, .8]],
+          "proposed-new-link", ["literal", [2, 1]],
+          ["literal", [1, 0]]
+        ],
+        "line-opacity": .96
       }
     });
     map.addLayer({
@@ -2620,7 +2657,10 @@
       type: "line",
       source: "network",
       filter: ["==", ["get", "feature_type"], "strategic-spine"],
-      layout: { visibility: hasBackboneAndAccessNetwork ? "visible" : "none" },
+      layout: {
+        visibility: hasBackboneAndAccessNetwork && !hasSemanticStrategicMainNetwork
+          ? "visible" : "none"
+      },
       paint: {
         "line-color": ["match", ["get", "spine_kind"],
           "ncn", "#006d77",
@@ -2633,9 +2673,9 @@
         "line-opacity": .92
       }
     });
-    map.addLayer({ id: "spine-access-connections", type: "line", source: "network", filter: ["==", ["get", "feature_type"], "spine-access-connection"], layout: { visibility: hasBackboneAndAccessNetwork ? "visible" : "none" }, paint: { "line-color": "#168f7b", "line-width": ["interpolate", ["linear"], ["zoom"], 8, 2.5, 13, 4], "line-dasharray": [1.5, 1.25], "line-opacity": .85 } });
+    map.addLayer({ id: "spine-access-connections", type: "line", source: "network", filter: ["==", ["get", "feature_type"], "spine-access-connection"], layout: { visibility: hasBackboneAndAccessNetwork && !hasSemanticAccessSupport ? "visible" : "none" }, paint: { "line-color": "#168f7b", "line-width": ["interpolate", ["linear"], ["zoom"], 8, 2.5, 13, 4], "line-dasharray": [1.5, 1.25], "line-opacity": .85 } });
     map.addLayer({ id: "school-access-connections", type: "line", source: "network", filter: ["==", ["get", "feature_type"], "school-access-connection"], layout: { visibility: "none" }, paint: { "line-color": "#7d3c98", "line-width": ["interpolate", ["linear"], ["zoom"], 8, 2.5, 13, 4], "line-dasharray": [1.5, 1.25], "line-opacity": .85 } });
-    map.addLayer({ id: "cross-spine-connectors", type: "line", source: "network", filter: ["==", ["get", "feature_type"], "cross-spine-connector"], layout: { visibility: hasBackboneAndAccessNetwork ? "visible" : "none" }, paint: { "line-color": "#7c4a93", "line-width": ["interpolate", ["linear"], ["zoom"], 8, 3, 13, 5], "line-opacity": .8 } });
+    map.addLayer({ id: "cross-spine-connectors", type: "line", source: "network", filter: ["==", ["get", "feature_type"], "cross-spine-connector"], layout: { visibility: hasBackboneAndAccessNetwork && !hasSemanticAccessSupport ? "visible" : "none" }, paint: { "line-color": "#7c4a93", "line-width": ["interpolate", ["linear"], ["zoom"], 8, 3, 13, 5], "line-opacity": .8 } });
     map.addLayer({ id: "spine-access-topography-warnings", type: "line", source: "network", filter: ["all", ["==", ["get", "feature_type"], "spine-access-connection"], ["in", ["get", "topography_comparison_status"], ["literal", ["original-retained-no-easier-option", "strategic-spine-retained"]]]], layout: { visibility: "none" }, paint: { "line-color": "#f39c12", "line-width": ["interpolate", ["linear"], ["zoom"], 8, 4.5, 13, 7], "line-dasharray": [1, 1], "line-opacity": .9 } });
     map.addLayer({ id: "school-access-topography-warnings", type: "line", source: "network", filter: ["all", ["==", ["get", "feature_type"], "school-access-connection"], ["in", ["get", "topography_comparison_status"], ["literal", ["original-retained-no-easier-option", "strategic-spine-retained"]]]], layout: { visibility: "none" }, paint: { "line-color": "#f39c12", "line-width": ["interpolate", ["linear"], ["zoom"], 8, 4.5, 13, 7], "line-dasharray": [1, 1], "line-opacity": .9 } });
     map.addLayer({ id: "access-obligations", type: "circle", source: "network", filter: ["==", ["get", "feature_type"], "access-obligation"], layout: { visibility: "none" }, paint: { "circle-color": ["match", ["get", "service_status"], "served", "#1e8449", "served-provisional", "#f39c12", "network-gap", "#c0392b", "#7f8c8d"], "circle-radius": ["interpolate", ["linear"], ["zoom"], 8, 5.5, 13, 7], "circle-stroke-color": "white", "circle-stroke-width": 1.5 } });
@@ -2665,7 +2705,7 @@
         map.setLayoutProperty(layerId, "visibility", "none");
       }
     });
-    map.addLayer({ id: "gaps", type: "circle", source: "network", filter: ["==", ["get", "feature_type"], "gap"], layout: { visibility: hasBackboneAndAccessNetwork ? "visible" : "none" }, paint: { "circle-color": "#c0392b", "circle-radius": 6 } });
+    map.addLayer({ id: "gaps", type: "circle", source: "network", filter: ["==", ["get", "feature_type"], "gap"], layout: { visibility: hasBackboneAndAccessNetwork && !hasSemanticAccessSupport ? "visible" : "none" }, paint: { "circle-color": "#c0392b", "circle-radius": 6 } });
     map.addLayer({ id: "crossing-warnings", type: "circle", source: "network", filter: ["==", ["get", "feature_type"], "crossing-warning"], paint: { "circle-color": "#f39c12", "circle-radius": 6, "circle-stroke-color": "#17202a", "circle-stroke-width": 1.5 } });
     map.addLayer({ id: "connections-highlight", type: "line", source: "network", filter: ["==", ["id"], ""], paint: { "line-color": "#f4d03f", "line-width": 8 } });
     map.addLayer({ id: "inspection-path", type: "line", source: "inspection-path", paint: { "line-color": "#f4d03f", "line-width": 10, "line-opacity": .82 } });

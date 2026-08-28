@@ -43,9 +43,9 @@ class ReuseFirstCandidateClass(StrEnum):
     """Evidence-derived candidate classes for a reuse-first profile."""
 
     EXISTING_CYCLE_PROVISION = "existing-cycle-provision"
+    A_ROAD_MAJOR_PROTECTED_INFRASTRUCTURE = "a-road-major-protected-infrastructure"
     UPGRADEABLE_OFF_CARRIAGEWAY = "upgradeable-off-carriageway"
     LOW_TRAFFIC_NON_A_ROAD = "low-traffic-non-a-road"
-    A_ROAD_MAJOR_PROTECTED_INFRASTRUCTURE = "a-road-major-protected-infrastructure"
     UNKNOWN_OR_CONFLICTING = "unknown-or-conflicting"
 
 
@@ -84,9 +84,7 @@ class TrafficProfileConfig(BaseModel):
     @classmethod
     def validate_profile_id(cls, value: str) -> str:
         if _PROFILE_ID_PATTERN.fullmatch(value) is None:
-            raise ValueError(
-                "traffic profile_id must be a lowercase kebab-case identifier"
-            )
+            raise ValueError("traffic profile_id must be a lowercase kebab-case identifier")
         return value
 
     @field_validator("thresholds")
@@ -110,9 +108,7 @@ class TrafficProfileConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_challenge_band(self) -> Self:
-        if self.high_traffic_challenge_band not in {
-            item.id for item in self.thresholds
-        }:
+        if self.high_traffic_challenge_band not in {item.id for item in self.thresholds}:
             raise ValueError("high traffic challenge band must name a configured threshold")
         return self
 
@@ -176,9 +172,7 @@ class TrafficMatchPolicyConfig(BaseModel):
     # explicitly supplied; the compiler does not invent a geometric default.
     route_buffer_m: float = Field(ge=0, strict=True)
     source_layers: tuple[str, ...] = ("aadf", "aadf-by-direction")
-    contract: Literal["satn-dft-traffic-matching/v1"] = (
-        "satn-dft-traffic-matching/v1"
-    )
+    contract: Literal["satn-dft-traffic-matching/v1"] = "satn-dft-traffic-matching/v1"
 
     @field_validator("route_buffer_m")
     @classmethod
@@ -245,9 +239,7 @@ class DisplacementReasonCode(StrEnum):
     KNOWN_ACCESS_PROHIBITION = "known-access-prohibition"
     DETOUR_LIMIT_EXCEEDED = "detour-limit-exceeded"
     ROUTE_EFFORT_LIMIT_EXCEEDED = "route-effort-limit-exceeded"
-    TRANSITION_OR_FRAGMENTATION_LIMIT_EXCEEDED = (
-        "transition-or-fragmentation-limit-exceeded"
-    )
+    TRANSITION_OR_FRAGMENTATION_LIMIT_EXCEEDED = "transition-or-fragmentation-limit-exceeded"
     KNOWN_MATERIAL_CONSTRAINT = "known-material-constraint"
     OFFICER_DECISION_APPLIED = "officer-decision-applied"
     HIGHER_RANKED_CANDIDATE_INELIGIBLE = "higher-ranked-candidate-ineligible"
@@ -303,9 +295,7 @@ class DisplacementRule(BaseModel):
 
     @field_validator("evidence_requirements")
     @classmethod
-    def reject_duplicate_evidence_requirements(
-        cls, value: tuple[str, ...]
-    ) -> tuple[str, ...]:
+    def reject_duplicate_evidence_requirements(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         if len(set(value)) != len(value):
             raise ValueError("displacement evidence requirements cannot contain duplicates")
         return value
@@ -369,9 +359,7 @@ class SectionPopulationCaptureProfileConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    profile: Literal["satn-section-population-capture/v1"] = (
-        "satn-section-population-capture/v1"
-    )
+    profile: Literal["satn-section-population-capture/v1"] = "satn-section-population-capture/v1"
     display_section_length_m: int = Field(default=100, gt=0, le=1_000, strict=True)
     maximum_display_section_length_m: Literal[1000] = 1_000
     urban_capture_radius_m: int = Field(default=250, gt=0, strict=True)
@@ -505,9 +493,7 @@ class NetworkSelectionProfile(BaseModel):
     traffic_profile: TrafficProfileConfig | None = None
     traffic_profile_fingerprint: str | None = Field(default=None, pattern=_SHA256_PATTERN)
     traffic_match_policy: TrafficMatchPolicyConfig | None = None
-    traffic_match_policy_fingerprint: str | None = Field(
-        default=None, pattern=_SHA256_PATTERN
-    )
+    traffic_match_policy_fingerprint: str | None = Field(default=None, pattern=_SHA256_PATTERN)
     deterministic_tie_break: Literal["stable-candidate-id"] | None = None
     agent_call_bound: int | None = Field(default=None, ge=0, strict=True)
     maximum_options_per_candidate_set: int | None = Field(default=None, ge=1, strict=True)
@@ -758,8 +744,7 @@ class NetworkSelectionProfile(BaseModel):
                 "intervention_state_order": list(self.intervention_state_order or ()),
                 "comparator_order": list(self.comparator_order or ()),
                 "material_difference_rules": [
-                    rule.model_dump(mode="json")
-                    for rule in (self.material_difference_rules or ())
+                    rule.model_dump(mode="json") for rule in (self.material_difference_rules or ())
                 ],
                 "displacement_rules": [
                     rule.model_dump(mode="json") for rule in (self.displacement_rules or ())
@@ -775,12 +760,8 @@ class NetworkSelectionProfile(BaseModel):
             if self.traffic_profile is not None:
                 payload["traffic_profile"] = self.traffic_profile.model_dump(mode="json")
             if self.traffic_match_policy is not None:
-                payload["traffic_match_policy"] = self.traffic_match_policy.model_dump(
-                    mode="json"
-                )
-                payload["traffic_match_policy_fingerprint"] = (
-                    self.traffic_match_policy_fingerprint
-                )
+                payload["traffic_match_policy"] = self.traffic_match_policy.model_dump(mode="json")
+                payload["traffic_match_policy_fingerprint"] = self.traffic_match_policy_fingerprint
             return payload
         payload = handler(self)
         for field in (
@@ -803,9 +784,7 @@ class NetworkSelectionProfile(BaseModel):
             payload.pop(field, None)
         if self.traffic_match_policy is not None:
             payload["traffic_match_policy"] = self.traffic_match_policy.model_dump(mode="json")
-            payload["traffic_match_policy_fingerprint"] = (
-                self.traffic_match_policy_fingerprint
-            )
+            payload["traffic_match_policy_fingerprint"] = self.traffic_match_policy_fingerprint
         return payload
 
     def canonical_json(self) -> str:
