@@ -19,6 +19,7 @@ from satn.effective_strategic_network import (
 )
 from satn.routing import RoadGraph
 from satn.strategic_mesh import StrategicMainNetworkProfile
+from satn.strategic_network_publication import project_strategic_network
 
 
 def _fixture_preparation(graph):
@@ -203,6 +204,51 @@ def test_complete_routable_snapshot_and_preparation_use_one_canonical_selector()
     assert not state.gaps
 
 
+def test_governed_access_connections_are_retained_as_access_support() -> None:
+    network = _fixture_routable_network()
+    graph = planning_graph_from_compiler_edges(
+        network,
+        source_export_fingerprint="3" * 64,
+    )
+    access_support = gpd.GeoDataFrame(
+        [
+            {
+                "access_connection_id": "access-bathford",
+                "obligation_id": "access-obligation-bathford",
+                "obligation_kind": "community",
+                "geometry": LineString([(20, 20), (40, 20)]),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+
+    state = compile_effective_strategic_network(
+        EffectiveStrategicNetworkRequest(
+            routable_network=network,
+            preparation=_fixture_preparation(graph),
+            area_fingerprint="b" * 64,
+            snapshot_fingerprint=graph.source_export_fingerprint,
+            access_support=(access_support,),
+        )
+    )
+
+    support = next(
+        section
+        for section in state.effective_network.sections
+        if section.section_id == "access-bathford"
+    )
+    assert support.network_role == "community-access"
+    assert support.obligation_id == "access-obligation-bathford"
+    assert support.routing_edge_ids == ()
+    assert support.geometry_wkt == "LINESTRING (20 20, 40 20)"
+    projection = project_strategic_network(state.result)
+    assert [
+        feature["properties"]["section_id"]
+        for feature in projection.layers["Access Support"]["features"]
+    ] == ["access-bathford"]
+
+
 def test_redundant_urban_main_roads_are_omitted_by_authoritative_mesh_selection() -> None:
     routable_network = _fixture_routable_network()
     graph = planning_graph_from_compiler_edges(
@@ -256,7 +302,7 @@ def test_redundant_urban_main_roads_are_omitted_by_authoritative_mesh_selection(
     } >= {"urban-spine-bristol-a4", "urban-spine-bristol-b4051"}
 
 
-def test_effective_network_reduces_avoidable_dense_urban_b_road_mesh_candidate() -> None:
+def test_effective_network_reduces_each_component_without_losing_mesh_coverage() -> None:
     routable_network = gpd.GeoDataFrame(
         [
             {
@@ -345,12 +391,9 @@ def test_effective_network_reduces_avoidable_dense_urban_b_road_mesh_candidate()
         section.section_id
         for section in state.effective_network.sections
         if section.network_role == "urban-main-road-spine"
-    ) == ("urban-main-a1",)
-    assert any(diagnostic.code == "strategic-mesh-gap" for diagnostic in state.diagnostics)
-    assert any(
-        gap.network_role == "strategic-main-network" and "mesh coverage is not proved" in gap.reason
-        for gap in state.gaps
-    )
+    ) == ("urban-main-a1", "urban-main-a2")
+    assert not any(diagnostic.code == "strategic-mesh-gap" for diagnostic in state.diagnostics)
+    assert not any(gap.network_role == "strategic-main-network" for gap in state.gaps)
 
 
 def test_urban_spine_interior_endpoints_are_attached_to_routable_topology() -> None:

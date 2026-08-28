@@ -73,7 +73,7 @@ A delivery-led structure composed of the Strategic Main Network and Access Suppo
 _Avoid_: Strategic Main Network, pairwise network, nearest-neighbour network, spider's web
 
 **Strategic Main Network**:
-The smallest connected, scope-sensitive mesh of selected main routes that can satisfy the governed mesh contract. Existing cycle provision is preferred first, A-road corridors second, and another routable corridor only when required for continuity or mesh coverage.
+The smallest coverage-preserving, scope-sensitive mesh of selected main routes that can satisfy the governed mesh contract. Each governed endpoint-connected component is reduced independently so an unrelated disconnected component cannot erase otherwise proved coverage. Existing cycle provision is preferred first, A-road corridors second, and another routable corridor only when required for continuity or mesh coverage.
 _Avoid_: complete Backbone-and-Access Network, access tree, every routable asset, universal 1,500 m grid
 
 **Strategic Mesh Profile**:

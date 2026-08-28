@@ -618,18 +618,30 @@ def _mesh_materialized_sections(
     candidates: list[CandidateRouteSection] = []
     normalized_sections: list[EffectiveStrategicSection] = []
     for section in sections:
-        if not section.routing_edge_ids:
-            raise ValueError(f"mesh section has no planning edges: {section.section_id}")
-        first_edge = edge_by_id.get(section.routing_edge_ids[0])
-        last_edge = edge_by_id.get(section.routing_edge_ids[-1])
-        if first_edge is None or last_edge is None:
-            missing = next(
-                edge_id for edge_id in section.routing_edge_ids if edge_id not in edge_by_id
-            )
-            raise ValueError(f"mesh section edge is absent: {missing}")
         geometry = load_wkt(section.geometry_wkt)
         if not isinstance(geometry, LineString) or geometry.is_empty:
             raise ValueError(f"mesh section geometry is not a non-empty line: {section.section_id}")
+        is_access_support = section.network_role.casefold() in {
+            "community-access",
+            "school-access",
+            "strategic-destination-access",
+            "cross-spine-connector",
+        }
+        if is_access_support:
+            first_node_id = f"access-support:{section.section_id}:start"
+            last_node_id = f"access-support:{section.section_id}:end"
+        else:
+            if not section.routing_edge_ids:
+                raise ValueError(f"mesh section has no planning edges: {section.section_id}")
+            first_edge = edge_by_id.get(section.routing_edge_ids[0])
+            last_edge = edge_by_id.get(section.routing_edge_ids[-1])
+            if first_edge is None or last_edge is None:
+                missing = next(
+                    edge_id for edge_id in section.routing_edge_ids if edge_id not in edge_by_id
+                )
+                raise ValueError(f"mesh section edge is absent: {missing}")
+            first_node_id = first_edge.from_node_id
+            last_node_id = last_edge.to_node_id
         # Interurban candidate routes are governed by the rural scope. The
         # Effective section field defaults to urban for compatibility, so bind
         # this scope where the route role is authoritative.
@@ -643,11 +655,12 @@ def _mesh_materialized_sections(
         candidates.append(
             CandidateRouteSection(
                 section_id=normalized.section_id,
-                start_node_id=first_edge.from_node_id,
-                end_node_id=last_edge.to_node_id,
+                start_node_id=first_node_id,
+                end_node_id=last_node_id,
                 coordinates=tuple((float(x), float(y)) for x, y in geometry.coords),
                 corridor_class=_mesh_corridor_class(normalized),
                 network_role=normalized.network_role,
+                is_access_support=is_access_support,
                 network_scope=scope,
             )
         )
@@ -657,6 +670,7 @@ def _mesh_materialized_sections(
             route_sections=tuple(candidates),
             coverage_points=coverage_points,
             profile=request.mesh_profile,
+            preserve_connected_components=True,
         )
     )
     selected_ids = set(assembly.selected_section_ids)

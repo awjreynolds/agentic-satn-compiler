@@ -94,6 +94,7 @@ class EffectiveStrategicNetworkRequest:
     snapshot_fingerprint: str | None = None
     officer_decisions: tuple[object, ...] = ()
     urban_spines: gpd.GeoDataFrame | None = None
+    access_support: tuple[gpd.GeoDataFrame, ...] = ()
     mesh_profile: StrategicMainNetworkProfile = field(default_factory=StrategicMainNetworkProfile)
 
     def __post_init__(self) -> None:
@@ -110,11 +111,17 @@ class EffectiveStrategicNetworkRequest:
                 raise ValueError("effective strategic request urban spines must be a GeoDataFrame")
             if self.urban_spines.crs is None:
                 raise ValueError("effective strategic request urban spines require an explicit CRS")
+        access_support = tuple(self.access_support)
+        if any(not isinstance(frame, gpd.GeoDataFrame) for frame in access_support):
+            raise ValueError("effective strategic request access support must be GeoDataFrames")
+        if any(frame.crs is None for frame in access_support):
+            raise ValueError("effective strategic request access support requires explicit CRS")
         if not isinstance(self.mesh_profile, StrategicMainNetworkProfile):
             raise ValueError(
                 "effective strategic request mesh profile must be a StrategicMainNetworkProfile"
             )
         object.__setattr__(self, "officer_decisions", tuple(self.officer_decisions))
+        object.__setattr__(self, "access_support", access_support)
 
     @property
     def governed_identity_complete(self) -> bool:
@@ -1025,6 +1032,71 @@ def _planning_graph_with_urban_spines(
     return graph, required_sections
 
 
+def _access_support_sections(
+    frames: tuple[gpd.GeoDataFrame, ...],
+):
+    """Materialise exact governed access lines without treating them as mesh coverage."""
+
+    from satn.strategic_network_planning import (
+        EffectiveStrategicSection,
+        PlanningAuthority,
+    )
+
+    sections: list[EffectiveStrategicSection] = []
+    identifier_fields = (
+        "access_connection_id",
+        "meeting_connection_id",
+        "connection_id",
+        "section_id",
+    )
+    for frame in frames:
+        if frame.empty:
+            continue
+        projected = frame.to_crs(27700)
+        for index, row in projected.iterrows():
+            geometry = row.geometry
+            if not isinstance(geometry, LineString) or geometry.is_empty:
+                raise ValueError("access support geometry must be a non-empty line")
+            section_id = next(
+                (
+                    str(row[field_name])
+                    for field_name in identifier_fields
+                    if field_name in row and _present(row[field_name])
+                ),
+                None,
+            )
+            if section_id is None:
+                raise ValueError(f"access support row has no governed identifier: {index!s}")
+            obligation_id = (
+                str(row["obligation_id"])
+                if "obligation_id" in row and _present(row["obligation_id"])
+                else section_id
+            )
+            role = (
+                "school-access"
+                if str(row.get("obligation_kind", "")).casefold() == "school"
+                else "community-access"
+            )
+            sections.append(
+                EffectiveStrategicSection(
+                    section_id=section_id,
+                    obligation_id=obligation_id,
+                    candidate_id=None,
+                    network_role=role,
+                    routing_edge_ids=(),
+                    reverse_routing_edge_ids=(),
+                    geometry_wkt=geometry.wkt,
+                    authority=PlanningAuthority.COMPILER,
+                    alignment_bases=("access-support",),
+                    primary_alignment_basis="access-support",
+                    intervention_state="upgrade-required",
+                    display_state="upgrade-required",
+                    network_scope="rural",
+                )
+            )
+    return tuple(sorted(sections, key=lambda section: section.section_id))
+
+
 def compile_effective_strategic_network(
     request: EffectiveStrategicNetworkRequest | None,
 ) -> EffectiveStrategicNetworkState:
@@ -1060,6 +1132,10 @@ def compile_effective_strategic_network(
             request.urban_spines,
             source_export_fingerprint=request.snapshot_fingerprint,
         )
+    required_sections = (
+        *required_sections,
+        *_access_support_sections(request.access_support),
+    )
     discovery = discovery_from_preparation(request.preparation, graph)
     prepared_candidate_sets = discovery.candidate_sets
     from satn.strategic_network_planning import StrategicNetworkPlanningRequest
