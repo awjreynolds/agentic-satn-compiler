@@ -404,7 +404,7 @@ def test_reference_option_legend_remains_visible_while_layer_is_active(
         page.locator("#map").hover()
         assert status.is_visible()
         assert persistent_semantics in status.inner_text()
-        page.get_by_role("button", name="About the strategic network").click()
+        page.get_by_role("button", name="About the strategic main network").click()
         assert status.is_visible()
         assert persistent_semantics in status.inner_text()
 
