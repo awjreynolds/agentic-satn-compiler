@@ -128,6 +128,7 @@ class StrategicNetworkPlanningRequest:
     routing_endpoint_bindings: tuple[tuple[str, tuple[str, str]], ...] = ()
     officer_candidate_choices: tuple[tuple[str, str], ...] = ()
     required_sections: tuple[EffectiveStrategicSection, ...] = ()
+    mesh_profile_fingerprint: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.graph, PlanningGraphSnapshot):
@@ -201,6 +202,16 @@ class StrategicNetworkPlanningRequest:
             raise ValueError("required strategic sections must be effective section records")
         if len({item.section_id for item in required_sections}) != len(required_sections):
             raise ValueError("required strategic section IDs must be unique")
+        if self.mesh_profile_fingerprint is not None:
+            try:
+                int(self.mesh_profile_fingerprint, 16)
+            except (TypeError, ValueError) as error:
+                raise ValueError("strategic mesh profile fingerprint must be SHA-256") from error
+            if (
+                len(self.mesh_profile_fingerprint) != 64
+                or self.mesh_profile_fingerprint != self.mesh_profile_fingerprint.lower()
+            ):
+                raise ValueError("strategic mesh profile fingerprint must be SHA-256")
         object.__setattr__(self, "reference_routes", routes)
         object.__setattr__(self, "compiler_preferred_candidate_ids", preferences)
         object.__setattr__(self, "routing_endpoint_bindings", endpoint_bindings)
@@ -233,6 +244,7 @@ class StrategicNetworkPlanningRequest:
                 "routing_endpoint_bindings": self.routing_endpoint_bindings,
                 "officer_candidate_choices": self.officer_candidate_choices,
                 "required_sections": self.required_sections,
+                "mesh_profile_fingerprint": self.mesh_profile_fingerprint,
             }
         )
 
@@ -363,6 +375,7 @@ class StrategicPlanningLineage:
     officer_decision_fingerprint: str | None
     reference_routes_fingerprint: str
     fallback_profile_fingerprint: str
+    mesh_profile_fingerprint: str | None
 
 
 @dataclass(frozen=True)
@@ -1218,6 +1231,7 @@ def compile_strategic_network(
         officer_decision_fingerprint=officer_fingerprint,
         reference_routes_fingerprint=_fingerprint(request.reference_routes),
         fallback_profile_fingerprint=request.fallback_profile.fingerprint,
+        mesh_profile_fingerprint=request.mesh_profile_fingerprint,
     )
     canonical_gaps = _canonical_gaps(gaps)
     payload = {

@@ -1022,12 +1022,13 @@ def _materialise_candidate(
     bases = tuple(sorted({item[2] for item in facts}))
     if ReuseFirstCandidateClass.UNKNOWN_OR_CONFLICTING in classes:
         reuse = ReuseFirstCandidateClass.UNKNOWN_OR_CONFLICTING
-    elif ReuseFirstCandidateClass.EXISTING_CYCLE_PROVISION in classes and all(
-        item == ReuseFirstCandidateClass.EXISTING_CYCLE_PROVISION for item in classes
-    ):
-        reuse = ReuseFirstCandidateClass.EXISTING_CYCLE_PROVISION
     elif ReuseFirstCandidateClass.UPGRADEABLE_OFF_CARRIAGEWAY in classes:
         reuse = ReuseFirstCandidateClass.UPGRADEABLE_OFF_CARRIAGEWAY
+    elif ReuseFirstCandidateClass.EXISTING_CYCLE_PROVISION in classes:
+        # A reusable section gives a mixed route reuse-first priority.  The
+        # section facts and the route-level intervention state below retain
+        # any A-road/local continuity delivery burden.
+        reuse = ReuseFirstCandidateClass.EXISTING_CYCLE_PROVISION
     elif ReuseFirstCandidateClass.A_ROAD_MAJOR_PROTECTED_INFRASTRUCTURE in classes:
         reuse = ReuseFirstCandidateClass.A_ROAD_MAJOR_PROTECTED_INFRASTRUCTURE
     elif ReuseFirstCandidateClass.LOW_TRAFFIC_NON_A_ROAD in classes:

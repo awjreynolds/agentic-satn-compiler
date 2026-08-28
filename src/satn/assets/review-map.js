@@ -2068,10 +2068,11 @@
   const controlLayerGroups = {
     "layer-authority-boundaries": ["authority-boundaries"],
     "layer-strategic-network": hasBackboneAndAccessNetwork
-      ? ["strategic-spines", "reviewable-urban-strategic-network", "spine-access-connections", "cross-spine-connectors", "gaps"]
+      ? ["strategic-spines", "reviewable-urban-strategic-network"]
       : usesReviewableStrategicFallback
         ? ["reviewable-strategic-network-halo", "reviewable-strategic-network-core", "reviewable-route-labels"]
         : usesLegacyStrategicFallback ? ["strategic-network"] : [],
+    "layer-access-support": ["reviewable-access-support", "spine-access-connections", "cross-spine-connectors", "gaps"],
     "layer-alignment-review": [
       "reviewable-strategic-network-halo",
       "reviewable-strategic-network-core",
@@ -2382,6 +2383,10 @@
       reviewableSelectedRouteFilter,
       ["==", ["get", "network_role"], "urban-main-road-spine"]
     ];
+    const reviewableAccessSupportFilter = ["all",
+      reviewableSelectedRouteFilter,
+      ["==", ["get", "layer"], "Access Support"]
+    ];
     const reviewableLineFilter = hasEffectiveStrategicNetwork
       ? ["all", reviewableSelectedRouteFilter,
         ["!=", ["get", "selection_disposition"], "selected-strategic-spine"]]
@@ -2480,6 +2485,19 @@
         "line-color": "#513a63",
         "line-width": ["interpolate", ["linear"], ["zoom"], 8, 3, 13, 4.75],
         "line-opacity": .92
+      }
+    });
+    map.addLayer({
+      id: "reviewable-access-support",
+      type: "line",
+      source: "reviewable",
+      filter: reviewableAccessSupportFilter,
+      layout: { visibility: "none" },
+      paint: {
+        "line-color": "#168f7b",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 7, 2.5, 13, 4.5],
+        "line-dasharray": [1.5, 1.25],
+        "line-opacity": .9
       }
     });
     map.moveLayer("reviewable-required-connections");

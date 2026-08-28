@@ -72,6 +72,10 @@ def test_reviewable_network_layer_defaults_and_semantics_are_explicit() -> None:
         "layer-places",
     ):
         assert f'id="{control_id}" type="checkbox" checked' in html
+    assert 'id="layer-strategic-network" type="checkbox" checked' in html
+    assert "> Strategic Main Network</label>" in html
+    assert 'id="layer-access-support" type="checkbox"' in html
+    assert 'id="layer-access-support" type="checkbox" checked' not in html
     assert 'id="layer-urban-spines" type="checkbox" checked' not in html
     for control_id in (
         "layer-alignment-review",
@@ -91,6 +95,8 @@ def test_reviewable_network_layer_defaults_and_semantics_are_explicit() -> None:
     assert "const reviewable = data.reviewable" in script
     assert "reviewable-strategic-network-halo" in script
     assert 'id: "reviewable-urban-strategic-network"' in script
+    assert 'id: "reviewable-access-support"' in script
+    assert '["==", ["get", "layer"], "Access Support"]' in script
     assert (
         '"community-access",\n        "school-access",\n        "strategic-destination-access"'
         in script
@@ -114,9 +120,10 @@ def test_reviewable_network_layer_defaults_and_semantics_are_explicit() -> None:
     assert "!hasBackboneAndAccessNetwork && !hasReviewableRoutes" in script
     assert '"layer-strategic-network": hasBackboneAndAccessNetwork' in script
     assert (
-        '["strategic-spines", "reviewable-urban-strategic-network", '
-        '"spine-access-connections", "cross-spine-connectors", "gaps"]' in script
+        '"layer-access-support": ["reviewable-access-support", "spine-access-connections", '
+        '"cross-spine-connectors", "gaps"]' in script
     )
+    assert '["strategic-spines", "reviewable-urban-strategic-network"]' in script
     assert 'id: "strategic-spines"' in script
     assert 'id: "mapped-active-travel-assets"' in script
     assert '"asset_kind"], "mapped-cycleway"' in script

@@ -17,12 +17,18 @@ def test_publication_projection_imports() -> None:
     assert callable(project_strategic_network)
 
 
-def _section(section_id: str, *, authority: str = "compiler", display: str = "existing-provision"):
+def _section(
+    section_id: str,
+    *,
+    authority: str = "compiler",
+    display: str = "existing-provision",
+    network_role: str = "interurban-spine",
+):
     return SimpleNamespace(
         section_id=section_id,
         obligation_id=f"obligation-{section_id}",
         candidate_id=f"candidate-{section_id}",
-        network_role="interurban-spine",
+        network_role=network_role,
         routing_edge_ids=(f"edge-{section_id}",),
         reverse_routing_edge_ids=(f"reverse-{section_id}",),
         geometry_wkt="LINESTRING (100000 200000, 100100 200100)",
@@ -69,17 +75,65 @@ def test_selected_network_and_places_are_the_only_default_layers() -> None:
         ],
     }
     projection = project_strategic_network(result, places=places, places_crs="EPSG:4326")
-    assert projection.default_layers == DEFAULT_LAYERS == ("Strategic Network", "Places")
+    assert projection.default_layers == DEFAULT_LAYERS == ("Strategic Main Network", "Places")
     assert projection.optional_layers == OPTIONAL_LAYERS
-    assert len(projection.layers["Strategic Network"]["features"]) == 2
+    assert len(projection.layers["Strategic Main Network"]["features"]) == 2
     assert len(projection.layers["Places"]["features"]) == 1
     assert all(not projection.layers[name]["features"] for name in OPTIONAL_LAYERS)
-    assert projection.layers["Strategic Network"]["features"][0]["geometry"]["type"] == "LineString"
     assert (
-        projection.layers["Strategic Network"]["features"][0]["properties"][
+        projection.layers["Strategic Main Network"]["features"][0]["geometry"]["type"]
+        == "LineString"
+    )
+    assert (
+        projection.layers["Strategic Main Network"]["features"][0]["properties"][
             "strategic_result_fingerprint"
         ]
         == "a" * 64
+    )
+
+
+def test_stored_roles_are_published_as_main_or_access_support_without_roster_loss() -> None:
+    main_roles = {
+        "interurban-spine",
+        "urban-main-road-spine",
+    }
+    access_roles = {
+        "cross-spine-connector",
+        "community-access",
+        "school-access",
+        "strategic-destination-access",
+    }
+    sections = tuple(
+        _section(role, network_role=role) for role in (*sorted(main_roles), *sorted(access_roles))
+    )
+
+    projection = project_strategic_network(_result(*sections))
+
+    assert projection.default_layers == ("Strategic Main Network", "Places")
+    assert projection.optional_layers[0] == "Access Support"
+    assert {
+        feature["properties"]["network_role"]
+        for feature in projection.layers["Strategic Main Network"]["features"]
+    } == main_roles
+    assert {
+        feature["properties"]["network_role"]
+        for feature in projection.layers["Access Support"]["features"]
+    } == access_roles
+    assert {
+        feature["properties"]["network_role"]
+        for feature in projection.feature_collection["features"]
+        if feature["properties"].get("feature_type") == "reviewable-selected-route"
+    } == main_roles
+    reviewable_routes = {
+        feature["properties"]["network_role"]
+        for feature in projection.reviewable_feature_collection["features"]
+        if feature["properties"].get("feature_type") == "reviewable-selected-route"
+    }
+    assert reviewable_routes == main_roles | access_roles
+    assert all(
+        feature["properties"]["strategic_result_fingerprint"] == "a" * 64
+        for feature in projection.reviewable_feature_collection["features"]
+        if feature["properties"].get("feature_type") == "reviewable-selected-route"
     )
 
 
@@ -101,7 +155,7 @@ def test_required_urban_spine_is_published_as_selected_strategic_geometry() -> N
 
     projection = project_strategic_network(_result(urban))
 
-    feature = projection.layers["Strategic Network"]["features"][0]
+    feature = projection.layers["Strategic Main Network"]["features"][0]
     assert feature["id"] == "urban-spine-bristol-a4"
     assert feature["properties"]["network_role"] == "urban-main-road-spine"
     assert feature["properties"]["selection_disposition"] == "selected"
@@ -122,7 +176,7 @@ def test_reference_and_divergence_are_explicit_non_grey_variants() -> None:
     projection = project_strategic_network(
         _result(reference, divergences=(divergence,)), optional_layers=True
     )
-    ref = projection.layers["Strategic Network"]["features"][0]["properties"]
+    ref = projection.layers["Strategic Main Network"]["features"][0]["properties"]
     assert ref["authority"] == "governed-reference-provisional"
     assert ref["pattern"] == "long-dash"
     divergence_feature = projection.layers["Officer Divergence"]["features"][0]
@@ -145,7 +199,7 @@ def test_gaps_are_null_geometry_and_candidates_remain_optional() -> None:
     projection = project_strategic_network(
         _result(gaps=(gap,), candidates=(candidate,)), optional_layers=True
     )
-    gap_feature = projection.layers["Strategic Network"]["features"][0]
+    gap_feature = projection.layers["Access Support"]["features"][0]
     assert gap_feature["geometry"] is None
     assert (
         projection.layers["Candidates discarded"]["features"][0]["properties"]["candidate_id"]
@@ -219,7 +273,7 @@ def test_projection_owns_contextual_evidence_and_final_reviewable_collection() -
     }
     assert [
         feature["properties"]["layer"] for feature in projection.feature_collection["features"]
-    ] == ["Strategic Network", "Places"]
+    ] == ["Strategic Main Network", "Places"]
     assert (
         projection.projection_fingerprint
         != project_strategic_network(
@@ -305,7 +359,7 @@ def test_projection_keeps_contextual_families_and_divergence_variants_owned() ->
     )
     gap_features = {
         feature["properties"]["endpoint_id"]: feature
-        for feature in projection.layers["Strategic Network"]["features"]
+        for feature in projection.layers["Access Support"]["features"]
         if feature["properties"].get("feature_type") == "reviewable-gap-endpoint"
     }
     assert gap_features["place-a"]["geometry"]["type"] == "Point"
@@ -371,7 +425,7 @@ def test_projection_gaps_with_empty_duplicate_endpoints_have_stable_fallback_ids
     projection = project_strategic_network(_result(gaps=(gap,)))
     gap_features = [
         feature
-        for feature in projection.feature_collection["features"]
+        for feature in projection.layers["Access Support"]["features"]
         if feature["properties"].get("feature_type") == "reviewable-gap-endpoint"
     ]
 

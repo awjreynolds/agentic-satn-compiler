@@ -128,6 +128,7 @@ def test_banes_manifest_records_resolved_configuration_sensitive_dependency_set(
     assert "satn/psa_evidence_loaders.py" in selected
     assert "satn/network_selection.py" in selected
     assert "satn/effective_strategic_network.py" in selected
+    assert "satn/strategic_mesh.py" in selected
     assert "satn/section_population.py" in selected
 
 
