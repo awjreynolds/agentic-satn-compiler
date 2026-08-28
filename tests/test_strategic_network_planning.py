@@ -198,7 +198,7 @@ def test_rural_mesh_reduces_avoidable_b_road_and_retains_access_support() -> Non
                 "rural-support",
                 "R4",
                 "R5",
-                "LINESTRING (0 200, 3000 200)",
+                "LINESTRING (0 2000, 3000 2000)",
                 highway="residential",
                 length_m=3000,
             ),
@@ -245,7 +245,7 @@ def test_rural_mesh_reduces_avoidable_b_road_and_retains_access_support() -> Non
             "community-access",
             ("rural-support",),
             (),
-            "LINESTRING (0 200, 3000 200)",
+            "LINESTRING (0 2000, 3000 2000)",
             PlanningAuthority.COMPILER,
             ("local-connector",),
             "local-connector",
@@ -281,6 +281,7 @@ def test_rural_mesh_reduces_avoidable_b_road_and_retains_access_support() -> Non
         diagnostic.code == "strategic-mesh-section-omitted" and diagnostic.subject_id == "rural-b"
         for diagnostic in result.diagnostics
     )
+    assert not any(gap.network_role == "strategic-main-network" for gap in result.gaps)
 
 
 def test_materialized_rural_candidate_reduction_keeps_selection_roster_consistent() -> None:

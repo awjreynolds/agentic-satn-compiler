@@ -664,7 +664,10 @@ def _mesh_materialized_sections(
                 network_scope=scope,
             )
         )
-    coverage_points = derive_mesh_coverage_points(candidates, profile=request.mesh_profile)
+    coverage_points = derive_mesh_coverage_points(
+        tuple(candidate for candidate in candidates if not candidate.is_access_support),
+        profile=request.mesh_profile,
+    )
     assembly = assemble_strategic_main_network(
         StrategicMainNetworkRequest(
             route_sections=tuple(candidates),
