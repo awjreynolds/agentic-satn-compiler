@@ -222,6 +222,48 @@ def test_package_pages_copies_catalogue_deployments_and_writes_release_archive(
     assert "deployments/test-area/publication.json" in names
 
 
+def test_package_pages_keeps_one_canonical_reviewable_projection(
+    tmp_path: Path,
+) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    write_catalogue(catalogue)
+    write_bundle(bundles)
+    bundle = bundles / "test-area"
+    data_path = bundle / "data.js"
+    data = json.loads(
+        data_path.read_text(encoding="utf-8")
+        .removeprefix("window.SATN_DATA = ")
+        .removesuffix(";\n")
+    )
+    reviewable = {"type": "FeatureCollection", "features": []}
+    data["reviewable"] = reviewable
+    data["reviewable_network"] = reviewable
+    data_path.write_text(
+        "window.SATN_DATA = " + json.dumps(data) + ";\n",
+        encoding="utf-8",
+    )
+    (bundle / "strategic-network.json").write_text("{}", encoding="utf-8")
+
+    result = package_pages(
+        catalogue,
+        bundles,
+        tmp_path / "pages",
+        tmp_path / "satn-pages.zip",
+    )
+
+    packaged = result.pages_directory / "deployments" / "test-area"
+    packaged_data = json.loads(
+        (packaged / "data.js")
+        .read_text(encoding="utf-8")
+        .removeprefix("window.SATN_DATA = ")
+        .removesuffix(";\n")
+    )
+    assert packaged_data["reviewable_network"] == reviewable
+    assert "reviewable" not in packaged_data
+    assert not (packaged / "strategic-network.json").exists()
+
+
 def test_package_pages_rejects_budget_at_or_above_github_pages_limit(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="1 GB limit"):
         package_fixture(tmp_path, maximum_bytes=GITHUB_PAGES_LIMIT_BYTES)

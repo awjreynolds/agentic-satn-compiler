@@ -33,6 +33,10 @@ _AREA_DEPLOYMENT_REDUNDANT_AUDITS = frozenset(
         "asset-accounting.json",
         "asset-accounting.geojson",
         "reviewable-network.geojson",
+        # The compiler publication and review-map ZIP retain this complete
+        # strategic projection. The Pages runtime already receives the same
+        # projection through data.js under the canonical reviewable_network key.
+        "strategic-network.json",
     }
 )
 
@@ -280,8 +284,9 @@ def build_area_deployment(
 
         def ignore_redundant_audits(source: str, names: list[str]) -> set[str]:
             # The compiler publication and review-map ZIP retain the complete
-            # audit files.  The Area Deployment adapter only needs to omit the
-            # standalone copies because data.js embeds the reviewable payload.
+            # audit files. The Area Deployment adapter only needs to omit the
+            # standalone copies because data.js embeds the canonical runtime
+            # projection.
             if Path(source).resolve() != review_map.resolve():
                 return set()
             return set(names).intersection(_AREA_DEPLOYMENT_REDUNDANT_AUDITS)
@@ -475,6 +480,13 @@ def build_area_deployment(
             raise SystemExit("review-map data.js has an unsupported format")
         data = json.loads(source.removeprefix(prefix).removesuffix(";\n"))
         data.pop("network", None)
+        # ``reviewable`` was the original public key. Keep one canonical
+        # runtime projection; the browser prefers ``reviewable_network`` and
+        # still accepts the old key for legacy publications.
+        if "reviewable" in data and "reviewable_network" in data:
+            if data["reviewable"] != data["reviewable_network"]:
+                raise SystemExit("review-map reviewable projections disagree")
+            data.pop("reviewable")
         data["area_id"] = definition.area_id
         data["area_name"] = definition.area_name
         data["network_url"] = "network.geojson"

@@ -1,7 +1,8 @@
 # Feature tour: what the B&NES map demonstrates
 
-Start with the [live B&NES map](https://awjreynolds.github.io/agentic-satn-compiler/deployments/banes/).
-It is a generated planning hypothesis, not an adopted network.
+Start with the [live WECA map](https://awjreynolds.github.io/agentic-satn-compiler/deployments/weca/).
+The screenshots below use the reproducible B&NES local example; every map is a
+generated planning hypothesis, not an adopted network.
 
 ## 1. Read the strategic network before the evidence inventory
 

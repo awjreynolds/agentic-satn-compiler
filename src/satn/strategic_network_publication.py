@@ -23,7 +23,11 @@ from satn.constants import DISCLAIMER
 
 
 class StrategicPublicationLayer(StrEnum):
-    STRATEGIC_NETWORK = "Strategic Network"
+    STRATEGIC_MAIN_NETWORK = "Strategic Main Network"
+    # Keep the symbolic name for callers that used the pre-separation API;
+    # its value now identifies the authoritative main-network projection.
+    STRATEGIC_NETWORK = "Strategic Main Network"
+    ACCESS_SUPPORT = "Access Support"
     PLACES = "Places"
     CANDIDATES = "Candidates discarded"
     ASSETS = "Existing Assets"
@@ -34,10 +38,11 @@ class StrategicPublicationLayer(StrEnum):
 
 
 DEFAULT_LAYERS = (
-    StrategicPublicationLayer.STRATEGIC_NETWORK.value,
+    StrategicPublicationLayer.STRATEGIC_MAIN_NETWORK.value,
     StrategicPublicationLayer.PLACES.value,
 )
 OPTIONAL_LAYERS = (
+    StrategicPublicationLayer.ACCESS_SUPPORT.value,
     StrategicPublicationLayer.CANDIDATES.value,
     StrategicPublicationLayer.ASSETS.value,
     StrategicPublicationLayer.UPGRADEABLE_ASSETS.value,
@@ -45,6 +50,37 @@ OPTIONAL_LAYERS = (
     StrategicPublicationLayer.DIAGNOSTICS.value,
     StrategicPublicationLayer.DIVERGENCE.value,
 )
+
+_STRATEGIC_MAIN_NETWORK_ROLES = frozenset(
+    {
+        "interurban-spine",
+        "urban-main-road-spine",
+    }
+)
+_ACCESS_SUPPORT_ROLES = frozenset(
+    {
+        "cross-spine-connector",
+        "community-access",
+        "school-access",
+        "strategic-destination-access",
+    }
+)
+
+
+def _publication_layer_for_role(role: object) -> str:
+    """Return the closed publication layer for a stored network role.
+
+    Effective sections are expected to carry one of the six governed roles.
+    Unknown roles stay in the primary layer so a malformed or newly introduced
+    result cannot silently disappear from the complete review roster.
+    """
+
+    role_value = _text(role)
+    if role_value in _ACCESS_SUPPORT_ROLES:
+        return StrategicPublicationLayer.ACCESS_SUPPORT.value
+    if role_value in _STRATEGIC_MAIN_NETWORK_ROLES:
+        return StrategicPublicationLayer.STRATEGIC_MAIN_NETWORK.value
+    return StrategicPublicationLayer.STRATEGIC_MAIN_NETWORK.value
 
 
 # The colours are deliberately semantic rather than route scores.  ``core`` is
@@ -597,8 +633,10 @@ def project_strategic_network(
         for item in getattr(result, "selections", ())
     }
 
-    strategic_features: list[dict[str, object]] = []
+    strategic_main_features: list[dict[str, object]] = []
+    access_support_features: list[dict[str, object]] = []
     for section in sorted(tuple(effective.sections), key=lambda item: str(item.section_id)):
+        publication_layer = _publication_layer_for_role(getattr(section, "network_role", None))
         authority = _text(getattr(section, "authority", None))
         style = _style_for(
             intervention=getattr(section, "intervention_state", None),
@@ -613,7 +651,7 @@ def project_strategic_network(
         candidate_entry = candidate_roster.get(section_candidate_id)
         selection = selection_by_candidate.get(section_candidate_id)
         properties = {
-            "layer": StrategicPublicationLayer.STRATEGIC_NETWORK.value,
+            "layer": StrategicPublicationLayer.STRATEGIC_MAIN_NETWORK.value,
             "feature_type": "reviewable-selected-route",
             "section_id": section.section_id,
             "route_id": section.section_id,
@@ -664,13 +702,16 @@ def project_strategic_network(
                     "compiler_candidate_id": getattr(selection, "compiler_candidate_id", None),
                 }
             )
-        strategic_features.append(
-            _feature(
-                feature_id=str(section.section_id),
-                geometry=_line_geometry(section.geometry_wkt, source_crs),
-                properties=properties,
-            )
+        properties["layer"] = publication_layer
+        feature = _feature(
+            feature_id=str(section.section_id),
+            geometry=_line_geometry(section.geometry_wkt, source_crs),
+            properties=properties,
         )
+        if publication_layer == StrategicPublicationLayer.ACCESS_SUPPORT.value:
+            access_support_features.append(feature)
+        else:
+            strategic_main_features.append(feature)
 
     place_features = _collection_features(
         places,
@@ -679,9 +720,13 @@ def project_strategic_network(
         fingerprint=result_fingerprint,
     )
     layers: dict[str, dict[str, object]] = {
-        StrategicPublicationLayer.STRATEGIC_NETWORK.value: {
+        StrategicPublicationLayer.STRATEGIC_MAIN_NETWORK.value: {
             "type": "FeatureCollection",
-            "features": strategic_features,
+            "features": strategic_main_features,
+        },
+        StrategicPublicationLayer.ACCESS_SUPPORT.value: {
+            "type": "FeatureCollection",
+            "features": access_support_features,
         },
         StrategicPublicationLayer.PLACES.value: {
             "type": "FeatureCollection",
@@ -874,6 +919,8 @@ def project_strategic_network(
         }
     else:
         for layer in OPTIONAL_LAYERS:
+            if layer == StrategicPublicationLayer.ACCESS_SUPPORT.value:
+                continue
             layers[layer] = _empty_collection()
 
     place_points: dict[str, dict[str, object]] = {}
@@ -896,7 +943,10 @@ def project_strategic_network(
 
     # Gaps are endpoint findings. Emit a governed Point when its endpoint Place
     # is published; retain null geometry only for genuinely absent Places.
-    gap_features: list[dict[str, object]] = []
+    gap_features_by_layer: dict[str, list[dict[str, object]]] = {
+        StrategicPublicationLayer.STRATEGIC_MAIN_NETWORK.value: [],
+        StrategicPublicationLayer.ACCESS_SUPPORT.value: [],
+    }
     result_gaps = list(getattr(result, "gaps", ()))
     known_gap_keys = {
         key
@@ -920,6 +970,7 @@ def project_strategic_network(
         tuple(result_gaps),
         key=lambda item: str(getattr(item, "gap_id", getattr(item, "obligation_id", ""))),
     ):
+        publication_layer = _publication_layer_for_role(getattr(gap, "network_role", None))
         gap_id = str(getattr(gap, "gap_id", getattr(gap, "obligation_id", "gap")))
         endpoints = tuple(getattr(gap, "endpoints", ()))
         endpoint_occurrences: dict[str, int] = {}
@@ -929,12 +980,12 @@ def project_strategic_network(
             occurrence = endpoint_occurrences[endpoint_key]
             identity_key, identity_fallback = gap_endpoint_identity(endpoint_id, occurrence)
             geometry = place_points.get(endpoint_key)
-            gap_features.append(
+            gap_features_by_layer[publication_layer].append(
                 _feature(
                     feature_id=f"reviewable-gap:{gap_id}:{identity_key}",
                     geometry=geometry,
                     properties={
-                        "layer": StrategicPublicationLayer.STRATEGIC_NETWORK.value,
+                        "layer": publication_layer,
                         "feature_type": "reviewable-gap-endpoint",
                         "gap_id": gap_id,
                         "obligation_id": getattr(gap, "obligation_id", gap_id),
@@ -957,21 +1008,20 @@ def project_strategic_network(
                     },
                 )
             )
-    layers[StrategicPublicationLayer.STRATEGIC_NETWORK.value]["features"] = [
-        *layers[StrategicPublicationLayer.STRATEGIC_NETWORK.value]["features"],
-        *gap_features,
-    ]
+    for layer, features in gap_features_by_layer.items():
+        layers[layer]["features"] = [*layers[layer]["features"], *features]
     core = {
         "type": "FeatureCollection",
         "name": "SATN effective strategic network map",
         "contract": "satn-reviewable-map/v1",
         "disclaimer": DISCLAIMER,
         "strategic_result_fingerprint": result_fingerprint,
-        "features": layers[StrategicPublicationLayer.STRATEGIC_NETWORK.value]["features"]
+        "features": layers[StrategicPublicationLayer.STRATEGIC_MAIN_NETWORK.value]["features"]
         + layers[StrategicPublicationLayer.PLACES.value]["features"],
     }
     reviewable_layer_names = (
-        StrategicPublicationLayer.STRATEGIC_NETWORK.value,
+        StrategicPublicationLayer.STRATEGIC_MAIN_NETWORK.value,
+        StrategicPublicationLayer.ACCESS_SUPPORT.value,
         StrategicPublicationLayer.CANDIDATES.value,
         StrategicPublicationLayer.ASSETS.value,
         StrategicPublicationLayer.UPGRADEABLE_ASSETS.value,

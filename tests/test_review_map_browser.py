@@ -14,7 +14,7 @@ PROJECT = Path(__file__).parents[1]
 
 
 @pytest.mark.browser
-def test_complete_strategic_network_is_the_rendered_default(tmp_path: Path) -> None:
+def test_strategic_main_network_is_the_rendered_default(tmp_path: Path) -> None:
     fixture = tmp_path / "fixture"
     shutil.copytree(
         PROJECT / "examples" / "fixture",
@@ -37,32 +37,30 @@ def test_complete_strategic_network_is_the_rendered_default(tmp_path: Path) -> N
             """() => {
               const map = window.SATN_REVIEW_MAP;
               const network = map.getSource("network")._data.features;
-              const counts = Object.fromEntries([
-                ["strategic-spine", "strategic-spines"],
-                ["spine-access-connection", "spine-access-connections"],
-                ["cross-spine-connector", "cross-spine-connectors"],
-              ].map(([featureType, layerId]) => [layerId, {
-                features: network.filter(
-                  (feature) => feature.properties?.feature_type === featureType
-                ).length,
-                visible: map.getLayoutProperty(layerId, "visibility") !== "none",
-              }]));
               return {
-                counts,
-                reviewableCoreVisible: map.getLayer("reviewable-strategic-network-core")
-                  ? map.getLayoutProperty(
-                      "reviewable-strategic-network-core", "visibility"
-                    ) !== "none"
-                  : false,
+                mainFeatures: network.filter(
+                  (feature) => feature.properties?.feature_type === "strategic-spine"
+                ).length,
+                supportFeatures: network.filter(
+                  (feature) => feature.properties?.feature_type === "spine-access-connection"
+                ).length,
+                mainVisible: map.getLayoutProperty(
+                  "strategic-spines", "visibility"
+                ) !== "none",
+                supportVisible: map.getLayoutProperty(
+                  "spine-access-connections", "visibility"
+                ) !== "none",
               };
             }"""
         )
 
-        assert state["counts"]["strategic-spines"]["features"] > 0
-        assert all(layer["visible"] for layer in state["counts"].values() if layer["features"] > 0)
-        assert not state["reviewableCoreVisible"]
+        assert state["mainFeatures"] > 0
+        assert state["supportFeatures"] > 0
+        assert state["mainVisible"]
+        assert not state["supportVisible"]
         assert page.evaluate(
-            "window.SATN_REVIEW_MAP.queryRenderedFeatures({layers: ['strategic-spines']})"
+            "window.SATN_REVIEW_MAP.queryRenderedFeatures("
+            "{layers: ['strategic-spines']})"
             ".length > 0"
         )
         browser.close()
@@ -688,7 +686,7 @@ def test_gradient_inspection_path_popovers_and_linear_evidence(tmp_path: Path) -
         assert page.locator("#criteria-controls").count() == 0
         assert page.locator("#criteria-panel").count() == 0
 
-        information = page.get_by_role("button", name="About the strategic network")
+        information = page.get_by_role("button", name="About the strategic main network")
         information.click()
         popover = page.locator("#legend-strategic-network")
         assert popover.is_visible()

@@ -28,6 +28,10 @@ catalogue tree and temporary `build/satn-pages.zip` release transport. Packaging
 checks catalogue/deployment identity, required files, WGS84 geometry, progressive
 manifest shape and the configured package-size budget. The Pages workflow extracts
 the archive and runs the Chromium rendering gate before upload and deployment.
+The public Area Deployment keeps one canonical Effective Strategic Network
+projection in `data.js` as `reviewable_network`; the compiler-only strategic
+sidecar and portable review-map ZIP are deliberately omitted because they duplicate
+that runtime projection.
 
 ## Reading provenance and timing
 

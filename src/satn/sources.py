@@ -845,7 +845,8 @@ def _materialise_snapshot(
                 attribution = str(retained_manifest["attribution"])
             elif config.source.kind == "fixture":
                 source_identifier, files = _write_fixture_snapshot(config, temporary)
-                attribution = "Synthetic test fixture"
+                source_identifier = config.source.source_identifier or source_identifier
+                attribution = config.source.source_attribution or "Synthetic test fixture"
             else:
                 source_identifier, files = _write_osm_snapshot(
                     config, temporary, osm_adapter or OSMnxAdapter()

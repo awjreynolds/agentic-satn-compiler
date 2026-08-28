@@ -223,6 +223,8 @@ class UrbanSettlementFormConfig(BaseModel):
 class SourceConfig(BaseModel):
     kind: Literal["fixture", "osm"] = "fixture"
     fixture_dir: Path | None = None
+    source_identifier: str | None = None
+    source_attribution: str | None = None
     snapshot_dir: Path
     snapshot_id: str = "current"
     osm_place_query: str | None = None
@@ -327,40 +329,27 @@ class SourceConfig(BaseModel):
             self.school_register_evidence is not None
             and self.network_selection_school_register_max_age_days is None
         ):
-            raise ValueError(
-                "school-register evidence requires a declared freshness window"
-            )
+            raise ValueError("school-register evidence requires a declared freshness window")
         if (
             self.strategic_education_destination_admissions is None
             and self.network_selection_strategic_admissions_max_age_days is not None
         ):
-            raise ValueError(
-                "strategic-admissions freshness requires an admissions artifact"
-            )
+            raise ValueError("strategic-admissions freshness requires an admissions artifact")
         if (
             self.strategic_education_destination_admissions is not None
             and self.network_selection_strategic_admissions_max_age_days is None
         ):
-            raise ValueError(
-                "strategic-admissions evidence requires a declared freshness window"
-            )
+            raise ValueError("strategic-admissions evidence requires a declared freshness window")
         if (
             self.strategic_education_destination_admissions is not None
             and self.school_register_evidence is None
         ):
-            raise ValueError(
-                "strategic-admissions evidence requires school-register evidence"
-            )
-        if (
-            self.network_selection_as_at is None
-            and (
-                self.school_register_evidence is not None
-                or self.strategic_education_destination_admissions is not None
-            )
+            raise ValueError("strategic-admissions evidence requires school-register evidence")
+        if self.network_selection_as_at is None and (
+            self.school_register_evidence is not None
+            or self.strategic_education_destination_admissions is not None
         ):
-            raise ValueError(
-                "current education evidence requires network_selection_as_at"
-            )
+            raise ValueError("current education evidence requires network_selection_as_at")
         return self
 
     @property
@@ -875,9 +864,7 @@ class AgentRecord(AgentReviewAudit):
     attempts: list[AgentAttempt] = Field(default_factory=list)
     usage: dict[str, int] = Field(default_factory=dict)
     derived_features: list[PublishedFeatureReference] = Field(default_factory=list)
-    withheld_derived_features: list[WithheldDerivedFeatureReference] = Field(
-        default_factory=list
-    )
+    withheld_derived_features: list[WithheldDerivedFeatureReference] = Field(default_factory=list)
     decision_request: AgentDecisionRequest | None = None
     selected_choice_id: str | None = None
     mapped_action: AgentDecisionAction | None = None

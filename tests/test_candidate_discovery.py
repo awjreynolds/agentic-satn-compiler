@@ -19,6 +19,10 @@ from satn.planning_graph import (
     PlanningGraphSnapshot,
     PlanningNodeRecord,
 )
+from satn.strategic_network_planning import (
+    StrategicNetworkPlanningRequest,
+    compile_strategic_network,
+)
 
 
 def snapshot(identity: str = "snapshot-fixture") -> object:
@@ -151,6 +155,156 @@ def fixture_graph() -> PlanningGraphSnapshot:
     )
 
 
+def partial_cycleway_graph() -> PlanningGraphSnapshot:
+    """A mixed route has one mapped cycleway section and two continuity links."""
+
+    edges = (
+        edge(
+            "a-road-ad",
+            "A",
+            "D",
+            "LINESTRING (0 0, 90 0)",
+            highway="primary",
+            ref="A1",
+            length_m=90,
+        ),
+        edge(
+            "cycle-ab",
+            "A",
+            "B",
+            "LINESTRING (0 0, 0 40)",
+            highway="cycleway",
+            bicycle="designated",
+            length_m=40,
+        ),
+        edge(
+            "a-road-bc",
+            "B",
+            "C",
+            "LINESTRING (0 40, 30 40)",
+            highway="primary",
+            ref="A1",
+            length_m=30,
+        ),
+        edge(
+            "local-cd",
+            "C",
+            "D",
+            "LINESTRING (30 40, 90 0)",
+            highway="residential",
+            length_m=30,
+        ),
+    )
+    nodes = tuple(
+        PlanningNodeRecord(
+            node_id=node,
+            weak_component_id="component-main",
+            strong_component_id="component-main",
+        )
+        for node in ("A", "B", "C", "D")
+    )
+    return PlanningGraphSnapshot(
+        graph_fingerprint="4" * 64,
+        edge_records=edges,
+        node_records=nodes,
+        component_records=(
+            GraphComponentRecord(
+                "component-main",
+                "weak",
+                ("A", "B", "C", "D"),
+                tuple(item.directed_edge_id for item in edges),
+                4,
+                4,
+            ),
+        ),
+        observation_matches=(),
+        diagnostics=(),
+        profile_fingerprint="5" * 64,
+        source_export_fingerprint="6" * 64,
+        route_control_fingerprint=None,
+    )
+
+
+def pure_a_road_priority_graph() -> PlanningGraphSnapshot:
+    """A direct A-road competes with shorter pure PROW and local alternatives."""
+
+    edges = (
+        edge(
+            "a-road-ad",
+            "A",
+            "D",
+            "LINESTRING (0 0, 70 0)",
+            highway="primary",
+            ref="A1",
+            length_m=70,
+        ),
+        edge(
+            "prow-ab",
+            "A",
+            "B",
+            "LINESTRING (0 0, 0 20)",
+            highway="footway",
+            foot="designated",
+            ref="PROW-1",
+            length_m=20,
+        ),
+        edge(
+            "prow-bd",
+            "B",
+            "D",
+            "LINESTRING (0 20, 90 0)",
+            highway="footway",
+            foot="designated",
+            ref="PROW-1",
+            length_m=20,
+        ),
+        edge(
+            "quiet-ac",
+            "A",
+            "C",
+            "LINESTRING (0 0, 0 30)",
+            highway="residential",
+            length_m=30,
+        ),
+        edge(
+            "quiet-cd",
+            "C",
+            "D",
+            "LINESTRING (0 30, 90 0)",
+            highway="residential",
+            length_m=30,
+        ),
+    )
+    nodes = tuple(
+        PlanningNodeRecord(
+            node_id=node,
+            weak_component_id="component-main",
+            strong_component_id="component-main",
+        )
+        for node in ("A", "B", "C", "D")
+    )
+    return PlanningGraphSnapshot(
+        graph_fingerprint="7" * 64,
+        edge_records=edges,
+        node_records=nodes,
+        component_records=(
+            GraphComponentRecord(
+                "component-main",
+                "weak",
+                ("A", "B", "C", "D"),
+                tuple(item.directed_edge_id for item in edges),
+                4,
+                5,
+            ),
+        ),
+        observation_matches=(),
+        diagnostics=(),
+        profile_fingerprint="8" * 64,
+        source_export_fingerprint="9" * 64,
+        route_control_fingerprint=None,
+    )
+
+
 def request(
     graph: PlanningGraphSnapshot, *, profile: CandidateDiscoveryProfile | None = None
 ) -> CandidateDiscoveryRequest:
@@ -187,6 +341,128 @@ def test_trial_discovery_exposes_all_connected_alternatives_and_facts() -> None:
     assert cycle.sections
     assert any(item.code == "disconnected-asset" for item in result.search_diagnostics)
     assert result.evidence_requests
+
+
+def test_partial_mapped_cycleway_beats_shorter_a_road_and_keeps_section_facts() -> None:
+    graph = partial_cycleway_graph()
+    result = discover_candidate_sets(
+        CandidateDiscoveryRequest(
+            graph=graph,
+            obligations=(CorridorObligation("partial-corridor", "A", "D"),),
+            evidence_snapshot=snapshot("partial-cycleway"),
+            profile=CandidateDiscoveryProfile(),
+        )
+    )
+
+    mixed = next(
+        item
+        for item in result.candidate_records
+        if item.edge_ids == ("cycle-ab", "a-road-bc", "local-cd")
+    )
+    direct = next(item for item in result.candidate_records if item.edge_ids == ("a-road-ad",))
+    admitted = result.candidate_sets[0].admitted_candidates
+
+    assert mixed.reuse_class == ReuseFirstCandidateClass.EXISTING_CYCLE_PROVISION
+    assert mixed.intervention_state == InterventionState.PROPOSED_NEW_LINK
+    assert mixed.existing_provision_m == 40.0
+    assert mixed.major_road_m == 30.0
+    assert mixed.low_traffic_m == 30.0
+    assert tuple(item.primary_alignment_basis for item in mixed.sections) == (
+        "cycleway",
+        "a-road",
+        "quiet-road",
+    )
+    assert tuple(item.reuse_class for item in mixed.sections) == (
+        ReuseFirstCandidateClass.EXISTING_CYCLE_PROVISION,
+        ReuseFirstCandidateClass.A_ROAD_MAJOR_PROTECTED_INFRASTRUCTURE,
+        ReuseFirstCandidateClass.LOW_TRAFFIC_NON_A_ROAD,
+    )
+    assert tuple(item.intervention_state for item in mixed.sections) == (
+        InterventionState.EXISTING_PROVISION,
+        InterventionState.PROPOSED_NEW_LINK,
+        InterventionState.UPGRADE_REQUIRED,
+    )
+    assert mixed.length_m == 100.0
+    assert direct.length_m == 90.0
+    assert {item.candidate_id for item in admitted} == {mixed.candidate_id, direct.candidate_id}
+
+    selected = compile_strategic_network(
+        StrategicNetworkPlanningRequest(
+            area_fingerprint="a" * 64,
+            graph=graph,
+            discovery=result,
+        )
+    )
+    assert selected.status == "complete"
+    assert selected.effective_network.sections[0].routing_edge_ids == mixed.edge_ids
+
+
+def test_governed_mapped_cycleway_keeps_priority_through_prow_continuity() -> None:
+    graph = partial_cycleway_graph()
+    graph = replace(
+        graph,
+        edge_records=tuple(
+            replace(
+                item,
+                asset_observation_ids=("mapped-cycleway-observation",)
+                if item.directed_edge_id == "cycle-ab"
+                else item.asset_observation_ids,
+                highway="footway" if item.directed_edge_id == "local-cd" else item.highway,
+                foot="designated" if item.directed_edge_id == "local-cd" else item.foot,
+                ref="PROW-1" if item.directed_edge_id == "local-cd" else item.ref,
+            )
+            for item in graph.edge_records
+        ),
+    )
+    result = discover_candidate_sets(request(graph))
+    mixed = next(
+        item
+        for item in result.candidate_records
+        if item.edge_ids == ("cycle-ab", "a-road-bc", "local-cd")
+    )
+    selected = compile_strategic_network(
+        StrategicNetworkPlanningRequest(
+            area_fingerprint="a" * 64,
+            graph=graph,
+            discovery=result,
+        )
+    )
+
+    assert mixed.reuse_class == ReuseFirstCandidateClass.EXISTING_CYCLE_PROVISION
+    assert "mapped-cycleway-observation" in mixed.evidence_ids
+    assert mixed.intervention_state == InterventionState.PROPOSED_NEW_LINK
+    assert tuple(item.reuse_class for item in mixed.sections) == (
+        ReuseFirstCandidateClass.EXISTING_CYCLE_PROVISION,
+        ReuseFirstCandidateClass.A_ROAD_MAJOR_PROTECTED_INFRASTRUCTURE,
+        ReuseFirstCandidateClass.UPGRADEABLE_OFF_CARRIAGEWAY,
+    )
+    assert tuple(item.intervention_state for item in mixed.sections) == (
+        InterventionState.EXISTING_PROVISION,
+        InterventionState.PROPOSED_NEW_LINK,
+        InterventionState.UPGRADE_REQUIRED,
+    )
+    assert selected.effective_network.sections[0].routing_edge_ids == mixed.edge_ids
+
+
+def test_a_road_priority_beats_shorter_pure_upgradeable_and_low_traffic_routes() -> None:
+    graph = pure_a_road_priority_graph()
+    result = discover_candidate_sets(request(graph))
+    selected = compile_strategic_network(
+        StrategicNetworkPlanningRequest(
+            area_fingerprint="b" * 64,
+            graph=graph,
+            discovery=result,
+        )
+    )
+
+    assert result.candidate_sets[0].profile.candidate_class_order == (
+        ReuseFirstCandidateClass.EXISTING_CYCLE_PROVISION,
+        ReuseFirstCandidateClass.A_ROAD_MAJOR_PROTECTED_INFRASTRUCTURE,
+        ReuseFirstCandidateClass.UPGRADEABLE_OFF_CARRIAGEWAY,
+        ReuseFirstCandidateClass.LOW_TRAFFIC_NON_A_ROAD,
+        ReuseFirstCandidateClass.UNKNOWN_OR_CONFLICTING,
+    )
+    assert selected.effective_network.sections[0].routing_edge_ids == ("a-road-ad",)
 
 
 def test_route_length_fact_is_bound_to_each_candidate_path() -> None:

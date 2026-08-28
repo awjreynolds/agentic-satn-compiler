@@ -347,6 +347,7 @@ def test_area_deployment_omits_redundant_standalone_audits_but_keeps_embedded_re
         "asset-accounting.json",
         "asset-accounting.geojson",
         "reviewable-network.geojson",
+        "strategic-network.json",
     ):
         assert not (deployment / filename).exists()
 
@@ -357,6 +358,7 @@ def test_area_deployment_omits_redundant_standalone_audits_but_keeps_embedded_re
         .removesuffix(";\n")
     )
     assert "reviewable_network" in data
+    assert "reviewable" not in data
     assert (deployment / "network.geojson").is_file()
     assert (deployment / "compiler-run.json").is_file()
     assert (deployment / "publication.json").is_file()

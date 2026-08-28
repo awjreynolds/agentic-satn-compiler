@@ -69,19 +69,31 @@ A stable named point where continuous internal low-traffic street or path fabric
 _Avoid_: Community Portal, approximate nearest point, selected residential route
 
 **Backbone-and-Access Network**:
-A delivery-led network structure in which continuous Strategic Spines provide shared routes, selected Cross-Spine Connectors provide transverse routes, and Communities and Schools reach them through bounded access. It avoids a dense web of repeated point-to-point routes.
-_Avoid_: pairwise network, nearest-neighbour network, spider's web
+A delivery-led structure composed of the Strategic Main Network and Access Support. It retains every governed access obligation without promoting each bounded access connection into the strategic route mesh.
+_Avoid_: Strategic Main Network, pairwise network, nearest-neighbour network, spider's web
+
+**Strategic Main Network**:
+The smallest coverage-preserving, scope-sensitive mesh of selected main routes that can satisfy the governed mesh contract. Each governed endpoint-connected component is reduced independently so an unrelated disconnected component cannot erase otherwise proved coverage. Existing cycle provision is preferred first, A-road corridors second, and another routable corridor only when required for continuity or mesh coverage.
+_Avoid_: complete Backbone-and-Access Network, access tree, every routable asset, universal 1,500 m grid
+
+**Strategic Mesh Profile**:
+A frozen declaration of the scope-specific main-network mesh ranges and deterministic conformance method. The initial profile uses a usual 300–500 m urban mesh and 1,000–1,500 m rural mesh as governed planning ranges, not as a universal Dutch rule.
+_Avoid_: parallel-candidate proximity, Access Support spacing, binding Dutch standard
+
+**Access Support**:
+Governed Community, School and Strategic Destination connections that reach the Strategic Main Network without counting as main-route mesh coverage. Access Support remains fingerprinted and inspectable and exposes an unresolved connection as a Network Gap.
+_Avoid_: Strategic Main Network, hidden feeder, discarded access route
 
 **Strategic Network Visualization**:
-A deliberately bounded, informative and inspectable layered picture showing the Backbone-and-Access Network, Gradient Sections, School Access Obligations and Candidate Low-Traffic Areas together. It explains a prioritised strategy for building outward from shared spines rather than claiming that every displayed corridor is already complete or designed. Street-level imagery inspection and detailed intervention derivation are future refinement work, not prerequisites for generating this picture.
+A deliberately bounded, informative and inspectable layered picture whose initial route view is the Strategic Main Network, with Access Support, Gradient Sections, School Access Obligations and Candidate Low-Traffic Areas separately inspectable. It explains a prioritised strategy without claiming that every displayed corridor is already complete or designed.
 _Avoid_: final scheme map, cycle-route inventory, undifferentiated linework
 
 **Strategic Network Route Layer**:
-The inspectable selected SATN alignment-detail layer, including its required Community and destination connections. Its line core communicates Network Display State, while its halo communicates the primary Alignment Basis; details retain every basis and the evidence behind it. The initial map instead shows the complete Backbone-and-Access Network so the selected-route projection cannot obscure the strategic structure. The selected layer is accompanied by quiet Places and prominent material gaps and officer–compiler divergences rather than an undifferentiated red backbone.
-_Avoid_: uniform-red route, hidden connectors, contextual asset inventory, colour-only meaning
+The inspectable selected Strategic Main Network layer. Its line core communicates Network Display State, while its halo communicates the primary Alignment Basis; Access Support, material gaps and officer–compiler divergences retain separate inspectable identities.
+_Avoid_: complete access network, uniform-red route, hidden connectors, contextual asset inventory, colour-only meaning
 
 **Effective Strategic Network**:
-The single fingerprinted network state produced by the authoritative network-selection step for one exact compilation request. It includes selected alignment sections and governed Urban Main-Road Spines as required strategic structure; finite Alignment Candidates and preparation rosters are inputs, while publication artifacts and Review Lens interaction state are projections or views. Downstream consumers use this stored result and never select again.
+The single fingerprinted network state produced by the authoritative network-selection step for one exact compilation request. It distinguishes selected Strategic Main Network sections from Access Support while retaining both with gaps and evidence; publication artifacts and Review Lens interaction state remain projections or views and never select again.
 _Avoid_: candidate set, preparation roster, published map, review selection, route winner
 
 **Alignment Basis**:
@@ -109,7 +121,7 @@ The iterative formation of a Backbone-and-Access Network from all Strategic Spin
 _Avoid_: one-spine-at-a-time build, global pairwise routing, order-dependent catchment
 
 **Access Obligation**:
-A Community, School or Strategic Destination Site that must be served by a bounded connection into the strategic network without requiring a peer-to-peer route. A degree-one Access Obligation is valid once its applicable access rule is satisfied.
+A Community, School or Strategic Destination Site that must be served by bounded Access Support into the Strategic Main Network without requiring a peer-to-peer main route. A degree-one Access Obligation is valid once its applicable access rule is satisfied.
 _Avoid_: peer network node, redundancy requirement, direct journey pair
 
 **Network Place**:

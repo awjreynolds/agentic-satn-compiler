@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from enum import StrEnum
 
 from shapely.geometry import LineString
@@ -21,6 +21,14 @@ from shapely.wkt import loads as load_wkt
 from satn.alignment_selection import AlignmentCandidateSet, _reuse_first_sort_key
 from satn.candidate_discovery import CandidateDiscoveryResult
 from satn.planning_graph import PlanningGraphSnapshot
+from satn.strategic_mesh import (
+    CandidateRouteSection,
+    MeshGap,
+    StrategicMainNetworkProfile,
+    StrategicMainNetworkRequest,
+    assemble_strategic_main_network,
+    derive_mesh_coverage_points,
+)
 
 
 def _canonical(value: object) -> object:
@@ -128,6 +136,8 @@ class StrategicNetworkPlanningRequest:
     routing_endpoint_bindings: tuple[tuple[str, tuple[str, str]], ...] = ()
     officer_candidate_choices: tuple[tuple[str, str], ...] = ()
     required_sections: tuple[EffectiveStrategicSection, ...] = ()
+    mesh_profile: StrategicMainNetworkProfile = field(default_factory=StrategicMainNetworkProfile)
+    mesh_profile_fingerprint: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.graph, PlanningGraphSnapshot):
@@ -201,6 +211,20 @@ class StrategicNetworkPlanningRequest:
             raise ValueError("required strategic sections must be effective section records")
         if len({item.section_id for item in required_sections}) != len(required_sections):
             raise ValueError("required strategic section IDs must be unique")
+        if self.mesh_profile_fingerprint is not None:
+            try:
+                int(self.mesh_profile_fingerprint, 16)
+            except (TypeError, ValueError) as error:
+                raise ValueError("strategic mesh profile fingerprint must be SHA-256") from error
+            if (
+                len(self.mesh_profile_fingerprint) != 64
+                or self.mesh_profile_fingerprint != self.mesh_profile_fingerprint.lower()
+            ):
+                raise ValueError("strategic mesh profile fingerprint must be SHA-256")
+            if self.mesh_profile_fingerprint != self.mesh_profile.fingerprint:
+                raise ValueError("strategic mesh profile fingerprint does not match profile")
+        elif self.mesh_profile is not None:
+            object.__setattr__(self, "mesh_profile_fingerprint", self.mesh_profile.fingerprint)
         object.__setattr__(self, "reference_routes", routes)
         object.__setattr__(self, "compiler_preferred_candidate_ids", preferences)
         object.__setattr__(self, "routing_endpoint_bindings", endpoint_bindings)
@@ -233,6 +257,8 @@ class StrategicNetworkPlanningRequest:
                 "routing_endpoint_bindings": self.routing_endpoint_bindings,
                 "officer_candidate_choices": self.officer_candidate_choices,
                 "required_sections": self.required_sections,
+                "mesh_profile": self.mesh_profile,
+                "mesh_profile_fingerprint": self.mesh_profile_fingerprint,
             }
         )
 
@@ -251,6 +277,7 @@ class EffectiveStrategicSection:
     primary_alignment_basis: str | None = None
     intervention_state: str | None = None
     display_state: str | None = None
+    network_scope: str = "urban"
 
 
 @dataclass(frozen=True)
@@ -363,6 +390,7 @@ class StrategicPlanningLineage:
     officer_decision_fingerprint: str | None
     reference_routes_fingerprint: str
     fallback_profile_fingerprint: str
+    mesh_profile_fingerprint: str | None
 
 
 @dataclass(frozen=True)
@@ -553,6 +581,134 @@ def _display_state(intervention_state: object | None) -> str:
     }.get(str(value), "unresolved-gap")
 
 
+def _mesh_corridor_class(section: EffectiveStrategicSection) -> str:
+    bases = {str(item) for item in section.alignment_bases}
+    if bases & {
+        "current-ncn",
+        "ncn-link",
+        "greenway",
+        "mapped-cycleway",
+        "cycle-track",
+        "shared-use-path",
+    }:
+        return "existing-cycleway"
+    if section.primary_alignment_basis == "a-road" or "a-road" in bases:
+        return "a-road"
+    return "other"
+
+
+def _mesh_materialized_sections(
+    request: StrategicNetworkPlanningRequest,
+    sections: tuple[EffectiveStrategicSection, ...],
+) -> tuple[
+    tuple[EffectiveStrategicSection, ...],
+    tuple[PlanningDiagnostic, ...],
+    tuple[MeshGap, ...],
+]:
+    """Reduce all materialized main routes at the sole planning boundary.
+
+    Candidate and governed-reference routes are only available after fallback
+    selection. Access Support remains effective, but is excluded from Main
+    coverage by the mesh kernel.
+    """
+
+    if not sections:
+        return (), (), ()
+    edge_by_id = {edge.directed_edge_id: edge for edge in request.graph.edge_records}
+    candidates: list[CandidateRouteSection] = []
+    normalized_sections: list[EffectiveStrategicSection] = []
+    for section in sections:
+        geometry = load_wkt(section.geometry_wkt)
+        if not isinstance(geometry, LineString) or geometry.is_empty:
+            raise ValueError(f"mesh section geometry is not a non-empty line: {section.section_id}")
+        is_access_support = section.network_role.casefold() in {
+            "community-access",
+            "school-access",
+            "strategic-destination-access",
+            "cross-spine-connector",
+        }
+        if is_access_support:
+            first_node_id = f"access-support:{section.section_id}:start"
+            last_node_id = f"access-support:{section.section_id}:end"
+        else:
+            if not section.routing_edge_ids:
+                raise ValueError(f"mesh section has no planning edges: {section.section_id}")
+            first_edge = edge_by_id.get(section.routing_edge_ids[0])
+            last_edge = edge_by_id.get(section.routing_edge_ids[-1])
+            if first_edge is None or last_edge is None:
+                missing = next(
+                    edge_id for edge_id in section.routing_edge_ids if edge_id not in edge_by_id
+                )
+                raise ValueError(f"mesh section edge is absent: {missing}")
+            first_node_id = first_edge.from_node_id
+            last_node_id = last_edge.to_node_id
+        # Interurban candidate routes are governed by the rural scope. The
+        # Effective section field defaults to urban for compatibility, so bind
+        # this scope where the route role is authoritative.
+        scope = (
+            "rural"
+            if section.network_role.casefold() == "interurban-spine"
+            else section.network_scope
+        )
+        normalized = replace(section, network_scope=scope)
+        normalized_sections.append(normalized)
+        candidates.append(
+            CandidateRouteSection(
+                section_id=normalized.section_id,
+                start_node_id=first_node_id,
+                end_node_id=last_node_id,
+                coordinates=tuple((float(x), float(y)) for x, y in geometry.coords),
+                corridor_class=_mesh_corridor_class(normalized),
+                network_role=normalized.network_role,
+                is_access_support=is_access_support,
+                network_scope=scope,
+            )
+        )
+    coverage_points = derive_mesh_coverage_points(
+        tuple(candidate for candidate in candidates if not candidate.is_access_support),
+        profile=request.mesh_profile,
+    )
+    assembly = assemble_strategic_main_network(
+        StrategicMainNetworkRequest(
+            route_sections=tuple(candidates),
+            coverage_points=coverage_points,
+            profile=request.mesh_profile,
+            preserve_connected_components=True,
+        )
+    )
+    selected_ids = set(assembly.selected_section_ids)
+    selected = tuple(
+        section for section in normalized_sections if section.section_id in selected_ids
+    )
+    diagnostics: list[PlanningDiagnostic] = []
+    for gap in assembly.gaps:
+        diagnostics.append(
+            PlanningDiagnostic(
+                "strategic-mesh-gap",
+                gap.gap_id,
+                f"{gap.scope} mesh coverage is not proved: {gap.reason}",
+            )
+        )
+    for section in normalized_sections:
+        if section.section_id in selected_ids:
+            continue
+        if section.section_id in assembly.access_support_section_ids:
+            selected = (*selected, section)
+            continue
+        diagnostics.append(
+            PlanningDiagnostic(
+                "strategic-mesh-section-omitted",
+                section.section_id,
+                "section is outside the selected Strategic Main Network mesh",
+            )
+        )
+    return (
+        tuple(sorted(selected, key=lambda item: item.section_id)),
+        tuple(diagnostics),
+        assembly.gaps,
+    )
+
+
 def compile_strategic_network(
     request: StrategicNetworkPlanningRequest,
 ) -> StrategicNetworkPlanningResult:
@@ -565,6 +721,7 @@ def compile_strategic_network(
     diagnostics: list[PlanningDiagnostic] = []
     gaps: list[ReviewableNetworkGap] = []
     requests: list[EvidenceRequest] = []
+    required_sections = tuple(request.required_sections)
     for gap in sorted(discovery.gaps, key=lambda item: item.obligation_id):
         role = str(getattr(gap, "network_role", "unresolved-strategic-alignment"))
         reviewable_gap = ReviewableNetworkGap(
@@ -829,9 +986,9 @@ def compile_strategic_network(
     selections: list[EffectiveReviewableSelection] = []
     divergences: list[OfficerCompilerDivergence] = []
     dispositions: list[CandidateDisposition] = []
-    sections: list[EffectiveStrategicSection] = list(request.required_sections)
+    sections: list[EffectiveStrategicSection] = list(required_sections)
     selected_ids: set[str] = set()
-    effective_roles: set[str] = {section.network_role for section in request.required_sections}
+    effective_roles: set[str] = {section.network_role for section in required_sections}
 
     profile_fingerprints = {item.profile_fingerprint for item in candidate_sets}
     if len(profile_fingerprints) > 1:
@@ -1170,6 +1327,50 @@ def compile_strategic_network(
                     )
                 )
 
+    mesh_sections, mesh_diagnostics, mesh_gaps = _mesh_materialized_sections(
+        request, tuple(sections)
+    )
+    mesh_omitted_ids = {section.section_id for section in sections} - {
+        section.section_id for section in mesh_sections
+    }
+    mesh_omitted_obligation_ids = {
+        section.obligation_id for section in sections if section.section_id in mesh_omitted_ids
+    }
+    diagnostics.extend(mesh_diagnostics)
+    mesh_gap_groups: dict[tuple[str, str], list[MeshGap]] = {}
+    for mesh_gap in mesh_gaps:
+        mesh_gap_groups.setdefault((mesh_gap.scope, mesh_gap.reason), []).append(mesh_gap)
+    for (scope, reason), grouped_gaps in sorted(mesh_gap_groups.items()):
+        gaps.append(
+            ReviewableNetworkGap(
+                f"strategic-mesh:{scope}:{reason}",
+                "strategic-main-network",
+                ("", ""),
+                f"{scope} mesh coverage is not proved at {len(grouped_gaps)} proof points: "
+                f"{reason}",
+            )
+        )
+    if mesh_omitted_ids:
+        selected_ids.difference_update(mesh_omitted_ids)
+        selections = [
+            selection
+            for selection in selections
+            if selection.effective_candidate_id not in mesh_omitted_ids
+            and selection.obligation_id not in mesh_omitted_obligation_ids
+        ]
+        dispositions = [
+            replace(
+                disposition,
+                disposition="unselected",
+                reason="omitted by Strategic Main Network mesh",
+            )
+            if disposition.candidate_id in mesh_omitted_ids
+            else disposition
+            for disposition in dispositions
+        ]
+    sections = list(mesh_sections)
+    effective_roles = {section.network_role for section in sections}
+
     missing_roles = set(request.fallback_profile.required_roles) - effective_roles
     for role in sorted(missing_roles):
         diagnostics.append(
@@ -1218,6 +1419,7 @@ def compile_strategic_network(
         officer_decision_fingerprint=officer_fingerprint,
         reference_routes_fingerprint=_fingerprint(request.reference_routes),
         fallback_profile_fingerprint=request.fallback_profile.fingerprint,
+        mesh_profile_fingerprint=request.mesh_profile_fingerprint,
     )
     canonical_gaps = _canonical_gaps(gaps)
     payload = {

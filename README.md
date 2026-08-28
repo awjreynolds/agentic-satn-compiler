@@ -13,7 +13,7 @@ the reviewer needs them.
 > legal-access finding or investment case.
 
 [Open SATN Deployments](https://awjreynolds.github.io/agentic-satn-compiler/),
-[explore the B&NES example](https://awjreynolds.github.io/agentic-satn-compiler/deployments/banes/)
+[explore the WECA deployment](https://awjreynolds.github.io/agentic-satn-compiler/deployments/weca/)
 or [build your first local map](docs/getting-started/agent-quickstart.md).
 
 ![B&NES strategic network with intervention states and alignment-basis halos](docs/images/banes-strategic-network.png)

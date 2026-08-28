@@ -445,6 +445,23 @@ def _data_payload(path: Path) -> dict[str, Any]:
     return payload
 
 
+def _canonicalize_runtime_data(path: Path) -> None:
+    """Remove equal legacy projections from the Pages-facing runtime payload."""
+
+    prefix = "window.SATN_DATA = "
+    data = _data_payload(path)
+    legacy = data.get("reviewable")
+    canonical = data.get("reviewable_network")
+    if legacy is not None and canonical is not None:
+        if legacy != canonical:
+            raise ValueError("generated data.js reviewable projections disagree")
+        data.pop("reviewable")
+        path.write_text(
+            f"{prefix}{json.dumps(data, separators=(',', ':'))};\n",
+            encoding="utf-8",
+        )
+
+
 def _validate_publication_shape(
     deployment: Path,
     deployment_id: str,
@@ -513,7 +530,12 @@ def _copy_deployments(
         if not source.is_dir():
             raise ValueError(f"missing generated deployment for {entry.deployment_id}: {source}")
         _files(source)
-        shutil.copytree(source, target, ignore=shutil.ignore_patterns("review-map.zip"))
+        shutil.copytree(
+            source,
+            target,
+            ignore=shutil.ignore_patterns("review-map.zip", "strategic-network.json"),
+        )
+        _canonicalize_runtime_data(target / "data.js")
         _validate_wgs84_map_artifacts(target)
 
         for name, artifact in entry.artifacts.items():

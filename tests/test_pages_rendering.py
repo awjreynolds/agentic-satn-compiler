@@ -277,7 +277,7 @@ def test_packaged_pages_gate_checks_required_connection_detail() -> None:
 
 def test_packaged_pages_gate_checks_default_road_and_cycleway_context() -> None:
     validator = (PROJECT / "scripts" / "validate_pages_rendering.py").read_text(encoding="utf-8")
-    assert '["layer-urban-spines", "urban-spines"]' in validator
+    assert '"reviewable-urban-strategic-network"' in validator
     assert '["layer-mapped-active-travel-assets", "mapped-active-travel-assets"]' in validator
     assert "defaultEvidenceReady" in validator
     assert "has data but no rendered features" in validator
