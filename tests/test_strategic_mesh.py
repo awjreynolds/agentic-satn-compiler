@@ -96,3 +96,40 @@ def test_derived_urban_proof_points_bound_every_source_position_to_half_width() 
     assert max(spacings) <= 125.0
     assert {point.proof_radius_m for point in points} == {187.5}
     assert points[0].proof_radius_m + max(spacings) / 2 <= 250.0
+
+
+def test_existing_cycleway_precedes_a_road_when_both_components_cover_points() -> None:
+    request = StrategicMainNetworkRequest(
+        route_sections=(
+            CandidateRouteSection(
+                section_id="a-road-direct",
+                start_node_id="a0",
+                end_node_id="a1",
+                coordinates=((0.0, 0.0), (1000.0, 0.0)),
+                corridor_class="a-road",
+            ),
+            CandidateRouteSection(
+                section_id="cycle-west",
+                start_node_id="c0",
+                end_node_id="mid",
+                coordinates=((0.0, 0.0), (500.0, 0.0)),
+                corridor_class="existing-cycleway",
+            ),
+            CandidateRouteSection(
+                section_id="other-east",
+                start_node_id="mid",
+                end_node_id="c1",
+                coordinates=((500.0, 0.0), (1000.0, 0.0)),
+                corridor_class="other",
+            ),
+        ),
+        coverage_points=(
+            MeshCoveragePoint("west", (0.0, 0.0), "urban"),
+            MeshCoveragePoint("east", (1000.0, 0.0), "urban"),
+        ),
+        profile=StrategicMainNetworkProfile(),
+    )
+
+    result = assemble_strategic_main_network(request)
+
+    assert result.selected_section_ids == ("cycle-west", "other-east")

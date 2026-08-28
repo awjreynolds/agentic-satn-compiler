@@ -501,14 +501,16 @@ def _selection_score(
     """Prefer coverage, then governed corridor order, then the smallest set."""
 
     covered = len(_covered_point_ids(selected, point_candidates))
+    existing_cycleway_count = sum(item.corridor_class == "existing-cycleway" for item in selected)
     other_count = sum(item.corridor_class == "other" for item in selected)
     a_road_count = sum(item.corridor_class == "a-road" for item in selected)
     total_length = sum(item.length_m for item in selected)
     selected_ids = tuple(item.section_id for item in selected)
     return (
         -covered,
+        -existing_cycleway_count,
+        -a_road_count,
         other_count,
-        a_road_count,
         len(selected),
         total_length,
         selected_ids,
