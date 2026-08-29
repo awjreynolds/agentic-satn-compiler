@@ -50,25 +50,6 @@ def _package_fixture(tmp_path: Path) -> tuple[Path, Path]:
     return pages, deployment
 
 
-def _remove_network_features(deployment: Path, feature_type: str) -> None:
-    network_path = deployment / "network.geojson"
-    network = json.loads(network_path.read_text(encoding="utf-8"))
-    network["features"] = [
-        feature
-        for feature in network["features"]
-        if feature.get("properties", {}).get("feature_type") != feature_type
-    ]
-    network_path.write_text(json.dumps(network), encoding="utf-8")
-    data_path = deployment / "data.js"
-    data_text = data_path.read_text(encoding="utf-8")
-    data_prefix = "window.SATN_DATA = "
-    assert data_text.startswith(data_prefix)
-    data = json.loads(data_text.removeprefix(data_prefix).rstrip(";\n"))
-    if isinstance(data.get("network"), dict):
-        data["network"]["features"] = network["features"]
-    data_path.write_text(data_prefix + json.dumps(data) + ";\n", encoding="utf-8")
-
-
 def _replace_review_map_asset(deployment: Path, needle: str, replacement: str) -> None:
     changed = False
     for asset in (deployment / "assets").glob("review-map*.js"):
@@ -246,25 +227,25 @@ def test_packaged_pages_gate_requires_urban_strategic_sections(
 
 
 @pytest.mark.browser
-def test_packaged_pages_gate_rejects_hidden_zero_count_network_layer(tmp_path: Path) -> None:
+def test_packaged_pages_gate_accepts_separately_hidden_access_support(tmp_path: Path) -> None:
     pages, deployment = _package_fixture(tmp_path)
-    _remove_network_features(deployment, "spine-access-connection")
     needle = (
         'id: "spine-access-connections", type: "line", source: "network", '
         'filter: ["==", ["get", "feature_type"], "spine-access-connection"], '
-        'layout: { visibility: hasBackboneAndAccessNetwork ? "visible" : "none" }'
+        "layout: { visibility: hasBackboneAndAccessNetwork && !hasSemanticAccessSupport "
+        '? "visible" : "none" }'
     )
     _replace_review_map_asset(
         deployment,
         needle,
         needle.replace(
-            'layout: { visibility: hasBackboneAndAccessNetwork ? "visible" : "none" }',
+            "layout: { visibility: hasBackboneAndAccessNetwork && !hasSemanticAccessSupport "
+            '? "visible" : "none" }',
             'layout: { visibility: "none" }',
         ),
     )
 
-    with pytest.raises(ValueError, match="spine-access-connections layer is hidden"):
-        validate_pages_rendering(pages)
+    assert validate_pages_rendering(pages)[0].access_connections > 0
 
 
 def test_packaged_pages_gate_checks_required_connection_detail() -> None:
@@ -278,6 +259,8 @@ def test_packaged_pages_gate_checks_required_connection_detail() -> None:
 def test_packaged_pages_gate_checks_default_road_and_cycleway_context() -> None:
     validator = (PROJECT / "scripts" / "validate_pages_rendering.py").read_text(encoding="utf-8")
     assert '"reviewable-urban-strategic-network"' in validator
+    assert '"reviewable-strategic-main-network"' in validator
+    assert 'feature.properties?.layer === "Access Support"' in validator
     assert '["layer-mapped-active-travel-assets", "mapped-active-travel-assets"]' in validator
     assert "defaultEvidenceReady" in validator
     assert "has data but no rendered features" in validator

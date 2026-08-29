@@ -42,15 +42,23 @@ def _wait_for_rendered_strategic_spines(page: Page) -> int:
         page.wait_for_function(
             """() => {
               const map = window.SATN_REVIEW_MAP;
-              return Boolean(map?.getLayer("strategic-spines")) &&
-                map.queryRenderedFeatures({layers: ["strategic-spines"]}).length > 0;
+              const layerId = map?.getLayer("reviewable-strategic-main-network") &&
+                map.getLayoutProperty("reviewable-strategic-main-network", "visibility") !== "none"
+                ? "reviewable-strategic-main-network"
+                : "strategic-spines";
+              return Boolean(map?.getLayer(layerId)) &&
+                map.queryRenderedFeatures({layers: [layerId]}).length > 0;
             }"""
         )
     return page.evaluate(
         """() => {
           const map = window.SATN_REVIEW_MAP;
-          return map.getLayer("strategic-spines")
-            ? map.queryRenderedFeatures({layers: ["strategic-spines"]}).length
+          const layerId = map.getLayer("reviewable-strategic-main-network") &&
+            map.getLayoutProperty("reviewable-strategic-main-network", "visibility") !== "none"
+            ? "reviewable-strategic-main-network"
+            : "strategic-spines";
+          return map.getLayer(layerId)
+            ? map.queryRenderedFeatures({layers: [layerId]}).length
             : 0;
         }"""
     )
@@ -130,9 +138,17 @@ def _inspect_deployment(
                   const map = window.SATN_REVIEW_MAP;
                   const network = map.getSource("network")?._data?.features || [];
                   const reviewable = map.getSource("reviewable")?._data?.features || [];
+                  const hasSemanticMain = reviewable.some(
+                    (feature) => feature.properties?.layer === "Strategic Main Network"
+                  );
                   const expected = [
-                    [reviewable, "reviewable-selected-route", "reviewable-urban-strategic-network",
-                     (feature) => feature.properties?.network_role === "urban-main-road-spine"],
+                    [reviewable, "reviewable-selected-route",
+                     hasSemanticMain
+                       ? "reviewable-strategic-main-network"
+                       : "reviewable-urban-strategic-network",
+                     (feature) => hasSemanticMain
+                       ? feature.properties?.layer === "Strategic Main Network"
+                       : feature.properties?.network_role === "urban-main-road-spine"],
                     [reviewable, "asset-upgrade-required", "mapped-active-travel-assets",
                      (feature) => feature.properties?.asset_kind === "mapped-cycleway"],
                   ];
@@ -174,6 +190,12 @@ def _inspect_deployment(
                 feature.properties?.feature_type === "reviewable-selected-route" &&
                 feature.properties?.network_role === "urban-main-road-spine"
               ).length;
+              counts["strategic-main-network"] = reviewableFeatures.filter((feature) =>
+                feature.properties?.layer === "Strategic Main Network"
+              ).length;
+              counts["access-support"] = reviewableFeatures.filter((feature) =>
+                feature.properties?.layer === "Access Support"
+              ).length;
               const invalidGeometry = expected.flatMap(([featureType]) =>
                 features
                   .filter((feature) => feature.properties?.feature_type === featureType)
@@ -197,7 +219,16 @@ def _inspect_deployment(
                   failures.push(`${layerId} default layer is hidden`);
                 }
               }
-              if (counts["urban-main-road-spine"] > 0 && counts["strategic-spine"] > 0) {
+              const mainLayerId = counts["strategic-main-network"] > 0
+                ? "reviewable-strategic-main-network"
+                : "strategic-spines";
+              if (!map.getLayer(mainLayerId)) {
+                failures.push(`${mainLayerId} default layer is missing`);
+              } else if (map.getLayoutProperty(mainLayerId, "visibility") === "none") {
+                failures.push(`${mainLayerId} default layer is hidden`);
+              }
+              if (counts["strategic-main-network"] === 0 &&
+                  counts["urban-main-road-spine"] > 0 && counts["strategic-spine"] > 0) {
                 if (!map.getLayer("reviewable-urban-strategic-network")) {
                   failures.push("reviewable-urban-strategic-network default layer is missing");
                 } else if (
@@ -233,8 +264,6 @@ def _inspect_deployment(
               for (const [featureType, layerId] of expected) {
                 if (!map.getLayer(layerId)) {
                   failures.push(`${layerId} layer is missing`);
-                } else if (map.getLayoutProperty(layerId, "visibility") === "none") {
-                  failures.push(`${layerId} layer is hidden`);
                 }
               }
               for (const layerId of [
@@ -259,8 +288,14 @@ def _inspect_deployment(
                 if (typeof coordinate?.[0] === "number") coordinates.push(coordinate);
                 else coordinate?.forEach(collect);
               };
-              features
-                .filter((feature) => feature.properties?.feature_type === "strategic-spine")
+              const mainFeatures = counts["strategic-main-network"] > 0
+                ? reviewableFeatures.filter(
+                    (feature) => feature.properties?.layer === "Strategic Main Network"
+                  )
+                : features.filter(
+                    (feature) => feature.properties?.feature_type === "strategic-spine"
+                  );
+              mainFeatures
                 .forEach((feature) => collect(feature.geometry?.coordinates));
               if (coordinates.length) {
                 const longitudes = coordinates.map(([longitude]) => longitude);
