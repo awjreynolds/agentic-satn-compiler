@@ -2464,12 +2464,6 @@
       paint: {
         "line-color": reviewableCoreColour,
         "line-width": ["interpolate", ["linear"], ["zoom"], 7, 3, 13, 6],
-        "line-dasharray": ["match", ["get", "display_state"],
-          "existing-provision", ["literal", [1, 0]],
-          "upgrade-required", ["literal", [1, .8]],
-          "proposed-new-link", ["literal", [2, 1]],
-          ["literal", [1, 0]]
-        ],
         "line-opacity": .96
       }
     });
@@ -2515,12 +2509,6 @@
       paint: {
         "line-color": reviewableCoreColour,
         "line-width": ["interpolate", ["linear"], ["zoom"], 7, 3, 13, 6],
-        "line-dasharray": ["match", ["get", "display_state"],
-          "existing-provision", ["literal", [1, 0]],
-          "upgrade-required", ["literal", [1, .8]],
-          "proposed-new-link", ["literal", [2, 1]],
-          ["literal", [1, 0]]
-        ],
         "line-opacity": .96
       }
     });

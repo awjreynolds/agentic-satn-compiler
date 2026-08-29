@@ -123,6 +123,9 @@ def test_reviewable_network_layer_defaults_and_semantics_are_explicit() -> None:
     assert 'feature.properties?.layer === "Access Support"' in script
     assert "!hasBackboneAndAccessNetwork && !hasReviewableRoutes" in script
     assert 'id: "reviewable-strategic-main-network"' in script
+    main_layer = script.split('id: "reviewable-strategic-main-network"', maxsplit=1)[1]
+    main_layer = main_layer.split('id: "reviewable-access-support"', maxsplit=1)[0]
+    assert '"line-dasharray"' not in main_layer
     assert '["==", ["get", "layer"], "Strategic Main Network"]' in script
     assert '"layer-strategic-network": hasSemanticStrategicMainNetwork' in script
     assert (
