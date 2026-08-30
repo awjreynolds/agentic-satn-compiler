@@ -14,8 +14,10 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from enum import StrEnum
+from itertools import pairwise
 
-from shapely.geometry import LineString
+import networkx as nx
+from shapely.geometry import LineString, Point
 from shapely.wkt import loads as load_wkt
 
 from satn.alignment_selection import AlignmentCandidateSet, _reuse_first_sort_key
@@ -23,6 +25,7 @@ from satn.candidate_discovery import CandidateDiscoveryResult
 from satn.planning_graph import PlanningGraphSnapshot
 from satn.strategic_mesh import (
     CandidateRouteSection,
+    MeshCoveragePoint,
     MeshGap,
     StrategicMainNetworkProfile,
     StrategicMainNetworkRequest,
@@ -470,7 +473,10 @@ def _edge_geometry(
         elif coordinates[-1] == points[0]:
             coordinates.extend(points[1:])
         else:
-            raise ValueError("selected edge geometry is not contiguous")
+            # Governed node identity establishes graph continuity. Reprojection
+            # can leave adjacent source-edge endpoint coordinates fractionally
+            # different, so retain both exact source coordinates in the line.
+            coordinates.extend(points)
     return LineString(coordinates).wkt
 
 
@@ -597,6 +603,312 @@ def _mesh_corridor_class(section: EffectiveStrategicSection) -> str:
     return "other"
 
 
+def _planning_edge_corridor_class(edge: object) -> str:
+    highway = str(getattr(edge, "highway", "") or "").casefold()
+    bicycle = str(getattr(edge, "bicycle", "") or "").casefold()
+    ref = str(getattr(edge, "ref", "") or "").casefold().replace(" ", "")
+    if (
+        getattr(edge, "asset_observation_ids", ())
+        or highway == "cycleway"
+        or bicycle in {"designated", "official"}
+    ):
+        return "existing-cycleway"
+    if highway in {"trunk", "primary"} or ref.startswith("a"):
+        return "a-road"
+    return "other"
+
+
+def _candidate_endpoint_components(
+    candidates: tuple[CandidateRouteSection, ...],
+) -> tuple[tuple[CandidateRouteSection, ...], ...]:
+    by_id = {item.section_id: item for item in candidates}
+    section_ids_by_node: dict[str, set[str]] = {}
+    for candidate in candidates:
+        for node_id in candidate.endpoint_ids:
+            section_ids_by_node.setdefault(node_id, set()).add(candidate.section_id)
+    remaining = set(by_id)
+    components: list[tuple[CandidateRouteSection, ...]] = []
+    while remaining:
+        pending = [min(remaining)]
+        component_ids: set[str] = set()
+        while pending:
+            section_id = pending.pop()
+            if section_id in component_ids:
+                continue
+            component_ids.add(section_id)
+            for node_id in by_id[section_id].endpoint_ids:
+                pending.extend(sorted(section_ids_by_node[node_id], reverse=True))
+        remaining.difference_update(component_ids)
+        components.append(tuple(by_id[item] for item in sorted(component_ids)))
+    return tuple(components)
+
+
+def _main_continuity_sections(
+    graph: PlanningGraphSnapshot,
+    candidates: tuple[CandidateRouteSection, ...],
+    coverage_points: tuple[MeshCoveragePoint, ...],
+    profile: StrategicMainNetworkProfile,
+) -> tuple[tuple[CandidateRouteSection, ...], tuple[EffectiveStrategicSection, ...]]:
+    """Connect reachable Main components through the governed routable graph.
+
+    The connector search is lexicographic: existing cycle provision first,
+    A-road corridors second, and other routable edges only where continuity
+    requires them. Unreachable components are left for the mesh kernel to
+    expose as gaps.
+    """
+
+    main_candidates = tuple(item for item in candidates if not item.is_access_support)
+    components = _candidate_endpoint_components(main_candidates)
+    if len(components) <= 1:
+        return (), ()
+    root_selection = assemble_strategic_main_network(
+        StrategicMainNetworkRequest(
+            route_sections=main_candidates,
+            coverage_points=coverage_points,
+            profile=profile,
+        )
+    )
+    if not root_selection.selected_section_ids:
+        return (), ()
+    root_id = root_selection.selected_section_ids[0]
+    root_index = next(
+        index
+        for index, component in enumerate(components)
+        if any(item.section_id == root_id for item in component)
+    )
+
+    records_by_endpoints: dict[tuple[str, str], list[object]] = {}
+    for edge in graph.edge_records:
+        if edge.reciprocal_state != "reciprocal" or edge.access in {
+            "no",
+            "private",
+            "customers",
+        }:
+            continue
+        left, right = sorted((edge.from_node_id, edge.to_node_id))
+        records_by_endpoints.setdefault((left, right), []).append(edge)
+
+    physical_edges: list[tuple[str, str, str, int, str, dict[tuple[str, str], str]]] = []
+    corridor_order = {"existing-cycleway": 0, "a-road": 1, "other": 2}
+    for (left, right), records in sorted(records_by_endpoints.items()):
+        records_by_direction = {
+            direction: tuple(
+                edge for edge in records if (edge.from_node_id, edge.to_node_id) == direction
+            )
+            for direction in ((left, right), (right, left))
+        }
+        if any(not items for items in records_by_direction.values()):
+            continue
+        chosen = {
+            direction: min(
+                items,
+                key=lambda item: (
+                    corridor_order[_planning_edge_corridor_class(item)],
+                    item.length_mm,
+                    item.source_edge_id,
+                    item.directed_edge_id,
+                ),
+            )
+            for direction, items in records_by_direction.items()
+        }
+        representative = min(
+            chosen.values(),
+            key=lambda item: (
+                corridor_order[_planning_edge_corridor_class(item)],
+                item.length_mm,
+                item.source_edge_id,
+                item.directed_edge_id,
+            ),
+        )
+        source_id = "|".join(sorted({item.source_edge_id for item in chosen.values()}))
+        physical_edges.append(
+            (
+                left,
+                right,
+                source_id,
+                int(representative.length_mm),
+                _planning_edge_corridor_class(representative),
+                {direction: edge.directed_edge_id for direction, edge in chosen.items()},
+            )
+        )
+    if not physical_edges:
+        return (), ()
+
+    # The base is derived from the complete eligible graph length, making the
+    # scalar Dijkstra weight exactly preserve the governed lexicographic order.
+    base = sum(item[3] for item in physical_edges) + 1
+    route_graph = nx.Graph()
+    for left, right, source_id, length_mm, corridor_class, directed in physical_edges:
+        class_weight = {
+            "existing-cycleway": length_mm,
+            "a-road": length_mm * base + length_mm,
+            "other": length_mm * base * base + length_mm,
+        }[corridor_class]
+        choice = (class_weight, source_id)
+        existing = route_graph.get_edge_data(left, right)
+        if existing is not None and existing["choice"] <= choice:
+            continue
+        route_graph.add_edge(
+            left,
+            right,
+            choice=choice,
+            weight=class_weight,
+            corridor_class=corridor_class,
+            directed=directed,
+        )
+
+    component_nodes = tuple(
+        frozenset(node_id for item in component for node_id in item.endpoint_ids)
+        for component in components
+    )
+    endpoint_coordinates = tuple(
+        {
+            node_id: tuple(
+                sorted(
+                    {
+                        coordinates
+                        for item in component
+                        for candidate_node, coordinates in (
+                            (item.start_node_id, item.coordinates[0]),
+                            (item.end_node_id, item.coordinates[-1]),
+                        )
+                        if candidate_node == node_id
+                    }
+                )
+            )
+            for node_id in component_nodes[index]
+        }
+        for index, component in enumerate(components)
+    )
+    connected_nodes = set(component_nodes[root_index])
+    connected_components = {root_index}
+    remaining = set(range(len(components))) - {root_index}
+    connector_candidates: list[CandidateRouteSection] = []
+    connector_sections: list[EffectiveStrategicSection] = []
+    while remaining:
+        sources = sorted(connected_nodes.intersection(route_graph))
+        if not sources:
+            break
+        distances, paths = nx.multi_source_dijkstra(
+            route_graph,
+            sources,
+            weight="weight",
+        )
+        reachable = [
+            (distances[node_id], node_id, component_index)
+            for component_index in remaining
+            for node_id in component_nodes[component_index]
+            if node_id in distances
+        ]
+        if not reachable:
+            break
+        _distance, target_node, component_index = min(reachable)
+        path_nodes = paths[target_node]
+        if len(path_nodes) < 2:
+            remaining.remove(component_index)
+            connected_nodes.update(component_nodes[component_index])
+            continue
+        forward_ids: list[str] = []
+        reverse_ids: list[str] = []
+        classes: list[str] = []
+        for start_node, end_node in pairwise(path_nodes):
+            edge_data = route_graph[start_node][end_node]
+            directed = edge_data["directed"]
+            forward_ids.append(directed[(start_node, end_node)])
+            reverse_ids.insert(0, directed[(end_node, start_node)])
+            classes.append(edge_data["corridor_class"])
+        forward = tuple(forward_ids)
+        reverse = tuple(reverse_ids)
+        endpoints = (path_nodes[0], path_nodes[-1])
+        geometry_wkt = _edge_geometry(graph, forward, endpoints=endpoints)
+        _reverse_edge_chain(graph, forward, reverse, endpoints)
+        route_geometry = load_wkt(geometry_wkt)
+        route_coordinates = list(route_geometry.coords)
+        start_options = tuple(
+            coordinate
+            for index in sorted(connected_components)
+            for coordinate in endpoint_coordinates[index].get(endpoints[0], ())
+        )
+        end_options = endpoint_coordinates[component_index].get(endpoints[1], ())
+        start_anchor = min(
+            start_options,
+            key=lambda coordinate: (
+                Point(coordinate).distance(Point(route_coordinates[0])),
+                coordinate,
+            ),
+        )
+        end_anchor = min(
+            end_options,
+            key=lambda coordinate: (
+                Point(coordinate).distance(Point(route_coordinates[-1])),
+                coordinate,
+            ),
+        )
+        if route_coordinates[0] != start_anchor:
+            route_coordinates.insert(0, start_anchor)
+        if route_coordinates[-1] != end_anchor:
+            route_coordinates.append(end_anchor)
+        geometry_wkt = LineString(route_coordinates).wkt
+        section_id = _stable_id("strategic-main-continuity", forward)
+        corridor_class = (
+            "other"
+            if "other" in classes
+            else "a-road"
+            if "a-road" in classes
+            else "existing-cycleway"
+        )
+        bases = tuple(
+            basis
+            for corridor, basis in (
+                ("existing-cycleway", "mapped-cycleway"),
+                ("a-road", "a-road"),
+                ("other", "other-routable"),
+            )
+            if corridor in classes
+        )
+        geometry = load_wkt(geometry_wkt)
+        connector_candidates.append(
+            CandidateRouteSection(
+                section_id=section_id,
+                start_node_id=endpoints[0],
+                end_node_id=endpoints[1],
+                coordinates=tuple((float(x), float(y)) for x, y in geometry.coords),
+                corridor_class=corridor_class,
+                network_role="strategic-main-connector",
+                network_scope="rural",
+            )
+        )
+        connector_sections.append(
+            EffectiveStrategicSection(
+                section_id=section_id,
+                obligation_id=f"strategic-main-continuity:{section_id}",
+                candidate_id=None,
+                network_role="strategic-main-connector",
+                routing_edge_ids=forward,
+                reverse_routing_edge_ids=reverse,
+                geometry_wkt=geometry_wkt,
+                authority=PlanningAuthority.COMPILER,
+                alignment_bases=bases,
+                primary_alignment_basis=bases[0],
+                intervention_state=(
+                    "existing-provision"
+                    if corridor_class == "existing-cycleway"
+                    else "upgrade-required"
+                ),
+                display_state=(
+                    "existing-provision"
+                    if corridor_class == "existing-cycleway"
+                    else "upgrade-required"
+                ),
+                network_scope="rural",
+            )
+        )
+        connected_nodes.update(component_nodes[component_index])
+        connected_components.add(component_index)
+        remaining.remove(component_index)
+    return tuple(connector_candidates), tuple(connector_sections)
+
+
 def _mesh_materialized_sections(
     request: StrategicNetworkPlanningRequest,
     sections: tuple[EffectiveStrategicSection, ...],
@@ -668,12 +980,19 @@ def _mesh_materialized_sections(
         tuple(candidate for candidate in candidates if not candidate.is_access_support),
         profile=request.mesh_profile,
     )
+    continuity_candidates, continuity_sections = _main_continuity_sections(
+        request.graph,
+        tuple(candidates),
+        coverage_points,
+        request.mesh_profile,
+    )
+    candidates.extend(continuity_candidates)
+    normalized_sections.extend(continuity_sections)
     assembly = assemble_strategic_main_network(
         StrategicMainNetworkRequest(
             route_sections=tuple(candidates),
             coverage_points=coverage_points,
             profile=request.mesh_profile,
-            preserve_connected_components=True,
         )
     )
     selected_ids = set(assembly.selected_section_ids)

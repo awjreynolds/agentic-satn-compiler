@@ -73,8 +73,12 @@ A delivery-led structure composed of the Strategic Main Network and Access Suppo
 _Avoid_: Strategic Main Network, pairwise network, nearest-neighbour network, spider's web
 
 **Strategic Main Network**:
-The smallest coverage-preserving, scope-sensitive mesh of selected main routes that can satisfy the governed mesh contract. Each governed endpoint-connected component is reduced independently so an unrelated disconnected component cannot erase otherwise proved coverage. Existing cycle provision is preferred first, A-road corridors second, and another routable corridor only when required for continuity or mesh coverage.
+The smallest connected, coverage-preserving, scope-sensitive mesh of selected main routes that can satisfy the governed mesh contract. Reachable candidate components are joined by the minimum Strategic Main Connectors required for continuity; an unreachable candidate island is exposed as a Network Gap rather than published as another Main network. Existing cycle provision is preferred first, A-road corridors second, and another routable corridor only when required for continuity or mesh coverage.
 _Avoid_: complete Backbone-and-Access Network, access tree, every routable asset, universal 1,500 m grid
+
+**Strategic Main Connector**:
+A compiler-selected, bidirectionally routable path used only to join otherwise disconnected Strategic Main Network components through the governed Planning Graph. Connector search prefers existing cycle provision first, A-road corridors second and other routable edges only when continuity requires them; it does not promote unrelated Access Support.
+_Avoid_: Access Support, geometric snap, invented link, disconnected Main island
 
 **Strategic Mesh Profile**:
 A frozen declaration of the scope-specific main-network mesh ranges and deterministic conformance method. The initial profile uses a usual 300–500 m urban mesh and 1,000–1,500 m rural mesh as governed planning ranges, not as a universal Dutch rule.

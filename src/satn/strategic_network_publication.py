@@ -54,6 +54,7 @@ OPTIONAL_LAYERS = (
 _STRATEGIC_MAIN_NETWORK_ROLES = frozenset(
     {
         "interurban-spine",
+        "strategic-main-connector",
         "urban-main-road-spine",
     }
 )

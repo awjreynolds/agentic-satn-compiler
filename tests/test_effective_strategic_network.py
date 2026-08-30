@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 
 import geopandas as gpd
+import networkx as nx
 import pytest
 from shapely.geometry import LineString
 from test_strategic_network_planning import discovery, fixture_graph, request
@@ -302,7 +303,7 @@ def test_redundant_urban_main_roads_are_omitted_by_authoritative_mesh_selection(
     } >= {"urban-spine-bristol-a4", "urban-spine-bristol-b4051"}
 
 
-def test_effective_network_reduces_each_component_without_losing_mesh_coverage() -> None:
+def test_effective_network_and_publication_connect_main_components_through_routable_graph() -> None:
     routable_network = gpd.GeoDataFrame(
         [
             {
@@ -312,6 +313,14 @@ def test_effective_network_reduces_each_component_without_losing_mesh_coverage()
                 "highway": "primary",
                 "ref": "A1",
                 "geometry": LineString([(0, 0), (1000, 0)]),
+            },
+            {
+                "source_id": "a-road-reverse",
+                "u": "D",
+                "v": "A",
+                "highway": "primary",
+                "ref": "A1",
+                "geometry": LineString([(1000, 0), (0, 0)]),
             },
             {
                 "source_id": "b-road",
@@ -343,6 +352,68 @@ def test_effective_network_reduces_each_component_without_losing_mesh_coverage()
                 "ref": "A2",
                 "geometry": LineString([(2000, 0), (3000, 0)]),
             },
+            {
+                "source_id": "far-a-road-reverse",
+                "u": "G",
+                "v": "F",
+                "highway": "primary",
+                "ref": "A2",
+                "geometry": LineString([(3000, 0), (2000, 0)]),
+            },
+            {
+                "source_id": "short-other-link",
+                "u": "D",
+                "v": "F",
+                "highway": "residential",
+                "geometry": LineString([(1000, 0), (2000, 0)]),
+            },
+            {
+                "source_id": "short-other-link",
+                "u": "F",
+                "v": "D",
+                "highway": "residential",
+                "geometry": LineString([(2000, 0), (1000, 0)]),
+            },
+            {
+                "source_id": "cycle-continuity-west",
+                "u": "D",
+                "v": "J",
+                "highway": "cycleway",
+                "bicycle": "designated",
+                "geometry": LineString([(1000, 0), (1500, 500)]),
+            },
+            {
+                "source_id": "cycle-continuity-west",
+                "u": "J",
+                "v": "D",
+                "highway": "cycleway",
+                "bicycle": "designated",
+                "geometry": LineString([(1500, 500), (1000, 0)]),
+            },
+            {
+                "source_id": "cycle-continuity-east",
+                "u": "J",
+                "v": "F",
+                "highway": "cycleway",
+                "bicycle": "designated",
+                "geometry": LineString([(1500.001, 500), (2000, 0)]),
+            },
+            {
+                "source_id": "cycle-continuity-east",
+                "u": "F",
+                "v": "J",
+                "highway": "cycleway",
+                "bicycle": "designated",
+                "geometry": LineString([(2000, 0), (1500.001, 500)]),
+            },
+            {
+                "source_id": "unreachable-a-road",
+                "u": "H",
+                "v": "I",
+                "highway": "primary",
+                "ref": "A3",
+                "geometry": LineString([(4000, 0), (5000, 0)]),
+            },
         ],
         geometry="geometry",
         crs=27700,
@@ -356,7 +427,7 @@ def test_effective_network_reduces_each_component_without_losing_mesh_coverage()
             {
                 "structure_id": "urban-main-a1",
                 "official_classification": "a-road",
-                "geometry": LineString([(0, 0), (1000, 0)]),
+                "geometry": LineString([(100, 10), (900, 10)]),
             },
             {
                 "structure_id": "urban-main-b1",
@@ -366,7 +437,12 @@ def test_effective_network_reduces_each_component_without_losing_mesh_coverage()
             {
                 "structure_id": "urban-main-a2",
                 "official_classification": "a-road",
-                "geometry": LineString([(2000, 0), (3000, 0)]),
+                "geometry": LineString([(2100, 10), (2900, 10)]),
+            },
+            {
+                "structure_id": "urban-main-a3-unreachable",
+                "official_classification": "a-road",
+                "geometry": LineString([(4000, 0), (5000, 0)]),
             },
         ],
         geometry="geometry",
@@ -392,8 +468,33 @@ def test_effective_network_reduces_each_component_without_losing_mesh_coverage()
         for section in state.effective_network.sections
         if section.network_role == "urban-main-road-spine"
     ) == ("urban-main-a1", "urban-main-a2")
-    assert not any(diagnostic.code == "strategic-mesh-gap" for diagnostic in state.diagnostics)
-    assert not any(gap.network_role == "strategic-main-network" for gap in state.gaps)
+    assert any(diagnostic.code == "strategic-mesh-gap" for diagnostic in state.diagnostics)
+    assert any(gap.network_role == "strategic-main-network" for gap in state.gaps)
+    connector = next(
+        section
+        for section in state.effective_network.sections
+        if section.network_role == "strategic-main-connector"
+    )
+    assert connector.primary_alignment_basis == "mapped-cycleway"
+    assert connector.intervention_state == "upgrade-required"
+
+    projection = project_strategic_network(state.result)
+    main_features = projection.layers["Strategic Main Network"]["features"]
+    selected_features = [
+        feature
+        for feature in main_features
+        if feature["properties"]["feature_type"] == "reviewable-selected-route"
+    ]
+    assert len(selected_features) == 3
+    graph = nx.Graph()
+    for feature in selected_features:
+        coordinates = feature["geometry"]["coordinates"]
+        graph.add_edge(tuple(coordinates[0]), tuple(coordinates[-1]))
+    assert nx.is_connected(graph)
+    assert any(
+        feature["properties"]["feature_type"] == "reviewable-gap-endpoint"
+        for feature in main_features
+    )
 
 
 def test_urban_spine_interior_endpoints_are_attached_to_routable_topology() -> None:
