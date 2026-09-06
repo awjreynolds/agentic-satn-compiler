@@ -10,11 +10,11 @@
 The two authorities support a two-layer method:
 
 1. **Strategic network selection:** choose a coherent, continuous set of inter-urban connections at an abstract corridor/desire-line level, using existing assets and strategic evidence. This answers **which relationships belong in the preferred network**.
-2. **Delivery prioritisation:** split selected connections into deliverable segments or interventions and decide **which improvements should be developed or funded first**. This is a later investment decision and must not create duplicate strategic redlines.
+2. **Delivery prioritisation:** after the preferred physical network is selected, decide **which improvements should be developed or funded first**. This is a later investment decision and must remain distinct from strategic-network membership; genuinely distinct parallel corridors may still serve different intermediate catchments.
 
 Oxfordshire does not build every physical route and then rank the resulting alignments. It builds and consults an abstract desire-line network, converts it to segments and sub-segments, prioritises those straight-line units, and only then develops potential on-the-ground alignments for the resulting priority network. B&NES's adopted masterplan describes the same separation in less formal terms: it presents a comprehensive future network, then says a later process will prioritise routes and subject selected routes to engineering assessment.
 
-For this repository, “full network then prioritise” should therefore mean **complete the abstract strategic candidate/preferred network before ranking delivery interventions**. It should not mean “draw every possible physical alignment before deciding which strategic relationships matter.”
+For this repository, “full network then prioritise” should therefore mean **settle the preferred strategic and physical network before ranking delivery interventions**. That is a B&NES method adaptation, not Oxfordshire's exact Stage 1 order: Oxfordshire prioritised abstract straight-line segments before developing physical alignments. In either case, it should not mean “draw every possible physical alignment before deciding which strategic relationships matter.”
 
 ## Primary-source findings
 
@@ -53,7 +53,7 @@ The council's consultation page separates three artifacts: the report, the strai
 
 ### 1. Keep one strategic selection layer
 
-Represent the preferred strategic network as a canonical set of continuous inter-urban relationships between urban focal points or local-network gateways. A relationship may be assembled from several evidence segments, but it should have one authoritative preferred representation. Store optional physical alignments or alternatives against that relationship rather than drawing duplicate preferred redlines.
+Represent the preferred strategic network as urban-to-urban relationships between urban focal points or local-network gateways. A relationship may be assembled from several evidence segments and may use physical sections shared with other relationships. This is a technical identity recommendation: it does not impose one geometry per city pair or erase distinct parallel corridors serving different intermediate catchments. Keep genuinely distinct corridor options distinguishable; display shared geometry once even when it supports multiple relationships, while avoiding duplicate representations of the same physical choice.
 
 The candidate evidence review should require consideration of:
 
@@ -73,32 +73,24 @@ Village connections should be represented as feeders or complementary links from
 
 ### 3. Add a separate delivery-priority layer
 
-After the canonical strategic network is selected, create delivery records for route segments or concrete interventions. A delivery record can cover an existing asset needing an upgrade, a gap between existing assets, an access or crossing problem, or a new alignment option. It should carry the evidence and owner-defined priority result, while leaving the strategic network membership unchanged.
+After the preferred physical network is selected, rank its delivery segments or concrete interventions. A segment may cover an existing asset needing an upgrade, a gap between existing assets, an access or crossing problem, or a new alignment option. The ranking should leave strategic-network membership unchanged.
 
-The implementation should not invent numerical weights. Oxfordshire's transferable lesson is the ordering and the use of two decision scales; its SATN Index and B&NES's later criteria are evidence for possible owner criteria, not weights to copy silently. If the council wants numerical prioritisation, the owner must choose the criteria, scales, treatment of missing evidence and tie-breaking rule.
+The implementation should not invent numerical weights. Oxfordshire's transferable lesson is the distinction between abstract network priority and later physical optioneering; its SATN Index and B&NES's later criteria are evidence for possible investment objectives, not weights to copy silently. The later delivery ranking is a B&NES adaptation and does not describe Oxfordshire's exact Stage 3/Stage 4 order.
 
 The minimum method sequence is therefore:
 
 1. inventory existing assets, committed schemes, urban focal points and cross-boundary gateways;
 2. form the abstract inter-urban candidate relationships and review the required A-road/NCN/asset evidence;
-3. select the coherent canonical strategic network, preserving continuity and one preferred redline per relationship;
-4. split selected relationships into delivery segments and attach optional physical alignments/typologies;
+3. select the coherent strategic relationships, allowing shared physical sections and retaining distinct parallel corridors where their intermediate catchments differ;
+4. select or confirm the preferred physical network and split it into delivery segments with optional alignment/typology evidence;
 5. prioritise delivery interventions using an explicitly owner-chosen, auditable method; and
 6. maintain village feeders as a separate layer, with through-village sections retained where they lie on a selected inter-urban corridor.
 
-This ordering follows Oxfordshire's desire-line-before-alignment process while retaining the B&NES masterplan's distinction between a coherent network and later route engineering/prioritisation.
+This ordering retains the B&NES distinction between a coherent network and later route engineering/prioritisation. It intentionally adapts the delivery ranking to follow physical network selection; Oxfordshire's documented Stage 3 instead prioritises abstract straight-line segments before Stage 4 physical optioneering.
 
 ## Remaining owner choices
 
-The substantive unresolved choice is the strategic unit: should one canonical link be an urban-to-urban relationship assembled from segments, or a corridor segment between gateway nodes? Oxfordshire used both (46 segments and 176 sub-segments); the B&NES method needs one explicit identity rule to prevent duplicate redlines and to make delivery records attach consistently.
-
-The related owner choices are:
-
-- the authoritative list of urban focal points, LCWIP gateways and cross-boundary endpoints;
-- what evidence qualifies as a former NCN alignment and which PRoW/bridleway legal or accessibility states are eligible;
-- the test that proves a B-road is filling a genuine missing inter-urban connection;
-- whether village feeders terminate at a strategic route, an urban gateway or a service destination; and
-- the delivery-priority criteria, scales and priority classes.
+The technical recommendation is to use an urban-to-urban relationship as the strategic identity, with shared physical sections permitted and delivery segments below it. The remaining substantive owner choice is when parallel corridors merit separate Main status rather than one preferred corridor with alternatives, especially where they serve different intermediate catchments. Investment objectives and any ranking criteria belong to the later delivery phase.
 
 ## Sources
 
