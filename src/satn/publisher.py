@@ -4172,6 +4172,16 @@ def _write_review_map(
     }
     if compilation_metadata is not None:
         data["compilation_metadata"] = dict(compilation_metadata)
+    urban_journeys = getattr(
+        getattr(compiled, "strategic_corridor_preparation", None),
+        "urban_journeys",
+        None,
+    )
+    data["urban_journey_place_names"] = {
+        str(place.place_id): str(place.name)
+        for place in getattr(urban_journeys, "places", ())
+        if getattr(place, "place_id", None) and getattr(place, "name", None)
+    }
     if compiled.strategic_network_planning is not None:
         data["strategic_result_fingerprint"] = compiled.strategic_network_planning.fingerprint
         publication_finding_count = int(reviewable_map.get("publication_finding_count", 0))

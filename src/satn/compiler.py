@@ -115,6 +115,7 @@ from satn.topography import (
 )
 from satn.urban import derive_urban_structure
 from satn.urban_community import assess_urban_community_access, urban_community_gaps
+from satn.urban_journeys import prepare_urban_journeys
 from satn.urban_school import assess_urban_school_access
 
 if TYPE_CHECKING:
@@ -685,9 +686,27 @@ def _compile_network(
         source["boundary"],
     )
     urban_spines = urban.spines
-    strategic_routable_network = strategic_routable_network_with_a_road_backbone(
-        routable_network,
-        official_road_classification,
+    prepared_urban_journeys = None
+    legacy_urban_journey_mode = False
+    network_selection_profile = config.compilation.network_selection
+    if network_selection_profile is not None and network_selection_profile.contract is None:
+        label_places = source.get("label_places")
+        if label_places is not None:
+            prepared_urban_journeys = prepare_urban_journeys(
+                label_places=label_places,
+                area_definition=source["boundary"],
+                road_graph=road_graph,
+            )
+            legacy_urban_journey_mode = any(
+                item.preferred for item in prepared_urban_journeys.adjacencies
+            )
+    strategic_routable_network = (
+        routable_network
+        if legacy_urban_journey_mode
+        else strategic_routable_network_with_a_road_backbone(
+            routable_network,
+            official_road_classification,
+        )
     )
     strategic_road_graph = (
         road_graph
@@ -872,7 +891,7 @@ def _compile_network(
         # those exact compiler-emitted anchors without mutating this network.
         strategic_corridor_preparation = prepare_strategic_corridors(
             config.compilation.network_selection,
-            road_graph=strategic_road_graph,
+            road_graph=road_graph if legacy_urban_journey_mode else strategic_road_graph,
             spine_access_connections=spine_access_connections,
             access_obligations=access_obligations,
             context=strategic_corridor_context,
@@ -884,7 +903,11 @@ def _compile_network(
                 urban_scope_buffer_km=config.source.urban_scope_buffer_km,
             ),
             official_road_classification=official_road_classification,
-            urban_spines=urban_spines,
+            urban_spines=None if legacy_urban_journey_mode else urban_spines,
+            urban_places=None,
+            prepared_urban_journeys=(
+                prepared_urban_journeys if legacy_urban_journey_mode else None
+            ),
         )
         network_selection_preparation = NetworkSelectionPreparationResult(
             spine_access_preparation=spine_access_candidate_preparation,
@@ -1200,14 +1223,16 @@ def _compile_network(
     )
     if compiled.strategic_corridor_preparation is not None:
         compiled.strategic_network_planning = compile_prepared_strategic_network(
-            routable_network=strategic_routable_network,
+            routable_network=(
+                routable_network if legacy_urban_journey_mode else strategic_routable_network
+            ),
             preparation=compiled.strategic_corridor_preparation,
             snapshot_manifest_path=(
                 config.source.snapshot_dir / config.source.snapshot_id / "snapshot.json"
             ),
             area_definition_path=config.config_path,
             officer_decisions=officer_decisions,
-            urban_spines=compiled.urban_spines,
+            urban_spines=None if legacy_urban_journey_mode else compiled.urban_spines,
             access_support=(
                 compiled.spine_access_connections,
                 compiled.branch_meeting_connections,

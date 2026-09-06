@@ -14,6 +14,7 @@ import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from itertools import pairwise
 
 from pyproj import Transformer
 from shapely import STRtree
@@ -469,6 +470,86 @@ def _feature(
         "id": feature_id,
         "geometry": geometry,
         "properties": _json_value(dict(properties)),
+    }
+
+
+def _strategic_main_display_collection(
+    features: Iterable[Mapping[str, object]], fingerprint: str
+) -> dict[str, object]:
+    """Deduplicate exact Main geometry for drawing without changing route records."""
+
+    segments: dict[str, dict[str, object]] = {}
+    for feature in features:
+        geometry = feature.get("geometry")
+        if not isinstance(geometry, Mapping):
+            continue
+        geometry_type = geometry.get("type")
+        if geometry_type == "LineString":
+            lines = (tuple(geometry.get("coordinates") or ()),)
+        elif geometry_type == "MultiLineString":
+            lines = tuple(tuple(line) for line in geometry.get("coordinates") or ())
+        else:
+            continue
+        properties = feature.get("properties")
+        properties = properties if isinstance(properties, Mapping) else {}
+        route_id = str(properties.get("section_id") or feature.get("id") or "")
+        if not route_id:
+            continue
+        for coordinates in lines:
+            if len(coordinates) < 2:
+                continue
+            for start, end in pairwise(coordinates):
+                start_value = tuple(_json_value(start))
+                end_value = tuple(_json_value(end))
+                ordered = tuple(sorted((start_value, end_value), key=lambda item: json.dumps(item)))
+                segment_key = json.dumps(ordered, separators=(",", ":"), ensure_ascii=True)
+                record = segments.setdefault(
+                    segment_key,
+                    {"coordinates": ordered, "route_ids": set()},
+                )
+                record["route_ids"].add(route_id)  # type: ignore[union-attr]
+
+    grouped: dict[tuple[str, ...], list[tuple[str, tuple[object, ...]]]] = {}
+    for segment_key, record in segments.items():
+        route_ids = tuple(sorted(record["route_ids"]))  # type: ignore[arg-type]
+        grouped.setdefault(route_ids, []).append((segment_key, record["coordinates"]))  # type: ignore[arg-type]
+
+    display_features: list[dict[str, object]] = []
+    for route_ids, group in sorted(grouped.items()):
+        coordinates = [
+            [list(coordinate) for coordinate in item[1]]
+            for item in sorted(group, key=lambda item: item[0])
+        ]
+        if len(coordinates) == 1:
+            display_geometry = {"type": "LineString", "coordinates": coordinates[0]}
+        else:
+            display_geometry = {"type": "MultiLineString", "coordinates": coordinates}
+        display_id = "strategic-main-display:" + json.dumps(
+            route_ids,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        )
+        display_features.append(
+            _feature(
+                feature_id=display_id,
+                geometry=display_geometry,
+                properties={
+                    "layer": StrategicPublicationLayer.STRATEGIC_MAIN_NETWORK.value,
+                    "feature_type": "reviewable-selected-route",
+                    "display_only": True,
+                    "participating_journey_ids": list(route_ids),
+                    "participating_route_ids": list(route_ids),
+                    "journey_count": len(route_ids),
+                    "strategic_result_fingerprint": fingerprint,
+                },
+            )
+        )
+    return {
+        "type": "FeatureCollection",
+        "name": "SATN strategic Main display geometry",
+        "contract": "satn-reviewable-map/v1",
+        "strategic_result_fingerprint": fingerprint,
+        "features": display_features,
     }
 
 
@@ -948,6 +1029,10 @@ def project_strategic_network(
         layer=StrategicPublicationLayer.PLACES.value,
         fingerprint=result_fingerprint,
     )
+    strategic_main_display = _strategic_main_display_collection(
+        strategic_main_features,
+        result_fingerprint,
+    )
     layers: dict[str, dict[str, object]] = {
         StrategicPublicationLayer.STRATEGIC_MAIN_NETWORK.value: {
             "type": "FeatureCollection",
@@ -1375,6 +1460,7 @@ def project_strategic_network(
         "publication_findings": [
             publication_finding_payload(finding) for finding in publication_findings
         ],
+        "strategic_main_display": strategic_main_display,
         "features": reviewable_features,
     }
     projection_payload = {
@@ -1384,6 +1470,7 @@ def project_strategic_network(
         "layers": layers,
         "feature_collection": core,
         "reviewable_feature_collection": reviewable,
+        "strategic_main_display": strategic_main_display,
         "publication_finding_count": len(publication_findings),
         "publication_findings": [
             publication_finding_payload(finding) for finding in publication_findings

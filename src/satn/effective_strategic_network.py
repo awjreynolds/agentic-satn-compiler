@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field, fields, is_dataclass
 from enum import StrEnum
 from itertools import pairwise
@@ -35,7 +35,11 @@ from satn.candidate_discovery import (
     EvidenceRequest,
 )
 from satn.content_identity import canonical_network_geometry_fingerprint
-from satn.network_selection import InterventionState, ReuseFirstCandidateClass
+from satn.network_selection import (
+    CandidateSourceClass,
+    InterventionState,
+    ReuseFirstCandidateClass,
+)
 from satn.planning_graph import (
     GraphComponentRecord,
     GraphDiagnostic,
@@ -44,6 +48,7 @@ from satn.planning_graph import (
     PlanningGraphSnapshot,
     PlanningNodeRecord,
 )
+from satn.route_source_facts import derive_route_source_facts
 from satn.routing import (
     RoadGraph,
     _coordinate_id,
@@ -360,62 +365,86 @@ def _wkt_coords(value: str) -> tuple[tuple[float, float], ...]:
     return tuple((float(x), float(y)) for x, y in geometry.coords)
 
 
-def _facts(candidate: object, graph: PlanningGraphSnapshot, edge_ids: tuple[str, ...]):
-    by_id = {item.directed_edge_id: item for item in graph.edge_records}
-    edges = tuple(by_id[item] for item in edge_ids)
-    highways = {str(item.highway or "").lower() for item in edges}
-    refs = {str(item.ref or "").upper() for item in edges}
-    ncn = any("ncn" in basis for basis in getattr(candidate, "alignment_bases", ()))
+def _facts(
+    candidate: object,
+    graph: PlanningGraphSnapshot,
+    edge_ids: tuple[str, ...],
+    source_precedence: Sequence[CandidateSourceClass | str] = (),
+):
+    """Return legacy edge-derived facts while leaving vNext facts immutable."""
+
     explicit_reuse = getattr(candidate, "reuse_class", None)
     explicit_intervention = getattr(candidate, "intervention_state", None)
     explicit_bases = tuple(getattr(candidate, "alignment_bases", ()))
-    source_class = str(getattr(getattr(candidate, "source_class", None), "value", ""))
-    cycleway_highways = {"cycleway", "path", "footway", "track", "pedestrian", "bridleway"}
-    cycleway_only = bool(highways) and highways.issubset(cycleway_highways)
-    if explicit_bases:
-        bases = explicit_bases
-    elif ncn or (source_class == "verified-existing-asset" and cycleway_only):
-        bases = ("current-ncn",)
-    elif cycleway_only:
-        bases = ("mapped-cycleway",)
-    elif source_class == "verified-existing-asset":
-        bases = ("proposed-new-corridor",)
-    elif highways & {"path", "footway", "track"}:
-        bases = ("prow-class-unknown",)
-    elif any(value.startswith("A") for value in refs) or source_class == "a-road-corridor":
-        bases = ("a-road",)
-    elif any(value.startswith("B") for value in refs) or source_class == "b-road-corridor":
-        bases = ("b-road",)
-    elif highways & {"residential", "unclassified", "service", "living_street"}:
-        bases = ("local-connector",)
-    else:
-        bases = ("proposed-new-corridor",)
-    if explicit_reuse is not None:
-        reuse = explicit_reuse
-    elif cycleway_only or (source_class == "verified-existing-asset" and not highways):
+    explicit_primary = getattr(candidate, "primary_alignment_basis", None)
+    candidate_source = getattr(candidate, "source_class", None)
+
+    # vNext candidate sets carry complete, governed facts.  In particular, do
+    # not replace their explicit primary basis with tuple ordering here.
+    if not source_precedence:
+        return (
+            explicit_reuse,
+            explicit_intervention,
+            explicit_bases,
+            explicit_primary,
+            candidate_source,
+        )
+
+    facts = derive_route_source_facts(edge_ids, graph, source_precedence)
+    bases = tuple(sorted(set((*facts.alignment_bases, *explicit_bases))))
+    if not facts.complete:
+        # The legacy record still has to materialise for the review model, but
+        # the helper's unresolved result must not be turned into a guessed
+        # source class or a synthetic primary basis.  Preserve any facts the
+        # record already carried and leave source attribution unchanged.
+        return (
+            explicit_reuse or ReuseFirstCandidateClass.UNKNOWN_OR_CONFLICTING,
+            explicit_intervention or InterventionState.UNDETERMINED,
+            bases or ("proposed-new-corridor",),
+            explicit_primary or (explicit_bases[0] if explicit_bases else bases[0])
+            if (explicit_bases or bases)
+            else "proposed-new-corridor",
+            None,
+        )
+
+    # Legacy candidate records may already carry typed edge evidence while
+    # the planning snapshot intentionally stores only routable edge facts.
+    # Preserve that candidate-level attribution and use the routed facts to
+    # add any observable minority bases and delivery burden.
+    source_class = candidate_source if explicit_bases else facts.generation_source_class
+    if source_class is CandidateSourceClass.VERIFIED_EXISTING_ASSET:
         reuse = ReuseFirstCandidateClass.EXISTING_CYCLE_PROVISION
-    elif highways & {"path", "footway", "track"}:
-        reuse = ReuseFirstCandidateClass.UPGRADEABLE_OFF_CARRIAGEWAY
-    elif "a-road" in bases or "b-road" in bases:
+    elif source_class in {
+        CandidateSourceClass.A_ROAD_CORRIDOR,
+        CandidateSourceClass.B_ROAD_CORRIDOR,
+    }:
         reuse = ReuseFirstCandidateClass.A_ROAD_MAJOR_PROTECTED_INFRASTRUCTURE
+    elif "public-bridleway" in bases or "prow-class-unknown" in bases:
+        reuse = ReuseFirstCandidateClass.UPGRADEABLE_OFF_CARRIAGEWAY
     elif "local-connector" in bases:
         reuse = ReuseFirstCandidateClass.LOW_TRAFFIC_NON_A_ROAD
     else:
         reuse = ReuseFirstCandidateClass.UNKNOWN_OR_CONFLICTING
-    if explicit_intervention is not None:
-        intervention = explicit_intervention
+
+    major_bases = {"a-road", "b-road", "classified-unnumbered-road"}
+    upgrade_bases = {
+        "public-bridleway",
+        "restricted-byway",
+        "public-footpath",
+        "byway-open-to-all-traffic",
+        "prow-class-unknown",
+        "local-connector",
+    }
+    if major_bases.intersection(bases):
+        intervention = InterventionState.PROPOSED_NEW_LINK
+    elif upgrade_bases.intersection(bases):
+        intervention = InterventionState.UPGRADE_REQUIRED
     elif reuse is ReuseFirstCandidateClass.EXISTING_CYCLE_PROVISION:
         intervention = InterventionState.EXISTING_PROVISION
-    elif reuse in {
-        ReuseFirstCandidateClass.UPGRADEABLE_OFF_CARRIAGEWAY,
-        ReuseFirstCandidateClass.LOW_TRAFFIC_NON_A_ROAD,
-    }:
-        intervention = InterventionState.UPGRADE_REQUIRED
-    elif reuse is ReuseFirstCandidateClass.A_ROAD_MAJOR_PROTECTED_INFRASTRUCTURE:
-        intervention = InterventionState.PROPOSED_NEW_LINK
     else:
         intervention = InterventionState.UNDETERMINED
-    return reuse, intervention, tuple(sorted(bases)), bases[0]
+    primary = explicit_primary or facts.primary_alignment_basis
+    return reuse, intervention, bases, primary, source_class
 
 
 def _fingerprint(value: object) -> str:
@@ -519,18 +548,22 @@ def discovery_from_preparation(
                     )
                 )
                 continue
-            reuse, intervention, bases, primary = _facts(
-                candidate, graph, prepared.routing_edge_ids
+            reuse, intervention, bases, primary, source_class = _facts(
+                candidate,
+                graph,
+                prepared.routing_edge_ids,
+                unit.candidate_set.candidate_source_precedence,
             )
-            candidate = AlignmentCandidateInput.model_validate(
-                {
-                    **candidate.model_dump(mode="python", exclude={"candidate_id"}),
-                    "reuse_class": reuse,
-                    "intervention_state": intervention,
-                    "alignment_bases": bases,
-                    "primary_alignment_basis": primary,
-                }
-            )
+            candidate_payload = {
+                **candidate.model_dump(mode="python", exclude={"candidate_id"}),
+                "reuse_class": reuse,
+                "intervention_state": intervention,
+                "alignment_bases": bases,
+                "primary_alignment_basis": primary,
+            }
+            if source_class is not None:
+                candidate_payload["source_class"] = source_class
+            candidate = AlignmentCandidateInput.model_validate(candidate_payload)
             evidence_ids = tuple(sorted(set((*prepared.evidence_ids, *prepared.source_ids))))
             section = CandidateReviewSection(
                 section_id=f"section-{candidate.candidate_id}",

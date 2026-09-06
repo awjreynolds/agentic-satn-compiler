@@ -60,6 +60,13 @@
     type: "FeatureCollection",
     features: []
   };
+  const strategicMainDisplay = reviewable.strategic_main_display || {
+    type: "FeatureCollection",
+    features: []
+  };
+  const strategicMainDisplaySource = strategicMainDisplay.features?.length
+    ? "strategic-main-display"
+    : "reviewable";
   const hasEffectiveStrategicNetwork = Boolean(data.strategic_result_fingerprint);
   const hasReviewableRoutes = reviewable.features.some(
     (feature) => feature.properties?.feature_type === "reviewable-selected-route"
@@ -96,6 +103,14 @@
       .filter(hasDataValue)
       .forEach((identifier) => placeNamesById.set(String(identifier), String(name)));
   });
+  Object.entries(data.urban_journey_place_names || {}).forEach(([identifier, name]) => {
+    const key = String(identifier);
+    if (!hasDataValue(name) || placeNamesById.has(key)) return;
+    placeNamesById.set(key, String(name));
+  });
+  const urbanJourneyPlaceIds = new Set(
+    Object.keys(data.urban_journey_place_names || {}).map((identifier) => String(identifier))
+  );
   const referenceRecord = data.reference_satn || null;
   const referenceOptions = data.reference_satn_options || { type: "FeatureCollection", features: [] };
   const reviewLensState = window.SATN_REVIEW_LENS_STATE;
@@ -1557,6 +1572,25 @@
   function resolveRenderedArtifact(rendered) {
     const sourceId = rendered.source;
     const layerId = rendered.layer?.id || "unknown";
+    if (sourceId === "strategic-main-display") {
+      const journeyArtifacts = parseList(rendered.properties?.participating_journey_ids)
+        .map((journeyId) => reviewable.features.find((feature) =>
+          String(feature.id) === String(journeyId) ||
+          String(feature.properties?.section_id || "") === String(journeyId)
+        ))
+        .filter(Boolean)
+        .map((feature) => reviewLensState.artifactRecord(feature, "reviewable", layerId))
+        .filter(Boolean);
+      if (journeyArtifacts.length === 1) return journeyArtifacts[0];
+      return {
+        key: `strategic-main-display:${String(rendered.id)}`,
+        id: String(rendered.id),
+        sourceId,
+        layerId,
+        feature: rendered,
+        journeyArtifacts,
+      };
+    }
     const renderedId = reviewLensState.stableArtifactId(rendered);
     const original = sourceFeatures(sourceId).find(
       (candidate) => reviewLensState.stableArtifactId(candidate) === renderedId
@@ -2228,6 +2262,32 @@
     showReviewLens();
   }
 
+  function renderStrategicMainJourneyChooser(panel, artifact) {
+    const journeys = artifact.journeyArtifacts || [];
+    panel.replaceChildren();
+    const heading = document.createElement("h3");
+    heading.id = "details-heading";
+    heading.textContent = "Shared Main section";
+    const note = document.createElement("p");
+    note.className = "comparison-note";
+    note.textContent = "This section serves several selected journeys. Choose a journey to open its comparison.";
+    const list = document.createElement("div");
+    list.className = "route-choice-list shared-journey-list";
+    journeys.forEach((journey) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "route-choice-card shared-journey-choice";
+      const endpointNames = urbanJourneyEndpointNames(journey.feature);
+      const journeyName = endpointNames.length >= 2
+        ? endpointNames.slice(0, 2).join(" → ")
+        : reviewableChoiceDisplayName(journey);
+      button.textContent = `Open ${journeyName}`;
+      button.addEventListener("click", () => selectReviewableChoiceArtifact(journey));
+      list.append(button);
+    });
+    panel.append(heading, note, list);
+  }
+
   function showArtifactDetails(artifact) {
     if (!artifact) return;
     const pinned = Boolean(lensState.pinnedArtifact);
@@ -2250,6 +2310,10 @@
       renderReviewableDetails(artifact, { includeChoiceDetails: false });
     } else {
       renderArtifactPreview(artifact, { includeEvidence: true });
+    }
+    if (artifact.sourceId === "strategic-main-display") {
+      const panel = document.querySelector("#feature-details");
+      renderStrategicMainJourneyChooser(panel, artifact);
     }
     setLensArtifactHighlight(artifact);
     if (pinned) {
@@ -2562,6 +2626,22 @@
   }
 
   function toggleArtifactPin(artifact) {
+    if (artifact?.sourceId === "strategic-main-display") {
+      const journeys = artifact.journeyArtifacts || [];
+      if (journeys.length === 1) {
+        toggleArtifactPin(journeys[0]);
+        return;
+      }
+      syncLensState(reviewLensState.reduceLens(
+        reviewLensState.createInitialLensState(),
+        { type: reviewLensState.ActionType.TOGGLE_PIN_ARTIFACT, artifact }
+      ));
+      const panel = document.querySelector("#feature-details");
+      renderStrategicMainJourneyChooser(panel, artifact);
+      setLensArtifactHighlight(artifact);
+      showReviewLens();
+      return;
+    }
     if (isReviewableChoicePair(lensState.pinnedArtifact, artifact)) {
       selectReviewableChoiceArtifact(artifact);
       return;
@@ -2610,9 +2690,58 @@
     if (artifact) toggleArtifactPin(artifact);
   }
 
+  function urbanJourneyEndpointNames(feature) {
+    const endpointIds = parseList(feature.properties?.endpoints)
+      .map((identifier) => String(identifier))
+      .filter((identifier) => urbanJourneyPlaceIds.has(identifier));
+    return [...new Set(endpointIds.map(placeNameForId).filter(hasDataValue))];
+  }
+
+  function renderUrbanJourneyCards(list) {
+    const seenJourneys = new Set();
+    reviewable.features
+      .filter((feature) => feature.properties?.feature_type === "reviewable-selected-route")
+      .forEach((feature) => {
+        const endpointNames = urbanJourneyEndpointNames(feature);
+        if (endpointNames.length < 2) return;
+        const endpointIds = parseList(feature.properties?.endpoints)
+          .map((identifier) => String(identifier))
+          .filter((identifier) => urbanJourneyPlaceIds.has(identifier));
+        const journeyKey = String(
+          feature.properties?.urban_journey_id || [...new Set(endpointIds)].sort().join("|")
+        );
+        if (!journeyKey || seenJourneys.has(journeyKey)) return;
+        seenJourneys.add(journeyKey);
+        const artifact = reviewLensState.artifactRecord(feature, "reviewable", "feature-index");
+        if (!artifact) return;
+        const button = document.createElement("button");
+        button.type = "button";
+        button.id = `item-${feature.id}`;
+        button.className = "connection urban-journey";
+        button.dataset.featureId = feature.id;
+        button.dataset.featureType = feature.properties.feature_type;
+        button.setAttribute("aria-pressed", "false");
+        const title = document.createElement("strong");
+        title.textContent = endpointNames.slice(0, 2).join(" → ");
+        const summary = document.createElement("span");
+        summary.textContent = "Preferred urban journey · comparison available";
+        button.append(title, summary);
+        const preview = () => {
+          if (!lensState.pinnedArtifact) showArtifactDetails(artifact);
+        };
+        button.addEventListener("mouseenter", preview);
+        button.addEventListener("focus", preview);
+        button.addEventListener("mouseleave", clearTransient);
+        button.addEventListener("blur", clearTransient);
+        button.addEventListener("click", () => toggleArtifactPin(artifact));
+        list.append(button);
+      });
+  }
+
   function renderCards() {
     const list = document.querySelector("#connection-list");
     list.replaceChildren();
+    renderUrbanJourneyCards(list);
     network.features
       .filter((feature) =>
         eligibleForGradientPath(feature) ||
@@ -3028,6 +3157,7 @@
   map.on("load", () => {
     map.addSource("network", { type: "geojson", data: network });
     map.addSource("reviewable", { type: "geojson", data: reviewable });
+    map.addSource("strategic-main-display", { type: "geojson", data: strategicMainDisplay });
     map.addSource("places", { type: "geojson", data: places });
     map.addSource("topography", {
       type: "geojson",
@@ -3229,7 +3359,7 @@
     map.addLayer({
       id: "reviewable-strategic-main-network",
       type: "line",
-      source: "reviewable",
+      source: strategicMainDisplaySource,
       filter: reviewableStrategicMainNetworkFilter,
       layout: { visibility: hasSemanticStrategicMainNetwork ? "visible" : "none" },
       paint: {

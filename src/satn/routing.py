@@ -212,6 +212,7 @@ class RoadGraph:
                 "oneway": _truthy(row.get("oneway")),
                 "alongside": str(row.get("satn_alongside", "possible")),
                 "ncn": _truthy(row.get("satn_ncn")),
+                "cycle_alignment_bases": tuple(_tag_values(row.get("cycle_alignment_bases"))),
             }
             self._add_best_edge(u, v, attrs)
             if not _present(row.get("u")) and not attrs["oneway"]:

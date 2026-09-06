@@ -27,6 +27,11 @@ STRATEGIC_CYCLE_ROUTE_TYPES = {
     "declassified-ncn-route",
     "greenway-cycleway",
 }
+CYCLE_ALIGNMENT_BASIS_BY_FEATURE_TYPE = {
+    "ncn-route": "current-ncn",
+    "declassified-ncn-route": "reclassified-ncn",
+    "greenway-cycleway": "greenway",
+}
 PUBLIC_CYCLE_ROUTE_TYPES = {*STRATEGIC_CYCLE_ROUTE_TYPES, "ncn-link"}
 OFFICIAL_ROAD_DISAGREEMENT_TOLERANCE_M = 25.0
 RoadClassificationDisagreementType = Literal[
@@ -762,11 +767,25 @@ def mark_ncn_edges(network: gpd.GeoDataFrame, context: gpd.GeoDataFrame) -> gpd.
     """Annotate routable edges that overlap strategic public cycle-route evidence."""
     result = network.copy()
     ncn = context[context["feature_type"].isin(STRATEGIC_CYCLE_ROUTE_TYPES)]
+    cycle_alignment_bases = [()] * len(result)
     if ncn.empty:
         result["satn_ncn"] = False
+        result["cycle_alignment_bases"] = cycle_alignment_bases
         return result
     projected = result.to_crs(27700)
-    corridor = ncn.to_crs(27700).geometry.buffer(20).union_all()
+    projected_ncn = ncn.to_crs(27700)
+    typed_corridors = tuple(
+        (
+            feature_type,
+            CYCLE_ALIGNMENT_BASIS_BY_FEATURE_TYPE[feature_type],
+            projected_ncn.loc[projected_ncn["feature_type"].eq(feature_type), "geometry"]
+            .buffer(20)
+            .union_all(),
+        )
+        for feature_type in CYCLE_ALIGNMENT_BASIS_BY_FEATURE_TYPE
+        if projected_ncn["feature_type"].eq(feature_type).any()
+    )
+    corridor = projected_ncn.geometry.buffer(20).union_all()
     candidate_positions = sorted(
         int(position) for position in projected.sindex.query(corridor, predicate="intersects")
     )
@@ -775,14 +794,22 @@ def mark_ncn_edges(network: gpd.GeoDataFrame, context: gpd.GeoDataFrame) -> gpd.
         candidate_geometry = projected.geometry.iloc[candidate_positions]
         candidate_lengths = candidate_geometry.length
         overlap_shares = candidate_geometry.intersection(corridor).length / candidate_lengths
-        for position, length, overlap_share in zip(
+        for position, geometry, length, overlap_share in zip(
             candidate_positions,
+            candidate_geometry,
             candidate_lengths,
             overlap_shares,
             strict=True,
         ):
             marked[position] = bool(length and overlap_share >= 0.5)
+            if length:
+                cycle_alignment_bases[position] = tuple(
+                    basis
+                    for _feature_type, basis, typed_corridor in typed_corridors
+                    if geometry.intersection(typed_corridor).length / length >= 0.5
+                )
     result["satn_ncn"] = marked
+    result["cycle_alignment_bases"] = cycle_alignment_bases
     return result
 
 

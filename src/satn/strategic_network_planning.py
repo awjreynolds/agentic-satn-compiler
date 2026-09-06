@@ -421,7 +421,7 @@ def _canonical_gap_scope(
 
     Direct planning requests have no preparation roster, so every unresolved
     obligation remains explicit.  A prepared regional run distinguishes the
-    required A-road units from optional interurban candidate attempts while
+    required A-road and urban-journey units from optional candidate attempts while
     retaining destination/access preparation issues for the support layer.
     """
 
@@ -432,7 +432,7 @@ def _canonical_gap_scope(
     required_candidate_set_ids: set[str] = set()
     access_issue_ids: set[str] = set()
     for unit in tuple(getattr(preparation, "units", ())):
-        if getattr(unit, "backbone_required", False):
+        if getattr(unit, "backbone_required", False) or getattr(unit, "urban_journey_id", None):
             required_obligation_ids.add(str(getattr(unit, "unit_id", "")))
             candidate_set = getattr(unit, "candidate_set", None)
             candidate_set_id = getattr(candidate_set, "candidate_set_id", None)
@@ -1359,6 +1359,11 @@ def _mesh_materialized_sections(
         for candidate_set in request.discovery.candidate_sets
         for candidate in candidate_set.admitted_candidates
     }
+    urban_journey_obligation_ids = {
+        unit.unit_id
+        for unit in getattr(request.corridor_obligations, "units", ())
+        if getattr(unit, "urban_journey_id", None)
+    }
 
     def _a_section_replaced_by_compared_candidate(
         section: EffectiveStrategicSection,
@@ -1417,6 +1422,7 @@ def _mesh_materialized_sections(
         section.section_id
         for section in normalized_sections
         if section.obligation_id in request.backbone_obligation_ids
+        or section.obligation_id in urban_journey_obligation_ids
         or (
             section.network_role.casefold() == "urban-main-road-spine"
             and "a-road" in section.alignment_bases

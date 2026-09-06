@@ -46,6 +46,7 @@ from satn.psa_evidence_loaders import (
     load_education_access_evidence,
     load_population_reach_evidence,
 )
+from satn.route_source_facts import derive_route_source_facts
 from satn.routing import RoadGraph, RouteOption, _coordinate_id, _present, _truthy, choose_alignment
 from satn.section_population import (
     MaterialPopulationDifference,
@@ -56,6 +57,10 @@ from satn.section_population import (
 )
 from satn.spine_access_candidate_preparation import SpineAccessCandidatePreparationResult
 from satn.urban import URBAN_SPINE_TERMINUS_TOLERANCE_M
+from satn.urban_journeys import (
+    UrbanJourneyPreparation,
+    prepare_urban_journeys,
+)
 
 STRATEGIC_CORRIDOR_PREPARATION_CONTRACT = "satn-strategic-corridor-preparation/v1"
 STRATEGIC_DESTINATION_GRAPH_BINDING_CONTRACT = "satn-strategic-destination-graph-binding/v1"
@@ -241,6 +246,7 @@ class PreparedStrategicCorridorUnit:
     access_point_evidence_ids: tuple[str, ...]
     candidate_records: tuple[StrategicCorridorCandidateRecord, ...]
     network_scope: str = "rural"
+    urban_journey_id: str | None = None
     backbone_required: bool = False
     endpoint_coordinates: tuple[tuple[float, float], ...] = ()
     backbone_component_ids: tuple[str, ...] = ()
@@ -286,18 +292,34 @@ class PreparedStrategicCorridorUnit:
             ):
                 raise ValueError("A-road backbone unit must use mechanical endpoints only")
         elif self.unit_role is StrategicCorridorUnitRole.INTERURBAN_SPINE:
-            if (
-                anchor_count != 2
-                or len(binding.network_place_ids) != 2
-                or binding.strategic_destination_ids
-                or self.strategic_destination_id is not None
-                or self.candidate_set.mandatory_network_place_ids != binding.network_place_ids
-                or any(
-                    candidate.served_network_place_ids != binding.network_place_ids
-                    or candidate.served_strategic_destination_ids
-                    for candidate in self.candidate_set.candidates
+            if self.urban_journey_id is not None:
+                valid = (
+                    bool(self.urban_journey_id)
+                    and anchor_count == 0
+                    and len(binding.network_place_ids) == 2
+                    and not binding.strategic_destination_ids
+                    and self.strategic_destination_id is None
+                    and self.candidate_set.mandatory_network_place_ids == binding.network_place_ids
+                    and all(
+                        candidate.served_network_place_ids == binding.network_place_ids
+                        and not candidate.served_strategic_destination_ids
+                        for candidate in self.candidate_set.candidates
+                    )
                 )
-            ):
+            else:
+                valid = (
+                    anchor_count == 2
+                    and len(binding.network_place_ids) == 2
+                    and not binding.strategic_destination_ids
+                    and self.strategic_destination_id is None
+                    and self.candidate_set.mandatory_network_place_ids == binding.network_place_ids
+                    and all(
+                        candidate.served_network_place_ids == binding.network_place_ids
+                        and not candidate.served_strategic_destination_ids
+                        for candidate in self.candidate_set.candidates
+                    )
+                )
+            if not valid:
                 raise ValueError("interurban unit requires exactly two Network Places")
         elif (
             anchor_count != 1
@@ -331,6 +353,7 @@ class PreparedStrategicCorridorUnit:
             "access_point_evidence_ids": list(self.access_point_evidence_ids),
             "candidate_records": [item.canonical() for item in self.candidate_records],
             "network_scope": self.network_scope,
+            "urban_journey_id": self.urban_journey_id,
             "backbone_required": self.backbone_required,
             "endpoint_coordinates": [list(item) for item in self.endpoint_coordinates],
             "backbone_component_ids": list(self.backbone_component_ids),
@@ -354,6 +377,7 @@ class StrategicCorridorPreparationResult:
     material_population_differences: tuple[MaterialPopulationDifference, ...]
     preparation_fingerprint: str
     phase_diagnostics: dict[str, object]
+    urban_journeys: UrbanJourneyPreparation | None = None
 
     @property
     def prepared(self) -> bool:
@@ -370,6 +394,9 @@ class StrategicCorridorPreparationResult:
             "missing_inputs": list(self.missing_inputs),
             "evidence_fingerprints": list(self.evidence_fingerprints),
             "evidence_lineage": self.evidence_lineage,
+            "urban_journeys": (
+                self.urban_journeys.canonical() if self.urban_journeys is not None else None
+            ),
         }
         if self.section_population is not None:
             payload["section_population"] = self.section_population.canonical()
@@ -443,6 +470,8 @@ def prepare_strategic_corridors(
     urban_extent: gpd.GeoDataFrame | None = None,
     official_road_classification: gpd.GeoDataFrame | None = None,
     urban_spines: gpd.GeoDataFrame | None = None,
+    urban_places: gpd.GeoDataFrame | None = None,
+    prepared_urban_journeys: UrbanJourneyPreparation | None = None,
 ) -> StrategicCorridorPreparationResult:
     """Generate only finite, current, evidence-bound strategic units.
 
@@ -486,35 +515,69 @@ def prepare_strategic_corridors(
         spine_access_connections,
         access_obligations=access_obligations,
     )
-    route_pairs = set(_strategic_route_pairs(road_graph, anchors, context, education))
-    # Backbone pairs use the same targeted route-option seam as ordinary
-    # strategic pairs. Unbound official junctions are intentionally omitted
-    # here and remain explicit preparation issues below.
-    for chain in _official_a_road_chains(official_road_classification):
-        start_node = _bound_backbone_node(road_graph, chain["start_point"])
-        end_node = _bound_backbone_node(road_graph, chain["end_point"])
-        if start_node is not None and end_node is not None and start_node != end_node:
-            route_pairs.add((start_node, end_node))
+    if profile.contract is None and prepared_urban_journeys is not None:
+        urban_journeys = prepared_urban_journeys
+    elif profile.contract is None and urban_places is not None:
+        urban_journeys = prepare_urban_journeys(
+            label_places=urban_places,
+            area_definition=area_definition,
+            road_graph=road_graph,
+        )
+    else:
+        urban_journeys = None
+    urban_journey_mode = (
+        profile.contract is None
+        and prepared_urban_journeys is not None
+        and urban_journeys is not None
+        and any(item.preferred for item in urban_journeys.adjacencies)
+    )
+    if urban_journey_mode:
+        assert urban_journeys is not None
+        route_pairs = {item.routing_node_ids for item in urban_journeys.adjacencies}
+    else:
+        route_pairs = set(_strategic_route_pairs(road_graph, anchors, context, education))
+        if urban_journeys is not None and urban_journeys.places:
+            route_pairs.update(item.routing_node_ids for item in urban_journeys.adjacencies)
+        # Backbone pairs use the same targeted route-option seam as ordinary
+        # strategic pairs. Unbound official junctions are intentionally omitted
+        # here and remain explicit preparation issues below.
+        for chain in _official_a_road_chains(official_road_classification):
+            start_node = _bound_backbone_node(road_graph, chain["start_point"])
+            end_node = _bound_backbone_node(road_graph, chain["end_point"])
+            if start_node is not None and end_node is not None and start_node != end_node:
+                route_pairs.add((start_node, end_node))
     route_options, route_searches = road_graph.route_options_for_pairs(
         tuple(sorted(route_pairs)),
         roles=_ROUTING_ROLES,
         strategic_use=True,
     )
-    backbone_units, backbone_issues = _a_road_backbone_units(
-        profile,
-        road_graph,
-        official_road_classification,
-        urban_spines,
-        context,
-        route_options,
-    )
-    units, issues = _interurban_units(
-        profile,
-        road_graph,
-        anchors,
-        context,
-        route_options,
-    )
+    if urban_journey_mode:
+        backbone_units, backbone_issues = (), ()
+    else:
+        backbone_units, backbone_issues = _a_road_backbone_units(
+            profile,
+            road_graph,
+            official_road_classification,
+            urban_spines,
+            context,
+            route_options,
+        )
+    if urban_journeys is None or not urban_journeys.places:
+        units, issues = _interurban_units(
+            profile,
+            road_graph,
+            anchors,
+            context,
+            route_options,
+        )
+    else:
+        units, issues = _urban_interurban_units(
+            profile,
+            road_graph,
+            urban_journeys,
+            context,
+            route_options,
+        )
     destination_units, destination_issues = _destination_units(
         profile,
         road_graph,
@@ -561,6 +624,13 @@ def prepare_strategic_corridors(
         "a_road_backbone_units": len(backbone_units),
         "a_road_backbone_issues": len(backbone_issues),
         "route_searches": route_searches,
+        "urban_places": len(urban_journeys.places) if urban_journeys is not None else 0,
+        "urban_adjacencies": len(urban_journeys.adjacencies) if urban_journeys is not None else 0,
+        "urban_preferred_adjacencies": (
+            sum(item.preferred for item in urban_journeys.adjacencies)
+            if urban_journeys is not None
+            else 0
+        ),
         "unique_alignments": len(physical_alignments),
         "sections": len(section_population.sections) if section_population is not None else 0,
         "elapsed_seconds": perf_counter() - started_at,
@@ -593,6 +663,7 @@ def prepare_strategic_corridors(
         "missing_inputs": sorted(set(missing)),
         "evidence_fingerprints": list(fingerprints),
         "evidence_lineage": lineage,
+        "urban_journeys": urban_journeys.canonical() if urban_journeys is not None else None,
         **(
             {
                 "section_population": section_population.canonical(),
@@ -618,6 +689,7 @@ def prepare_strategic_corridors(
         material_population_differences=material_population_differences,
         preparation_fingerprint=_fingerprint(provisional),
         phase_diagnostics=phase_diagnostics,
+        urban_journeys=urban_journeys,
     )
 
 
@@ -1497,6 +1569,100 @@ def _interurban_units(
     return tuple(units), tuple(issues)
 
 
+def _urban_interurban_units(
+    profile: NetworkSelectionProfile,
+    graph: RoadGraph,
+    urban_journeys: UrbanJourneyPreparation,
+    context: gpd.GeoDataFrame,
+    route_options: Mapping[tuple[str, str], Mapping[str, RouteOption | None]],
+) -> tuple[tuple[PreparedStrategicCorridorUnit, ...], tuple[StrategicCorridorIssue, ...]]:
+    """Turn preferred observed urban adjacencies into ordinary route comparisons.
+
+    B-road and local transitions remain in ``urban_journeys.adjacencies`` for
+    later governed gap handling, but do not become Main units without an
+    explicit missing-connection decision.
+    """
+
+    places_by_id = {item.place_id: item for item in urban_journeys.places}
+    units: list[PreparedStrategicCorridorUnit] = []
+    issues: list[StrategicCorridorIssue] = []
+    for adjacency in urban_journeys.adjacencies:
+        if not adjacency.preferred:
+            continue
+        left = places_by_id.get(adjacency.place_ids[0])
+        right = places_by_id.get(adjacency.place_ids[1])
+        if left is None or right is None:
+            issues.append(
+                StrategicCorridorIssue(
+                    StrategicCorridorUnitRole.INTERURBAN_SPINE,
+                    "urban-journey-place-binding-missing",
+                    "urban adjacency references a place that did not bind to the current graph",
+                    endpoints=adjacency.place_ids,
+                    network_role=NetworkRole.INTERURBAN_SPINE.value,
+                )
+            )
+            continue
+        start, end = adjacency.routing_node_ids
+        if start == end:
+            issues.append(
+                StrategicCorridorIssue(
+                    StrategicCorridorUnitRole.INTERURBAN_SPINE,
+                    "identical-urban-journey-anchor-nodes",
+                    "urban city/town points resolve to one RoadGraph node",
+                    endpoints=adjacency.place_ids,
+                    network_role=NetworkRole.INTERURBAN_SPINE.value,
+                )
+            )
+            continue
+        candidate_set, records = _candidate_set(
+            profile,
+            graph,
+            unit_role=StrategicCorridorUnitRole.INTERURBAN_SPINE,
+            endpoints=adjacency.place_ids,
+            mandatory_network_place_ids=adjacency.place_ids,
+            start_node=start,
+            end_node=end,
+            source_ids=tuple(sorted((left.source_id, right.source_id))),
+            evidence_ids=adjacency.cross_region_edge_ids,
+            context=context,
+            strategic_destination_id=None,
+            precomputed_options=route_options.get((start, end)),
+        )
+        unit_id = _stable_id(
+            "alignment-unit",
+            {
+                "role": StrategicCorridorUnitRole.INTERURBAN_SPINE.value,
+                "urban_journey_id": adjacency.journey_id,
+            },
+        )
+        units.append(
+            PreparedStrategicCorridorUnit(
+                unit_id=unit_id,
+                unit_role=StrategicCorridorUnitRole.INTERURBAN_SPINE,
+                candidate_set=candidate_set,
+                endpoint_binding=StrategicCorridorEndpointBinding(
+                    candidate_endpoints=candidate_set.endpoints,
+                    routing_node_ids=(start, end),
+                    network_place_ids=adjacency.place_ids,
+                    strategic_destination_ids=(),
+                ),
+                anchor_connection_ids=(),
+                anchor_obligation_ids=(),
+                routing_start_node_id=start,
+                routing_end_node_id=end,
+                strategic_destination_id=None,
+                site_id=None,
+                access_point_evidence_ids=adjacency.cross_region_edge_ids,
+                candidate_records=records,
+                urban_journey_id=adjacency.journey_id,
+                endpoint_coordinates=(left.coordinates, right.coordinates),
+            )
+        )
+    return tuple(sorted(units, key=lambda item: item.unit_id)), tuple(
+        sorted(issues, key=_issue_key)
+    )
+
+
 def _destination_units(
     profile: NetworkSelectionProfile,
     graph: RoadGraph,
@@ -1679,7 +1845,16 @@ def _candidate_set(
             or not _geometry_endpoints_match(geometry, exact_backbone_geometry)
         ):
             continue
-        source_class = _source_class(option, graph, context)
+        source_facts = (
+            derive_route_source_facts(option, graph, profile.candidate_source_precedence)
+            if profile.candidate_source_precedence is not None
+            else None
+        )
+        source_class = (
+            source_facts.generation_source_class or CandidateSourceClass.OTHER_ROUTABLE
+            if source_facts is not None
+            else _source_class(option, graph, context)
+        )
         key = (
             unit_role.value,
             tuple(sorted(endpoints)),
@@ -1696,6 +1871,7 @@ def _candidate_set(
                 "option": option,
                 "geometry": geometry,
                 "source_class": source_class,
+                "source_facts": source_facts,
                 "strategies": set(),
             },
         )
@@ -1716,6 +1892,7 @@ def _candidate_set(
         option = entry["option"]
         geometry = entry["geometry"]
         source_class = entry["source_class"]
+        source_facts = entry["source_facts"]
         strategies = tuple(sorted(entry["strategies"]))
         assert isinstance(option, RouteOption)
         assert isinstance(geometry, CanonicalLineString)
@@ -1751,6 +1928,10 @@ def _candidate_set(
             served_network_place_ids=tuple(sorted(mandatory_network_place_ids)),
             served_strategic_destination_ids=strategic_destination_ids,
             directness_m=float(option.length_km * 1000),
+            alignment_bases=source_facts.alignment_bases if source_facts is not None else (),
+            primary_alignment_basis=(
+                source_facts.primary_alignment_basis if source_facts is not None else None
+            ),
         )
         candidates.append(candidate)
         raw.append((candidate, option, strategies))

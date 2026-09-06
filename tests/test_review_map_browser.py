@@ -4,14 +4,20 @@ import json
 import shutil
 from pathlib import Path
 
+import geopandas as gpd
+import pandas as pd
 import pytest
 from bath_saltford_fixture import configured_bath_saltford
 from playwright.sync_api import sync_playwright
+from shapely.geometry import Point
 
 from satn import compile
+from satn.agents import FakeAgentRuntime
+from satn.compiler import compile_network
 from satn.filesystem_safety import publication_destination_authority
 from satn.models import CouncilConfig
-from satn.sources import snapshot
+from satn.publisher import _write_review_map
+from satn.sources import load_snapshot, snapshot
 
 PROJECT = Path(__file__).parents[1]
 
@@ -1536,4 +1542,153 @@ def test_selecting_route_opens_same_journey_comparison_without_enabling_alternat
             == "selected"
         )
 
+        browser.close()
+
+
+@pytest.mark.browser
+def test_feature_index_keyboard_opens_urban_journey_comparison(tmp_path: Path) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    source = load_snapshot(config)
+    labels = source["label_places"].copy()
+    labels["kind"] = "town"
+    labels["element"] = "node"
+    labels["id"] = ["bath", "saltford"]
+    labels["name"] = ["Bath", "Saltford"]
+    source["label_places"] = labels
+    compiled = compile_network(config, source, FakeAgentRuntime())
+    (tmp_path / "backbone-comparison.json").write_text("{}")
+    review = tmp_path / "review-map"
+    review.mkdir()
+    _write_review_map(review, config, compiled)
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1440, "height": 900})
+        page.route("https://tile.openstreetmap.org/**", lambda route: route.abort())
+        page.goto((review / "index.html").as_uri())
+        page.wait_for_function("document.documentElement.dataset.mapReady === 'true'")
+        page.wait_for_function("!window.SATN_REVIEW_MAP.isMoving()")
+
+        page.locator("#feature-index summary").click()
+        first_card = page.locator("#connection-list .connection").first
+        assert "Bath → Saltford" in first_card.inner_text()
+        first_card.focus()
+        first_card.press("Enter")
+
+        assert page.locator("#review-lens").get_attribute("data-state") == "pinned"
+        comparison = page.locator(".route-choice-comparison")
+        assert comparison.is_visible()
+        comparison_text = comparison.inner_text()
+        assert "Preferred route" in comparison_text
+        assert "Considered alternative" in comparison_text
+        assert page.locator("#layer-unselected-candidates").is_checked() is False
+        assert page.evaluate(
+            "window.SATN_REVIEW_MAP.getLayoutProperty("
+            "'review-lens-related-alternatives', 'visibility') === 'visible'"
+        )
+        assert page.evaluate(
+            "window.SATN_REVIEW_MAP.getSource("
+            "'review-lens-related-alternatives')._data.features.length > 0"
+        )
+        browser.close()
+
+
+@pytest.mark.browser
+def test_shared_main_geometry_opens_a_named_journey_comparison(tmp_path: Path) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    source = load_snapshot(config)
+    labels = source["label_places"].copy()
+    labels["kind"] = "town"
+    labels["place_id"] = ["bath", "saltford"]
+    labels["name"] = ["Bath", "Saltford"]
+    railway_mid = gpd.GeoDataFrame(
+        [
+            {
+                "place_id": "railway-mid",
+                "name": "Railway Mid",
+                "kind": "town",
+                "population": 1000,
+                "geometry": Point(-2.405, 51.405),
+            }
+        ],
+        geometry="geometry",
+        crs=labels.crs,
+    )
+    source["label_places"] = gpd.GeoDataFrame(
+        pd.concat([labels, railway_mid], ignore_index=True),
+        geometry="geometry",
+        crs=labels.crs,
+    )
+    compiled = compile_network(config, source, FakeAgentRuntime())
+    (tmp_path / "backbone-comparison.json").write_text("{}")
+    review = tmp_path / "review-map"
+    review.mkdir()
+    _write_review_map(review, config, compiled)
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1440, "height": 900})
+        page.route("https://tile.openstreetmap.org/**", lambda route: route.abort())
+        page.goto((review / "index.html").as_uri())
+        page.wait_for_function("document.documentElement.dataset.mapReady === 'true'")
+        page.wait_for_function("!window.SATN_REVIEW_MAP.isMoving()")
+
+        shared = page.evaluate(
+            """() => {
+              const collection = window.SATN_DATA.reviewable_network.strategic_main_display;
+              const feature = collection?.features.find((candidate) =>
+                candidate.properties?.participating_journey_ids?.length > 1
+              );
+              if (!feature) return null;
+              const coordinates = feature.geometry.type === 'LineString'
+                ? feature.geometry.coordinates
+                : feature.geometry.coordinates[0];
+              const midpoint = coordinates[0].map((value, index) =>
+                (value + coordinates[1][index]) / 2
+              );
+              const point = window.SATN_REVIEW_MAP.project(midpoint);
+              return {
+                id: feature.id,
+                routeIds: feature.properties.participating_journey_ids,
+                x: point.x,
+                y: point.y
+              };
+            }"""
+        )
+        assert shared is not None
+        assert len(shared["routeIds"]) > 1
+        assert page.evaluate(
+            "(id) => window.SATN_REVIEW_MAP.getSource('strategic-main-display')._data.features"
+            ".some((feature) => feature.id === id)",
+            shared["id"],
+        )
+
+        map_box = page.locator("#map").bounding_box()
+        assert map_box is not None
+        canvas = page.locator(".maplibregl-canvas")
+        canvas.hover(position={"x": shared["x"], "y": shared["y"]})
+        page.wait_for_function(
+            "document.querySelector('#feature-details').innerText.includes('Shared Main section')"
+        )
+        canvas.click(position={"x": shared["x"], "y": shared["y"]})
+        assert page.locator("#review-lens").get_attribute("data-state") == "pinned"
+        chooser = page.locator(".shared-journey-list")
+        assert chooser.is_visible()
+        chooser_text = chooser.inner_text()
+        assert "Bath" in chooser_text
+        assert "Saltford" in chooser_text
+
+        journey_button = chooser.get_by_role("button", name="Open Bath → Saltford")
+        journey_button.hover()
+        assert chooser.is_visible()
+        journey_button.click()
+        comparison = page.locator(".route-choice-comparison")
+        assert comparison.is_visible()
+        assert "Preferred route" in comparison.inner_text()
+        assert page.evaluate(
+            "window.SATN_REVIEW_MAP.getLayoutProperty("
+            "'reviewable-unselected-candidates', 'visibility') === 'none'"
+        )
         browser.close()
