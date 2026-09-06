@@ -635,7 +635,7 @@ def discovery_from_preparation(
         issue_endpoints = tuple(getattr(issue, "endpoints", ("", "")))
         endpoints = (
             issue_endpoints
-            if len(issue_endpoints) == 2 and all(issue_endpoints)
+            if issue_endpoints and all(issue_endpoints)
             else ("unresolved", obligation_id)
         )
         diagnostic_id = f"strategic-preparation-{_fingerprint(issue.canonical())[:20]}"

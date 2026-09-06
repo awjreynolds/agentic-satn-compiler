@@ -184,6 +184,7 @@ def prepare_urban_journeys(
     label_places: gpd.GeoDataFrame,
     area_definition: gpd.GeoDataFrame | None,
     road_graph: RoadGraph,
+    urban_scope_buffer_m: float | None = None,
 ) -> UrbanJourneyPreparation:
     """Bind in-area city/town points and derive observed region adjacencies.
 
@@ -193,7 +194,12 @@ def prepare_urban_journeys(
     policy and does not itself admit a route.
     """
 
-    places, issues = _bind_places(label_places, area_definition, road_graph)
+    places, issues = _bind_places(
+        label_places,
+        area_definition,
+        road_graph,
+        urban_scope_buffer_m=urban_scope_buffer_m,
+    )
     physical_graph, edge_records = _physical_graph(road_graph)
     owners = _region_owners(physical_graph, places)
     adjacencies = _adjacencies(places, owners, edge_records)
@@ -230,6 +236,8 @@ def _bind_places(
     label_places: gpd.GeoDataFrame,
     area_definition: gpd.GeoDataFrame | None,
     road_graph: RoadGraph,
+    *,
+    urban_scope_buffer_m: float | None = None,
 ) -> tuple[list[UrbanJourneyPlace], list[UrbanJourneyIssue]]:
     if label_places is None or label_places.empty:
         return [], []
@@ -265,7 +273,15 @@ def _bind_places(
         if frame.crs is not None and road_graph.crs is not None:
             point = gpd.GeoSeries([point], crs=frame.crs).to_crs(road_graph.crs).iloc[0]
         try:
-            routing_node_id, distance_m = road_graph.nearest_node(point)
+            if urban_scope_buffer_m is None:
+                routing_node_id, distance_m = road_graph.nearest_node(point)
+            else:
+                routing_node_id, distance_m = (
+                    road_graph.nearest_node_on_largest_reciprocal_component(
+                        point,
+                        urban_scope_buffer_m,
+                    )
+                )
         except (ValueError, KeyError) as exc:
             issues = UrbanJourneyIssue(
                 reason="urban-place-not-bound",

@@ -1495,6 +1495,10 @@ def test_selecting_route_opens_same_journey_comparison_without_enabling_alternat
         )
         assert page.evaluate(
             "window.SATN_REVIEW_MAP.getLayoutProperty("
+            "'reviewable-strategic-main-network', 'line-cap') === 'round'"
+        )
+        assert page.evaluate(
+            "window.SATN_REVIEW_MAP.getLayoutProperty("
             "'review-lens-related-alternatives', 'visibility') === 'visible'"
         )
         assert page.evaluate(

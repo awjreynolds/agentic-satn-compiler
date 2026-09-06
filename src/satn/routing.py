@@ -617,6 +617,49 @@ class RoadGraph:
             key=lambda match: (match[1], match[0]),
         )
 
+    def nearest_node_on_largest_reciprocal_component(
+        self,
+        point: Point,
+        max_distance_m: float,
+    ) -> tuple[str, float]:
+        """Bind a canonical urban point to the largest reciprocal component nearby.
+
+        This opt-in seam only prefers a node in the largest strongly connected
+        reciprocal component when that node is within the caller's governed
+        urban attachment extent.  Otherwise it retains the nearest reciprocal
+        node, so an out-of-scope fragment remains local instead of snapping to
+        the globally filtered dominant component.
+        """
+
+        if max_distance_m < 0:
+            raise ValueError("urban attachment extent must be non-negative")
+        dominant_nodes = {
+            node_id
+            for node_id, component_index in self._strong_component_by_node.items()
+            if component_index == 0
+        }
+        if dominant_nodes:
+            candidates = [
+                (node_id, distance_m)
+                for node_id, distance_m in self.nodes_near(point, max_distance_m)
+                if node_id in dominant_nodes
+            ]
+            if candidates:
+                return min(candidates, key=lambda match: (match[1], match[0]))
+        if self._strong_component_by_node:
+            target = gpd.GeoSeries([point], crs=self.crs).to_crs(27700).iloc[0]
+            reciprocal_candidates = [
+                (
+                    node_id,
+                    float(self._projected_node_by_id[node_id].distance(target)),
+                )
+                for node_id in self._strong_component_by_node
+                if node_id in self._projected_node_by_id
+            ]
+            if reciprocal_candidates:
+                return min(reciprocal_candidates, key=lambda match: (match[1], match[0]))
+        return self.nearest_node(point)
+
     def nodes_near(self, point: Point, max_distance_m: float) -> list[tuple[str, float]]:
         """Return every bounded attachment candidate with deterministic tie-breaking."""
         if not self.node_points:

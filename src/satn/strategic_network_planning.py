@@ -338,7 +338,7 @@ class CandidateDisposition:
 class ReviewableNetworkGap:
     obligation_id: str
     network_role: str
-    endpoints: tuple[str, str]
+    endpoints: tuple[str, ...]
     reason: str
     candidate_set_id: str | None = None
     gap_id: str = ""
@@ -443,6 +443,9 @@ def _canonical_gap_scope(
         role = getattr(getattr(issue, "unit_role", None), "value", None)
         if role == "a-road-backbone" and issue_id:
             required_obligation_ids.add(str(issue_id))
+        elif role == "interurban-spine" and issue_id:
+            if getattr(issue, "reason", None) == "urban-place-no-cross-region-adjacency":
+                required_obligation_ids.add(str(issue_id))
         elif role == "strategic-destination-access" and issue_id:
             access_issue_ids.add(str(issue_id))
     return required_obligation_ids, required_candidate_set_ids, access_issue_ids

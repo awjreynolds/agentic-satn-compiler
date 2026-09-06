@@ -696,6 +696,7 @@ def _compile_network(
                 label_places=label_places,
                 area_definition=source["boundary"],
                 road_graph=road_graph,
+                urban_scope_buffer_m=config.source.urban_scope_buffer_km * 1000.0,
             )
             legacy_urban_journey_mode = any(
                 item.preferred for item in prepared_urban_journeys.adjacencies

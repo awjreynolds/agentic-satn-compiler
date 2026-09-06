@@ -119,7 +119,7 @@ class StrategicCorridorIssue:
     strategic_destination_id: str | None = None
     site_id: str | None = None
     obligation_id: str | None = None
-    endpoints: tuple[str, str] = ("", "")
+    endpoints: tuple[str, ...] = ()
     network_role: str | None = None
     endpoint_coordinates: tuple[tuple[float, float], ...] = ()
     component_ids: tuple[str, ...] = ()
@@ -1586,6 +1586,30 @@ def _urban_interurban_units(
     places_by_id = {item.place_id: item for item in urban_journeys.places}
     units: list[PreparedStrategicCorridorUnit] = []
     issues: list[StrategicCorridorIssue] = []
+    for issue in urban_journeys.issues:
+        if issue.reason != "urban-place-no-cross-region-adjacency":
+            continue
+        place = next(
+            (item for item in urban_journeys.places if item.source_id == issue.source_id),
+            None,
+        )
+        if place is None:
+            continue
+        obligation_id = _stable_id(
+            "urban-place-coverage-gap",
+            {"place_id": place.place_id, "source_id": place.source_id},
+        )
+        issues.append(
+            StrategicCorridorIssue(
+                unit_role=StrategicCorridorUnitRole.INTERURBAN_SPINE,
+                reason=issue.reason,
+                detail=f"{issue.detail}; source_id={place.source_id}",
+                obligation_id=obligation_id,
+                endpoints=(place.place_id,),
+                network_role=NetworkRole.INTERURBAN_SPINE.value,
+                endpoint_coordinates=(place.coordinates,),
+            )
+        )
     for adjacency in urban_journeys.adjacencies:
         if not adjacency.preferred:
             continue

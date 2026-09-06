@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import geopandas as gpd
+import pandas as pd
 from bath_saltford_fixture import configured_bath_saltford
 from shapely.geometry import LineString, Point, Polygon
 from shapely.wkt import loads as load_wkt
@@ -112,6 +113,179 @@ def test_public_urban_preparation_reports_unbound_place_without_cartesian_pair()
 
     assert all("Delta" not in adjacency.place_names for adjacency in result.adjacencies)
     assert any(issue.reason == "urban-place-no-cross-region-adjacency" for issue in result.issues)
+
+
+def test_public_urban_preparation_anchors_nearby_place_to_dominant_component() -> None:
+    places, area = _places()
+    isolated = places.iloc[[0]].copy()
+    isolated.loc[len(isolated)] = {
+        "element": "node",
+        "id": 5,
+        "place": "town",
+        "name": "Delta",
+        "geometry": Point(10, 0),
+    }
+
+    anchored = prepare_urban_journeys(
+        label_places=isolated,
+        area_definition=area,
+        road_graph=_graph(),
+        urban_scope_buffer_m=100,
+    )
+    delta = next(place for place in anchored.places if place.name == "Delta")
+    assert delta.routing_node_id == "c"
+    assert all(issue.source_id != "node/5" for issue in anchored.issues)
+
+    beyond_extent = prepare_urban_journeys(
+        label_places=isolated,
+        area_definition=area,
+        road_graph=_graph(),
+        urban_scope_buffer_m=1,
+    )
+    delta = next(place for place in beyond_extent.places if place.name == "Delta")
+    assert delta.routing_node_id == "d"
+    assert any(issue.source_id == "node/5" for issue in beyond_extent.issues)
+
+
+def test_public_urban_preparation_keeps_remote_place_on_local_component() -> None:
+    rows = []
+    for index in range(18):
+        left = f"main-{index}"
+        right = f"main-{index + 1}"
+        geometry = LineString([(float(index), 0.0), (float(index + 1), 0.0)])
+        for u, v, directed_geometry in (
+            (left, right, geometry),
+            (right, left, LineString(list(geometry.coords)[::-1])),
+        ):
+            rows.append(
+                {
+                    "osmid": f"main-{index}-{u}-{v}",
+                    "u": u,
+                    "v": v,
+                    "oneway": False,
+                    "highway": "primary",
+                    "geometry": directed_geometry,
+                }
+            )
+    for u, v, geometry in (
+        (
+            "remote-a",
+            "remote-b",
+            LineString([(1000.0, 0.0), (1001.0, 0.0)]),
+        ),
+        (
+            "remote-b",
+            "remote-a",
+            LineString([(1001.0, 0.0), (1000.0, 0.0)]),
+        ),
+    ):
+        rows.append(
+            {
+                "osmid": f"remote-{u}-{v}",
+                "u": u,
+                "v": v,
+                "oneway": False,
+                "highway": "unclassified",
+                "geometry": geometry,
+            }
+        )
+    road_graph = RoadGraph(gpd.GeoDataFrame(rows, geometry="geometry", crs=27700))
+    labels = gpd.GeoDataFrame(
+        [
+            {
+                "element": "node",
+                "id": 6,
+                "place": "town",
+                "name": "Remote",
+                "geometry": Point(1000, 0),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    area = gpd.GeoDataFrame(
+        [{"geometry": Polygon([(-1, -1), (1100, -1), (1100, 1), (-1, 1), (-1, -1)])}],
+        geometry="geometry",
+        crs=27700,
+    )
+
+    result = prepare_urban_journeys(
+        label_places=labels,
+        area_definition=area,
+        road_graph=road_graph,
+        urban_scope_buffer_m=100,
+    )
+
+    remote = next(place for place in result.places if place.name == "Remote")
+    assert remote.routing_node_id == "remote-a"
+    assert any(issue.source_id == "node/6" for issue in result.issues)
+
+
+def test_public_compile_passes_configured_urban_scope_to_city_anchors(tmp_path) -> None:
+    config = configured_bath_saltford(tmp_path)
+    config.source.urban_scope_buffer_km = 1.0
+    snapshot(config)
+    source = load_snapshot(config)
+
+    labels = source["label_places"].copy()
+    labels["kind"] = "town"
+    labels["element"] = "node"
+    labels["id"] = ["bath", "saltford"]
+    labels["name"] = ["Bath", "Saltford"]
+    labels.loc[len(labels)] = {
+        "element": "node",
+        "id": "yate",
+        "kind": "town",
+        "name": "Yate",
+        "geometry": Point(-2.395, 51.395),
+    }
+    source["label_places"] = gpd.GeoDataFrame(labels, geometry="geometry", crs=labels.crs)
+
+    network = source["network"].copy()
+    isolated_rows = []
+    for source_id, start, end, geometry in (
+        (
+            "isolated-yate-forward",
+            "yate-a",
+            "yate-b",
+            LineString([(-2.395, 51.395), (-2.396, 51.395)]),
+        ),
+        (
+            "isolated-yate-reverse",
+            "yate-b",
+            "yate-a",
+            LineString([(-2.396, 51.395), (-2.395, 51.395)]),
+        ),
+    ):
+        row = network.iloc[0].copy()
+        row["source_id"] = source_id
+        row["u"] = start
+        row["v"] = end
+        row["highway"] = "unclassified"
+        row["ref"] = None
+        row["name"] = "Synthetic isolated Yate edge"
+        row["geometry"] = geometry
+        isolated_rows.append(row)
+    source["network"] = gpd.GeoDataFrame(
+        pd.concat(
+            [
+                network,
+                gpd.GeoDataFrame(isolated_rows, geometry="geometry", crs=network.crs),
+            ],
+            ignore_index=True,
+        ),
+        geometry="geometry",
+        crs=network.crs,
+    )
+
+    compiled = compile_network(config, source, FakeAgentRuntime())
+    preparation = compiled.strategic_corridor_preparation
+    assert preparation is not None and preparation.urban_journeys is not None
+    yate = next(
+        place for place in preparation.urban_journeys.places if place.source_id == "node/yate"
+    )
+    assert yate.routing_node_id != "yate-a"
+    assert yate.routing_node_id != "yate-b"
 
 
 def test_public_compile_uses_city_town_labels_and_mesh_keeps_selected_journey(tmp_path) -> None:

@@ -3361,7 +3361,11 @@
       type: "line",
       source: strategicMainDisplaySource,
       filter: reviewableStrategicMainNetworkFilter,
-      layout: { visibility: hasSemanticStrategicMainNetwork ? "visible" : "none" },
+      layout: {
+        visibility: hasSemanticStrategicMainNetwork ? "visible" : "none",
+        "line-cap": "round",
+        "line-join": "round"
+      },
       paint: {
         // Main structure has one stable structural treatment.  Intervention
         // state and Alignment Basis remain available through the optional
