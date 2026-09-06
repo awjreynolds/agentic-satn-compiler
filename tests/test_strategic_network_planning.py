@@ -286,6 +286,59 @@ def test_rural_mesh_reduces_avoidable_b_road_and_retains_access_support() -> Non
     assert not any(gap.network_role == "strategic-main-network" for gap in result.gaps)
 
 
+def test_materialized_protected_required_self_loop_survives_mesh_assembly() -> None:
+    base_graph = fixture_graph()
+    graph = replace(
+        base_graph,
+        edge_records=(
+            *base_graph.edge_records,
+            edge(
+                "required-loop-edge",
+                "loop-junction",
+                "loop-junction",
+                "LINESTRING (200 0, 250 0, 200 0)",
+                highway="primary",
+                ref="A2",
+                length_m=100,
+            ),
+        ),
+        graph_fingerprint="5" * 64,
+    )
+    required_loop = EffectiveStrategicSection(
+        "required-loop",
+        "required-loop",
+        None,
+        "interurban-spine",
+        ("required-loop-edge",),
+        (),
+        "LINESTRING (200 0, 250 0, 200 0)",
+        PlanningAuthority.COMPILER,
+        ("a-road",),
+        "a-road",
+        "upgrade-required",
+        "upgrade-required",
+        "rural",
+    )
+
+    result = compile_strategic_network(
+        StrategicNetworkPlanningRequest(
+            graph=graph,
+            discovery=discovery(graph, CorridorObligation("corridor-a-d", "A", "D")),
+            area_fingerprint="a" * 64,
+            required_sections=(required_loop,),
+            backbone_obligation_ids=("required-loop",),
+        )
+    )
+
+    selected_loop = next(
+        section
+        for section in result.effective_network.sections
+        if section.section_id == "required-loop"
+    )
+    assert selected_loop.routing_edge_ids == ("required-loop-edge",)
+    assert selected_loop.geometry_wkt == "LINESTRING (200 0, 250 0, 200 0)"
+
+
 def test_materialized_rural_candidate_reduction_keeps_selection_roster_consistent() -> None:
     graph = fixture_graph()
     discovered = discovery(

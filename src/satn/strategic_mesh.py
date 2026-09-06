@@ -163,9 +163,10 @@ class CandidateRouteSection:
         object.__setattr__(self, "section_id", _text(self.section_id, "section id"))
         object.__setattr__(self, "start_node_id", _text(self.start_node_id, "start node id"))
         object.__setattr__(self, "end_node_id", _text(self.end_node_id, "end node id"))
-        if self.start_node_id == self.end_node_id:
-            raise ValueError("route section endpoints must be distinct")
-        object.__setattr__(self, "coordinates", _coordinates(self.coordinates, "coordinates"))
+        coordinates = _coordinates(self.coordinates, "coordinates")
+        object.__setattr__(self, "coordinates", coordinates)
+        if self.start_node_id == self.end_node_id and coordinates[0] != coordinates[-1]:
+            raise ValueError("route section endpoints must be distinct unless geometry is closed")
         object.__setattr__(self, "corridor_class", _canonical_corridor_class(self.corridor_class))
         object.__setattr__(self, "network_role", _token(self.network_role, "network role"))
         if not isinstance(self.is_access_support, bool):
