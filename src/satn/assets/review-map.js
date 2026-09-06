@@ -1180,6 +1180,11 @@
       properties.gap_marker_kind === "a-road-component-representative";
   }
 
+  function isSelectedMainComponentGapMarker(properties) {
+    return properties?.feature_type === "reviewable-gap-endpoint" &&
+      properties.gap_marker_kind === "selected-main-component-representative";
+  }
+
   function humanStatus(raw) {
     const labels = {
       "existing-provision": "Existing provision",
@@ -1215,6 +1220,9 @@
     const featureType = String(properties.feature_type || "");
     if (featureType === "reviewable-gap-endpoint") {
       if (isMeshGapMarker(properties)) return "Network coverage gap";
+      if (isSelectedMainComponentGapMarker(properties)) {
+        return "Disconnected Main component (representative location)";
+      }
       if (isAroadComponentGapMarker(properties)) {
         return "Disconnected A-road component (representative location)";
       }
@@ -1264,6 +1272,9 @@
     const featureType = String(properties.feature_type || "");
     if (featureType === "reviewable-gap-endpoint") {
       if (isMeshGapMarker(properties)) return "Network coverage gap";
+      if (isSelectedMainComponentGapMarker(properties)) {
+        return "Disconnected Main component marker";
+      }
       if (isAroadComponentGapMarker(properties)) {
         return "Disconnected A-road component marker";
       }
@@ -1336,6 +1347,10 @@
     if (isAroadComponentGapMarker(properties)) {
       return properties.gap_marker_disclaimer ||
         "Representative location for a disconnected official A-road source component.";
+    }
+    if (isSelectedMainComponentGapMarker(properties)) {
+      return properties.gap_marker_disclaimer ||
+        "Representative location for a disconnected selected Main component.";
     }
     const rationale = artifactRecordedReason(properties);
     if (hasDataValue(rationale)) return contextualText(rationale);
@@ -1973,7 +1988,7 @@
     if (isAroadComponentGapMarker(properties)) {
       addData("Location note", properties.gap_marker_disclaimer);
     }
-    if (!isAroadComponentGapMarker(properties)) {
+    if (!isAroadComponentGapMarker(properties) && !isSelectedMainComponentGapMarker(properties)) {
       addData("Geometry meaning", properties.geometry_semantics);
     }
     if (properties.divergence_variant) {
@@ -2004,6 +2019,8 @@
         ? hasDataValue(properties.proof_point_position)
           ? `coverage point ${properties.proof_point_position}`
           : "coverage point"
+        : isSelectedMainComponentGapMarker(properties)
+        ? "representative component location"
         : isAroadComponentGapMarker(properties)
         ? "representative component location"
         : hasDataValue(properties.endpoint_id)
@@ -2011,6 +2028,8 @@
         : "endpoint location unavailable";
       const geometryLabel = isMeshGapMarker(properties)
         ? feature.geometry ? "coverage marker" : "coverage position unavailable"
+        : isSelectedMainComponentGapMarker(properties)
+        ? "component representative marker"
         : isAroadComponentGapMarker(properties)
         ? "component representative marker"
         : feature.geometry ? "mapped endpoint" : "endpoint geometry unavailable";

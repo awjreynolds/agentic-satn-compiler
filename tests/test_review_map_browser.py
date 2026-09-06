@@ -763,6 +763,118 @@ def test_mesh_gap_marker_has_a_coverage_summary_and_main_layer_role(tmp_path: Pa
 
 
 @pytest.mark.browser
+def test_selected_main_component_marker_has_representative_summary(tmp_path: Path) -> None:
+    fixture = tmp_path / "fixture"
+    shutil.copytree(
+        PROJECT / "examples" / "fixture",
+        fixture,
+        ignore=shutil.ignore_patterns("work", ".satn-cache"),
+    )
+    config = CouncilConfig.from_yaml(fixture / "council.yaml")
+    snapshot(config)
+    result = compile(config)
+
+    review_map = result.artifacts["review_map"]
+    data_path = review_map.parent / "data.js"
+    data_prefix = "window.SATN_DATA = "
+    data_source = data_path.read_text(encoding="utf-8")
+    assert data_source.startswith(data_prefix)
+    data = json.loads(data_source[len(data_prefix) :].rstrip(";\n"))
+    coordinates = data["places"]["features"][0]["geometry"]["coordinates"]
+    marker = {
+        "type": "Feature",
+        "id": "reviewable-gap:selected-main-component:representative-point",
+        "geometry": {
+            "type": "Point",
+            "coordinates": [coordinates[0] + 0.01, coordinates[1] + 0.01],
+        },
+        "properties": {
+            "layer": "Strategic Main Network",
+            "feature_type": "reviewable-gap-endpoint",
+            "gap_id": "selected-main-component",
+            "obligation_id": "selected-main-component",
+            "endpoint_id": None,
+            "network_role": "strategic-main-network",
+            "display_state": "unresolved-gap",
+            "geometry_semantics": (
+                "selected-main-component-representative-point-marker-only-no-route-geometry"
+            ),
+            "gap_marker_kind": "selected-main-component-representative",
+            "gap_marker_disclaimer": (
+                "Selected Main component is physically separate; representative location only; "
+                "no direct connection proposed"
+            ),
+            "reason": (
+                "Selected Main component is physically separate; representative location only; "
+                "no direct connection proposed"
+            ),
+            "missing_endpoint_geometry": False,
+        },
+    }
+    for collection_key in ("reviewable", "reviewable_network"):
+        data[collection_key]["features"].append(marker)
+    data_path.write_text(data_prefix + json.dumps(data) + ";\n", encoding="utf-8")
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1440, "height": 900})
+        page.route("https://tile.openstreetmap.org/**", lambda route: route.abort())
+        page.goto(review_map.as_uri())
+        page.wait_for_function("document.documentElement.dataset.mapReady === 'true'")
+        page.wait_for_function("!window.SATN_REVIEW_MAP.isMoving()")
+        page.locator("#layer-reviewable-gaps").check()
+        page.evaluate(
+            """() => {
+              const map = window.SATN_REVIEW_MAP;
+              map.getStyle().layers
+                .filter((layer) => layer.source && layer.id !== "reviewable-gaps")
+                .forEach((layer) => map.setLayoutProperty(layer.id, "visibility", "none"));
+            }"""
+        )
+        marker_point = page.evaluate(
+            """() => {
+              const map = window.SATN_REVIEW_MAP;
+              const feature = map.getSource("reviewable")._data.features.find(
+                (item) => item.id === "reviewable-gap:selected-main-component:representative-point"
+              );
+              const point = map.project(feature.geometry.coordinates);
+              return {x: point.x, y: point.y};
+            }"""
+        )
+        page.wait_for_function(
+            """(point) => window.SATN_REVIEW_MAP.queryRenderedFeatures(
+              point, {layers: ["reviewable-gaps"]}
+            ).length > 0""",
+            arg=marker_point,
+        )
+        map_box = page.locator("#map").bounding_box()
+        assert map_box is not None
+        page.mouse.move(
+            map_box["x"] + marker_point["x"],
+            map_box["y"] + marker_point["y"],
+        )
+        page.wait_for_function(
+            """document.querySelector('#feature-details').innerText.includes(
+              'Disconnected Main component (representative location)')"""
+        )
+        page.mouse.click(
+            map_box["x"] + marker_point["x"],
+            map_box["y"] + marker_point["y"],
+        )
+        page.wait_for_function(
+            """document.querySelector('#feature-details').innerText.includes(
+              'Disconnected Main component marker')"""
+        )
+        panel_text = page.locator("#feature-details").inner_text()
+        assert "Disconnected Main component (representative location)" in panel_text
+        assert "Role: Disconnected Main component marker" in panel_text
+        assert "Recorded reason: Selected Main component is physically separate" in panel_text
+        assert "Geometry meaning" not in panel_text
+        assert "selected-main-component-representative" not in panel_text
+        browser.close()
+
+
+@pytest.mark.browser
 def test_two_pinned_segments_show_a_high_level_comparison(tmp_path: Path) -> None:
     fixture = tmp_path / "fixture"
     shutil.copytree(
