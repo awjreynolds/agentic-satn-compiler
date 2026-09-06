@@ -2,6 +2,7 @@
 
 - Status: accepted
 - Date: 2026-09-05
+- Selection policy amended 2026-09-06 by [the SATN method reset](https://github.com/awjreynolds/agentic-satn-compiler/issues/421) and [case-by-case route selection](https://github.com/awjreynolds/agentic-satn-compiler/issues/424): A-road consideration is required, universal segment retention is not; B-roads require a missing interurban connection. This is a planning amendment, not evidence that the compiler has been changed. The historical rationale below remains for context; its universal-retention requirements do not govern the planned POC method.
 - Supersedes: ADR 0024's smallest coverage-preserving mesh as the primary selection objective
 
 The owner clarified that A roads establish the strategic network's backbone.

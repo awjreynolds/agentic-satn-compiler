@@ -73,7 +73,7 @@ A delivery-led structure composed of the Strategic Main Network and Access Suppo
 _Avoid_: Strategic Main Network, pairwise network, nearest-neighbour network, spider's web
 
 **Strategic Main Network**:
-The connected strategic backbone established by urban and rural A-road corridors, with cycle routes and Greenways preferred as alternative alignments where they preserve those strategic connections. A-road connections and useful backbone loops remain required even when nearby routes satisfy a proximity check. Official junction links can connect A-road corridors without becoming A roads themselves. Exact official A-road proposal geometry remains available even where nearby OSM attachments are absent. Additional main routes can provide scope-sensitive coverage; ordinary access remains separate. A connection that cannot be established remains an explicit Network Gap, not an invented joining line or a silently discarded obligation.
+The coherent, simplified network of preferred routes connecting urban areas. A-road corridors, current and former National Cycle Network routes, existing cycleways, Greenways and suitable bridleways supply preferred alignment evidence; designation alone does not make every segment Main. A B-road belongs only where needed to fill a genuine missing interurban connection. Reusing existing cycleways, NCN routes and suitable bridleways carries a strong pragmatic preference. Alignment choice considers journey usefulness, continuity, social and traffic safety, reuse and practical deliverability case by case. Village-only branches are Access Support; villages naturally on a Main corridor remain served. Distinct strategic connections may share sections or justify complementary corridors. Main membership is separate from improvement needs and delivery priority.
 _Avoid_: complete Backbone-and-Access Network, access tree, every routable asset, proximity-pruned spanning tree, universal 1,500 m grid
 
 **Strategic Main Connector**:
@@ -104,6 +104,10 @@ _Avoid_: candidate set, preparation roster, published map, review selection, rou
 The evidence-backed physical or corridor basis followed by an Alignment Section, such as current cycle provision, Greenway, current or reclassified National Cycle Network, public right of way, former railway, governed Local Connector, classified road or proposed corridor. A section retains every applicable basis and names one primary basis for map presentation; basis alone never establishes condition, access, feasibility or Intervention State.
 _Avoid_: route quality, intervention need, single source label, inferred suitability
 
+**Social Safety**:
+The personal-security dimension of using an Alignment Option, including isolation, overlooking, activity, lighting and access to help across the times people need to travel. It is distinct from safety from motor traffic and is not established by road classification or cycle-route designation alone.
+_Avoid_: traffic safety, automatic off-road safety, automatic A-road safety
+
 **Intervention State**:
 The delivery state of a selected or complementary routable section: `existing-provision`, `upgrade-required` or `proposed-new-link`. It is supported independently of Alignment Basis and does not claim cost, funding, legal authority, design readiness or deliverability.
 _Avoid_: asset type, scheme status, feasibility class, unresolved gap
@@ -117,7 +121,7 @@ An optional inventory layer containing every governed in-scope reusable asset wh
 _Avoid_: selected network, hidden asset loss, feasibility inventory
 
 **Unselected Candidates Layer**:
-An optional layer containing finite compiler-authored candidates not selected into the active Scenario Compilation. Ordinary alternatives may be muted, but existing-asset identity and Material Officer–Compiler Divergence styling remain distinct and inspectable.
+An optional view of considered route alternatives not selected into the active strategic network, retaining their identity, comparison reason and decision attribution. It distinguishes coherent alternatives from the raw asset inventory; visibility does not make an alternative part of Main.
 _Avoid_: discarded geometry, deleted options, grey divergence
 
 **Backbone-Outward Assembly**:
@@ -253,7 +257,7 @@ The Backbone-and-Access rule that a same-role, boundary-equivalent set of substi
 _Avoid_: parallel backbone bundle, duplicate strategic spine, access branch promoted by default, cost claim
 
 **Non-Selected Parallel Alignment**:
-A valid substitute Alignment Option that Singular Parallel Selection did not choose for the generated strategic network. It retains its geometry, evidence, comparison reason, decision provenance and change conditions and remains visibly inspectable as a muted alternative; non-selection is not a finding that the route is bad, invalid or unavailable to a later governed scenario.
+A considered alternative to the currently preferred alignment for a strategic connection. It retains its route identity, geometry, comparison reason and attribution to the compiler or officer who made the choice, and remains available for reconsideration. Its non-selection does not establish that it is unsuitable, unbuilt or permanently rejected.
 _Avoid_: deleted route, invalid route, hidden loser, abandoned scheme
 
 **Composite Alignment Continuity**:
