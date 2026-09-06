@@ -27,6 +27,8 @@ from pydantic import BaseModel
 from pyproj import CRS
 from shapely import from_wkb, to_wkb
 
+from satn.compilation_dependencies import is_compiler_cache_revision
+
 _FRAME_CONTRACT = "satn-geodataframe-wire/v1"
 _BUNDLE_CONTRACT = "satn-compiled-network-bundle/v1"
 _JSON_CONTRACT = "satn-canonical-typed-json/v1"
@@ -66,6 +68,13 @@ def _canonical_bytes(value: object) -> bytes:
 
 def _sha256(value: object) -> str:
     return hashlib.sha256(_canonical_bytes(value)).hexdigest()
+
+
+def _valid_identity(value: object, *, allow_revision: bool = False) -> bool:
+    return isinstance(value, str) and (
+        _SHA256.fullmatch(value) is not None
+        or (allow_revision and is_compiler_cache_revision(value))
+    )
 
 
 def _require_keys(value: object, expected: set[str], label: str) -> dict[str, Any]:
@@ -215,8 +224,7 @@ def _unwire_value(value: object) -> object:
         if (
             not isinstance(shape, list)
             or any(
-                isinstance(dimension, bool) or not isinstance(dimension, int)
-                for dimension in shape
+                isinstance(dimension, bool) or not isinstance(dimension, int) for dimension in shape
             )
             or any(dimension < 0 for dimension in shape)
         ):
@@ -232,11 +240,7 @@ def _unwire_value(value: object) -> object:
             raise BundleCodecError("ndarray bytes are not canonical base64")
         element_count = math.prod(shape, start=1)
         expected_size = element_count * dtype.itemsize
-        if (
-            element_count > sys.maxsize
-            or expected_size > sys.maxsize
-            or expected_size != len(raw)
-        ):
+        if element_count > sys.maxsize or expected_size > sys.maxsize or expected_size != len(raw):
             raise BundleCodecError("ndarray byte length does not match dtype and shape")
         try:
             return np.frombuffer(raw, dtype=dtype, count=element_count).reshape(shape).copy()
@@ -649,10 +653,13 @@ def encode_compiled_network_bundle(
     invalid = [
         name
         for name, value in identities.items()
-        if not isinstance(value, str) or _SHA256.fullmatch(value) is None
+        if not _valid_identity(value, allow_revision=name == "dependency")
     ]
     if invalid:
-        raise BundleCodecError(f"bundle identities must be full lowercase SHA-256: {invalid}")
+        raise BundleCodecError(
+            "bundle area/input identities must be full lowercase SHA-256 and "
+            f"dependency identity must be a SHA-256 or compiler revision: {invalid}"
+        )
     if any(
         not isinstance(item, str) or _SHA256.fullmatch(item) is None
         for item in upstream_artifact_ids
@@ -853,10 +860,13 @@ def decode_compiled_network_bundle(payload: object, expected_type: type[Any]) ->
         raise BundleCodecError("bundle dataclass does not match expected type")
     identities = _require_keys(wire["identities"], {"area", "input", "dependency"}, "identities")
     if any(
-        not isinstance(value, str) or _SHA256.fullmatch(value) is None
-        for value in identities.values()
+        not _valid_identity(value, allow_revision=name == "dependency")
+        for name, value in identities.items()
     ):
-        raise BundleCodecError("bundle identities must be full lowercase SHA-256")
+        raise BundleCodecError(
+            "bundle area/input identities must be full lowercase SHA-256 and "
+            "dependency identity must be a SHA-256 or compiler revision"
+        )
     upstream_ids = wire["upstream_artifact_ids"]
     if (
         not isinstance(upstream_ids, list)

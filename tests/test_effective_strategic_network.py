@@ -3,8 +3,6 @@ from __future__ import annotations
 import sys
 
 import geopandas as gpd
-import networkx as nx
-import pytest
 from shapely.geometry import LineString
 from test_strategic_network_planning import discovery, fixture_graph, request
 
@@ -15,6 +13,7 @@ from satn.effective_strategic_network import (
     EffectiveStrategicNetworkStatus,
     _planning_graph_with_urban_spines,
     _route_geometry,
+    _urban_attachment_diagnostics,
     compile_effective_strategic_network,
     planning_graph_from_compiler_edges,
 )
@@ -250,7 +249,7 @@ def test_governed_access_connections_are_retained_as_access_support() -> None:
     ] == ["access-bathford"]
 
 
-def test_redundant_urban_main_roads_are_omitted_by_authoritative_mesh_selection() -> None:
+def test_urban_a_road_defaults_are_protected_by_authoritative_mesh_selection() -> None:
     routable_network = _fixture_routable_network()
     graph = planning_graph_from_compiler_edges(
         routable_network,
@@ -289,18 +288,15 @@ def test_redundant_urban_main_roads_are_omitted_by_authoritative_mesh_selection(
         for section in state.effective_network.sections
         if section.network_role == "urban-main-road-spine"
     )
-    assert urban_sections == ()
-    selected_route = next(
-        section
-        for section in state.effective_network.sections
-        if section.network_role == "interurban-spine"
+    assert tuple(section.section_id for section in urban_sections) == ("urban-spine-bristol-a4",)
+    assert not any(
+        section.network_role == "interurban-spine" for section in state.effective_network.sections
     )
-    assert selected_route.primary_alignment_basis == "mapped-cycleway"
-    assert {
+    assert "urban-spine-bristol-b4051" in {
         diagnostic.subject_id
         for diagnostic in state.diagnostics
         if diagnostic.code == "strategic-mesh-section-omitted"
-    } >= {"urban-spine-bristol-a4", "urban-spine-bristol-b4051"}
+    }
 
 
 def test_effective_network_and_publication_connect_main_components_through_routable_graph() -> None:
@@ -467,16 +463,9 @@ def test_effective_network_and_publication_connect_main_components_through_routa
         section.section_id
         for section in state.effective_network.sections
         if section.network_role == "urban-main-road-spine"
-    ) == ("urban-main-a1", "urban-main-a2")
-    assert any(diagnostic.code == "strategic-mesh-gap" for diagnostic in state.diagnostics)
-    assert any(gap.network_role == "strategic-main-network" for gap in state.gaps)
-    connector = next(
-        section
-        for section in state.effective_network.sections
-        if section.network_role == "strategic-main-connector"
-    )
-    assert connector.primary_alignment_basis == "mapped-cycleway"
-    assert connector.intervention_state == "upgrade-required"
+    ) == ("urban-main-a1", "urban-main-a2", "urban-main-a3-unreachable")
+    assert not any(diagnostic.code == "strategic-mesh-gap" for diagnostic in state.diagnostics)
+    assert not any(gap.network_role == "strategic-main-network" for gap in state.gaps)
 
     projection = project_strategic_network(state.result)
     main_features = projection.layers["Strategic Main Network"]["features"]
@@ -485,15 +474,15 @@ def test_effective_network_and_publication_connect_main_components_through_routa
         for feature in main_features
         if feature["properties"]["feature_type"] == "reviewable-selected-route"
     ]
-    assert len(selected_features) == 3
-    graph = nx.Graph()
-    for feature in selected_features:
-        coordinates = feature["geometry"]["coordinates"]
-        graph.add_edge(tuple(coordinates[0]), tuple(coordinates[-1]))
-    assert nx.is_connected(graph)
+    assert len(selected_features) == 4
+    assert {feature["properties"]["section_id"] for feature in selected_features} >= {
+        "urban-main-a1",
+        "urban-main-a2",
+        "urban-main-a3-unreachable",
+    }
     assert any(
-        feature["properties"]["feature_type"] == "reviewable-gap-endpoint"
-        for feature in main_features
+        feature["properties"]["section_id"].startswith("strategic-main-continuity-")
+        for feature in selected_features
     )
 
 
@@ -571,7 +560,7 @@ def test_urban_spine_interior_endpoints_are_attached_to_routable_topology() -> N
     }
 
 
-def test_isolated_urban_spine_without_routable_attachment_is_rejected() -> None:
+def test_unattached_a_road_spine_is_retained_with_located_main_attachment_gap() -> None:
     routable_network = gpd.GeoDataFrame(
         [
             {
@@ -597,12 +586,184 @@ def test_isolated_urban_spine_without_routable_attachment_is_rejected() -> None:
         crs=27700,
     )
 
-    with pytest.raises(
-        ValueError,
-        match="unattachable urban strategic section: urban-isolated-2000-2100",
-    ):
-        _planning_graph_with_urban_spines(
+    graph = planning_graph_from_compiler_edges(
+        routable_network,
+        source_export_fingerprint="5" * 64,
+    )
+    state = compile_effective_strategic_network(
+        EffectiveStrategicNetworkRequest(
             routable_network,
-            urban_spines,
-            source_export_fingerprint="5" * 64,
+            _fixture_preparation(graph),
+            "d" * 64,
+            graph.source_export_fingerprint,
+            urban_spines=urban_spines,
         )
+    )
+
+    assert state.status is EffectiveStrategicNetworkStatus.EVALUATED
+    assert "urban-isolated-2000-2100" in {
+        section.section_id for section in state.effective_network.sections
+    }
+    gap = next(
+        gap for gap in state.gaps if gap.obligation_id == "urban-structure:urban-isolated-2000-2100"
+    )
+    assert gap.network_role == "strategic-main-network"
+    assert gap.endpoint_coordinates == ((2000.0, 0.0), (2100.0, 0.0))
+    assert any(
+        diagnostic.code == "strategic-main-attachment-gap"
+        and diagnostic.subject_id == "urban-isolated-2000-2100"
+        for diagnostic in state.diagnostics
+    )
+
+
+def test_detached_classified_unnumbered_spine_is_excluded_but_context_remains() -> None:
+    routable_network = gpd.GeoDataFrame(
+        [
+            {
+                "source_id": "main-a-b",
+                "u": "A",
+                "v": "B",
+                "highway": "primary",
+                "geometry": LineString([(0, 0), (1000, 0)]),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    urban_spines = gpd.GeoDataFrame(
+        [
+            {
+                "structure_id": "urban-isolated-unnumbered",
+                "official_classification": "classified-unnumbered",
+                "geometry": LineString([(2000, 0), (2100, 0)]),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+
+    graph, required_sections = _planning_graph_with_urban_spines(
+        routable_network,
+        urban_spines,
+        source_export_fingerprint="6" * 64,
+    )
+    diagnostics = _urban_attachment_diagnostics(
+        routable_network,
+        urban_spines,
+        graph,
+        required_sections,
+    )
+
+    assert required_sections == ()
+    urban_edge = next(
+        edge for edge in graph.edge_records if edge.source_edge_id == "urban-isolated-unnumbered"
+    )
+    assert urban_edge.geometry_wkt == "LINESTRING (2000 0, 2100 0)"
+    assert any(
+        diagnostic.code == "strategic-main-section-excluded"
+        and diagnostic.subject_id == "urban-isolated-unnumbered"
+        and "classified-unnumbered" in diagnostic.message
+        and "no current routable-network attachment" in diagnostic.message
+        for diagnostic in diagnostics.diagnostics
+    )
+
+
+def test_detached_mixed_a_and_classified_unnumbered_component_keeps_both_sections() -> None:
+    routable_network = gpd.GeoDataFrame(
+        [
+            {
+                "source_id": "main-a-b",
+                "u": "A",
+                "v": "B",
+                "highway": "primary",
+                "geometry": LineString([(0, 0), (1000, 0)]),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    urban_spines = gpd.GeoDataFrame(
+        [
+            {
+                "structure_id": "urban-detached-a",
+                "official_classification": "a-road",
+                "geometry": LineString([(2000, 0), (2050, 0)]),
+            },
+            {
+                "structure_id": "urban-detached-unnumbered",
+                "official_classification": "classified-unnumbered",
+                "geometry": LineString([(2050, 0), (2100, 0)]),
+            },
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+
+    graph, required_sections = _planning_graph_with_urban_spines(
+        routable_network,
+        urban_spines,
+        source_export_fingerprint="8" * 64,
+    )
+    diagnostics = _urban_attachment_diagnostics(
+        routable_network,
+        urban_spines,
+        graph,
+        required_sections,
+    )
+
+    assert {section.section_id for section in required_sections} == {
+        "urban-detached-a",
+        "urban-detached-unnumbered",
+    }
+    assert [
+        diagnostic.subject_id
+        for diagnostic in diagnostics.diagnostics
+        if diagnostic.code == "strategic-main-attachment-gap"
+    ] == ["urban-detached-a"]
+    assert not any(
+        diagnostic.subject_id == "urban-detached-unnumbered"
+        and diagnostic.code == "strategic-main-section-excluded"
+        for diagnostic in diagnostics.diagnostics
+    )
+
+
+def test_attached_classified_unnumbered_spine_remains_required() -> None:
+    routable_network = gpd.GeoDataFrame(
+        [
+            {
+                "source_id": "main-a-b",
+                "u": "A",
+                "v": "B",
+                "highway": "primary",
+                "geometry": LineString([(0, 0), (1000, 0)]),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    urban_spines = gpd.GeoDataFrame(
+        [
+            {
+                "structure_id": "urban-attached-unnumbered",
+                "official_classification": "classified-unnumbered",
+                "geometry": LineString([(500, 0), (600, 0)]),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+
+    graph, required_sections = _planning_graph_with_urban_spines(
+        routable_network,
+        urban_spines,
+        source_export_fingerprint="7" * 64,
+    )
+    diagnostics = _urban_attachment_diagnostics(
+        routable_network,
+        urban_spines,
+        graph,
+        required_sections,
+    )
+
+    assert [section.section_id for section in required_sections] == ["urban-attached-unnumbered"]
+    assert diagnostics.diagnostics == ()

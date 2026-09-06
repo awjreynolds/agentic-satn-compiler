@@ -571,9 +571,7 @@ class LocalEvidenceStore:
         finally:
             connection.close()
 
-    def verify_edge_enrichment_citations(
-        self, citations: Sequence[object]
-    ) -> tuple[object, ...]:
+    def verify_edge_enrichment_citations(self, citations: Sequence[object]) -> tuple[object, ...]:
         """Verify and transactionally retain exact Scenario enrichment citations."""
 
         from satn.edge_enrichments import EdgeEnrichmentStore
@@ -673,8 +671,7 @@ class LocalEvidenceStore:
                 else {key.fingerprint: key for key in current.requested_partition_keys}
             )
             current_by_key = {
-                item.partition_content.partition_key.fingerprint: item
-                for item in attestations
+                item.partition_content.partition_key.fingerprint: item for item in attestations
             }
             reused: list[str] = []
             missing: list[str] = []
@@ -694,8 +691,7 @@ class LocalEvidenceStore:
                         continue
                     content = existing.partition_content
                     exact = (
-                        existing.source_export.fingerprint
-                        == request.source_export.fingerprint
+                        existing.source_export.fingerprint == request.source_export.fingerprint
                         and content.ingestion_contract.fingerprint
                         == request.ingestion_contract.fingerprint
                     )
@@ -716,8 +712,7 @@ class LocalEvidenceStore:
                 attestations = [
                     item
                     for item in attestations
-                    if item.partition_content.partition_key.fingerprint
-                    not in replaced_fingerprints
+                    if item.partition_content.partition_key.fingerprint not in replaced_fingerprints
                 ]
 
             observations = self._observations_by_source_export(attestations)
@@ -736,9 +731,7 @@ class LocalEvidenceStore:
                     attestations.append(attestation)
                     if not dry_run:
                         self._stage_partition(connection, attestation, rows)
-                    rebuilt_keys.add(
-                        attestation.partition_content.partition_key.fingerprint
-                    )
+                    rebuilt_keys.add(attestation.partition_content.partition_key.fingerprint)
                 if rebuilt_keys != {key.fingerprint for key in keys}:
                     raise ValueError("Source Export did not produce every requested partition")
                 if _sha256_file(source_path) != request.source_export.raw_bytes_sha256:
@@ -907,9 +900,7 @@ class LocalEvidenceStore:
                 )
                 != coverage
             ):
-                raise ValueError(
-                    "rebuilt Local Evidence Store lost historical coverage identity"
-                )
+                raise ValueError("rebuilt Local Evidence Store lost historical coverage identity")
         return RefreshResult(coverage=verified)
 
     def refresh_ea_elevation_cache(
@@ -1008,9 +999,15 @@ class LocalEvidenceStore:
         self,
         *,
         state_fingerprint: str,
-        verify: bool = True,
+        verify: bool = False,
     ) -> EvidenceCoverage:
-        """Resolve exactly one explicitly named immutable historical coverage state."""
+        """Resolve one named coverage state, optionally verifying retained bytes.
+
+        Resolution reconstructs the typed registry records and their canonical
+        identities on every call.  ``verify=True`` additionally walks the
+        materialised rows and hashes each retained Source Export; that is an
+        explicit inspection operation rather than part of an ordinary build.
+        """
 
         if (
             not isinstance(state_fingerprint, str)
@@ -1051,20 +1048,20 @@ class LocalEvidenceStore:
         predicate: QueryPredicate = "intersects",
         filters: Mapping[str, object] | None = None,
         projection: tuple[str, ...] = (),
+        verify: bool = False,
     ) -> EvidenceQueryResult:
         """Read an exact subset from current or explicitly pinned historical coverage.
 
         Predicates always use ``feature_geometry PREDICATE selector_geometry``:
         ``within`` therefore means that the returned road feature lies within the
-        selector, while ``contains`` means that the feature contains it.
+        selector, while ``contains`` means that the feature contains it.  Set
+        ``verify=True`` for the explicit full registry and retained-byte check.
         """
 
         if state_fingerprint is not None:
             _validate_query_state_fingerprint(state_fingerprint)
         selector = _query_selector_input(selector=selector, bbox=bbox)
-        selector_geometry, selector_fingerprint = _canonical_query_selector(
-            selector, selector_crs
-        )
+        selector_geometry, selector_fingerprint = _canonical_query_selector(selector, selector_crs)
         table = _LAYER_TABLES.get(source_layer)
         if table is None:
             raise ValueError(f"unsupported Local Evidence query source layer: {source_layer}")
@@ -1091,8 +1088,9 @@ class LocalEvidenceStore:
             else:
                 coverage = self._coverage_by_fingerprint(connection, state_fingerprint)
                 resolved_state_fingerprint = state_fingerprint
-            self._verify_coverage(connection, coverage)
-            self._verify_retained_source_bytes(coverage)
+            if verify:
+                self._verify_coverage(connection, coverage)
+                self._verify_retained_source_bytes(coverage)
             required_keys, consulted = _query_attestations_for_selector(
                 coverage, source_layer, selector_geometry
             )
@@ -1146,9 +1144,7 @@ class LocalEvidenceStore:
                     *attribute_values,
                 ) = raw
                 all_attributes = dict(zip(full_attributes, attribute_values, strict=True))
-                result_attributes = {
-                    field: all_attributes[field] for field in fields.projection
-                }
+                result_attributes = {field: all_attributes[field] for field in fields.projection}
                 row = EvidenceQueryRow(
                     source_export_fingerprint=str(source_export_fingerprint),
                     logical_key=str(logical_key),
@@ -1157,9 +1153,7 @@ class LocalEvidenceStore:
                     geometry=from_wkb(bytes(geometry_wkb)),
                     crs=str(crs),
                     attributes=result_attributes,
-                    attestation_fingerprints=(
-                        str(attestation_fingerprint),
-                    ),
+                    attestation_fingerprints=(str(attestation_fingerprint),),
                 )
                 key = (row.source_export_fingerprint, row.logical_key)
                 existing = deduplicated.get(key)
@@ -1226,8 +1220,9 @@ class LocalEvidenceStore:
         bbox: tuple[object, object, object, object] | None = None,
         predicate: QueryPredicate = "intersects",
         filters: Mapping[str, object] | None = None,
+        verify: bool = False,
     ) -> tuple[object, ...]:
-        """Return typed DfT observations through a bounded pure conversion seam."""
+        """Return typed DfT observations, optionally verifying the store first."""
 
         if not source_layer.startswith("dft/"):
             raise ValueError("query_traffic requires a dft/<layer> source layer")
@@ -1244,6 +1239,7 @@ class LocalEvidenceStore:
             predicate=predicate,
             filters=filters,
             projection=_DFT_TRAFFIC_ATTRIBUTES,
+            verify=verify,
         )
         observations = [observation_from_query_row(row) for row in result.rows]
         claims: dict[tuple[object, ...], list[object]] = {}
@@ -1260,10 +1256,7 @@ class LocalEvidenceStore:
         from satn.traffic_evidence import TrafficMatchState
 
         for group in claims.values():
-            signatures = {
-                traffic_claim_signature(item.model_dump(mode="python"))
-                for item in group
-            }
+            signatures = {traffic_claim_signature(item.model_dump(mode="python")) for item in group}
             if len(signatures) > 1:
                 for index, item in enumerate(observations):
                     if item in group:
@@ -1492,9 +1485,7 @@ class LocalEvidenceStore:
             """
         )
         for table in ("dft_traffic_aadf_by_direction", "dft_traffic_raw_counts"):
-            connection.execute(
-                f"ALTER TABLE {table} ALTER COLUMN all_motor_vehicles DROP NOT NULL"
-            )
+            connection.execute(f"ALTER TABLE {table} ALTER COLUMN all_motor_vehicles DROP NOT NULL")
             for column in (
                 "attestation_fingerprint",
                 "source_export_fingerprint",
@@ -1511,9 +1502,7 @@ class LocalEvidenceStore:
                 "traffic_observation_json",
                 "source_row_json",
             ):
-                connection.execute(
-                    f"ALTER TABLE {table} ALTER COLUMN {column} SET NOT NULL"
-                )
+                connection.execute(f"ALTER TABLE {table} ALTER COLUMN {column} SET NOT NULL")
         for table in ("dft_traffic_aadf_by_direction", "dft_traffic_raw_counts"):
             connection.execute(
                 f"CREATE INDEX IF NOT EXISTS {table}_geometry_rtree "
@@ -1873,9 +1862,7 @@ class LocalEvidenceStore:
             ingestion_contract,
             partition_keys,
         )
-        by_key = {
-            partition.partition_key.fingerprint: partition for partition in source_partitions
-        }
+        by_key = {partition.partition_key.fingerprint: partition for partition in source_partitions}
         expected_keys = {key.fingerprint for key in partition_keys}
         if len(by_key) != len(source_partitions) or set(by_key) != expected_keys:
             raise ValueError(
@@ -1887,9 +1874,7 @@ class LocalEvidenceStore:
                 ingestion_contract=ingestion_contract,
                 partition_key=by_key[partition_key.fingerprint].partition_key,
                 availability=(
-                    "available"
-                    if by_key[partition_key.fingerprint].features
-                    else "no-data"
+                    "available" if by_key[partition_key.fingerprint].features else "no-data"
                 ),
                 features=tuple(
                     _EvidenceFeature(
@@ -2760,9 +2745,7 @@ _LAYER_FIELD_TYPES = {
         "road_classification_number": ("string|null", True),
         "name_1": ("string|null", True),
     },
-    _OSM_NETWORK_SOURCE_LAYER: {
-        name: ("string|null", True) for name in _OSM_NETWORK_ATTRIBUTES
-    },
+    _OSM_NETWORK_SOURCE_LAYER: {name: ("string|null", True) for name in _OSM_NETWORK_ATTRIBUTES},
     **{
         f"{_DFT_SOURCE_FAMILY}/{layer}": {
             name: (
@@ -2776,7 +2759,7 @@ _LAYER_FIELD_TYPES = {
                     "traffic_observation_json",
                     "source_row_json",
                 }
-                and not (name == "all_motor_vehicles" and layer != "raw-counts")
+                and not (name == "all_motor_vehicles" and layer != "raw-counts"),
             )
             for name in _DFT_TRAFFIC_ATTRIBUTES
         }
@@ -2822,10 +2805,7 @@ def _merge_refresh_requests(
         if existing is None:
             groups[identity] = request
             continue
-        keys = {
-            key.fingerprint: key
-            for key in (*existing.partition_keys, *request.partition_keys)
-        }
+        keys = {key.fingerprint: key for key in (*existing.partition_keys, *request.partition_keys)}
         groups[identity] = EvidenceRefreshRequest(
             source_export=existing.source_export,
             ingestion_contract=existing.ingestion_contract,
@@ -2961,9 +2941,7 @@ def _normalise_query_fields(
         raise ValueError("evidence query projection cannot contain duplicates")
     unknown = (set(filters) | set(projection)) - set(field_types)
     if unknown:
-        raise ValueError(
-            "evidence query uses unsupported fields: " + ", ".join(sorted(unknown))
-        )
+        raise ValueError("evidence query uses unsupported fields: " + ", ".join(sorted(unknown)))
     normalised_filters: list[tuple[str, object]] = []
     for field, value in sorted(filters.items()):
         _, nullable = field_types[field]
@@ -2990,10 +2968,7 @@ def _query_attestations_for_selector(
     required_cells = _bng_cells_intersecting(selector)
     required_keys = tuple(
         sorted(
-            (
-                EvidencePartitionKey(source_layer, "bng-10km/v1", cell)
-                for cell in required_cells
-            ),
+            (EvidencePartitionKey(source_layer, "bng-10km/v1", cell) for cell in required_cells),
             key=lambda key: key.fingerprint,
         )
     )
@@ -3045,20 +3020,13 @@ def _bng_cells_intersecting(selector: BaseGeometry) -> tuple[str, ...]:
 def _bng_10km_cell(easting_index: int, northing_index: int) -> str:
     easting_100km, east_digit = divmod(easting_index, 10)
     northing_100km, north_digit = divmod(northing_index, 10)
-    first_index = (
-        (19 - northing_100km)
-        - (19 - northing_100km) % 5
-        + (easting_100km + 10) // 5
-    )
+    first_index = (19 - northing_100km) - (19 - northing_100km) % 5 + (easting_100km + 10) // 5
     second_index = ((19 - northing_100km) * 5) % 25 + easting_100km % 5
     if first_index > 7:
         first_index += 1
     if second_index > 7:
         second_index += 1
-    return (
-        f"{chr(first_index + ord('A'))}{chr(second_index + ord('A'))}"
-        f"{east_digit}{north_digit}"
-    )
+    return f"{chr(first_index + ord('A'))}{chr(second_index + ord('A'))}{east_digit}{north_digit}"
 
 
 def _validate_query_contracts(
@@ -3166,9 +3134,7 @@ def _query_manifest(
         "predicate_operand_order": "feature_geometry predicate selector_geometry",
         "filters": {field: value for field, value in filters},
         "projection": list(projection),
-        "required_partition_key_fingerprints": [
-            key.fingerprint for key in required_partition_keys
-        ],
+        "required_partition_key_fingerprints": [key.fingerprint for key in required_partition_keys],
         "required_bng_10km_cells": sorted(key.cell for key in required_partition_keys),
         "consulted_attestation_fingerprints": sorted(consulted_attestations),
         "availability_counts": {

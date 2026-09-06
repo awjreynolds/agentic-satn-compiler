@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import date
+from types import SimpleNamespace
 
 import pytest
 
@@ -35,6 +36,7 @@ from satn.strategic_network_planning import (
     ReferenceRoute,
     StrategicNetworkPlanningRequest,
     StrategicPlanningFallbackProfile,
+    _resolved_backbone_component_gap_ids,
     compile_strategic_network,
 )
 
@@ -361,6 +363,169 @@ def test_candidate_discovery_gaps_survive_into_reviewable_network() -> None:
     assert result.status == "complete-with-gaps"
     assert len([item for item in result.gaps if item.obligation_id == "destination-gap"]) == 1
     assert any(item.obligation_id == "destination-gap" for item in result.evidence_requests)
+
+
+def test_prepared_optional_interurban_gap_stays_diagnostic_only() -> None:
+    graph = fixture_graph()
+    discovered = discovery(
+        graph,
+        CorridorObligation("valid", "A", "D"),
+        CorridorObligation("optional-gap", "X", "Y", mandatory=False),
+    )
+    preparation = SimpleNamespace(
+        units=(SimpleNamespace(unit_id="valid", backbone_required=False),),
+        issues=(),
+    )
+
+    result = compile_strategic_network(
+        StrategicNetworkPlanningRequest(
+            graph=graph,
+            discovery=discovered,
+            area_fingerprint="a" * 64,
+            corridor_obligations=preparation,
+        )
+    )
+
+    assert result.status == "complete"
+    assert not any(item.obligation_id == "optional-gap" for item in result.gaps)
+    assert any(item.obligation_id == "optional-gap" for item in result.evidence_requests)
+
+
+def test_prepared_backbone_gap_remains_a_published_gap() -> None:
+    graph = fixture_graph()
+    discovered = discovery(graph, CorridorObligation("backbone-gap", "X", "Y"))
+    preparation = SimpleNamespace(
+        units=(
+            SimpleNamespace(
+                unit_id="backbone-gap",
+                backbone_required=True,
+                candidate_set=discovered.candidate_sets[0],
+            ),
+        ),
+        issues=(),
+    )
+
+    result = compile_strategic_network(
+        StrategicNetworkPlanningRequest(
+            graph=graph,
+            discovery=discovered,
+            area_fingerprint="a" * 64,
+            corridor_obligations=preparation,
+            backbone_obligation_ids=("backbone-gap",),
+        )
+    )
+
+    assert result.status == "complete-with-gaps"
+    assert [item.obligation_id for item in result.gaps] == ["backbone-gap"]
+
+
+def test_unselected_junction_context_does_not_resolve_one_sided_component_gap() -> None:
+    graph = fixture_graph()
+    discovered = discovery(graph, CorridorObligation("a-side", "A", "D"))
+    preparation = SimpleNamespace(
+        units=(
+            SimpleNamespace(
+                unit_id="junction-context",
+                backbone_component_ids=("component-a", "component-b"),
+                routing_start_node_id="A",
+                routing_end_node_id="B",
+            ),
+            SimpleNamespace(
+                unit_id="a-side",
+                backbone_component_ids=("component-a",),
+                routing_start_node_id="A",
+                routing_end_node_id="D",
+            ),
+        ),
+        issues=(
+            SimpleNamespace(
+                reason="a-road-backbone-component-unconnected",
+                component_ids=("component-a", "component-b"),
+                obligation_id="component-gap",
+            ),
+        ),
+    )
+    request = StrategicNetworkPlanningRequest(
+        graph=graph,
+        discovery=discovered,
+        area_fingerprint="a" * 64,
+        corridor_obligations=preparation,
+    )
+    a_side = EffectiveStrategicSection(
+        "a-side-section",
+        "a-side",
+        None,
+        "interurban-spine",
+        ("a-road",),
+        (),
+        "LINESTRING (0 0, 100 0)",
+        PlanningAuthority.COMPILER,
+    )
+    context = EffectiveStrategicSection(
+        "junction-context-section",
+        "junction-context",
+        None,
+        "interurban-spine",
+        ("a-road",),
+        (),
+        "LINESTRING (0 0, 0 60)",
+        PlanningAuthority.COMPILER,
+    )
+
+    assert "component-gap" not in _resolved_backbone_component_gap_ids(request, (a_side,))
+    assert "component-gap" in _resolved_backbone_component_gap_ids(request, (context,))
+
+
+def test_selected_obligation_suppresses_its_discovery_failure_gap() -> None:
+    graph = fixture_graph()
+    discovered = discovery(graph, CorridorObligation("valid", "A", "D"))
+    discovered = replace(
+        discovered,
+        gaps=(CandidateSetGapEvidence("valid", ("A", "D"), "no-path", ()),),
+    )
+    preparation = SimpleNamespace(
+        units=(SimpleNamespace(unit_id="valid", backbone_required=False),),
+        issues=(),
+    )
+
+    result = compile_strategic_network(
+        StrategicNetworkPlanningRequest(
+            graph=graph,
+            discovery=discovered,
+            area_fingerprint="a" * 64,
+            corridor_obligations=preparation,
+        )
+    )
+
+    assert result.status == "complete"
+    assert not result.gaps
+
+
+def test_unresolved_obligation_is_deduplicated_by_obligation_id() -> None:
+    graph = fixture_graph()
+    discovered = discovery(graph, CorridorObligation("valid", "A", "D"))
+    discovered = replace(
+        discovered,
+        gaps=(
+            CandidateSetGapEvidence("unresolved", ("X", "Y"), "no-path", ()),
+            CandidateSetGapEvidence(
+                "unresolved",
+                ("X", "Y"),
+                "strategies produced no candidate within configured bounds",
+                (),
+            ),
+        ),
+    )
+
+    result = compile_strategic_network(
+        StrategicNetworkPlanningRequest(
+            graph=graph,
+            discovery=discovered,
+            area_fingerprint="a" * 64,
+        )
+    )
+
+    assert [item.obligation_id for item in result.gaps].count("unresolved") == 1
 
 
 def test_cycleway_is_effective_and_a_road_remains_inspectable() -> None:

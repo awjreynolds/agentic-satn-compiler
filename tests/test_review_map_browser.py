@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 
@@ -152,13 +153,14 @@ def test_any_visible_map_artifact_can_pin_its_context(tmp_path: Path) -> None:
                 const point = map.project(feature.geometry.coordinates);
                 const rendered = map.queryRenderedFeatures(point, {layers: ["places"]});
                 if (rendered.length) {
-                  return {
-                    x: point.x,
-                    y: point.y,
-                    id: feature.properties.place_id,
-                    name: feature.properties.name,
-                    kind: feature.properties.kind
-                  };
+                      return {
+                        x: point.x,
+                        y: point.y,
+                        id: feature.properties.place_id,
+                        name: feature.properties.name,
+                        kind: feature.properties.kind,
+                        geometry: feature.geometry
+                      };
                 }
               }
               return null;
@@ -171,47 +173,97 @@ def test_any_visible_map_artifact_can_pin_its_context(tmp_path: Path) -> None:
         artifact_y = map_box["y"] + selection["y"]
         lens = page.locator("#review-lens")
         panel = page.locator("#feature-details")
+        main_before_hover = page.evaluate(
+            """() => {
+              const map = window.SATN_REVIEW_MAP;
+              return {
+                source: JSON.stringify(map.getSource("network")._data),
+                filter: JSON.stringify(map.getFilter("strategic-spines")),
+                paint: JSON.stringify(map.getPaintProperty("strategic-spines", "line-color")),
+                visibility: map.getLayoutProperty("strategic-spines", "visibility")
+              };
+            }"""
+        )
 
         page.mouse.move(artifact_x, artifact_y)
+        page.wait_for_function(
+            "window.SATN_REVIEW_MAP.getSource('review-lens-highlight')._data.features.length === 1"
+        )
         assert not page_errors
         assert lens.is_visible()
+        assert (
+            page.evaluate(
+                """() => {
+              const map = window.SATN_REVIEW_MAP;
+              return map.getSource("review-lens-highlight")._data.features[0].geometry;
+            }"""
+            )
+            == selection["geometry"]
+        )
+        assert (
+            page.evaluate(
+                """() => {
+              const map = window.SATN_REVIEW_MAP;
+              return {
+                source: JSON.stringify(map.getSource("network")._data),
+                filter: JSON.stringify(map.getFilter("strategic-spines")),
+                paint: JSON.stringify(map.getPaintProperty("strategic-spines", "line-color")),
+                visibility: map.getLayoutProperty("strategic-spines", "visibility")
+              };
+            }"""
+            )
+            == main_before_hover
+        )
         hover_text = panel.inner_text()
         assert selection["name"] in hover_text
-        assert selection["id"] in hover_text
-        assert selection["kind"] in hover_text
-        assert "places" in hover_text
-        assert "Point" in hover_text
-        assert "All contextual properties" in hover_text
-        assert panel.locator(".artifact-context").get_attribute("open") is None
+        assert "Role: Named community reference" in hover_text
+        assert "Purpose: Named place shown for orientation." in hover_text
+        assert "Access status" not in hover_text
+        assert "Unavailable" not in hover_text
+        assert "All contextual properties" not in hover_text
+        assert panel.locator(".artifact-context").count() == 0
 
         page.mouse.move(map_box["x"] + 2, map_box["y"] + 2)
         assert lens.is_hidden()
+        page.wait_for_function(
+            "window.SATN_REVIEW_MAP.getSource('review-lens-highlight')._data.features.length === 0"
+        )
 
         page.mouse.move(artifact_x, artifact_y)
         page.mouse.click(artifact_x, artifact_y)
+        page.wait_for_function(
+            "window.SATN_REVIEW_MAP.getSource('review-lens-highlight')._data.features.length === 1"
+        )
         page.mouse.move(map_box["x"] + 2, map_box["y"] + 2)
         assert lens.is_visible()
 
         assert not page_errors
         panel_text = panel.inner_text()
         assert selection["name"] in panel_text
+        assert "All contextual properties" in panel_text
+        panel.locator(".artifact-context summary").evaluate("(element) => element.click()")
+        panel_text = panel.inner_text()
         assert selection["id"] in panel_text
         assert selection["kind"] in panel_text
         assert "places" in panel_text
         assert "Point" in panel_text
-        assert "All contextual properties" in panel_text
 
-        page.mouse.move(artifact_x, artifact_y)
-        page.mouse.click(artifact_x, artifact_y)
-        page.mouse.move(map_box["x"] + 2, map_box["y"] + 2)
+        page.get_by_role("button", name="Close route review lens").click()
         assert lens.is_hidden()
+        page.wait_for_function(
+            "window.SATN_REVIEW_MAP.getSource('review-lens-highlight')._data.features.length === 0"
+        )
 
         page.locator("#feature-index summary").click()
         indexed_artifact = page.locator("#connection-list .connection").first
         indexed_artifact.focus()
         assert lens.is_visible()
+        assert panel.locator(".artifact-context").count() == 0
+        indexed_artifact.click()
+        assert lens.get_attribute("data-state") == "pinned"
+        panel.locator(".artifact-context summary").evaluate("(element) => element.click()")
         assert indexed_artifact.get_attribute("data-feature-id") in panel.inner_text()
-        indexed_artifact.blur()
+        page.get_by_role("button", name="Close route review lens").click()
         assert lens.is_hidden()
 
         route_preview = page.evaluate(
@@ -229,8 +281,9 @@ def test_any_visible_map_artifact_can_pin_its_context(tmp_path: Path) -> None:
               });
               const coordinates = feature.geometry.coordinates;
               const point = map.project(coordinates[Math.floor(coordinates.length / 2)]);
-              return {
+            return {
                 x: point.x, y: point.y, id: feature.id,
+                geometry: feature.geometry,
                 name: feature.properties.name || feature.properties.feature_type
               };
             }"""
@@ -243,14 +296,43 @@ def test_any_visible_map_artifact_can_pin_its_context(tmp_path: Path) -> None:
             map_box["x"] + route_preview["x"],
             map_box["y"] + route_preview["y"],
         )
+        page.wait_for_function(
+            "window.SATN_REVIEW_MAP.getSource('review-lens-highlight')._data.features.length === 1"
+        )
         route_preview_text = lens.inner_text()
         assert route_preview["name"] in route_preview_text
-        assert route_preview["id"] in route_preview_text
-        assert "Line colour" in route_preview_text
-        assert "Teal" in route_preview_text
-        assert "Map meaning" in route_preview_text
-        assert "Selected Strategic Spine" in route_preview_text
-        assert "Not available" not in route_preview_text
+        assert "Role: Strategic Main Network structural route" in route_preview_text
+        assert "Purpose: Part of the proposed main network." in route_preview_text
+        assert panel.locator(".artifact-context").count() == 0
+        assert panel.locator(".artifact-appearance").count() == 0
+        assert (
+            page.evaluate(
+                """() => window.SATN_REVIEW_MAP.getSource(
+              "review-lens-highlight"
+            )._data.features[0].geometry"""
+            )
+            == route_preview["geometry"]
+        )
+        page.mouse.click(
+            map_box["x"] + route_preview["x"],
+            map_box["y"] + route_preview["y"],
+        )
+        route_pinned_text = panel.inner_text()
+        assert panel.locator(".artifact-context").count() == 1
+        assert panel.locator(".artifact-appearance").count() == 1
+        lens.locator(".artifact-appearance summary").evaluate("(element) => element.click()")
+        lens.locator(".artifact-context summary").evaluate("(element) => element.click()")
+        route_pinned_text = lens.inner_text()
+        assert route_preview["id"] in route_pinned_text
+        assert "Line colour" in route_pinned_text
+        assert "Teal" in route_pinned_text
+        assert "Map meaning" in route_pinned_text
+        assert "Selected Strategic Spine" in route_pinned_text
+        assert "Not available" not in route_pinned_text
+        page.get_by_role("button", name="Close route review lens").click()
+        page.wait_for_function(
+            "window.SATN_REVIEW_MAP.getSource('review-lens-highlight')._data.features.length === 0"
+        )
         page.mouse.move(map_box["x"] + 2, map_box["y"] + 2)
         assert lens.is_hidden()
 
@@ -311,10 +393,92 @@ def test_any_visible_map_artifact_can_pin_its_context(tmp_path: Path) -> None:
 
         reference_text = panel.inner_text()
         assert "Reference option test" in reference_text
-        assert "reference-option-test" in reference_text
-        assert "complementary" in reference_text
+        assert "Complementary" in reference_text
         assert "Retained as contextual reference evidence." in reference_text
+        panel.locator(".artifact-context summary").evaluate("(element) => element.click()")
+        reference_text = panel.inner_text()
+        assert "reference-option-test" in reference_text
         assert "reference-satn-options" in reference_text
+        page.get_by_role("button", name="Close route review lens").click()
+
+        served_route = page.evaluate(
+            """() => {
+              const map = window.SATN_REVIEW_MAP;
+              const places = map.getSource("places")._data.features;
+              const [first, second] = places.slice(0, 2);
+              const firstId = first.properties.place_id;
+              const secondId = second.properties.place_id;
+              const feature = {
+                type: "Feature",
+                id: "served-route-test",
+                properties: {
+                  layer: "Strategic Main Network",
+                  feature_type: "reviewable-selected-route",
+                  section_id: "served-route-test",
+                  network_role: "strategic-main-network",
+                  display_state: "proposed-new-link",
+                  served_network_place_ids: [secondId, firstId],
+                  endpoints: [firstId, secondId]
+                },
+                geometry: {
+                  type: "LineString",
+                  coordinates: [
+                    first.geometry.coordinates,
+                    second.geometry.coordinates
+                  ]
+                }
+              };
+              const collection = map.getSource("reviewable")._data;
+              collection.features.push(feature);
+              map.getSource("reviewable").setData(collection);
+              map.getStyle().layers
+                .filter((layer) => layer.source && layer.id !== "served-route-test")
+                .forEach((layer) => map.setLayoutProperty(layer.id, "visibility", "none"));
+              map.addLayer({
+                id: "served-route-test",
+                type: "line",
+                source: "reviewable",
+                filter: ["==", ["get", "section_id"], "served-route-test"],
+                paint: {"line-color": "#17202a", "line-width": 14}
+              });
+              const midpoint = first.geometry.coordinates.map(
+                (value, index) => (value + second.geometry.coordinates[index]) / 2
+              );
+              const point = map.project(midpoint);
+              return {
+                x: point.x,
+                y: point.y,
+                firstName: first.properties.name,
+                secondName: second.properties.name
+              };
+            }"""
+        )
+        page.wait_for_function(
+            "window.SATN_REVIEW_MAP.queryRenderedFeatures("
+            "{layers: ['served-route-test']}).length > 0"
+        )
+        served_x = map_box["x"] + served_route["x"]
+        served_y = map_box["y"] + served_route["y"]
+        page.mouse.move(served_x, served_y)
+        assert panel.get_by_role("heading", name="Strategic route section").is_visible()
+        assert panel.locator(".artifact-context").count() == 0
+        page.mouse.click(served_x, served_y)
+        served_text = panel.inner_text()
+        assert "Places served" in served_text
+        assert "Endpoints" in served_text
+        assert "Selection reason" in served_text
+        assert "Not recorded" in served_text
+        assert served_route["firstName"] in served_text
+        assert served_route["secondName"] in served_text
+        served_value = page.evaluate(
+            """() => [...document.querySelectorAll("#feature-details dt")]
+              .find((item) => item.textContent === "Places served")
+              ?.nextElementSibling?.textContent || ''
+            """
+        )
+        assert "," in served_value
+        assert " → " not in served_value
+        page.get_by_role("button", name="Close route review lens").click()
         browser.close()
 
 
@@ -379,7 +543,8 @@ def test_compact_review_lens_previews_pins_and_closes_map_artifacts(
         first_x, first_y = map_point(first)
         second_x, second_y = map_point(second)
         empty_x, empty_y = map_box["x"] + 2, map_box["y"] + 2
-        lens = page.get_by_role("dialog", name="Route review lens")
+        lens = page.get_by_role("region", name="Route review lens")
+        panel = page.locator("#feature-details")
 
         assert page.locator("#linear-evidence-panel").count() == 0
         assert lens.is_hidden()
@@ -388,8 +553,14 @@ def test_compact_review_lens_previews_pins_and_closes_map_artifacts(
         assert lens.is_visible()
         assert lens.get_attribute("data-state") == "preview"
         first_preview = lens.inner_text()
+        assert panel.locator(".artifact-context").count() == 0
+        assert panel.locator(".artifact-appearance").count() == 0
 
         page.mouse.click(first_x, first_y)
+        assert lens.get_attribute("data-state") == "pinned"
+        assert panel.locator(".artifact-context").count() == 1
+        panel.locator(".artifact-context summary").evaluate("(element) => element.click()")
+        assert first["id"] in panel.inner_text()
         page.mouse.move(second_x, second_y)
         assert lens.get_attribute("data-state") == "pinned"
         pinned_during_second_hover = lens.inner_text()
@@ -400,9 +571,11 @@ def test_compact_review_lens_previews_pins_and_closes_map_artifacts(
         page.mouse.move(second_x, second_y)
         assert lens.is_visible()
         second_preview_after_unlock = lens.inner_text()
+        assert panel.locator(".artifact-context").count() == 0
+        assert panel.locator(".artifact-appearance").count() == 0
 
         failures = []
-        if first["name"] not in first_preview or first["id"] not in first_preview:
+        if first["name"] not in first_preview:
             failures.append("hovering the first artifact did not preview it in the lens")
         if (
             first["name"] not in pinned_during_second_hover
@@ -411,7 +584,6 @@ def test_compact_review_lens_previews_pins_and_closes_map_artifacts(
             failures.append("hovering another artifact replaced the pinned lens")
         if (
             second["name"] not in second_preview_after_unlock
-            or second["id"] not in second_preview_after_unlock
             or first["name"] in second_preview_after_unlock
         ):
             failures.append("the lens did not resume preview after being closed")
@@ -439,10 +611,11 @@ def test_selecting_a_layer_only_changes_map_visibility(tmp_path: Path) -> None:
         page.goto(result.artifacts["review_map"].as_uri())
         page.wait_for_function("document.documentElement.dataset.mapReady === 'true'")
 
+        page.get_by_text("Urban and low-traffic context", exact=True).click()
         control = page.locator("#layer-authority-boundaries")
         information = page.get_by_role("button", name="About authority boundaries")
         popover = page.locator("#legend-authority-boundaries")
-        lens = page.get_by_role("dialog", name="Route review lens")
+        lens = page.get_by_role("region", name="Route review lens")
         map_legend = page.get_by_role("region", name="Map legend")
 
         assert not control.is_checked()
@@ -467,6 +640,7 @@ def test_selecting_a_layer_only_changes_map_visibility(tmp_path: Path) -> None:
         assert information.get_attribute("aria-expanded") == "true"
 
         information.click()
+        page.get_by_text("Terrain, warnings and comparison", exact=True).click()
         page.locator("#layer-population-display-sections").check()
         assert map_legend.get_attribute("open") is None
 
@@ -475,6 +649,116 @@ def test_selecting_a_layer_only_changes_map_visibility(tmp_path: Path) -> None:
         if findings.locator(".finding-button").count():
             assert findings.evaluate("element => element.tagName") == "DETAILS"
             assert findings.get_attribute("open") is None
+        browser.close()
+
+
+@pytest.mark.browser
+def test_mesh_gap_marker_has_a_coverage_summary_and_main_layer_role(tmp_path: Path) -> None:
+    fixture = tmp_path / "fixture"
+    shutil.copytree(
+        PROJECT / "examples" / "fixture",
+        fixture,
+        ignore=shutil.ignore_patterns("work", ".satn-cache"),
+    )
+    config = CouncilConfig.from_yaml(fixture / "council.yaml")
+    snapshot(config)
+    result = compile(config)
+
+    review_map = result.artifacts["review_map"]
+    data_path = review_map.parent / "data.js"
+    data_prefix = "window.SATN_DATA = "
+    data_source = data_path.read_text(encoding="utf-8")
+    assert data_source.startswith(data_prefix)
+    data = json.loads(data_source[len(data_prefix) :].rstrip(";\n"))
+    coordinates = data["places"]["features"][0]["geometry"]["coordinates"]
+    mesh_coordinates = [coordinates[0] + 0.01, coordinates[1] + 0.01]
+    mesh_marker = {
+        "type": "Feature",
+        "id": "reviewable-gap:mesh-coverage:proof-point-1",
+        "geometry": {"type": "Point", "coordinates": mesh_coordinates},
+        "properties": {
+            "layer": "Strategic Main Network",
+            "feature_type": "reviewable-gap-endpoint",
+            "gap_id": "mesh-coverage",
+            "obligation_id": "mesh-coverage",
+            "endpoint_id": None,
+            "network_role": "strategic-main-network",
+            "display_state": "unresolved-gap",
+            "proof_point_position": 1,
+            "geometry_semantics": "mesh-proof-point-marker-only-no-route-geometry",
+            "reason": "coverage proof point",
+            "missing_endpoint_geometry": False,
+        },
+    }
+    for collection_key in ("reviewable", "reviewable_network"):
+        data[collection_key]["features"].append(mesh_marker)
+    data_path.write_text(
+        data_prefix + json.dumps(data) + ";\n",
+        encoding="utf-8",
+    )
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1440, "height": 900})
+        page.route("https://tile.openstreetmap.org/**", lambda route: route.abort())
+        page.goto(review_map.as_uri())
+        page.wait_for_function("document.documentElement.dataset.mapReady === 'true'")
+
+        page.wait_for_function("!window.SATN_REVIEW_MAP.isMoving()")
+        page.locator("#layer-reviewable-gaps").check()
+        page.locator("#reviewable-findings summary").click()
+        page.evaluate(
+            """() => {
+              const map = window.SATN_REVIEW_MAP;
+              map.getStyle().layers
+                .filter((layer) => layer.source && layer.id !== "reviewable-gaps")
+                .forEach((layer) => map.setLayoutProperty(layer.id, "visibility", "none"));
+            }"""
+        )
+        marker_point = page.evaluate(
+            """() => {
+              const map = window.SATN_REVIEW_MAP;
+              const feature = map.getSource("reviewable")._data.features.find(
+                (item) => item.id === "reviewable-gap:mesh-coverage:proof-point-1"
+              );
+              const point = map.project(feature.geometry.coordinates);
+              return {x: point.x, y: point.y};
+            }"""
+        )
+        page.wait_for_function(
+            """(point) => window.SATN_REVIEW_MAP.queryRenderedFeatures(
+              point, {layers: ["reviewable-gaps"]}
+            ).length > 0""",
+            arg=marker_point,
+        )
+        map_box = page.locator("#map").bounding_box()
+        assert map_box is not None
+        page.mouse.move(
+            map_box["x"] + marker_point["x"],
+            map_box["y"] + marker_point["y"],
+        )
+        page.wait_for_function(
+            "document.querySelector('#feature-details').innerText.includes('Network coverage gap')"
+        )
+        hover_panel_text = page.locator("#feature-details").inner_text()
+        assert "Network coverage gap" in hover_panel_text
+        assert "Recorded reason: coverage proof point" in hover_panel_text
+        assert "Route role" not in hover_panel_text
+
+        finding = page.locator(".finding-button").filter(has_text="mesh-coverage")
+        assert finding.count() == 1
+        finding_text = finding.inner_text()
+        assert "coverage point 1" in finding_text
+        assert "coverage marker" in finding_text
+        assert "unknown endpoint" not in finding_text
+
+        finding.click()
+        panel_text = page.locator("#feature-details").inner_text()
+        assert "Network coverage gap" in panel_text
+        assert "Recorded reason: coverage proof point" in panel_text
+        assert "Route role" not in panel_text
+        assert "Strategic Main Network structural route" not in panel_text
+        assert "Access Support" not in panel_text
         browser.close()
 
 
@@ -563,6 +847,12 @@ def test_two_pinned_segments_show_a_high_level_comparison(tmp_path: Path) -> Non
 
         lens = page.locator("#review-lens")
         assert lens.get_attribute("data-state") == "compare"
+        assert (
+            page.evaluate(
+                "window.SATN_REVIEW_MAP.getSource('review-lens-highlight')._data.features.length"
+            )
+            == 0
+        )
         assert lens.get_by_role("heading", name="Compare 2 segments").is_visible()
         assert "Riverside cycleway" in lens.inner_text()
         assert "Main road option" in lens.inner_text()
@@ -640,6 +930,11 @@ def test_two_pinned_segments_show_a_high_level_comparison(tmp_path: Path) -> Non
             map_box["x"] + first_semantic["x"],
             map_box["y"] + first_semantic["y"],
         )
+        semantic_preview_text = lens.inner_text()
+        assert "Existing greenway section" in semantic_preview_text
+        assert "Role: Selected network route" in semantic_preview_text
+        assert "Purpose: Part of the proposed network." in semantic_preview_text
+        assert "Existing provision" in semantic_preview_text
         page.mouse.click(
             map_box["x"] + second_semantic["x"],
             map_box["y"] + second_semantic["y"],
@@ -691,9 +986,10 @@ def test_gradient_inspection_path_popovers_and_linear_evidence(tmp_path: Path) -
         popover = page.locator("#legend-strategic-network")
         assert popover.is_visible()
         assert information.get_attribute("aria-expanded") == "true"
-        assert page.evaluate("() => window.SATN_REVIEW_MAP.getStyle().layers.at(-1).id") == (
-            "strategic-network"
+        layer_order = page.evaluate(
+            "() => window.SATN_REVIEW_MAP.getStyle().layers.map((layer) => layer.id)"
         )
+        assert layer_order.index("strategic-spines") > layer_order.index("places")
 
         page.locator("#feature-index summary").click()
         path_candidates = page.evaluate(

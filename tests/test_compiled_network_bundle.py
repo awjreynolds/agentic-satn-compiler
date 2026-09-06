@@ -406,6 +406,7 @@ def test_bundle_round_trips_strategic_planning_candidate_sets_and_gaps() -> None
                 endpoints=("A", "D"),
                 reason="no admitted candidate",
                 candidate_set_id="candidate-set-gap-a-d",
+                mesh_proof_points=((100.0, 200.0),),
             ),
         ),
     )
@@ -421,6 +422,7 @@ def test_bundle_round_trips_strategic_planning_candidate_sets_and_gaps() -> None
 
     assert decoded == fixture
     assert type(decoded.candidate_sets[0]) is type(fixture.candidate_sets[0])
+    assert decoded.gaps[0].mesh_proof_points == ((100.0, 200.0),)
 
 
 @pytest.mark.parametrize("wrong_encoding", ["typed-string", "geodataframe"])

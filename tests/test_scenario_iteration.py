@@ -25,7 +25,7 @@ from satn.scenario_iteration import (
 
 def _inputs():
     manifest = compilation_dependency_manifest()
-    digest = manifest["sha256"]
+    digest = manifest["compiler_cache_revision"]
     stages = []
     prior = None
     for stage in range(1, 7):
@@ -91,7 +91,7 @@ def test_iteration_reuses_one_through_six_then_compiles_and_publishes() -> None:
 
     def publish_stage(compiled, dependency_manifest):
         calls.append(("publish", compiled.scenario_fingerprint))
-        assert dependency_manifest["sha256"] == manifest["sha256"]
+        assert dependency_manifest["compiler_cache_revision"] == manifest["compiler_cache_revision"]
         return AtomicPublicationReceipt(
             publication_fingerprint="c" * 64,
             artifact_digests={"run.json": "d" * 64},

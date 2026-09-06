@@ -302,6 +302,52 @@ def test_lineaged_retained_core_seeds_distinct_target_and_is_idempotent(tmp_path
     assert (target / "snapshot.json").read_bytes() == final_manifest_bytes
 
 
+def test_lineaged_retained_core_without_elevation_can_add_official_roads(
+    tmp_path: Path,
+) -> None:
+    config = copied_config(tmp_path)
+    (config.source.fixture_dir / ELEVATION_EVIDENCE_FILENAME).unlink()
+    config.source.national_elevation = None
+    historical = snapshot(config)
+    historical_manifest_sha256 = hashlib.sha256(
+        (historical / "snapshot.json").read_bytes()
+    ).hexdigest()
+
+    classification = tmp_path / "connected-road.geojson"
+    gpd.GeoDataFrame(
+        [
+            {
+                "osmid": "connected-road",
+                "official_classification": "A road",
+                "geometry": LineString([(-2.5, 51.39), (-2.5, 51.45)]),
+            }
+        ],
+        geometry="geometry",
+        crs=4326,
+    ).to_file(classification, driver="GeoJSON")
+    config.source.official_road_classification = OfficialRoadClassificationConfig(
+        path=classification,
+        source_id="connected-road-source",
+        effective_date="2026-04-07",
+        licence="Synthetic fixture",
+    )
+    config.source.snapshot_id = "fixture-no-elevation-augmented"
+    config.source.retained_core_source = RetainedCoreSourceConfig(
+        snapshot_id=historical.name,
+        manifest_sha256=historical_manifest_sha256,
+    )
+
+    target = snapshot(config, retain_core=True)
+    manifest = json.loads((target / "snapshot.json").read_text(encoding="utf-8"))
+
+    assert "elevation-evidence.geojson" not in manifest["files"]
+    assert not (target / ELEVATION_EVIDENCE_FILENAME).exists()
+    assert set(
+        gpd.read_file(target / "official-road-classification.geojson")["official_feature_id"]
+    ) == {"connected-road"}
+    assert snapshot(config, retain_core=True) == target
+
+
 def test_lineaged_whole_road_selection_is_idempotently_revalidated(
     tmp_path: Path,
 ) -> None:

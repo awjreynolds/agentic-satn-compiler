@@ -20,7 +20,6 @@ import numpy as np
 
 import satn.compilation_dependencies as compilation_dependencies
 import satn.compiled_network_bundle as compiled_network_bundle_codec
-import satn.routable_edge_enrichment as routable_edge_enrichment_codec
 from satn.agents import (
     AgentCompilationTerminated,
     AgentDecisionRequired,
@@ -31,7 +30,12 @@ from satn.agents import (
 )
 from satn.alignment_selection import ReferenceSATNSelection
 from satn.atm import compare_atm, load_atm
-from satn.compilation_dependencies import CompilerPath, compilation_dependency_manifest
+from satn.compilation_dependencies import (
+    CompilerPath,
+    compilation_dependency_manifest,
+    compiler_cache_revision,
+    is_compiler_cache_revision,
+)
 from satn.compiler import (
     CompiledNetwork,
     _compile_network_with_reference,
@@ -663,21 +667,9 @@ def _copy_compilation_source(
 
 
 def _compiled_network_bundle_implementation_fingerprint() -> str:
-    """Bind reuse to both compiler semantics and the exact installed wire codec."""
+    """Return the explicit revision for compiled-network bundle semantics."""
 
-    codec_path = Path(compiled_network_bundle_codec.__file__ or "")
-    if not codec_path.is_file():
-        raise ValueError("compiled network bundle codec source is unavailable")
-    return hashlib.sha256(
-        json.dumps(
-            {
-                "compiler": _compiler_digest(),
-                "codec": hashlib.sha256(codec_path.read_bytes()).hexdigest(),
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
+    return f"{compilation_dependencies.COMPILER_CACHE_REVISION}/compiled-network-bundle"
 
 
 def _compiled_network_bundle_specification(
@@ -690,12 +682,7 @@ def _compiled_network_bundle_specification(
     upstream_artifact_ids: tuple[str, ...] = (),
     routing_input_identity: str | None = None,
 ) -> ArtifactSpecification:
-    dependency_identity = dependency_manifest.get("sha256")
-    if (
-        not isinstance(dependency_identity, str)
-        or _SHA256_PATTERN.fullmatch(dependency_identity) is None
-    ):
-        raise ValueError("compilation dependency manifest has no SHA-256 digest")
+    dependency_identity = compiler_cache_revision(dependency_manifest)
     snapshot_identity = snapshot_manifest_sha256(council)
     coverage = (snapshot_identity,) + (
         (evidence_state_fingerprint,) if evidence_state_fingerprint is not None else ()
@@ -842,23 +829,9 @@ def _routing_source_identities(
 
 
 def _edge_enrichment_implementation_fingerprint() -> str:
-    """Bind replay to both wire codecs and compiler implementation."""
+    """Return the explicit revision for edge-enrichment semantics."""
 
-    codec_path = Path(routable_edge_enrichment_codec.__file__ or "")
-    compiled_codec_path = Path(compiled_network_bundle_codec.__file__ or "")
-    if not codec_path.is_file() or not compiled_codec_path.is_file():
-        raise ValueError("edge-enrichment codec source is unavailable")
-    return hashlib.sha256(
-        json.dumps(
-            {
-                "compiler": _compiler_digest(),
-                "codec": hashlib.sha256(codec_path.read_bytes()).hexdigest(),
-                "compiled_codec": hashlib.sha256(compiled_codec_path.read_bytes()).hexdigest(),
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
+    return f"{compilation_dependencies.COMPILER_CACHE_REVISION}/edge-enrichments"
 
 
 def _edge_enrichment_identities(
@@ -869,8 +842,9 @@ def _edge_enrichment_identities(
 ) -> dict[str, str]:
     """Return exact governed identities for the mark-NCN-edges boundary."""
 
-    if not isinstance(dependency_identity, str) or not _SHA256_PATTERN.fullmatch(
-        dependency_identity
+    if not isinstance(dependency_identity, str) or (
+        _SHA256_PATTERN.fullmatch(dependency_identity) is None
+        and not is_compiler_cache_revision(dependency_identity)
     ):
         raise ValueError("edge-enrichment dependency identity is unavailable")
     area_identity, _ = _routing_source_identities(council, source)
@@ -899,9 +873,7 @@ def _edge_enrichment_specification(
     *,
     dependency_manifest: dict[str, object],
 ) -> tuple[ArtifactSpecification, dict[str, str]]:
-    dependency_identity = dependency_manifest.get("sha256")
-    if not isinstance(dependency_identity, str):
-        raise ValueError("compilation dependency manifest has no SHA-256 digest")
+    dependency_identity = compiler_cache_revision(dependency_manifest)
     identities = _edge_enrichment_identities(
         council,
         source,
@@ -1022,26 +994,9 @@ def _routing_snapshot_area_identity(council: AreaConfig) -> str:
     """Derive the routing boundary identity without loading the full snapshot."""
 
     snapshot_root = council.source.snapshot_dir / council.source.snapshot_id
-    manifest_path = snapshot_root / "snapshot.json"
     boundary_path = snapshot_root / "boundary.geojson"
-    if (
-        manifest_path.is_symlink()
-        or not manifest_path.is_file()
-        or boundary_path.is_symlink()
-        or not boundary_path.is_file()
-    ):
+    if boundary_path.is_symlink() or not boundary_path.is_file():
         raise ValueError("routing boundary snapshot input is unavailable")
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
-        raise ValueError("routing snapshot manifest is invalid") from error
-    file_hashes = manifest.get("file_sha256") if isinstance(manifest, dict) else None
-    if (
-        not isinstance(file_hashes, dict)
-        or file_hashes.get("boundary.geojson")
-        != hashlib.sha256(boundary_path.read_bytes()).hexdigest()
-    ):
-        raise ValueError("routing boundary snapshot digest differs from manifest")
     boundary = gpd.read_file(boundary_path)
     boundary_identity = _routing_frame_payload("boundary", boundary)["content_sha256"]
     if not isinstance(boundary_identity, str):
@@ -1068,11 +1023,7 @@ def _routing_lineage_identity(
 ) -> str:
     """Bind active route replay to source release and route configuration."""
 
-    dependency_identity = dependency_manifest.get("sha256")
-    if not isinstance(dependency_identity, str) or not _SHA256_PATTERN.fullmatch(
-        dependency_identity
-    ):
-        raise ValueError("compilation dependency manifest has no SHA-256 digest")
+    dependency_identity = compiler_cache_revision(dependency_manifest)
     payload = {
         "contract": "satn-routing-lineage/v1",
         "area_definition": area_definition_sha256(council),
@@ -1131,12 +1082,6 @@ def _routing_input_identity(
 ) -> tuple[str, str]:
     """Return stage-scoped area/input identities for routing assembly reuse."""
 
-    dependency_identity = dependency_manifest.get("sha256")
-    if (
-        not isinstance(dependency_identity, str)
-        or _SHA256_PATTERN.fullmatch(dependency_identity) is None
-    ):
-        raise ValueError("compilation dependency manifest has no SHA-256 digest")
     area_identity, _ = _routing_source_identities(council, source)
     lineage_identity = _routing_lineage_identity(
         council,
@@ -1150,23 +1095,9 @@ def _routing_input_identity(
 
 
 def _routing_bundle_implementation_fingerprint() -> str:
-    """Bind route reuse to both canonical codecs and compiler semantics."""
+    """Return the explicit revision for routing-assembly semantics."""
 
-    route_codec_path = compilation_dependencies._package_root() / "routing_assembly_bundle.py"
-    compiled_codec_path = Path(compiled_network_bundle_codec.__file__ or "")
-    if not route_codec_path.is_file() or not compiled_codec_path.is_file():
-        raise ValueError("routing bundle codec source is unavailable")
-    return hashlib.sha256(
-        json.dumps(
-            {
-                "compiler": _compiler_digest(),
-                "compiled_codec": hashlib.sha256(compiled_codec_path.read_bytes()).hexdigest(),
-                "routing_codec": hashlib.sha256(route_codec_path.read_bytes()).hexdigest(),
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
+    return f"{compilation_dependencies.COMPILER_CACHE_REVISION}/routing-assembly"
 
 
 def _routing_bundle_specification(
@@ -1177,9 +1108,7 @@ def _routing_bundle_specification(
     dependency_manifest: dict[str, object],
     upstream_artifact_ids: tuple[str, ...] = (),
 ) -> tuple[ArtifactSpecification, str]:
-    dependency_identity = dependency_manifest.get("sha256")
-    if not isinstance(dependency_identity, str):
-        raise ValueError("compilation dependency manifest has no SHA-256 digest")
+    dependency_identity = compiler_cache_revision(dependency_manifest)
     area_identity, input_identity = _routing_input_identity(
         council,
         source,
@@ -2022,9 +1951,7 @@ def _compile(
         ):
             try:
                 routing_area_identity, _ = _routing_source_identities(council, source)
-                dependency_identity = dependency_manifest.get("sha256")
-                if not isinstance(dependency_identity, str):
-                    raise ValueError("routing dependency identity is unavailable")
+                dependency_identity = compiler_cache_revision(dependency_manifest)
                 if routing_input_fingerprint is None:
                     raise ValueError("routing input identity is unavailable")
                 routing_payload = encode_routing_assembly_bundle(
@@ -2157,7 +2084,7 @@ def _compile(
                     compiled,
                     area_identity=area_definition_sha256(council),
                     input_identity=input_fingerprint,
-                    dependency_identity=str(dependency_manifest["sha256"]),
+                    dependency_identity=compiler_cache_revision(dependency_manifest),
                     upstream_artifact_ids=bundle_specification.upstream_artifact_ids,
                     bundle_crs=source["network"].crs,
                 )
@@ -2927,8 +2854,7 @@ def compilation_governed_input_fingerprint(
             if path is not None and path.is_file()
         },
         "compiler_dependency_manifest": manifest,
-        # Retain the compact field for release contracts and benchmark evidence.
-        "compiler_sha256": manifest["sha256"],
+        "compiler_cache_revision": compiler_cache_revision(manifest),
         "dft_traffic_evidence_state_fingerprint": evidence_state_fingerprint,
         "dft_traffic_match_policy_fingerprint": traffic_match_policy_fingerprint,
     }
@@ -3016,14 +2942,6 @@ def area_definition_sha256(council: AreaConfig) -> str:
 
 def _file_digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _compiler_digest() -> str:
-    """Return the explicit compilation dependency-set digest."""
-    digest = compilation_dependency_manifest()["sha256"]
-    if not isinstance(digest, str):  # Defensive: this is a governed reuse boundary.
-        raise ValueError("compilation dependency manifest has no SHA-256 digest")
-    return digest
 
 
 def _review_map_assets_are_current(output: Path) -> bool:

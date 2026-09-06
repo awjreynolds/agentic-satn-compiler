@@ -295,6 +295,7 @@ class StrategicMainNetworkRequest:
     coverage_points: tuple[MeshCoveragePoint, ...]
     profile: StrategicMainNetworkProfile = field(default_factory=StrategicMainNetworkProfile)
     preserve_connected_components: bool = False
+    protected_section_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         sections = tuple(self.route_sections)
@@ -318,6 +319,12 @@ class StrategicMainNetworkRequest:
             raise TypeError("profile must be a StrategicMainNetworkProfile")
         if not isinstance(self.preserve_connected_components, bool):
             raise TypeError("preserve_connected_components must be boolean")
+        protected = tuple(
+            sorted(_text(item, "protected section id") for item in self.protected_section_ids)
+        )
+        if len(set(protected)) != len(protected):
+            raise ValueError("protected section ids must be unique")
+        object.__setattr__(self, "protected_section_ids", protected)
 
     @property
     def candidate_sections(self) -> tuple[CandidateRouteSection, ...]:
@@ -332,6 +339,7 @@ class StrategicMainNetworkRequest:
                 "coverage_points": tuple(item.fingerprint_payload for item in self.coverage_points),
                 "profile": self.profile.fingerprint,
                 "preserve_connected_components": self.preserve_connected_components,
+                "protected_section_ids": self.protected_section_ids,
             }
         )
 
@@ -603,6 +611,7 @@ def _coverage_index(
 def _reduced_component(
     component: tuple[CandidateRouteSection, ...],
     point_candidates: dict[str, tuple[str, ...]],
+    protected_section_ids: frozenset[str] = frozenset(),
 ) -> tuple[CandidateRouteSection, ...]:
     """Remove lower-priority sections while preserving this component's proof."""
 
@@ -615,6 +624,8 @@ def _reduced_component(
     )
     by_id = {item.section_id: item for item in component}
     for section in deletion_order:
+        if section.section_id in protected_section_ids:
+            continue
         affected_points = point_ids_by_section.get(section.section_id, ())
         if any(
             counts[point_id] <= 1 for point_id in affected_points if point_id in initial_coverage
@@ -632,6 +643,7 @@ def _reduced_component(
 def _best_connected_subset(
     sections: Sequence[CandidateRouteSection],
     point_candidates: dict[str, tuple[str, ...]],
+    protected_section_ids: frozenset[str] = frozenset(),
 ) -> tuple[CandidateRouteSection, ...]:
     """Reverse-delete each endpoint-connected component deterministically.
 
@@ -646,7 +658,7 @@ def _best_connected_subset(
         return ()
 
     reduced_components = [
-        _reduced_component(component, point_candidates)
+        _reduced_component(component, point_candidates, protected_section_ids)
         for component in _endpoint_components(ordered_sections)
     ]
 
@@ -656,6 +668,7 @@ def _best_connected_subset(
 def _reduced_component_union(
     sections: Sequence[CandidateRouteSection],
     point_candidates: dict[str, tuple[str, ...]],
+    protected_section_ids: frozenset[str] = frozenset(),
 ) -> tuple[CandidateRouteSection, ...]:
     """Reduce every endpoint component while allowing proven components to coexist."""
 
@@ -676,6 +689,8 @@ def _reduced_component_union(
         key=lambda item: (-_CORRIDOR_ORDER[item.corridor_class], item.section_id),
     )
     for section in deletion_order:
+        if section.section_id in protected_section_ids:
+            continue
         affected_points = point_ids_by_section.get(section.section_id, ())
         if any(
             counts[point_id] <= 1 for point_id in affected_points if point_id in initial_coverage
@@ -721,9 +736,17 @@ def assemble_strategic_main_network(
     )
 
     selected_sections = (
-        _reduced_component_union(main_sections, main_candidates)
+        _reduced_component_union(
+            main_sections,
+            main_candidates,
+            frozenset(request.protected_section_ids),
+        )
         if request.preserve_connected_components
-        else _best_connected_subset(main_sections, main_candidates)
+        else _best_connected_subset(
+            main_sections,
+            main_candidates,
+            frozenset(request.protected_section_ids),
+        )
     )
     selected_ids = tuple(sorted(item.section_id for item in selected_sections))
     selected_id_set = set(selected_ids)

@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted.
+Superseded by [ADR 0025](0025-local-poc-build-and-cache-contract.md) on 2026-09-05.
+The decision below records the former checksum-inventory design.
 
 ## Context
 

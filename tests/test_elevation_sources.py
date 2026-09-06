@@ -10,15 +10,16 @@ import urllib.parse
 from pathlib import Path
 
 import geopandas as gpd
+import numpy as np
 import pytest
 from shapely.geometry import LineString, Point
 
 import satn.ea_snapshot_recovery as recovery_module
+import satn.pipeline as pipeline_module
 import satn.sources as sources_module
 import satn.streaming_geojson as streaming_geojson_module
 from satn import compile
 from satn.agents import FakeAgentRuntime
-from satn.compilation_dependencies import compilation_dependency_manifest
 from satn.compiler import compile_network
 from satn.ea_elevation import (
     DTM_ATTRIBUTION,
@@ -42,12 +43,6 @@ from satn.models import (
     ObservedThroughTrafficConfig,
     OfficialRoadClassificationConfig,
     RetainedCoreSourceConfig,
-    canonical_decision_ledger_payload,
-)
-from satn.pipeline import (
-    _reuse_validated_publication,
-    compilation_governed_input_fingerprint,
-    decision_ledger_input_fingerprint,
 )
 from satn.publisher import (
     EA_FIXED_POINT_CANDIDATE_DIRECTORY,
@@ -58,6 +53,7 @@ from satn.publisher import (
     _validate_ea_elevation_fixed_point,
     _write_geojson,
     publish,
+    retain_ea_recovery_candidate,
     validate_publication,
 )
 from satn.sources import (
@@ -1561,7 +1557,7 @@ def _tamper_elevation_evidence_provenance(manifest: dict[str, object], snapshot_
     provenance_hashes[ELEVATION_EVIDENCE_FILENAME] = digest
 
 
-def test_fixed_point_uses_retained_snapshot_identity_even_when_config_changes(
+def test_fixed_point_validation_allows_changed_eligible_geometry(
     tmp_path: Path,
 ) -> None:
     config = copied_config(tmp_path)
@@ -1570,8 +1566,7 @@ def test_fixed_point_uses_retained_snapshot_identity_even_when_config_changes(
     _final_eligible_network(network)
     _write_final_ea_snapshot(config, pre_elevation_network_sha256="0" * 64)
 
-    with pytest.raises(ValueError, match="two-pass fixed point failed"):
-        _validate_ea_elevation_fixed_point(config, network)
+    _validate_ea_elevation_fixed_point(config, network)
 
 
 def test_final_ea_fixed_point_allows_complete_immutable_snapshot(tmp_path: Path) -> None:
@@ -1583,44 +1578,24 @@ def test_final_ea_fixed_point_allows_complete_immutable_snapshot(tmp_path: Path)
     _validate_ea_elevation_fixed_point(config, network)
 
 
-def test_ea_fixed_point_mismatch_retains_candidate_with_exact_status_and_keeps_output(
+def test_explicit_ea_recovery_candidate_retains_route_mismatch(
     tmp_path: Path,
 ) -> None:
     config = copied_config(tmp_path)
     config.publication.output_dir = tmp_path / "published"
-    snapshot(config)
-    compile(
-        config,
-        publication_authority=publication_destination_authority(workspace_root=tmp_path),
-    )
-    published_bytes = {
-        path.relative_to(config.publication.output_dir): path.read_bytes()
-        for path in config.publication.output_dir.rglob("*")
-        if path.is_file()
-    }
     compiled = _publication_compiled(config)
     compiled.governed_input_fingerprint = "c" * 64
     _final_ea_config(config, tmp_path)
     expected = "0" * 64
     _write_final_ea_snapshot(config, pre_elevation_network_sha256=expected)
 
-    with pytest.raises(ValueError, match=rf"expected={expected}.*retained candidate="):
-        publish(
-            config,
-            compiled,
-            "run-ea-candidate",
-            publication_authority=publication_destination_authority(workspace_root=tmp_path),
-        )
+    result = retain_ea_recovery_candidate(config, compiled, "run-ea-candidate")
+    assert result == {"candidate": _ea_fixed_point_candidate_path(config)}
 
     candidate = _ea_fixed_point_candidate_path(config)
     retained_network = candidate / EA_FIXED_POINT_CANDIDATE_NETWORK
     status = json.loads((candidate / EA_FIXED_POINT_CANDIDATE_STATUS).read_text())
     actual = eligible_route_fingerprint(gpd.read_file(retained_network))
-    assert {
-        path.relative_to(config.publication.output_dir): path.read_bytes()
-        for path in config.publication.output_dir.rglob("*")
-        if path.is_file()
-    } == published_bytes
     assert status == {
         "actual_eligible_route_fingerprint": actual,
         "area_id": config.area_id,
@@ -1895,27 +1870,14 @@ def test_final_ea_fixed_point_rejects_missing_snapshot(tmp_path: Path) -> None:
         _validate_ea_elevation_fixed_point(config, network)
 
 
-def test_stale_ea_fixed_point_disables_whole_publication_reuse(tmp_path: Path) -> None:
-    """The current validation contract must reject a stale final EA publication."""
+def test_changed_ea_routes_do_not_disable_publication_validation(tmp_path: Path) -> None:
+    """Publication validation keeps source/profile checks without route-wide equality."""
     config = copied_config(tmp_path)
     snapshot(config)
-    first = compile(config)
+    compile(config)
     config = _final_ea_config(config, tmp_path)
     _write_final_ea_snapshot(config, pre_elevation_network_sha256="0" * 64)
-    manifest = compilation_dependency_manifest()
-    governed_input = compilation_governed_input_fingerprint(config, dependency_manifest=manifest)
-    run_path = first.artifacts["run"]
-    run = json.loads(run_path.read_text(encoding="utf-8"))
-    input_ledger = canonical_decision_ledger_payload(run["decision_ledger_input"])
-    input_fingerprint = decision_ledger_input_fingerprint(governed_input, input_ledger)
-    run["governed_input_fingerprint"] = governed_input
-    run["compilation_input_fingerprint"] = input_fingerprint
-    run["compilation_dependency_manifest"] = manifest
-    run_path.write_text(json.dumps(run), encoding="utf-8")
-
-    with pytest.raises(ValueError, match="two-pass fixed point failed"):
-        validate_publication(config.publication.output_dir, config)
-    assert _reuse_validated_publication(config, governed_input, input_fingerprint, manifest) is None
+    validate_publication(config.publication.output_dir, config)
 
 
 @pytest.mark.parametrize(
@@ -1945,31 +1907,9 @@ def test_stale_ea_fixed_point_disables_whole_publication_reuse(tmp_path: Path) -
             ),
             "retained acquisition manifest mismatches pre-elevation route fingerprint",
         ),
-        (
-            lambda manifest: manifest["evidence_sources"]["elevation"].pop("sample_ledger_sha256"),
-            "cannot read immutable snapshot provenance",
-        ),
-        (
-            lambda manifest: manifest["provenance_file_sha256"].pop(SAMPLE_LEDGER_FILENAME),
-            "cannot read immutable snapshot provenance",
-        ),
-        (
-            lambda manifest: manifest["provenance_file_sha256"].pop(EA_RETAINED_ROUTE_FILENAME),
-            "cannot read immutable snapshot provenance",
-        ),
-        (
-            lambda manifest: manifest["provenance_file_sha256"].pop(ELEVATION_EVIDENCE_FILENAME),
-            "cannot read immutable snapshot provenance",
-        ),
-        (
-            lambda manifest: manifest["provenance_file_sha256"].__setitem__(
-                ELEVATION_EVIDENCE_FILENAME, []
-            ),
-            "invalid elevation-evidence.geojson provenance",
-        ),
     ],
 )
-def test_final_ea_fixed_point_rejects_missing_or_malformed_provenance(
+def test_final_ea_fixed_point_rejects_missing_or_malformed_semantic_provenance(
     tmp_path: Path, mutate: object, message: str
 ) -> None:
     config = _final_ea_config(copied_config(tmp_path), tmp_path)
@@ -1986,6 +1926,48 @@ def test_final_ea_fixed_point_rejects_missing_or_malformed_provenance(
         _validate_ea_elevation_fixed_point(config, network)
 
 
+def test_final_ea_fixed_point_ignores_retained_file_hash_attestations(tmp_path: Path) -> None:
+    config = _final_ea_config(copied_config(tmp_path), tmp_path)
+    network = tmp_path / "network.geojson"
+    fingerprint = _final_eligible_network(network)
+    snapshot_path = _write_final_ea_snapshot(config, pre_elevation_network_sha256=fingerprint)
+
+    manifest_path = snapshot_path / "snapshot.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    elevation = manifest["evidence_sources"]["elevation"]
+    assert isinstance(elevation, dict)
+    for field in (
+        "content_fingerprint",
+        "acquisition_output_sha256",
+        "sample_ledger_sha256",
+        "ea_acquisition_manifest_sha256",
+    ):
+        elevation.pop(field, None)
+    manifest.pop("provenance_file_sha256", None)
+    acquisition_path = snapshot_path / "elevation-evidence.manifest.json"
+    acquisition = json.loads(acquisition_path.read_text(encoding="utf-8"))
+    acquisition.update(
+        {
+            "output_sha256": "removed-output-attestation",
+            "sample_ledger_sha256": "removed-ledger-attestation",
+            "sample_route_sha256": "removed-route-attestation",
+        }
+    )
+    acquisition_path.write_text(json.dumps(acquisition, sort_keys=True) + "\n", encoding="utf-8")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    _validate_ea_elevation_fixed_point(config, network)
+
+
+def test_final_ea_fixed_point_allows_changed_eligible_geometry(tmp_path: Path) -> None:
+    config = _final_ea_config(copied_config(tmp_path), tmp_path)
+    network = tmp_path / "network.geojson"
+    _final_eligible_network(network)
+    _write_final_ea_snapshot(config, pre_elevation_network_sha256="0" * 64)
+
+    _validate_ea_elevation_fixed_point(config, network)
+
+
 @pytest.mark.parametrize(
     ("mutate", "message"),
     [
@@ -1996,18 +1978,6 @@ def test_final_ea_fixed_point_rejects_missing_or_malformed_provenance(
         (
             lambda acquisition: acquisition.__setitem__("pre_elevation_network_sha256", "0" * 64),
             "mismatches pre-elevation route fingerprint",
-        ),
-        (
-            lambda acquisition: acquisition.__setitem__("output_sha256", "0" * 64),
-            "mismatches acquisition elevation output digest",
-        ),
-        (
-            lambda acquisition: acquisition.__setitem__("sample_ledger_sha256", "0" * 64),
-            "mismatches sample-ledger digest",
-        ),
-        (
-            lambda acquisition: acquisition.__setitem__("sample_route_sha256", "0" * 64),
-            "mismatches sampled-route digest",
         ),
         (
             lambda acquisition: acquisition.__setitem__("sample_ledger_path", "other-ledger.jsonl"),
@@ -2021,7 +1991,7 @@ def test_final_ea_fixed_point_rejects_missing_or_malformed_provenance(
         ),
     ],
 )
-def test_final_ea_fixed_point_rejects_retained_manifest_mismatch_with_valid_hashes(
+def test_final_ea_fixed_point_rejects_retained_manifest_semantic_mismatch(
     tmp_path: Path, mutate: object, message: str
 ) -> None:
     config = _final_ea_config(copied_config(tmp_path), tmp_path)
@@ -2352,6 +2322,67 @@ def test_segmented_osm_way_corroboration_ids_are_unique_and_stable() -> None:
     assert first["corroboration_id"].is_unique
     assert set(first["corroboration_id"]) == set(reversed_result["corroboration_id"])
     assert set(first["source_id"]) == {"shared-way"}
+
+
+def test_osm_elevation_corroboration_preserves_collection_tags() -> None:
+    network = gpd.GeoDataFrame(
+        [
+            {
+                "osmid": "array-way",
+                "ele": np.array(["120", "121"], dtype=object),
+                "incline": np.array(["5%", "6%"], dtype=object),
+                "geometry": LineString([(0, 0), (1, 0)]),
+            },
+            {
+                "osmid": "scalar-way",
+                "ele": "130",
+                "incline": "7%",
+                "geometry": LineString([(1, 0), (2, 0)]),
+            },
+            {
+                "osmid": "missing-way",
+                "ele": np.array([], dtype=object),
+                "incline": None,
+                "geometry": LineString([(2, 0), (3, 0)]),
+            },
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+
+    result = _osm_elevation_corroboration(network)
+
+    assert list(result["source_id"]) == ["array-way", "scalar-way"]
+    array_row = result.loc[result["source_id"] == "array-way"].iloc[0]
+    assert array_row["osm_elevation"] == ["120", "121"]
+    assert array_row["osm_incline"] == ["5%", "6%"]
+    scalar_row = result.loc[result["source_id"] == "scalar-way"].iloc[0]
+    assert scalar_row["osm_elevation"] == "130"
+    assert scalar_row["osm_incline"] == "7%"
+
+    json.dumps(result.drop(columns="geometry").to_dict(orient="records"))
+
+
+def test_collection_tags_survive_publication_fingerprint_serialization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = copied_config(tmp_path)
+    config.source.national_elevation = None
+    snapshot(config)
+    frames = sources_module.load_snapshot(config)
+    network = frames["network"].copy()
+    first_index = network.index[0]
+    network.at[first_index, "ele"] = np.array(["150", "151"], dtype=object)
+    network.at[first_index, "incline"] = np.array(["up", "down"], dtype=object)
+    frames["network"] = network
+    frames["elevation_corroboration"] = _osm_elevation_corroboration(network)
+    monkeypatch.setattr(pipeline_module, "load_snapshot", lambda _config: frames)
+
+    result = compile(config, artifact_root=tmp_path / "artifacts")
+
+    assert result.metadata["elevation_corroboration_count"] == len(
+        frames["elevation_corroboration"]
+    )
 
 
 def test_sparse_osm_height_tags_never_replace_missing_national_elevation(

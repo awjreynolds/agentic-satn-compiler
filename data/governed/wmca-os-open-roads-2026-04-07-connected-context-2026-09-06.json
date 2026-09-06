@@ -1,0 +1,384 @@
+{
+  "schema_version": "satn-governed-open-roads-extract/v1",
+  "product": "OS Open Roads",
+  "source_id": "os-open-roads-2026-04-07",
+  "effective_date": "2026-04-07",
+  "licence": "Open Government Licence v3.0",
+  "attribution": "Contains OS data © Crown copyright and database rights 2026.",
+  "download_url": "https://api.os.uk/downloads/v1/products/OpenRoads/downloads?area=GB&format=GeoPackage&redirect",
+  "source_archive": "oproad_gpkg_gb.zip",
+  "source_archive_md5": "2ee5d30899c4a44df321e5e1a66989ac",
+  "source_layer": "road_link",
+  "source_crs": "EPSG:27700",
+  "target_crs": "EPSG:4326",
+  "connected_context": "2026-09-06",
+  "boundary_snapshot_id": "wmca-osm-2026-09-06-constituent-authorities-open-roads-2026-04-07",
+  "selection": {
+    "predicate": "existing-wmca-export-plus-exact-source-feature-ids",
+    "geometry_treatment": "retain-whole-source-feature",
+    "existing_export": "wmca-os-open-roads-2026-04-07.geojson",
+    "existing_export_sha256": "9661301bd7b587e1752d0b6f9f6457eedf086c1ac238d007f7c149cff5f2a4db",
+    "existing_feature_count": 105365,
+    "added_feature_ids": [
+      "08A89F84-07E1-4E30-B5D8-A36D29695AC4",
+      "0B73BD41-24F1-4A49-8948-0F60FE9C4114",
+      "0DAAF24D-2266-4988-8DDD-34D8B1F713AC",
+      "162B4AE3-9747-4084-B015-269A65821DC6",
+      "2ECD5BF2-350A-4CC6-BDCB-ABDA025B45F1",
+      "2F0C66B8-039B-476D-9A8D-EDAB585B05E4",
+      "33CBFBD0-D789-4ACE-8143-7B9F37F55264",
+      "34A5C96F-55CF-48D6-8EC8-6290A398661A",
+      "3A1AED39-EA37-4C06-9CC4-27544E7160E4",
+      "3BA8F5F0-C16E-4061-B0C8-037B7336B939",
+      "4B181FB8-0CC6-4D3A-81C7-DD8A0E8110C6",
+      "629696B3-1830-4A0A-B36F-CE266BE04BE2",
+      "739CFF54-D72A-4F00-8864-193D078DC5DF",
+      "796C477C-0FE7-480C-A03A-A0FB4D0AD3C1",
+      "7D1FC878-D9F2-44DC-8C18-1423523232D8",
+      "8289D101-208D-461D-9FCD-E45022B19E03",
+      "83F4184E-09AE-4805-991D-8C7B2F6D86AD",
+      "8AF26471-38FF-4F8B-B2D5-D72C55A17D2B",
+      "91C06A5C-08D2-4808-B993-49C783607617",
+      "921F4FFB-F8E4-46AC-9AAF-2736CB0593A7",
+      "9273300C-32D2-413F-BE55-9E15CA3CF503",
+      "980C3004-B9F6-4D2F-BD79-52E92F0E7B55",
+      "9D881AD4-0873-4F1F-8AF7-828728AD20ED",
+      "BADF3F8A-A5A8-4C57-A4FE-3F0AC4252EA4",
+      "BFE906C4-FAF9-482C-BD30-AC6925C92419",
+      "C26CD3D1-E4B0-43BD-9767-154B4CBD11D0",
+      "C4CFF95E-3573-49F7-83BE-1DE156E92BA9",
+      "CAD295BB-AAC2-484B-BC66-A53CACF9AF76",
+      "CF61F0A6-87A6-468C-AB4E-6818654895C9",
+      "D34CCAA9-E100-4358-930F-F6B8A008113C",
+      "EA08E63B-6128-4E77-A562-7E83F5069E49",
+      "F48D194F-F0D5-40B8-B22A-509884AB3E50",
+      "FC106E2F-CEF2-4A7A-B2CB-B647A5B5BACC",
+      "FF3DA186-BF0C-40C0-AE91-70A939569283",
+      "FF625CA6-C245-4EC1-A990-AF23F5AF8C14"
+    ],
+    "added_feature_count": 35,
+    "added_source_records": [
+      {
+        "id": "08A89F84-07E1-4E30-B5D8-A36D29695AC4",
+        "road_classification": "A Road",
+        "road_classification_number": "A446",
+        "name_1": "London Road",
+        "start_node": "82AC1A6B-23BD-4C22-9F95-BBF9BADC2A17",
+        "end_node": "1FBF6447-513D-44AA-99AD-282F94317556",
+        "source_length_m": 59.0
+      },
+      {
+        "id": "0B73BD41-24F1-4A49-8948-0F60FE9C4114",
+        "road_classification": "A Road",
+        "road_classification_number": "A446",
+        "name_1": "London Road",
+        "start_node": "4D38878C-61CD-4051-9D39-C476593889FC",
+        "end_node": "45317D29-EFCB-4AA8-B38B-D86D8BCE360D",
+        "source_length_m": 80.0
+      },
+      {
+        "id": "0DAAF24D-2266-4988-8DDD-34D8B1F713AC",
+        "road_classification": "A Road",
+        "road_classification_number": "A38",
+        "name_1": "London Road",
+        "start_node": "602A2B51-1760-48B5-82E6-458770328549",
+        "end_node": "E0A2420A-EB7C-4736-8D6B-F58C73F31B8C",
+        "source_length_m": 109.0
+      },
+      {
+        "id": "162B4AE3-9747-4084-B015-269A65821DC6",
+        "road_classification": "A Road",
+        "road_classification_number": "A45",
+        "name_1": "Birmingham Road",
+        "start_node": "A04C5994-5FEF-4664-AE3C-20603EA6B861",
+        "end_node": "48FCF3B9-0023-4C1D-BB84-886E7C63E2FA",
+        "source_length_m": 361.0
+      },
+      {
+        "id": "2ECD5BF2-350A-4CC6-BDCB-ABDA025B45F1",
+        "road_classification": "A Road",
+        "road_classification_number": "A45",
+        "name_1": "Birmingham Road",
+        "start_node": "EA78C97C-C98A-4C60-A770-35C205B05926",
+        "end_node": "80B88BE9-35E7-4F64-B1CD-04A4ACC36003",
+        "source_length_m": 70.0
+      },
+      {
+        "id": "2F0C66B8-039B-476D-9A8D-EDAB585B05E4",
+        "road_classification": "A Road",
+        "road_classification_number": "A45",
+        "name_1": "Birmingham Road",
+        "start_node": "48FCF3B9-0023-4C1D-BB84-886E7C63E2FA",
+        "end_node": "BBF403EB-C82B-464A-A39E-557CA4B8D9C2",
+        "source_length_m": 144.0
+      },
+      {
+        "id": "33CBFBD0-D789-4ACE-8143-7B9F37F55264",
+        "road_classification": "A Road",
+        "road_classification_number": "A45",
+        "name_1": null,
+        "start_node": "CCD7D5F5-E8FA-4C90-B13C-EBCA37365183",
+        "end_node": "DFE3E37F-95DA-4324-BD2A-D67044D21EE6",
+        "source_length_m": 4.0
+      },
+      {
+        "id": "34A5C96F-55CF-48D6-8EC8-6290A398661A",
+        "road_classification": "A Road",
+        "road_classification_number": "A4141",
+        "name_1": "Warwick Road",
+        "start_node": "D0A1F0E7-EF63-441C-8D96-02E5E62E3DDE",
+        "end_node": "21DE1A97-3F6F-493F-9335-4546233C8CBC",
+        "source_length_m": 54.0
+      },
+      {
+        "id": "3A1AED39-EA37-4C06-9CC4-27544E7160E4",
+        "road_classification": "A Road",
+        "road_classification_number": "A446",
+        "name_1": "London Road",
+        "start_node": "BC269707-9590-4A9A-AB92-81129352F481",
+        "end_node": "F7865D3E-C75F-43EB-8F82-DE733BA645B7",
+        "source_length_m": 364.0
+      },
+      {
+        "id": "3BA8F5F0-C16E-4061-B0C8-037B7336B939",
+        "road_classification": "A Road",
+        "road_classification_number": "A38",
+        "name_1": null,
+        "start_node": "D8E2D47F-D59B-4DFB-AEE6-4EBCBD54503B",
+        "end_node": "5516C2CF-1BF8-4B9B-B81B-57ED1738F54B",
+        "source_length_m": 41.0
+      },
+      {
+        "id": "4B181FB8-0CC6-4D3A-81C7-DD8A0E8110C6",
+        "road_classification": "A Road",
+        "road_classification_number": "A45",
+        "name_1": "Birmingham Road",
+        "start_node": "80B88BE9-35E7-4F64-B1CD-04A4ACC36003",
+        "end_node": "A04C5994-5FEF-4664-AE3C-20603EA6B861",
+        "source_length_m": 60.0
+      },
+      {
+        "id": "629696B3-1830-4A0A-B36F-CE266BE04BE2",
+        "road_classification": "A Road",
+        "road_classification_number": "A446",
+        "name_1": "London Road",
+        "start_node": "19237969-5B16-4016-A4DF-4352EDBB9DF9",
+        "end_node": "7BE87875-4F0B-4257-B797-76F4EDE9CB20",
+        "source_length_m": 899.0
+      },
+      {
+        "id": "739CFF54-D72A-4F00-8864-193D078DC5DF",
+        "road_classification": "A Road",
+        "road_classification_number": "A38",
+        "name_1": null,
+        "start_node": "5516C2CF-1BF8-4B9B-B81B-57ED1738F54B",
+        "end_node": "3F1EC9B2-CABD-483E-848F-3B4199A6FE22",
+        "source_length_m": 184.0
+      },
+      {
+        "id": "796C477C-0FE7-480C-A03A-A0FB4D0AD3C1",
+        "road_classification": "A Road",
+        "road_classification_number": "A4141",
+        "name_1": "Warwick Road",
+        "start_node": "B82E00F3-B9A2-4178-BFBC-5841CBAFF189",
+        "end_node": "E8D75019-AA49-46E5-8F65-EF83347F5816",
+        "source_length_m": 46.0
+      },
+      {
+        "id": "7D1FC878-D9F2-44DC-8C18-1423523232D8",
+        "road_classification": "A Road",
+        "road_classification_number": "A4141",
+        "name_1": "Warwick Road",
+        "start_node": "E8D75019-AA49-46E5-8F65-EF83347F5816",
+        "end_node": "999D5E8A-A24A-4055-B58F-E051507C6915",
+        "source_length_m": 32.0
+      },
+      {
+        "id": "8289D101-208D-461D-9FCD-E45022B19E03",
+        "road_classification": "A Road",
+        "road_classification_number": "A4141",
+        "name_1": "Birmingham Road",
+        "start_node": "0C54DC70-898C-41E5-A7D3-B82705D3E9BB",
+        "end_node": "608A0EDD-9C31-465B-9AE1-6E00234AB48D",
+        "source_length_m": 41.0
+      },
+      {
+        "id": "83F4184E-09AE-4805-991D-8C7B2F6D86AD",
+        "road_classification": "A Road",
+        "road_classification_number": "A5",
+        "name_1": "Watling Street",
+        "start_node": "54DE09ED-4A65-4B92-AD9E-094FC29A6EE7",
+        "end_node": "8A793F4A-81FF-4486-B31E-CE373D53C564",
+        "source_length_m": 52.0
+      },
+      {
+        "id": "8AF26471-38FF-4F8B-B2D5-D72C55A17D2B",
+        "road_classification": "A Road",
+        "road_classification_number": "A446",
+        "name_1": "London Road",
+        "start_node": "F7865D3E-C75F-43EB-8F82-DE733BA645B7",
+        "end_node": "544FD19D-3C27-483C-BA70-36C9262F1EFB",
+        "source_length_m": 373.0
+      },
+      {
+        "id": "91C06A5C-08D2-4808-B993-49C783607617",
+        "road_classification": "A Road",
+        "road_classification_number": "A453",
+        "name_1": null,
+        "start_node": "FDF1B339-3E2C-4C99-B775-D5E5139AD32A",
+        "end_node": "967A4324-8DC1-4DF2-B663-D6777CC32D88",
+        "source_length_m": 243.0
+      },
+      {
+        "id": "921F4FFB-F8E4-46AC-9AAF-2736CB0593A7",
+        "road_classification": "A Road",
+        "road_classification_number": "A449",
+        "name_1": "Stourbridge Road",
+        "start_node": "7CF0CCBA-3855-4D44-9FF6-16999A3BFF02",
+        "end_node": "7DC71317-B45F-4C92-B169-F3094DC17576",
+        "source_length_m": 163.0
+      },
+      {
+        "id": "9273300C-32D2-413F-BE55-9E15CA3CF503",
+        "road_classification": "A Road",
+        "road_classification_number": "A38",
+        "name_1": null,
+        "start_node": "1EF8B5E6-00A5-4082-A142-181CE3079C95",
+        "end_node": "D8E2D47F-D59B-4DFB-AEE6-4EBCBD54503B",
+        "source_length_m": 86.0
+      },
+      {
+        "id": "980C3004-B9F6-4D2F-BD79-52E92F0E7B55",
+        "road_classification": "A Road",
+        "road_classification_number": "A4141",
+        "name_1": "Warwick Road",
+        "start_node": "21DE1A97-3F6F-493F-9335-4546233C8CBC",
+        "end_node": "4736A31C-C1E2-4AD5-9C0B-0BAF66D6E5C1",
+        "source_length_m": 67.0
+      },
+      {
+        "id": "9D881AD4-0873-4F1F-8AF7-828728AD20ED",
+        "road_classification": "A Road",
+        "road_classification_number": "A4141",
+        "name_1": "Warwick Road",
+        "start_node": "999D5E8A-A24A-4055-B58F-E051507C6915",
+        "end_node": "D0A1F0E7-EF63-441C-8D96-02E5E62E3DDE",
+        "source_length_m": 241.0
+      },
+      {
+        "id": "BADF3F8A-A5A8-4C57-A4FE-3F0AC4252EA4",
+        "road_classification": "A Road",
+        "road_classification_number": "A38",
+        "name_1": "London Road",
+        "start_node": "45317D29-EFCB-4AA8-B38B-D86D8BCE360D",
+        "end_node": "602A2B51-1760-48B5-82E6-458770328549",
+        "source_length_m": 7.0
+      },
+      {
+        "id": "BFE906C4-FAF9-482C-BD30-AC6925C92419",
+        "road_classification": "A Road",
+        "road_classification_number": "A446",
+        "name_1": "London Road",
+        "start_node": "BBB0B5A8-21D1-42AF-8A26-FC7ADD7204CE",
+        "end_node": "4D38878C-61CD-4051-9D39-C476593889FC",
+        "source_length_m": 25.0
+      },
+      {
+        "id": "C26CD3D1-E4B0-43BD-9767-154B4CBD11D0",
+        "road_classification": "A Road",
+        "road_classification_number": "A446",
+        "name_1": "London Road",
+        "start_node": "757D1395-5D7B-4C22-8694-B17A7955F2BB",
+        "end_node": "19237969-5B16-4016-A4DF-4352EDBB9DF9",
+        "source_length_m": 303.0
+      },
+      {
+        "id": "C4CFF95E-3573-49F7-83BE-1DE156E92BA9",
+        "road_classification": "A Road",
+        "road_classification_number": "A453",
+        "name_1": null,
+        "start_node": "FDF1B339-3E2C-4C99-B775-D5E5139AD32A",
+        "end_node": "BF4C72CA-8B45-4B6D-97C8-586ABD7B1219",
+        "source_length_m": 19.0
+      },
+      {
+        "id": "CAD295BB-AAC2-484B-BC66-A53CACF9AF76",
+        "road_classification": "A Road",
+        "road_classification_number": "A446",
+        "name_1": "London Road",
+        "start_node": "1FBF6447-513D-44AA-99AD-282F94317556",
+        "end_node": "BC269707-9590-4A9A-AB92-81129352F481",
+        "source_length_m": 132.0
+      },
+      {
+        "id": "CF61F0A6-87A6-468C-AB4E-6818654895C9",
+        "road_classification": "A Road",
+        "road_classification_number": "A446",
+        "name_1": "London Road",
+        "start_node": "757D1395-5D7B-4C22-8694-B17A7955F2BB",
+        "end_node": "BBB0B5A8-21D1-42AF-8A26-FC7ADD7204CE",
+        "source_length_m": 33.0
+      },
+      {
+        "id": "D34CCAA9-E100-4358-930F-F6B8A008113C",
+        "road_classification": "A Road",
+        "road_classification_number": "A45",
+        "name_1": "Birmingham Road",
+        "start_node": "FAC1F3DA-C257-4D30-AA61-4A6F6EA48E0F",
+        "end_node": "EA78C97C-C98A-4C60-A770-35C205B05926",
+        "source_length_m": 423.0
+      },
+      {
+        "id": "EA08E63B-6128-4E77-A562-7E83F5069E49",
+        "road_classification": "A Road",
+        "road_classification_number": "A446",
+        "name_1": "London Road",
+        "start_node": "7BE87875-4F0B-4257-B797-76F4EDE9CB20",
+        "end_node": "544FD19D-3C27-483C-BA70-36C9262F1EFB",
+        "source_length_m": 179.0
+      },
+      {
+        "id": "F48D194F-F0D5-40B8-B22A-509884AB3E50",
+        "road_classification": "A Road",
+        "road_classification_number": "A453",
+        "name_1": null,
+        "start_node": "BF4C72CA-8B45-4B6D-97C8-586ABD7B1219",
+        "end_node": "8D18A29E-26AC-4627-8241-3D435C379B23",
+        "source_length_m": 102.0
+      },
+      {
+        "id": "FC106E2F-CEF2-4A7A-B2CB-B647A5B5BACC",
+        "road_classification": "A Road",
+        "road_classification_number": "A4141",
+        "name_1": "Birmingham Road",
+        "start_node": "B82E00F3-B9A2-4178-BFBC-5841CBAFF189",
+        "end_node": "0C54DC70-898C-41E5-A7D3-B82705D3E9BB",
+        "source_length_m": 26.0
+      },
+      {
+        "id": "FF3DA186-BF0C-40C0-AE91-70A939569283",
+        "road_classification": "A Road",
+        "road_classification_number": "A38",
+        "name_1": "London Road",
+        "start_node": "E0A2420A-EB7C-4736-8D6B-F58C73F31B8C",
+        "end_node": "8D18A29E-26AC-4627-8241-3D435C379B23",
+        "source_length_m": 10.0
+      },
+      {
+        "id": "FF625CA6-C245-4EC1-A990-AF23F5AF8C14",
+        "road_classification": "A Road",
+        "road_classification_number": "A453",
+        "name_1": "Tamworth Road",
+        "start_node": "967A4324-8DC1-4DF2-B663-D6777CC32D88",
+        "end_node": "735108EF-F8B5-40F5-8E72-0D9659EA6E59",
+        "source_length_m": 17.0
+      }
+    ],
+    "coordinate_handling": "source geometry reprojected EPSG:27700 to EPSG:4326 and serialized at existing export coordinate precision",
+    "final_feature_count": 105400,
+    "diff_semantics": "only the 35 listed RoadLink IDs and their whole source geometries are added"
+  },
+  "extract_file": "wmca-os-open-roads-2026-04-07-connected-context-2026-09-06.geojson",
+  "extract_size_bytes": 47396267,
+  "extract_sha256": "35d1803621a2cf58046a6d57730f65925be62b1b1292b238b36fb17e034f0d3d"
+}

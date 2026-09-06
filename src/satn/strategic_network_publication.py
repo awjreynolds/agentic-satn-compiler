@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from pyproj import Transformer
-from shapely.geometry import mapping, shape
+from shapely.geometry import Point, mapping, shape
 from shapely.ops import transform as transform_geometry
 from shapely.wkt import loads as load_wkt
 
@@ -276,6 +276,7 @@ def _collection_features(
     elif hasattr(value, "iterrows"):
         rows = (
             {
+                "type": "Feature",
                 "properties": {str(k): _json_value(v) for k, v in row.items() if k != "geometry"},
                 "geometry": row.get("geometry"),
             }
@@ -943,7 +944,7 @@ def project_strategic_network(
             continue
 
     # Gaps are endpoint findings. Emit a governed Point when its endpoint Place
-    # is published; retain null geometry only for genuinely absent Places.
+    # is published; mesh coverage findings carry their own proof-point markers.
     gap_features_by_layer: dict[str, list[dict[str, object]]] = {
         StrategicPublicationLayer.STRATEGIC_MAIN_NETWORK.value: [],
         StrategicPublicationLayer.ACCESS_SUPPORT.value: [],
@@ -974,6 +975,41 @@ def project_strategic_network(
         publication_layer = _publication_layer_for_role(getattr(gap, "network_role", None))
         gap_id = str(getattr(gap, "gap_id", getattr(gap, "obligation_id", "gap")))
         endpoints = tuple(getattr(gap, "endpoints", ()))
+        mesh_proof_points = tuple(getattr(gap, "mesh_proof_points", ()))
+        for proof_position, coordinates in enumerate(mesh_proof_points, start=1):
+            identity_key = f"proof-point-{proof_position}"
+            geometry = _geometry_json(Point(coordinates), source_crs)
+            gap_features_by_layer[publication_layer].append(
+                _feature(
+                    feature_id=f"reviewable-gap:{gap_id}:{identity_key}",
+                    geometry=geometry,
+                    properties={
+                        "layer": publication_layer,
+                        "feature_type": "reviewable-gap-endpoint",
+                        "gap_id": gap_id,
+                        "obligation_id": getattr(gap, "obligation_id", gap_id),
+                        "endpoint_id": None,
+                        "endpoint_identity_key": identity_key,
+                        "endpoint_position": None,
+                        "endpoint_identity_fallback": False,
+                        "network_role": getattr(gap, "network_role", None),
+                        "endpoints": list(endpoints),
+                        "candidate_set_id": getattr(gap, "candidate_set_id", None),
+                        "display_state": "unresolved-gap",
+                        "missing_endpoint_geometry": False,
+                        "proof_point_position": proof_position,
+                        "geometry_semantics": "mesh-proof-point-marker-only-no-route-geometry",
+                        "core": _INTERVENTION_STYLES["unresolved-gap"]["core"],
+                        "halo": _INTERVENTION_STYLES["unresolved-gap"]["halo"],
+                        "pattern": _INTERVENTION_STYLES["unresolved-gap"]["pattern"],
+                        "legend_text": _INTERVENTION_STYLES["unresolved-gap"]["text"],
+                        "reason": gap.reason,
+                        "strategic_result_fingerprint": result_fingerprint,
+                    },
+                )
+            )
+        if mesh_proof_points:
+            continue
         endpoint_occurrences: dict[str, int] = {}
         for endpoint_position, endpoint_id in enumerate(endpoints, start=1):
             endpoint_key = str(endpoint_id or "")
@@ -981,6 +1017,10 @@ def project_strategic_network(
             occurrence = endpoint_occurrences[endpoint_key]
             identity_key, identity_fallback = gap_endpoint_identity(endpoint_id, occurrence)
             geometry = place_points.get(endpoint_key)
+            coordinate_index = endpoint_position - 1
+            endpoint_coordinates = tuple(getattr(gap, "endpoint_coordinates", ()))
+            if geometry is None and coordinate_index < len(endpoint_coordinates):
+                geometry = _geometry_json(Point(endpoint_coordinates[coordinate_index]), source_crs)
             gap_features_by_layer[publication_layer].append(
                 _feature(
                     feature_id=f"reviewable-gap:{gap_id}:{identity_key}",

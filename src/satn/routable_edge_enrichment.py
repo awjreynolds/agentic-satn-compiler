@@ -15,6 +15,7 @@ from typing import Final
 
 import geopandas as gpd
 
+from satn.compilation_dependencies import is_compiler_cache_revision
 from satn.compiled_network_bundle import BundleCodecError, decode_geodataframe, encode_geodataframe
 
 EDGE_ENRICHMENT_CONTRACT: Final = "satn-edge-enrichments/v1"
@@ -63,6 +64,16 @@ def _require_sha(value: object, label: str) -> str:
     return value
 
 
+def _require_identity(value: object, label: str, *, allow_revision: bool = False) -> str:
+    if not isinstance(value, str) or (
+        _SHA256.fullmatch(value) is None
+        and not (allow_revision and is_compiler_cache_revision(value))
+    ):
+        expected = "SHA-256 or compiler revision" if allow_revision else "SHA-256"
+        raise BundleCodecError(f"{label} must be a full lowercase {expected}")
+    return value
+
+
 def validate_identities(identities: object) -> dict[str, str]:
     """Validate the closed identity roster used by an enrichment payload."""
 
@@ -79,7 +90,14 @@ def validate_identities(identities: object) -> dict[str, str]:
     }
     if set(identities) != expected:
         raise BundleCodecError("edge-enrichment identities have an unexpected roster")
-    result = {key: _require_sha(identities[key], key) for key in expected}
+    result = {
+        key: _require_identity(
+            identities[key],
+            key,
+            allow_revision=key in {"implementation_identity", "dependency_identity"},
+        )
+        for key in expected
+    }
     if result["policy_fingerprint"] != policy_fingerprint():
         raise BundleCodecError("edge-enrichment policy fingerprint is stale")
     return result

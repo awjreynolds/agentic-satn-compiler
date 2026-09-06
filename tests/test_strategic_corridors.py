@@ -13,16 +13,22 @@ from shapely.geometry import LineString, Point
 from satn.agents import FakeAgentRuntime
 from satn.compiler import compile_network, governed_input_binding
 from satn.evidence import mark_ncn_edges
+from satn.network_selection import NetworkSelectionProfile
 from satn.parallel_reduction import PreloadedOfficerDecision
 from satn.population_reach import compile_population_reach
 from satn.psa_evidence_loaders import load_population_reach_evidence
-from satn.routing import RoadGraph
+from satn.routing import RoadGraph, RouteOption
 from satn.sources import load_snapshot, snapshot
 from satn.strategic_corridors import (
     StrategicCorridorUnitRole,
+    _a_road_backbone_units,
+    _bound_backbone_node,
+    _candidate_set,
     _fingerprint,
+    _official_a_road_chains,
     _provenance_id,
     prepare_strategic_corridors,
+    strategic_routable_network_with_a_road_backbone,
 )
 
 
@@ -37,6 +43,602 @@ def test_compound_external_edge_ids_have_stable_canonical_provenance_ids() -> No
     assert _provenance_id("source-edge-1") == "source-edge-1"
     assert _provenance_id("[1001848710, 33175860]") == ("source-reference-4cea4d0a166e52d52240")
     assert _provenance_id("[1001848710, 33175860]") == _provenance_id("[1001848710, 33175860]")
+
+
+def test_a_road_backbone_overlay_splits_interior_junctions_and_retains_exact_chain() -> None:
+    source = gpd.GeoDataFrame(
+        [
+            {
+                "source_id": "source-edge",
+                "u": "source-start",
+                "v": "source-end",
+                "oneway": False,
+                "geometry": LineString([(0.0, 0.0), (100.0, 0.0)]),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    official = gpd.GeoDataFrame(
+        [
+            {
+                "official_feature_id": "official-a1",
+                "official_classification": "a-road",
+                "official_road_number": "A1",
+                "geometry": LineString([(25.0, 0.0), (75.0, 0.0)]),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+
+    overlay = strategic_routable_network_with_a_road_backbone(source, official)
+    overlay_ids = tuple(str(item) for item in overlay["source_id"])
+
+    assert any(item.startswith("a-road-backbone:") for item in overlay_ids)
+    assert any(item.startswith("a-road-attachment:") for item in overlay_ids)
+    assert len(overlay) > len(source)
+
+    graph = RoadGraph(overlay)
+    start = "xy:25.0000000:0.0000000"
+    end = "xy:75.0000000:0.0000000"
+    option = graph.option(start, end, "strategic-spine", strategic_use=True)
+    assert option is not None
+    assert list(option.geometry.coords) == [(25.0, 0.0), (50.0, 0.0), (75.0, 0.0)]
+    backbone_rows = overlay[overlay["source_id"].astype(str).str.startswith("a-road-backbone:")]
+    for _, row in backbone_rows.iterrows():
+        assert Point(row.geometry.coords[0]).equals_exact(graph.node_points[str(row["u"])], 1e-9)
+        assert Point(row.geometry.coords[-1]).equals_exact(graph.node_points[str(row["v"])], 1e-9)
+
+
+def test_short_backbone_chain_binds_distinct_exact_overlay_endpoints() -> None:
+    source = gpd.GeoDataFrame(
+        [
+            {
+                "source_id": "source-edge",
+                "u": "source-start",
+                "v": "source-end",
+                "oneway": False,
+                "geometry": LineString([(0.0, 0.0), (100.0, 0.0)]),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    official = gpd.GeoDataFrame(
+        [
+            {
+                "official_feature_id": "official-short-a1",
+                "official_classification": "a-road",
+                "official_road_number": "A1",
+                "geometry": LineString([(48.1, 0.0), (51.9, 0.0)]),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+
+    graph = RoadGraph(strategic_routable_network_with_a_road_backbone(source, official))
+
+    start = _bound_backbone_node(graph, Point(48.1, 0.0))
+    end = _bound_backbone_node(graph, Point(51.9, 0.0))
+
+    assert start == "xy:48.1000000:0.0000000"
+    assert end == "xy:51.9000000:0.0000000"
+    assert start != end
+
+
+def test_backbone_candidate_set_keeps_cycle_substitute_on_the_same_endpoints() -> None:
+    source = gpd.GeoDataFrame(
+        [
+            {
+                "source_id": "a-road",
+                "u": "start",
+                "v": "end",
+                "oneway": False,
+                "highway": "primary",
+                "ref": "A1",
+                "geometry": LineString([(0.0, 0.0), (100.0, 0.0)]),
+            },
+            {
+                "source_id": "ncn-west",
+                "u": "start",
+                "v": "mid",
+                "oneway": False,
+                "highway": "cycleway",
+                "satn_ncn": True,
+                "geometry": LineString([(0.0, 0.0), (50.0, 60.0)]),
+            },
+            {
+                "source_id": "ncn-east",
+                "u": "mid",
+                "v": "end",
+                "oneway": False,
+                "highway": "cycleway",
+                "satn_ncn": True,
+                "geometry": LineString([(50.0, 60.0), (100.0, 0.0)]),
+            },
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    official = gpd.GeoDataFrame(
+        [
+            {
+                "official_feature_id": "official-a1",
+                "official_classification": "a-road",
+                "official_road_number": "A1",
+                "geometry": LineString([(0.0, 0.0), (100.0, 0.0)]),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    overlay = strategic_routable_network_with_a_road_backbone(source, official)
+    profile = NetworkSelectionProfile.model_validate(
+        {
+            "profile_id": "backbone-fixture",
+            "candidate_source_precedence": [
+                "verified-existing-asset",
+                "a-road-corridor",
+                "other-routable",
+            ],
+        }
+    )
+    units, issues = _a_road_backbone_units(
+        profile,
+        RoadGraph(overlay),
+        official,
+        None,
+        gpd.GeoDataFrame([], geometry=[], crs=27700),
+        {},
+    )
+
+    assert not issues
+    assert len(units) == 1
+    unit = units[0]
+    assert unit.endpoint_binding.routing_node_ids == ("start", "end")
+    assert {candidate.source_class.value for candidate in unit.candidate_set.candidates} == {
+        "a-road-corridor",
+        "verified-existing-asset",
+    }
+
+
+def test_backbone_candidates_must_physically_meet_exact_fallback_endpoints() -> None:
+    source = gpd.GeoDataFrame(
+        [
+            {
+                "source_id": "official-a1",
+                "u": "start",
+                "v": "end",
+                "oneway": False,
+                "highway": "primary",
+                "ref": "A1",
+                "geometry": LineString([(0.0, 0.0), (100.0, 0.0)]),
+            },
+            {
+                "source_id": "official-a1-reverse",
+                "u": "end",
+                "v": "start",
+                "oneway": False,
+                "highway": "primary",
+                "ref": "A1",
+                "geometry": LineString([(100.0, 0.0), (0.0, 0.0)]),
+            },
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    graph = RoadGraph(source)
+    exact = graph.option("start", "end", "strategic-spine", strategic_use=True)
+    assert exact is not None
+
+    def option(name: str, geometry: LineString, *, ncn_share: float) -> RouteOption:
+        return RouteOption(
+            role=name,
+            geometry=geometry,
+            length_km=geometry.length / 1000,
+            edge_ids=[name],
+            a_road_share=0.0,
+            ncn_share=ncn_share,
+            bidirectional=True,
+            reverse_length_km=geometry.length / 1000,
+            reverse_edge_ids=[f"{name}-reverse"],
+            reverse_corridor_share=ncn_share,
+            impracticable_alongside=False,
+        )
+
+    bad = option(
+        "bad-offset-cycleway",
+        LineString([(2.0, 0.0), (50.0, 20.0), (102.0, 0.0)]),
+        ncn_share=1.0,
+    )
+    valid = option(
+        "valid-cycleway",
+        LineString([(0.0, 0.0), (50.0, 20.0), (100.0, 0.0)]),
+        ncn_share=1.0,
+    )
+    profile = NetworkSelectionProfile.model_validate(
+        {
+            "profile_id": "backbone-endpoint-fixture",
+            "candidate_source_precedence": [
+                "verified-existing-asset",
+                "a-road-corridor",
+                "other-routable",
+            ],
+        }
+    )
+
+    candidate_set, records = _candidate_set(
+        profile,
+        graph,
+        unit_role=StrategicCorridorUnitRole.A_ROAD_BACKBONE,
+        endpoints=("official-start", "official-end"),
+        mandatory_network_place_ids=(),
+        start_node="start",
+        end_node="end",
+        source_ids=("official-a1",),
+        evidence_ids=("official-a1",),
+        context=gpd.GeoDataFrame([], geometry=[], crs=27700),
+        strategic_destination_id=None,
+        precomputed_options={
+            "direct": bad,
+            "strategic-spine": valid,
+            "ncn-informed": valid,
+            "low-traffic": valid,
+        },
+        exact_backbone_option=exact,
+    )
+
+    assert candidate_set.candidates
+    assert len(records) == len(candidate_set.candidates)
+    assert all(
+        candidate.geometry.as_shapely().coords[0]
+        in {
+            (0.0, 0.0),
+            (100.0, 0.0),
+        }
+        for candidate in candidate_set.candidates
+    )
+    assert all("bad-offset-cycleway" not in record.routing_edge_ids for record in records)
+    assert any("valid-cycleway" in record.routing_edge_ids for record in records)
+    assert any("official-a1" in record.routing_edge_ids for record in records)
+
+
+def test_backbone_exact_overlay_fallback_survives_structural_junction_filter() -> None:
+    source = gpd.GeoDataFrame(
+        [
+            {
+                "source_id": "cycle-ab",
+                "u": "a",
+                "v": "b",
+                "oneway": False,
+                "highway": "cycleway",
+                "satn_ncn": True,
+                "geometry": LineString([(0.0, 0.0), (50.0, 0.0)]),
+            },
+            {
+                "source_id": "cycle-bc",
+                "u": "b",
+                "v": "c",
+                "oneway": False,
+                "highway": "cycleway",
+                "satn_ncn": True,
+                "geometry": LineString([(50.0, 0.0), (100.0, 0.0)]),
+            },
+            {
+                "source_id": "road-bd",
+                "u": "b",
+                "v": "d",
+                "oneway": False,
+                "highway": "primary",
+                "ref": "A2",
+                "geometry": LineString([(50.0, 0.0), (50.0, -10.0)]),
+            },
+            {
+                "source_id": "shortcut-ac",
+                "u": "a",
+                "v": "c",
+                "oneway": False,
+                "highway": "cycleway",
+                "satn_ncn": True,
+                "geometry": LineString([(0.0, 0.0), (100.0, 0.0)]),
+            },
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    official = gpd.GeoDataFrame(
+        [
+            {
+                "official_feature_id": "official-long-a1",
+                "official_classification": "a-road",
+                "official_road_number": "A1",
+                "geometry": LineString([(0.0, 0.0), (0.0, 500.0), (100.0, 500.0), (100.0, 0.0)]),
+            },
+            {
+                "official_feature_id": "official-a2",
+                "official_classification": "a-road",
+                "official_road_number": "A2",
+                "geometry": LineString([(50.0, 0.0), (50.0, -10.0)]),
+            },
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    overlay = strategic_routable_network_with_a_road_backbone(source, official)
+    graph = RoadGraph(overlay)
+    profile = NetworkSelectionProfile.model_validate(
+        {
+            "profile_id": "backbone-fallback-fixture",
+            "candidate_source_precedence": [
+                "verified-existing-asset",
+                "a-road-corridor",
+                "other-routable",
+            ],
+        }
+    )
+
+    units, issues = _a_road_backbone_units(
+        profile,
+        graph,
+        official,
+        None,
+        gpd.GeoDataFrame([], geometry=[], crs=27700),
+        {},
+    )
+
+    a1_chain = next(
+        chain for chain in _official_a_road_chains(official) if chain["road_number"] == "A1"
+    )
+    a1_unit = next(unit for unit in units if unit.unit_id == a1_chain["chain_id"])
+    assert any(issue.reason == "a-road-backbone-component-unconnected" for issue in issues)
+    assert a1_unit.candidate_set.candidates
+    assert any(
+        any(edge_id.startswith("a-road-backbone:") for edge_id in record.routing_edge_ids)
+        for record in a1_unit.candidate_records
+    )
+    exact_record = next(
+        record
+        for record in a1_unit.candidate_records
+        if any(edge_id.startswith("a-road-backbone:") for edge_id in record.routing_edge_ids)
+    )
+    assert exact_record.candidate.geometry.as_shapely().wkt == official.loc[0, "geometry"].wkt
+    assert all(edge_id.startswith("a-road-backbone:") for edge_id in exact_record.routing_edge_ids)
+
+
+def test_unbound_a_road_backbone_remains_an_exact_proposal_without_attachment() -> None:
+    source = gpd.GeoDataFrame(
+        [
+            {
+                "source_id": "source-edge",
+                "u": "source-start",
+                "v": "source-end",
+                "oneway": False,
+                "geometry": LineString([(0.0, 0.0), (100.0, 0.0)]),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    official = gpd.GeoDataFrame(
+        [
+            {
+                "official_feature_id": "official-a1",
+                "official_classification": "a-road",
+                "official_road_number": "A1",
+                "geometry": LineString([(25.0, 100.0), (75.0, 100.0)]),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+
+    overlay = strategic_routable_network_with_a_road_backbone(source, official)
+    overlay_ids = tuple(str(item) for item in overlay["source_id"])
+
+    assert len(overlay) == len(source) + 4
+    assert sum(item.startswith("a-road-backbone:") for item in overlay_ids) == 4
+    assert not any(item.startswith("a-road-attachment:") for item in overlay_ids)
+
+
+def test_disconnected_degree_two_a_road_loop_is_retained_per_official_link() -> None:
+    official = gpd.GeoDataFrame(
+        [
+            {
+                "official_feature_id": "loop-1",
+                "official_classification": "a-road",
+                "official_road_number": "A1",
+                "geometry": LineString([(0.0, 0.0), (10.0, 0.0)]),
+            },
+            {
+                "official_feature_id": "loop-2",
+                "official_classification": "a-road",
+                "official_road_number": "A1",
+                "geometry": LineString([(10.0, 0.0), (5.0, 10.0)]),
+            },
+            {
+                "official_feature_id": "loop-3",
+                "official_classification": "a-road",
+                "official_road_number": "A1",
+                "geometry": LineString([(5.0, 10.0), (0.0, 0.0)]),
+            },
+            {
+                "official_feature_id": "separate-link",
+                "official_classification": "a-road",
+                "official_road_number": "A2",
+                "geometry": LineString([(100.0, 0.0), (110.0, 0.0)]),
+            },
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+
+    chains = _official_a_road_chains(official)
+
+    assert len(chains) == 4
+    assert sum(len(chain["source_ids"]) for chain in chains) == 4
+
+
+def test_non_motorway_junction_context_joins_a_road_components_without_a_classification() -> None:
+    source = gpd.GeoDataFrame(
+        [
+            {
+                "source_id": "a1-source",
+                "u": "a1-start",
+                "v": "a1-end",
+                "oneway": False,
+                "geometry": LineString([(0.0, 0.0), (10.0, 0.0)]),
+            },
+            {
+                "source_id": "a2-source",
+                "u": "a2-start",
+                "v": "a2-end",
+                "oneway": False,
+                "geometry": LineString([(20.0, 0.0), (30.0, 0.0)]),
+            },
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    official = gpd.GeoDataFrame(
+        [
+            {
+                "official_feature_id": "a1",
+                "official_classification": "a-road",
+                "official_road_number": "A1",
+                "official_road_function": "A Road",
+                "geometry": LineString([(0.0, 0.0), (10.0, 0.0)]),
+            },
+            {
+                "official_feature_id": "a2",
+                "official_classification": "a-road",
+                "official_road_number": "A2",
+                "official_road_function": "A Road",
+                "geometry": LineString([(20.0, 0.0), (30.0, 0.0)]),
+            },
+            {
+                "official_feature_id": "junction-local",
+                "official_classification": "unclassified",
+                "official_road_function": "Local Access Road",
+                "geometry": LineString([(10.0, 0.0), (20.0, 0.0)]),
+            },
+            {
+                "official_feature_id": "junction-restricted",
+                "official_classification": "unknown",
+                "official_road_function": "Restricted Local Access Road",
+                "geometry": LineString([(20.0, 0.0), (10.0, 0.0)]),
+            },
+            {
+                "official_feature_id": "same-component",
+                "official_classification": "unclassified",
+                "official_road_function": "Local Road",
+                "geometry": LineString([(0.0, 0.0), (10.0, 0.0)]),
+            },
+            {
+                "official_feature_id": "motorway-junction",
+                "official_classification": "unknown",
+                "official_road_function": "Motorway",
+                "geometry": LineString([(10.0, 0.0), (20.0, 0.0)]),
+            },
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+
+    chains = _official_a_road_chains(official)
+    context = [chain for chain in chains if chain["official_classification"] != "a-road"]
+
+    assert {chain["source_ids"] for chain in context} == {
+        ("junction-local",),
+        ("junction-restricted",),
+    }
+    assert all(chain["component_ids"] == tuple(sorted(chain["component_ids"])) for chain in context)
+    assert all(chain["road_number"] is None for chain in context)
+
+    overlay = strategic_routable_network_with_a_road_backbone(source, official)
+    context_rows = overlay[
+        overlay.get("official_classification", pd.Series(index=overlay.index)).ne("a-road")
+        & overlay["source_id"].astype(str).str.startswith("a-road-backbone:")
+    ]
+    assert len(context_rows) == 8
+    assert set(context_rows["official_classification"]) == {"unclassified", "unknown"}
+    assert set(context_rows["highway"]) == {"unclassified"}
+    assert context_rows["ref"].isna().all()
+
+
+def test_disconnected_backbone_component_issue_is_located_at_official_endpoints() -> None:
+    source = gpd.GeoDataFrame(
+        [
+            {
+                "source_id": "a1-source",
+                "u": "a1-start",
+                "v": "a1-end",
+                "oneway": False,
+                "geometry": LineString([(0.0, 0.0), (10.0, 0.0)]),
+            },
+            {
+                "source_id": "a2-source",
+                "u": "a2-start",
+                "v": "a2-end",
+                "oneway": False,
+                "geometry": LineString([(100.0, 0.0), (110.0, 0.0)]),
+            },
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    official = gpd.GeoDataFrame(
+        [
+            {
+                "official_feature_id": "a1",
+                "official_classification": "a-road",
+                "official_road_number": "A1",
+                "geometry": LineString([(0.0, 0.0), (10.0, 0.0)]),
+            },
+            {
+                "official_feature_id": "a2",
+                "official_classification": "a-road",
+                "official_road_number": "A2",
+                "geometry": LineString([(100.0, 0.0), (110.0, 0.0)]),
+            },
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    profile = NetworkSelectionProfile.model_validate(
+        {
+            "profile_id": "backbone-component-gap-fixture",
+            "candidate_source_precedence": [
+                "verified-existing-asset",
+                "a-road-corridor",
+                "other-routable",
+            ],
+        }
+    )
+    units, issues = _a_road_backbone_units(
+        profile,
+        RoadGraph(strategic_routable_network_with_a_road_backbone(source, official)),
+        official,
+        None,
+        gpd.GeoDataFrame([], geometry=[], crs=27700),
+        {},
+    )
+
+    component_issues = [
+        issue for issue in issues if issue.reason == "a-road-backbone-component-unconnected"
+    ]
+    assert len(units) == 2
+    assert len(component_issues) == 1
+    issue = component_issues[0]
+    assert issue.unit_role is StrategicCorridorUnitRole.A_ROAD_BACKBONE
+    assert len(issue.endpoint_coordinates) == 2
+    official_endpoints = {
+        coordinate
+        for geometry in official.geometry
+        for coordinate in (geometry.coords[0], geometry.coords[-1])
+    }
+    assert all(coordinate in official_endpoints for coordinate in issue.endpoint_coordinates)
 
 
 def test_bath_prepares_separate_interurban_and_destination_units(tmp_path: Path) -> None:
@@ -327,8 +929,14 @@ def test_preloaded_officer_route_is_applied_and_divergence_remains_visible(
         item for item in strategic.selections if item.obligation_id == interurban.unit_id
     )
     assert selection.authority.value == "officer"
-    assert selection.effective_candidate_id == road.candidate.candidate_id
-    assert strategic.divergences[0].officer_candidate_id == road.candidate.candidate_id
+    selected_candidate = next(
+        candidate
+        for candidate_set in strategic.candidate_sets
+        for candidate in candidate_set.candidates
+        if candidate.candidate_id == selection.effective_candidate_id
+    )
+    assert selected_candidate.geometry_fingerprint == road.candidate.geometry_fingerprint
+    assert strategic.divergences[0].officer_candidate_id == selected_candidate.candidate_id
 
 
 def test_missing_governed_destination_geometry_is_an_explicit_incomplete_issue(

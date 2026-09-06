@@ -139,6 +139,7 @@ class StrategicNetworkPlanningRequest:
     routing_endpoint_bindings: tuple[tuple[str, tuple[str, str]], ...] = ()
     officer_candidate_choices: tuple[tuple[str, str], ...] = ()
     required_sections: tuple[EffectiveStrategicSection, ...] = ()
+    backbone_obligation_ids: tuple[str, ...] = ()
     mesh_profile: StrategicMainNetworkProfile = field(default_factory=StrategicMainNetworkProfile)
     mesh_profile_fingerprint: str | None = None
 
@@ -214,6 +215,9 @@ class StrategicNetworkPlanningRequest:
             raise ValueError("required strategic sections must be effective section records")
         if len({item.section_id for item in required_sections}) != len(required_sections):
             raise ValueError("required strategic section IDs must be unique")
+        backbone_obligation_ids = tuple(
+            sorted(_text(item, "backbone obligation id") for item in self.backbone_obligation_ids)
+        )
         if self.mesh_profile_fingerprint is not None:
             try:
                 int(self.mesh_profile_fingerprint, 16)
@@ -233,6 +237,7 @@ class StrategicNetworkPlanningRequest:
         object.__setattr__(self, "routing_endpoint_bindings", endpoint_bindings)
         object.__setattr__(self, "officer_candidate_choices", officer_choices)
         object.__setattr__(self, "required_sections", required_sections)
+        object.__setattr__(self, "backbone_obligation_ids", backbone_obligation_ids)
 
     @property
     def fingerprint(self) -> str:
@@ -260,6 +265,7 @@ class StrategicNetworkPlanningRequest:
                 "routing_endpoint_bindings": self.routing_endpoint_bindings,
                 "officer_candidate_choices": self.officer_candidate_choices,
                 "required_sections": self.required_sections,
+                "backbone_obligation_ids": self.backbone_obligation_ids,
                 "mesh_profile": self.mesh_profile,
                 "mesh_profile_fingerprint": self.mesh_profile_fingerprint,
             }
@@ -280,7 +286,15 @@ class EffectiveStrategicSection:
     primary_alignment_basis: str | None = None
     intervention_state: str | None = None
     display_state: str | None = None
-    network_scope: str = "urban"
+    network_scope: str | None = None
+
+    def __post_init__(self) -> None:
+        scope = self.network_scope
+        if scope is None:
+            scope = "rural" if self.network_role.casefold() == "interurban-spine" else "urban"
+        if scope not in {"urban", "rural"}:
+            raise ValueError("effective strategic section network_scope must be urban or rural")
+        object.__setattr__(self, "network_scope", scope)
 
 
 @dataclass(frozen=True)
@@ -324,6 +338,8 @@ class ReviewableNetworkGap:
     reason: str
     candidate_set_id: str | None = None
     gap_id: str = ""
+    mesh_proof_points: tuple[tuple[float, float], ...] = ()
+    endpoint_coordinates: tuple[tuple[float, float], ...] = ()
 
     def __post_init__(self) -> None:
         expected = _stable_id(
@@ -343,16 +359,123 @@ class ReviewableNetworkGap:
             "gap_id",
             expected,
         )
+        raw_proof_points = tuple(self.mesh_proof_points)
+        if any(
+            not isinstance(point, (tuple, list)) or len(point) != 2 for point in raw_proof_points
+        ):
+            raise ValueError("mesh proof points must contain coordinate pairs")
+        proof_points = tuple((float(point[0]), float(point[1])) for point in raw_proof_points)
+        object.__setattr__(self, "mesh_proof_points", proof_points)
+        raw_endpoint_coordinates = tuple(self.endpoint_coordinates)
+        if any(
+            not isinstance(point, (tuple, list)) or len(point) != 2
+            for point in raw_endpoint_coordinates
+        ):
+            raise ValueError("endpoint coordinates must contain coordinate pairs")
+        endpoint_coordinates = tuple(
+            (float(point[0]), float(point[1])) for point in raw_endpoint_coordinates
+        )
+        object.__setattr__(self, "endpoint_coordinates", endpoint_coordinates)
 
 
 def _canonical_gaps(gaps: list[ReviewableNetworkGap]) -> tuple[ReviewableNetworkGap, ...]:
-    by_id: dict[str, ReviewableNetworkGap] = {}
-    for gap in gaps:
-        existing = by_id.get(gap.gap_id)
-        if existing is not None and existing != gap:
-            raise ValueError("strategic network gap identity collision")
-        by_id[gap.gap_id] = gap
-    return tuple(by_id[gap_id] for gap_id in sorted(by_id))
+    by_obligation: dict[str, ReviewableNetworkGap] = {}
+    for gap in sorted(
+        gaps,
+        key=lambda item: (
+            item.obligation_id,
+            item.gap_id,
+            item.candidate_set_id or "",
+            item.reason,
+        ),
+    ):
+        existing = by_obligation.get(gap.obligation_id)
+        if existing is not None:
+            if existing.gap_id == gap.gap_id and existing != gap:
+                raise ValueError("strategic network gap identity collision")
+            continue
+        by_obligation[gap.obligation_id] = gap
+    return tuple(by_obligation[obligation_id] for obligation_id in sorted(by_obligation))
+
+
+_ACCESS_SUPPORT_GAP_ROLES = frozenset(
+    {
+        "community-access",
+        "community-access-obligation",
+        "cross-spine-connector",
+        "school-access",
+        "school-access-obligation",
+        "strategic-destination-access",
+    }
+)
+
+
+def _canonical_gap_scope(
+    request: StrategicNetworkPlanningRequest,
+) -> tuple[set[str] | None, set[str], set[str]]:
+    """Return the required and access gap identities for semantic publication.
+
+    Direct planning requests have no preparation roster, so every unresolved
+    obligation remains explicit.  A prepared regional run distinguishes the
+    required A-road units from optional interurban candidate attempts while
+    retaining destination/access preparation issues for the support layer.
+    """
+
+    preparation = request.corridor_obligations
+    if preparation is None:
+        return None, set(), set()
+    required_obligation_ids = {str(item) for item in request.backbone_obligation_ids}
+    required_candidate_set_ids: set[str] = set()
+    access_issue_ids: set[str] = set()
+    for unit in tuple(getattr(preparation, "units", ())):
+        if getattr(unit, "backbone_required", False):
+            required_obligation_ids.add(str(getattr(unit, "unit_id", "")))
+            candidate_set = getattr(unit, "candidate_set", None)
+            candidate_set_id = getattr(candidate_set, "candidate_set_id", None)
+            if candidate_set_id:
+                required_candidate_set_ids.add(str(candidate_set_id))
+    for issue in tuple(getattr(preparation, "issues", ())):
+        issue_id = getattr(issue, "obligation_id", None)
+        role = getattr(getattr(issue, "unit_role", None), "value", None)
+        if role == "a-road-backbone" and issue_id:
+            required_obligation_ids.add(str(issue_id))
+        elif role == "strategic-destination-access" and issue_id:
+            access_issue_ids.add(str(issue_id))
+    return required_obligation_ids, required_candidate_set_ids, access_issue_ids
+
+
+def _published_gaps(
+    request: StrategicNetworkPlanningRequest,
+    gaps: list[ReviewableNetworkGap],
+    selected_obligation_ids: set[str],
+) -> list[ReviewableNetworkGap]:
+    required_ids, required_candidate_set_ids, access_issue_ids = _canonical_gap_scope(request)
+
+    def selected_discovery_failure(gap: ReviewableNetworkGap) -> bool:
+        if gap.obligation_id not in selected_obligation_ids:
+            return False
+        reason = gap.reason.casefold()
+        return (
+            reason == "no-path"
+            or reason.startswith("all generated")
+            or reason.startswith("all prepared")
+            or reason.startswith("prepared candidate route")
+            or reason.startswith("no admitted candidate set")
+        )
+
+    return [
+        gap
+        for gap in gaps
+        if not selected_discovery_failure(gap)
+        and (
+            required_ids is None
+            or gap.network_role.casefold() in _ACCESS_SUPPORT_GAP_ROLES
+            or gap.network_role.casefold() == "strategic-main-network"
+            or gap.obligation_id in required_ids
+            or (gap.candidate_set_id or "") in required_candidate_set_ids
+            or gap.obligation_id in access_issue_ids
+        )
+    ]
 
 
 @dataclass(frozen=True)
@@ -916,6 +1039,7 @@ def _mesh_materialized_sections(
     tuple[EffectiveStrategicSection, ...],
     tuple[PlanningDiagnostic, ...],
     tuple[MeshGap, ...],
+    tuple[MeshCoveragePoint, ...],
 ]:
     """Reduce all materialized main routes at the sole planning boundary.
 
@@ -925,7 +1049,7 @@ def _mesh_materialized_sections(
     """
 
     if not sections:
-        return (), (), ()
+        return (), (), (), ()
     edge_by_id = {edge.directed_edge_id: edge for edge in request.graph.edge_records}
     candidates: list[CandidateRouteSection] = []
     normalized_sections: list[EffectiveStrategicSection] = []
@@ -954,14 +1078,11 @@ def _mesh_materialized_sections(
                 raise ValueError(f"mesh section edge is absent: {missing}")
             first_node_id = first_edge.from_node_id
             last_node_id = last_edge.to_node_id
-        # Interurban candidate routes are governed by the rural scope. The
-        # Effective section field defaults to urban for compatibility, so bind
-        # this scope where the route role is authoritative.
-        scope = (
-            "rural"
-            if section.network_role.casefold() == "interurban-spine"
-            else section.network_scope
-        )
+        # A-road backbone units use the interurban role for publication, while
+        # their governed unit scope may still be urban. Preserve that explicit
+        # scope; only the legacy default for ordinary interurban sections is
+        # normalized to rural at construction.
+        scope = section.network_scope
         normalized = replace(section, network_scope=scope)
         normalized_sections.append(normalized)
         candidates.append(
@@ -988,11 +1109,22 @@ def _mesh_materialized_sections(
     )
     candidates.extend(continuity_candidates)
     normalized_sections.extend(continuity_sections)
+    protected_section_ids = {
+        section.section_id
+        for section in normalized_sections
+        if section.obligation_id in request.backbone_obligation_ids
+        or (
+            section.network_role.casefold() == "urban-main-road-spine"
+            and "a-road" in section.alignment_bases
+        )
+    }
     assembly = assemble_strategic_main_network(
         StrategicMainNetworkRequest(
             route_sections=tuple(candidates),
             coverage_points=coverage_points,
             profile=request.mesh_profile,
+            preserve_connected_components=bool(protected_section_ids),
+            protected_section_ids=tuple(sorted(protected_section_ids)),
         )
     )
     selected_ids = set(assembly.selected_section_ids)
@@ -1025,7 +1157,115 @@ def _mesh_materialized_sections(
         tuple(sorted(selected, key=lambda item: item.section_id)),
         tuple(diagnostics),
         assembly.gaps,
+        coverage_points,
     )
+
+
+def _resolved_backbone_component_gap_ids(
+    request: StrategicNetworkPlanningRequest,
+    sections: tuple[EffectiveStrategicSection, ...],
+) -> set[str]:
+    """Return preparation component gaps bridged by selected Main sections.
+
+    Preparation records identify the official component groups, while the
+    selected Planning Graph edge chains prove whether the effective result
+    actually traverses those groups.  A source-only component diagnostic must
+    not survive as a final gap once that proof exists.
+    """
+
+    preparation = request.corridor_obligations
+    if preparation is None:
+        return set()
+    units = tuple(getattr(preparation, "units", ()))
+    issues = tuple(getattr(preparation, "issues", ()))
+    component_ids = sorted(
+        {
+            str(component_id)
+            for unit in units
+            for component_id in tuple(getattr(unit, "backbone_component_ids", ()))
+        }
+        | {
+            str(component_id)
+            for issue in issues
+            if getattr(issue, "reason", None) == "a-road-backbone-component-unconnected"
+            for component_id in tuple(getattr(issue, "component_ids", ()))
+        }
+    )
+    if not component_ids:
+        return set()
+    parent = {component_id: component_id for component_id in component_ids}
+
+    def find(component_id: str) -> str:
+        root = component_id
+        while parent[root] != root:
+            root = parent[root]
+        while parent[component_id] != component_id:
+            next_id = parent[component_id]
+            parent[component_id] = root
+            component_id = next_id
+        return root
+
+    def union(component_group: tuple[str, ...]) -> None:
+        roots = sorted({find(component_id) for component_id in component_group})
+        if len(roots) < 2:
+            return
+        for root in roots[1:]:
+            parent[root] = roots[0]
+
+    edge_by_id = {edge.directed_edge_id: edge for edge in request.graph.edge_records}
+    routing_components: dict[str, set[str]] = {}
+    for unit in units:
+        component_group = tuple(
+            str(component_id) for component_id in tuple(getattr(unit, "backbone_component_ids", ()))
+        )
+        # A junction-context unit owns a two-component proof only when that
+        # unit itself is selected.  Attaching both IDs to both endpoints would
+        # let an unrelated route touching one endpoint resolve the other side.
+        if not component_group or len(component_group) != 1:
+            continue
+        for node_id in (
+            getattr(unit, "routing_start_node_id", ""),
+            getattr(unit, "routing_end_node_id", ""),
+        ):
+            routing_components.setdefault(str(node_id), set()).update(component_group)
+
+    for section in sections:
+        if section.obligation_id in {getattr(unit, "unit_id", None) for unit in units}:
+            unit = next(
+                (item for item in units if getattr(item, "unit_id", None) == section.obligation_id),
+                None,
+            )
+            if unit is not None:
+                union(
+                    tuple(
+                        str(component_id)
+                        for component_id in tuple(getattr(unit, "backbone_component_ids", ()))
+                    )
+                )
+        traversed_components: set[str] = set()
+        for edge_id in section.routing_edge_ids:
+            edge = edge_by_id.get(edge_id)
+            if edge is None:
+                continue
+            traversed_components.update(routing_components.get(edge.from_node_id, ()))
+            traversed_components.update(routing_components.get(edge.to_node_id, ()))
+        union(tuple(sorted(traversed_components)))
+
+    resolved: set[str] = set()
+    for issue in issues:
+        if getattr(issue, "reason", None) != "a-road-backbone-component-unconnected":
+            continue
+        issue_components = tuple(
+            str(component_id) for component_id in tuple(getattr(issue, "component_ids", ()))
+        )
+        if (
+            len(issue_components) > 1
+            and len({find(component_id) for component_id in issue_components}) == 1
+        ):
+            obligation_id = getattr(issue, "obligation_id", None)
+            if obligation_id:
+                resolved.add(str(obligation_id))
+    return resolved
 
 
 def compile_strategic_network(
@@ -1040,14 +1280,54 @@ def compile_strategic_network(
     diagnostics: list[PlanningDiagnostic] = []
     gaps: list[ReviewableNetworkGap] = []
     requests: list[EvidenceRequest] = []
+    supplied_diagnostics = request.network_diagnostics
+    diagnostics.extend(
+        item
+        for item in getattr(supplied_diagnostics, "diagnostics", ())
+        if isinstance(item, PlanningDiagnostic)
+    )
+    gaps.extend(
+        item
+        for item in getattr(supplied_diagnostics, "gaps", ())
+        if isinstance(item, ReviewableNetworkGap)
+    )
     required_sections = tuple(request.required_sections)
+    preparation_units = tuple(getattr(request.corridor_obligations, "units", ()))
+    preparation_issues = tuple(getattr(request.corridor_obligations, "issues", ()))
+    endpoint_coordinates_by_obligation = {
+        str(getattr(item, "unit_id", "")): tuple(getattr(item, "endpoint_coordinates", ()))
+        for item in preparation_units
+        if getattr(item, "endpoint_coordinates", ())
+    }
+    endpoint_coordinates_by_obligation.update(
+        {
+            str(getattr(item, "obligation_id", "")): tuple(
+                getattr(item, "endpoint_coordinates", ())
+            )
+            for item in preparation_issues
+            if getattr(item, "obligation_id", None) and getattr(item, "endpoint_coordinates", ())
+        }
+    )
     for gap in sorted(discovery.gaps, key=lambda item: item.obligation_id):
-        role = str(getattr(gap, "network_role", "unresolved-strategic-alignment"))
+        issue = next(
+            (
+                item
+                for item in preparation_issues
+                if getattr(item, "obligation_id", None) == gap.obligation_id
+            ),
+            None,
+        )
+        role = str(
+            getattr(gap, "network_role", None)
+            or getattr(issue, "network_role", None)
+            or "unresolved-strategic-alignment"
+        )
         reviewable_gap = ReviewableNetworkGap(
             gap.obligation_id,
             role,
             tuple(gap.endpoints),
             gap.reason,
+            endpoint_coordinates=endpoint_coordinates_by_obligation.get(gap.obligation_id, ()),
         )
         gaps.append(reviewable_gap)
         requests.append(
@@ -1476,6 +1756,9 @@ def compile_strategic_network(
                     reference_geometry,
                     authority,
                     display_state="reference-route",
+                    network_scope=(
+                        "rural" if str(role).casefold() == "interurban-spine" else "urban"
+                    ),
                 )
             )
             effective_roles.add(str(role))
@@ -1485,7 +1768,12 @@ def compile_strategic_network(
             )
             gaps.append(
                 ReviewableNetworkGap(
-                    obligation_id, str(role), endpoints, reason, candidate_set.candidate_set_id
+                    obligation_id,
+                    str(role),
+                    endpoints,
+                    reason,
+                    candidate_set.candidate_set_id,
+                    endpoint_coordinates=endpoint_coordinates_by_obligation.get(obligation_id, ()),
                 )
             )
             requests.append(
@@ -1526,6 +1814,9 @@ def compile_strategic_network(
                         endpoints,
                         str(error),
                         candidate_set.candidate_set_id,
+                        endpoint_coordinates=endpoint_coordinates_by_obligation.get(
+                            obligation_id, ()
+                        ),
                     )
                 )
                 requests.append(
@@ -1572,6 +1863,10 @@ def compile_strategic_network(
                             effective.intervention_state, "value", effective.intervention_state
                         ),
                         _display_state(effective.intervention_state),
+                        network_scope=(
+                            getattr(record.sections[0], "network_scope", None)
+                            or ("rural" if str(role).casefold() == "interurban-spine" else "urban")
+                        ),
                     )
                 )
 
@@ -1646,7 +1941,7 @@ def compile_strategic_network(
                     )
                 )
 
-    mesh_sections, mesh_diagnostics, mesh_gaps = _mesh_materialized_sections(
+    mesh_sections, mesh_diagnostics, mesh_gaps, mesh_coverage_points = _mesh_materialized_sections(
         request, tuple(sections)
     )
     mesh_omitted_ids = {section.section_id for section in sections} - {
@@ -1656,10 +1951,15 @@ def compile_strategic_network(
         section.obligation_id for section in sections if section.section_id in mesh_omitted_ids
     }
     diagnostics.extend(mesh_diagnostics)
+    coverage_points_by_id = {point.point_id: point for point in mesh_coverage_points}
     mesh_gap_groups: dict[tuple[str, str], list[MeshGap]] = {}
     for mesh_gap in mesh_gaps:
         mesh_gap_groups.setdefault((mesh_gap.scope, mesh_gap.reason), []).append(mesh_gap)
     for (scope, reason), grouped_gaps in sorted(mesh_gap_groups.items()):
+        proof_points = tuple(
+            coverage_points_by_id[item.coverage_point_id].coordinates
+            for item in sorted(grouped_gaps, key=lambda value: value.coverage_point_id)
+        )
         gaps.append(
             ReviewableNetworkGap(
                 f"strategic-mesh:{scope}:{reason}",
@@ -1667,6 +1967,7 @@ def compile_strategic_network(
                 ("", ""),
                 f"{scope} mesh coverage is not proved at {len(grouped_gaps)} proof points: "
                 f"{reason}",
+                mesh_proof_points=proof_points,
             )
         )
     if mesh_omitted_ids:
@@ -1690,6 +1991,12 @@ def compile_strategic_network(
     sections = list(mesh_sections)
     effective_roles = {section.network_role for section in sections}
 
+    resolved_backbone_component_gaps = _resolved_backbone_component_gap_ids(
+        request, tuple(sections)
+    )
+    if resolved_backbone_component_gaps:
+        gaps = [gap for gap in gaps if gap.obligation_id not in resolved_backbone_component_gaps]
+
     missing_roles = set(request.fallback_profile.required_roles) - effective_roles
     for role in sorted(missing_roles):
         diagnostics.append(
@@ -1708,9 +2015,11 @@ def compile_strategic_network(
             )
         )
 
+    selected_obligation_ids = {item.obligation_id for item in selections}
+    canonical_gaps = _canonical_gaps(_published_gaps(request, gaps, selected_obligation_ids))
     status = (
         "complete-with-gaps"
-        if gaps
+        if canonical_gaps
         else "reference-fallback"
         if any(item.authority is PlanningAuthority.GOVERNED_REFERENCE for item in selections)
         else "complete"
@@ -1740,7 +2049,6 @@ def compile_strategic_network(
         fallback_profile_fingerprint=request.fallback_profile.fingerprint,
         mesh_profile_fingerprint=request.mesh_profile_fingerprint,
     )
-    canonical_gaps = _canonical_gaps(gaps)
     payload = {
         "status": status,
         "effective_network": effective_network,

@@ -11,8 +11,9 @@ import geopandas as gpd
 import pandas as pd
 import pytest
 from pypdf import PdfReader
-from shapely.geometry import LineString, Point, mapping, shape
+from shapely.geometry import LineString, Point, Polygon, mapping, shape
 
+import satn.publisher as publisher
 from lcwip import (
     ArtifactLink,
     AuditFinding,
@@ -36,7 +37,12 @@ from satn.models import (
     OfficialRoadClassificationConfig,
     TrafficLight,
 )
-from satn.publisher import _reviewable_map_collection
+from satn.publisher import (
+    _is_legacy_access_gap,
+    _pdf_semantic_frames,
+    _reviewable_map_collection,
+    _write_pdf,
+)
 from satn.sources import snapshot
 
 PROJECT = Path(__file__).parents[1]
@@ -227,6 +233,332 @@ def test_reviewable_map_projection_keeps_rejected_routes_and_projects_assets_to_
     assert -90 <= coordinates[1] <= 90
     assert asset["properties"]["geometry_crs"] == "EPSG:4326"
     assert asset["properties"]["source_geometry_crs"] == "EPSG:27700"
+
+
+def test_semantic_map_keeps_legacy_access_gaps_out_of_main_network() -> None:
+    section = SimpleNamespace(
+        section_id="main-section",
+        obligation_id="main-obligation",
+        candidate_id=None,
+        network_role="interurban-spine",
+        authority="compiler",
+        alignment_bases=("a-road",),
+        primary_alignment_basis="a-road",
+        intervention_state="upgrade-required",
+        display_state="upgrade-required",
+        routing_edge_ids=(),
+        reverse_routing_edge_ids=(),
+        geometry_wkt="LINESTRING (100000 200000, 100100 200100)",
+    )
+    result = SimpleNamespace(
+        fingerprint="f" * 64,
+        effective_network=SimpleNamespace(sections=(section,)),
+        candidate_sets=(),
+        selections=(),
+        unselected_candidates=(),
+        divergences=(),
+        diagnostics=(),
+        gaps=(),
+    )
+    legacy = SimpleNamespace(
+        network_gaps=(
+            SimpleNamespace(
+                gap_id="legacy-main",
+                obligation_id="legacy-main-obligation",
+                network_role="unresolved-strategic-alignment",
+                endpoints=("missing-a", "missing-b"),
+                reason="legacy main gap",
+                candidate_set_id=None,
+            ),
+            SimpleNamespace(
+                gap_id="legacy-access",
+                obligation_id="legacy-access-obligation",
+                network_role="community-access",
+                endpoints=("missing-a", "missing-b"),
+                reason="legacy access gap",
+                candidate_set_id=None,
+            ),
+        )
+    )
+    compiled = SimpleNamespace(
+        strategic_network_planning=result,
+        reviewable_network=legacy,
+        places=gpd.GeoDataFrame({"geometry": []}, geometry="geometry", crs=4326),
+        asset_accounting={"records": []},
+    )
+
+    payload = _reviewable_map_collection(compiled)
+    gaps = {
+        feature["properties"]["gap_id"]
+        for feature in payload["features"]
+        if feature["properties"].get("feature_type") == "reviewable-gap-endpoint"
+    }
+
+    assert "legacy-access" in gaps
+    assert "legacy-main" not in gaps
+
+
+def test_legacy_gap_filter_matches_current_projection_roles() -> None:
+    assert _is_legacy_access_gap(SimpleNamespace(network_role="community-access"))
+    assert _is_legacy_access_gap({"network_role": "school-access-obligation"})
+    assert not _is_legacy_access_gap(SimpleNamespace(network_role=None))
+    assert not _is_legacy_access_gap({"network_role": "unresolved-strategic-alignment"})
+
+
+def test_publisher_labels_a_road_component_gaps_as_representative_locations() -> None:
+    section = SimpleNamespace(
+        section_id="main-section",
+        obligation_id="main-obligation",
+        candidate_id=None,
+        network_role="interurban-spine",
+        authority="compiler",
+        alignment_bases=("a-road",),
+        primary_alignment_basis="a-road",
+        intervention_state="upgrade-required",
+        display_state="upgrade-required",
+        routing_edge_ids=(),
+        reverse_routing_edge_ids=(),
+        geometry_wkt="LINESTRING (100000 200000, 100100 200100)",
+    )
+    component_gap = SimpleNamespace(
+        gap_id="component-gap",
+        obligation_id="a-road-backbone-component-gap-fixture",
+        network_role="interurban-spine",
+        endpoints=(
+            "a-road-backbone-component-endpoint-component",
+            "a-road-backbone-component-endpoint-main",
+        ),
+        endpoint_coordinates=((100000, 200000), (100100, 200100)),
+        reason="official A-road backbone component remains disconnected",
+        candidate_set_id=None,
+        mesh_proof_points=(),
+    )
+    result = SimpleNamespace(
+        fingerprint="f" * 64,
+        effective_network=SimpleNamespace(sections=(section,)),
+        candidate_sets=(),
+        selections=(),
+        unselected_candidates=(),
+        divergences=(),
+        diagnostics=(),
+        gaps=(component_gap,),
+    )
+    compiled = SimpleNamespace(
+        strategic_network_planning=result,
+        places=gpd.GeoDataFrame({"geometry": []}, geometry="geometry", crs=4326),
+        asset_accounting={"records": []},
+    )
+
+    payload = _reviewable_map_collection(compiled)
+    markers = [
+        feature
+        for feature in payload["features"]
+        if feature["properties"].get("feature_type") == "reviewable-gap-endpoint"
+    ]
+
+    assert len(markers) == 2
+    assert {marker["properties"]["gap_marker_kind"] for marker in markers} == {
+        "a-road-component-representative"
+    }
+    assert all(
+        marker["properties"]["geometry_semantics"]
+        == "a-road-component-representative-point-marker-only-no-route-geometry"
+        for marker in markers
+    )
+    assert all(
+        marker["properties"]["gap_marker_disclaimer"]
+        == (
+            "No direct connection between these markers is proposed; they locate separate "
+            "source components."
+        )
+        for marker in markers
+    )
+
+
+def test_pdf_semantic_frames_are_projected_from_effective_network() -> None:
+    section = SimpleNamespace(
+        section_id="effective-section",
+        obligation_id="effective-obligation",
+        candidate_id="effective-candidate",
+        network_role="interurban-spine",
+        routing_edge_ids=("edge-effective",),
+        reverse_routing_edge_ids=("reverse-effective",),
+        geometry_wkt="LINESTRING (100000 200000, 100100 200100)",
+        authority="compiler",
+        alignment_bases=("a-road",),
+        primary_alignment_basis="a-road",
+        intervention_state="upgrade-required",
+        display_state="upgrade-required",
+    )
+    result = SimpleNamespace(
+        fingerprint="a" * 64,
+        effective_network=SimpleNamespace(sections=(section,)),
+    )
+    places = gpd.GeoDataFrame({"geometry": []}, geometry="geometry", crs="EPSG:4326")
+    compiled = SimpleNamespace(strategic_network_planning=result, places=places)
+
+    main, access, gaps = _pdf_semantic_frames(compiled)
+
+    assert len(main) == 1
+    assert main.iloc[0]["section_id"] == "effective-section"
+    assert main.iloc[0].geometry.geom_type == "LineString"
+    assert access.empty
+    assert gaps.empty
+
+
+def test_pdf_renderer_semantic_branch_draws_only_projected_layers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    main = gpd.GeoDataFrame(
+        [{"geometry": LineString([(-1.0, 51.0), (-0.9, 51.1)])}],
+        crs=4326,
+    )
+    access = gpd.GeoDataFrame(
+        [{"geometry": LineString([(-1.0, 51.2), (-0.9, 51.3)])}],
+        crs=4326,
+    )
+    canonical_gaps = gpd.GeoDataFrame(
+        [{"geometry": Point(-0.8, 51.2)}],
+        crs=4326,
+    )
+    legacy_line = LineString([(-1.5, 50.5), (-1.4, 50.6)])
+    legacy_connections = gpd.GeoDataFrame(
+        [{"obligation_kind": "community", "geometry": legacy_line}],
+        crs=4326,
+    )
+    empty = gpd.GeoDataFrame({"geometry": []}, geometry="geometry", crs=4326)
+    boundary = gpd.GeoDataFrame(
+        [{"geometry": Polygon([(-2.0, 50.0), (-0.2, 50.0), (-0.2, 52.0), (-2.0, 52.0)])}],
+        crs=4326,
+    )
+    compiled = SimpleNamespace(
+        connection_count=1,
+        strategic_network_planning=SimpleNamespace(fingerprint="f" * 64),
+        boundary=boundary,
+        road_context=gpd.GeoDataFrame(
+            {"highway": [], "geometry": []}, geometry="geometry", crs=4326
+        ),
+        a_road_spines=empty,
+        ncn_routes=empty,
+        atm_reference=None,
+        spine_access_connections=legacy_connections,
+        branch_meeting_connections=legacy_connections,
+        label_places=empty,
+        crossing_warnings=empty,
+        gaps=gpd.GeoDataFrame([{"geometry": Point(-1.5, 50.5)}], crs=4326),
+    )
+    config = SimpleNamespace(
+        publication=SimpleNamespace(pdf_page_size="A4", title="Semantic PDF"),
+        source=SimpleNamespace(source_attribution="Test source", official_road_classification=None),
+    )
+    role_colours: list[str] = []
+    line_calls: list[list[object]] = []
+    gap_calls: list[gpd.GeoDataFrame] = []
+
+    monkeypatch.setattr(
+        publisher,
+        "_pdf_semantic_frames",
+        lambda _compiled: (main, access, canonical_gaps),
+    )
+    monkeypatch.setattr(
+        publisher,
+        "_draw_pdf_role_linework",
+        lambda _canvas, _geometries, colour, *_args: role_colours.append(colour),
+    )
+    monkeypatch.setattr(
+        publisher,
+        "_draw_line_collection",
+        lambda _canvas, geometries, *_args: line_calls.append(geometries),
+    )
+    monkeypatch.setattr(
+        publisher,
+        "_draw_pdf_gap_markers",
+        lambda _canvas, gaps, *_args: gap_calls.append(gaps),
+    )
+    for name in (
+        "_draw_geometry",
+        "_draw_pdf_places",
+        "_draw_scale",
+        "_draw_legend",
+        "_draw_pdf_footer",
+    ):
+        monkeypatch.setattr(publisher, name, lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        publisher,
+        "_draw_edge_register",
+        lambda *_args, **_kwargs: pytest.fail("semantic PDFs must not draw the legacy register"),
+    )
+
+    output = tmp_path / "semantic.pdf"
+    _write_pdf(output, config, compiled)
+
+    assert output.is_file()
+    assert role_colours == ["#c56a1a"]
+    assert any(line_calls and geometries for geometries in line_calls)
+    assert len(gap_calls) == 1
+    assert gap_calls[0] is canonical_gaps
+
+
+def test_pdf_semantic_main_geometry_outside_boundary_buffer_is_rendered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    main = gpd.GeoDataFrame(
+        [{"geometry": LineString([(-1.0, 51.005), (-0.5, 51.005)])}],
+        crs=4326,
+    )
+    empty = gpd.GeoDataFrame({"geometry": []}, geometry="geometry", crs=4326)
+    boundary = gpd.GeoDataFrame(
+        [{"geometry": Polygon([(-1.0, 51.0), (-0.99, 51.0), (-0.99, 51.01), (-1.0, 51.01)])}],
+        crs=4326,
+    )
+    compiled = SimpleNamespace(
+        connection_count=1,
+        strategic_network_planning=SimpleNamespace(fingerprint="f" * 64),
+        boundary=boundary,
+        road_context=gpd.GeoDataFrame(
+            {"highway": [], "geometry": []}, geometry="geometry", crs=4326
+        ),
+        a_road_spines=empty,
+        ncn_routes=empty,
+        atm_reference=None,
+        spine_access_connections=empty,
+        branch_meeting_connections=empty,
+        label_places=empty,
+        crossing_warnings=empty,
+        gaps=empty,
+    )
+    config = SimpleNamespace(
+        publication=SimpleNamespace(pdf_page_size="A4", title="External Main PDF"),
+        source=SimpleNamespace(source_attribution="Test source", official_road_classification=None),
+    )
+    drawn_main: list[object] = []
+    monkeypatch.setattr(
+        publisher,
+        "_pdf_semantic_frames",
+        lambda _compiled: (main, empty, empty),
+    )
+    monkeypatch.setattr(
+        publisher,
+        "_draw_pdf_role_linework",
+        lambda _canvas, geometries, *_args: drawn_main.extend(geometries),
+    )
+    for name in (
+        "_draw_geometry",
+        "_draw_pdf_gap_markers",
+        "_draw_pdf_places",
+        "_draw_scale",
+        "_draw_legend",
+        "_draw_pdf_footer",
+        "_draw_edge_register",
+    ):
+        monkeypatch.setattr(publisher, name, lambda *_args, **_kwargs: None)
+
+    output = tmp_path / "external-main.pdf"
+    _write_pdf(output, config, compiled)
+
+    assert output.is_file()
+    drawn_bounds = gpd.GeoSeries(drawn_main, crs=3857).to_crs(4326).total_bounds
+    assert drawn_bounds[2] > boundary.total_bounds[2] + 0.1
 
 
 def prepared_config(tmp_path: Path) -> CouncilConfig:
@@ -1118,18 +1450,20 @@ def test_failed_final_install_rolls_back_the_previous_complete_output(
     before = {name: checksum(path) for name, path in first.artifacts.items() if path.is_file()}
     import satn.filesystem_safety as filesystem_safety
 
-    original_rename = filesystem_safety.os.rename
+    original_replace = filesystem_safety.os.replace
 
-    def fail_temporary_install(source: str, target: str, *args: object, **kwargs: object) -> None:
+    def fail_temporary_install(source: object, target: object) -> None:
+        source_path = Path(source)
+        target_path = Path(target)
         if (
-            source.startswith(f".{config.publication.output_dir.name}-")
-            and not source.startswith(f".{config.publication.output_dir.name}-previous-")
-            and target == config.publication.output_dir.name
+            source_path.name.startswith(f".{config.publication.output_dir.name}-")
+            and not source_path.name.startswith(f".{config.publication.output_dir.name}-previous-")
+            and target_path == config.publication.output_dir
         ):
             raise OSError("simulated final install failure")
-        original_rename(source, target, *args, **kwargs)
+        original_replace(source, target)
 
-    monkeypatch.setattr(filesystem_safety.os, "rename", fail_temporary_install)
+    monkeypatch.setattr(filesystem_safety.os, "replace", fail_temporary_install)
     config.compilation.full = True
     with pytest.raises(OSError, match="simulated final install failure"):
         compile(config)
@@ -1320,7 +1654,7 @@ def test_governed_urban_spines_and_ncn_evidence_publish_distinctly(tmp_path: Pat
     assert 'id="layer-urban-classification-unknowns" type="checkbox" checked' not in review_html
     assert 'id="layer-low-traffic-area-portals" type="checkbox"' in review_html
     assert 'id="layer-low-traffic-area-portals" type="checkbox" checked' not in review_html
-    assert "declassified NCN routes and Greenway cycleways" in review_html
+    assert "former NCN routes and Greenway cycleways" in review_html
     assert "not an existing LTN" in review_html
     assert "no preferred residential cycling centreline" in review_html
     assert "School Street Candidate Assessments" in review_html

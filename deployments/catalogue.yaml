@@ -21,3 +21,12 @@ deployments:
       review_map: index.html
       network_map_pdf: network-map.pdf
       review_map_zip: review-map.zip
+  - deployment_id: wmca
+    area_id: west-midlands-combined-authority
+    area_name: West Midlands Combined Authority constituent area
+    area_definition: wmca/area.yaml
+    deployment_path: deployments/wmca/
+    artifacts:
+      review_map: index.html
+      network_map_pdf: network-map.pdf
+      review_map_zip: review-map.zip

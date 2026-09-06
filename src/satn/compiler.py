@@ -97,6 +97,7 @@ from satn.strategic_corridors import (
     NetworkSelectionPreparationResult,
     StrategicCorridorPreparationResult,
     prepare_strategic_corridors,
+    strategic_routable_network_with_a_road_backbone,
 )
 from satn.strategic_network_adapter import compile_prepared_strategic_network
 from satn.strategic_reference_replay import (
@@ -222,7 +223,9 @@ def governed_input_binding(
 
     Context-local state keeps the public seven-parameter API stable while
     ensuring nested or concurrent compilations cannot leak officer or evidence
-    bindings into one another.
+    bindings into one another. The pipeline caller verifies a bound evidence
+    store before entering this trusted internal context; this function only
+    validates the binding shape and must not repeat that store verification.
     """
 
     if (evidence_store is None) != (evidence_state_fingerprint is None):
@@ -232,7 +235,6 @@ def governed_input_binding(
             raise TypeError("evidence_store must be a LocalEvidenceStore")
         if re.fullmatch(r"[0-9a-f]{64}", evidence_state_fingerprint or "") is None:
             raise ValueError("evidence_state_fingerprint must be a full lowercase SHA-256")
-        evidence_store.resolve_coverage(state_fingerprint=evidence_state_fingerprint)
     if (
         routing_input_fingerprint is not None
         and re.fullmatch(r"[0-9a-f]{64}", routing_input_fingerprint) is None
@@ -683,6 +685,15 @@ def _compile_network(
         source["boundary"],
     )
     urban_spines = urban.spines
+    strategic_routable_network = strategic_routable_network_with_a_road_backbone(
+        routable_network,
+        official_road_classification,
+    )
+    strategic_road_graph = (
+        road_graph
+        if strategic_routable_network is routable_network
+        else RoadGraph(strategic_routable_network)
+    )
     urban_classification_unknowns = urban.classification_unknowns
     low_traffic_areas = urban.low_traffic_areas
     low_traffic_area_portals = urban.low_traffic_area_portals
@@ -861,7 +872,7 @@ def _compile_network(
         # those exact compiler-emitted anchors without mutating this network.
         strategic_corridor_preparation = prepare_strategic_corridors(
             config.compilation.network_selection,
-            road_graph=road_graph,
+            road_graph=strategic_road_graph,
             spine_access_connections=spine_access_connections,
             access_obligations=access_obligations,
             context=strategic_corridor_context,
@@ -872,6 +883,8 @@ def _compile_network(
                 urban_communities,
                 urban_scope_buffer_km=config.source.urban_scope_buffer_km,
             ),
+            official_road_classification=official_road_classification,
+            urban_spines=urban_spines,
         )
         network_selection_preparation = NetworkSelectionPreparationResult(
             spine_access_preparation=spine_access_candidate_preparation,
@@ -1187,7 +1200,7 @@ def _compile_network(
     )
     if compiled.strategic_corridor_preparation is not None:
         compiled.strategic_network_planning = compile_prepared_strategic_network(
-            routable_network=routable_network,
+            routable_network=strategic_routable_network,
             preparation=compiled.strategic_corridor_preparation,
             snapshot_manifest_path=(
                 config.source.snapshot_dir / config.source.snapshot_id / "snapshot.json"

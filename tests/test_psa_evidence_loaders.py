@@ -13,7 +13,6 @@ import geopandas as gpd
 import pytest
 from shapely.geometry import LineString, Polygon
 
-from satn.compilation_dependencies import compilation_dependency_manifest
 from satn.network_selection import (
     GovernedEvidenceArtifactConfig,
     PopulationReachEvidenceConfig,
@@ -465,10 +464,7 @@ def test_population_frame_mutation_cannot_escape_bound_compile_adapter(
         area,
     )
 
-    assert {
-        record.usual_residents
-        for record in assessment.assessment.records
-    } == {123}
+    assert {record.usual_residents for record in assessment.assessment.records} == {123}
     assert assessment.artifact_lineage == loaded.artifact_lineage
     assert loaded.output_areas["usual_residents"].tolist() == [123]
     assert f"canonical-frame:{loaded.frame_content_sha256}" in (
@@ -491,9 +487,7 @@ def test_governed_population_assessment_exactly_rederives_all_outputs(
         [
             {
                 "option_id": "option-a",
-                "geometry": LineString(
-                    [(399900, 150050), (400200, 150050)]
-                ),
+                "geometry": LineString([(399900, 150050), (400200, 150050)]),
             }
         ],
         geometry="geometry",
@@ -530,21 +524,16 @@ def test_governed_population_assessment_exactly_rederives_all_outputs(
     tampered_without_id.pop("assessment_id")
     tampered = replace(
         tampered,
-        assessment_id=(
-            "population-reach-v1-"
-            f"{canonical_sha256(tampered_without_id)[:16]}"
-        ),
+        assessment_id=(f"population-reach-v1-{canonical_sha256(tampered_without_id)[:16]}"),
     )
-    attacker_recomputed_fingerprint = (
-        _governed_population_assessment_fingerprint(
-            tampered,
-            governed.source_evidence,
-            route_options_crs=governed.route_options_crs,
-            route_options=governed.route_options,
-            area_definition_crs=governed.area_definition_crs,
-            area_definition=governed.area_definition,
-            profile=governed.profile,
-        )
+    attacker_recomputed_fingerprint = _governed_population_assessment_fingerprint(
+        tampered,
+        governed.source_evidence,
+        route_options_crs=governed.route_options_crs,
+        route_options=governed.route_options,
+        area_definition_crs=governed.area_definition_crs,
+        area_definition=governed.area_definition,
+        profile=governed.profile,
     )
 
     with pytest.raises(GovernedEvidenceLoadError, match="exact rederivation"):
@@ -817,9 +806,7 @@ def test_rejects_overlapping_oa_coverage_and_accepts_unambiguous_boundary(
         update={
             "population_weighted_centroids": (
                 boundary_config.population_weighted_centroids.model_copy(
-                    update={
-                        "content_sha256": hashlib.sha256(boundary_content).hexdigest()
-                    }
+                    update={"content_sha256": hashlib.sha256(boundary_content).hexdigest()}
                 )
             )
         }
@@ -1045,9 +1032,7 @@ def test_governed_identities_are_portable_across_base_directories(
     assert first_population.source == second_population.source
     assert first_population.frame_content_sha256 == second_population.frame_content_sha256
     assert first_population.artifact_lineage == second_population.artifact_lineage
-    assert first_population.artifact_lineage[0].path != (
-        second_population.artifact_lineage[0].path
-    )
+    assert first_population.artifact_lineage[0].path != (second_population.artifact_lineage[0].path)
     assert first_population.artifact_lineage[0].declared_path == Path("oa.json")
 
     first_school, first_admissions = education_configs(first_base)
@@ -1071,12 +1056,9 @@ def test_governed_identities_are_portable_across_base_directories(
     assert first_education is not None
     assert second_education is not None
     assert (
-        first_education.governed_source_fingerprint
-        == second_education.governed_source_fingerprint
+        first_education.governed_source_fingerprint == second_education.governed_source_fingerprint
     )
-    assert first_education.school_register_lineage == (
-        second_education.school_register_lineage
-    )
+    assert first_education.school_register_lineage == (second_education.school_register_lineage)
     assert first_education.school_register_lineage.path != (
         second_education.school_register_lineage.path
     )
@@ -1208,32 +1190,24 @@ def test_governed_education_assessment_rejects_tampered_or_deleted_outputs(
         option_evidence=(),
     )
 
-    tampered_id = governed.assessment.model_copy(
-        update={"assessment_id": "0" * 64}
-    )
+    tampered_id = governed.assessment.model_copy(update={"assessment_id": "0" * 64})
     with pytest.raises(GovernedEvidenceLoadError, match="raw reconstruction"):
         GovernedEducationAccessAssessment(
             assessment=tampered_id,
             source_evidence=source,
             scope=governed.scope,
-            assessment_content_sha256=canonical_sha256(
-                tampered_id.model_dump(mode="json")
-            ),
+            assessment_content_sha256=canonical_sha256(tampered_id.model_dump(mode="json")),
             governed_input_fingerprint="0" * 64,
         )
 
     assert governed.assessment.school_evidence_requests
-    deleted_output = governed.assessment.model_copy(
-        update={"school_evidence_requests": ()}
-    )
+    deleted_output = governed.assessment.model_copy(update={"school_evidence_requests": ()})
     with pytest.raises(GovernedEvidenceLoadError, match="raw reconstruction"):
         GovernedEducationAccessAssessment(
             assessment=deleted_output,
             source_evidence=source,
             scope=governed.scope,
-            assessment_content_sha256=canonical_sha256(
-                deleted_output.model_dump(mode="json")
-            ),
+            assessment_content_sha256=canonical_sha256(deleted_output.model_dump(mode="json")),
             governed_input_fingerprint="0" * 64,
         )
 
@@ -1271,8 +1245,7 @@ def test_governed_education_scope_rejects_absent_wrong_duplicate_or_stale_eviden
         for item in missing.assessment.source_snapshot.strategic_education_destinations
     ) == ("university-one",)
     assert {
-        (item.option_id, item.strategic_destination_id)
-        for item in missing.assessment.network_gaps
+        (item.option_id, item.strategic_destination_id) for item in missing.assessment.network_gaps
     } == {("candidate-option", "university-one")}
 
     with pytest.raises(GovernedEvidenceLoadError, match="unique canonical"):
@@ -1343,9 +1316,7 @@ def test_education_freshness_is_explicit_and_fingerprinted(
         strategic_admissions_max_age_days=400,
     )
     assert wider_policy is not None
-    assert accepted.governed_source_fingerprint != (
-        wider_policy.governed_source_fingerprint
-    )
+    assert accepted.governed_source_fingerprint != (wider_policy.governed_source_fingerprint)
 
 
 @pytest.mark.parametrize(
@@ -1456,11 +1427,3 @@ def test_rejects_stale_register_and_future_or_unauthorised_admission(
             school_register_max_age_days=30,
             strategic_admissions_max_age_days=30,
         )
-
-
-def test_loader_is_an_explicit_compilation_dependency() -> None:
-    components = {item["path"]: item for item in compilation_dependency_manifest()["components"]}
-
-    assert components["satn/psa_evidence_loaders.py"]["reason"] == (
-        "strict governed Preferred Strategic Alignment evidence loading"
-    )

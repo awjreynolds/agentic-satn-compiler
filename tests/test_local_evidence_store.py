@@ -33,17 +33,13 @@ from satn.local_evidence_store import (
 
 PROJECT = Path(__file__).parents[1]
 RAW_OSM_FIXTURE = PROJECT / "tests" / "fixtures" / "osm-network.xml"
-LOCAL_SPATIAL_RUNTIME_LOCK_SETTING = os.environ.get(
-    "SATN_TEST_DUCKDB_SPATIAL_RUNTIME_LOCK"
-)
+LOCAL_SPATIAL_RUNTIME_LOCK_SETTING = os.environ.get("SATN_TEST_DUCKDB_SPATIAL_RUNTIME_LOCK")
 LOCAL_SPATIAL_ARCHIVE_SETTING = os.environ.get("SATN_TEST_DUCKDB_SPATIAL_EXTENSION")
 LOCAL_SPATIAL_RUNTIME_LOCK = Path(
-    LOCAL_SPATIAL_RUNTIME_LOCK_SETTING
-    or "__satn_test_duckdb_spatial_runtime_lock_not_configured__"
+    LOCAL_SPATIAL_RUNTIME_LOCK_SETTING or "__satn_test_duckdb_spatial_runtime_lock_not_configured__"
 )
 LOCAL_SPATIAL_ARCHIVE = Path(
-    LOCAL_SPATIAL_ARCHIVE_SETTING
-    or "__satn_test_duckdb_spatial_extension_not_configured__"
+    LOCAL_SPATIAL_ARCHIVE_SETTING or "__satn_test_duckdb_spatial_extension_not_configured__"
 )
 
 
@@ -62,9 +58,7 @@ def _runtime_lock(
                 "duckdb_version": "1.4.4",
                 "spatial_version": "f129b24",
                 "platform": runtime_platform,
-                "extension_relative_path": (
-                    f"v1.4.4/{runtime_platform}/spatial.duckdb_extension"
-                ),
+                "extension_relative_path": (f"v1.4.4/{runtime_platform}/spatial.duckdb_extension"),
                 "extension_sha256": extension_sha256,
             }
         ),
@@ -87,10 +81,7 @@ def _store(tmp_path: Path, *, runtime_lock_path: Path) -> LocalEvidenceStore:
 
 
 def _real_store(tmp_path: Path) -> LocalEvidenceStore:
-    if (
-        LOCAL_SPATIAL_RUNTIME_LOCK_SETTING is None
-        or LOCAL_SPATIAL_ARCHIVE_SETTING is None
-    ):
+    if LOCAL_SPATIAL_RUNTIME_LOCK_SETTING is None or LOCAL_SPATIAL_ARCHIVE_SETTING is None:
         pytest.skip(
             "real DuckDB Spatial tests require explicit pinned "
             "SATN_TEST_DUCKDB_SPATIAL_RUNTIME_LOCK and "
@@ -103,8 +94,7 @@ def _real_store(tmp_path: Path) -> LocalEvidenceStore:
         )
     if not LOCAL_SPATIAL_ARCHIVE.is_file():
         pytest.fail(
-            "configured SATN_TEST_DUCKDB_SPATIAL_EXTENSION is not a file: "
-            f"{LOCAL_SPATIAL_ARCHIVE}"
+            f"configured SATN_TEST_DUCKDB_SPATIAL_EXTENSION is not a file: {LOCAL_SPATIAL_ARCHIVE}"
         )
     runtime_lock = SpatialRuntimeLock.from_json(LOCAL_SPATIAL_RUNTIME_LOCK)
     runtime_platform = local_evidence_store._runtime_platform()
@@ -267,9 +257,7 @@ def test_query_reads_one_exact_pinned_open_roads_subset(tmp_path: Path) -> None:
         "name_1": "London Road",
         "road_classification_number": "A4",
     }
-    assert result.rows[0].geometry.equals(
-        LineString([(349000, 165000), (361000, 165000)])
-    )
+    assert result.rows[0].geometry.equals(LineString([(349000, 165000), (361000, 165000)]))
     assert result.manifest["coverage_state_fingerprint"] == coverage.fingerprint
     assert result.manifest["predicate_operand_order"] == (
         "feature_geometry predicate selector_geometry"
@@ -287,9 +275,7 @@ def test_osm_refresh_batches_all_missing_keys_and_queries_the_typed_rtree(
 ) -> None:
     store = _real_store(tmp_path)
     store.initialise()
-    source_export = _osm_network_source_export(
-        _write_osm_network_fixture(tmp_path / "network.osm")
-    )
+    source_export = _osm_network_source_export(_write_osm_network_fixture(tmp_path / "network.osm"))
     contract = _osm_network_contract()
     cached_key = EvidencePartitionKey("openstreetmap/lines", "bng-10km/v1", "ST76")
     store.refresh(
@@ -325,10 +311,7 @@ def test_osm_refresh_batches_all_missing_keys_and_queries_the_typed_rtree(
     assert {
         attestation.partition_content.partition_key.cell: (
             attestation.partition_content.availability,
-            tuple(
-                feature["logical_key"]
-                for feature in attestation.partition_content.features
-            ),
+            tuple(feature["logical_key"] for feature in attestation.partition_content.features),
         )
         for attestation in coverage.attestations
     } == {
@@ -438,9 +421,7 @@ def test_initialise_rejects_a_cached_extension_with_the_wrong_checksum(tmp_path:
 
 def test_initialise_rejects_a_runtime_lock_for_another_platform(tmp_path: Path) -> None:
     runtime_platform = local_evidence_store._runtime_platform()
-    other_platform = (
-        "linux_x86_64" if runtime_platform != "linux_x86_64" else "osx_arm64"
-    )
+    other_platform = "linux_x86_64" if runtime_platform != "linux_x86_64" else "osx_arm64"
     store = _store(
         tmp_path,
         runtime_lock_path=_runtime_lock(
@@ -1198,9 +1179,7 @@ def test_refresh_reuses_exact_partitions_and_unions_disconnected_coverage(
     source_export = _source_export_for(source_path, format="GeoJSON")
     contract = _open_roads_contract()
     first_key = EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST56")
-    disconnected_key = EvidencePartitionKey(
-        "os-open-roads/RoadLink", "bng-10km/v1", "ST76"
-    )
+    disconnected_key = EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST76")
     first = store.refresh(
         source_export=source_export,
         ingestion_contract=contract,
@@ -1393,17 +1372,13 @@ def test_multi_source_refresh_rolls_back_every_source_when_the_second_scan_fails
     open_roads = EvidenceRefreshRequest(
         source_export=_source_export_for(tmp_path / "RoadLink.geojson", format="GeoJSON"),
         ingestion_contract=_open_roads_contract(),
-        partition_keys=(
-            EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST76"),
-        ),
+        partition_keys=(EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST76"),),
     )
     osm_path = _write_osm_network_fixture(tmp_path / "network.osm")
     osm = EvidenceRefreshRequest(
         source_export=_osm_network_source_export(osm_path),
         ingestion_contract=_osm_network_contract(),
-        partition_keys=(
-            EvidencePartitionKey("openstreetmap/lines", "bng-10km/v1", "ST76"),
-        ),
+        partition_keys=(EvidencePartitionKey("openstreetmap/lines", "bng-10km/v1", "ST76"),),
     )
     original_reader = store._read_missing_partitions
     scans = 0
@@ -1492,6 +1467,50 @@ def test_resolve_coverage_never_falls_back_to_current_or_tampered_history(
     with pytest.raises(EvidenceStoreSchemaError, match="rebuild"):
         store.resolve_coverage(state_fingerprint=old.fingerprint)
     assert store.resolve_coverage(state_fingerprint=current.fingerprint) == current
+
+
+@pytest.mark.skipif(
+    not LOCAL_SPATIAL_ARCHIVE.is_file() or importlib.util.find_spec("duckdb") is None,
+    reason="pinned local Spatial archive or DuckDB package absent",
+)
+def test_ordinary_coverage_reads_skip_retained_source_revalidation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, coverage = _seeded_real_store(tmp_path)
+    coverage_verified: list[str] = []
+    verified: list[str] = []
+
+    monkeypatch.setattr(
+        store,
+        "_verify_coverage",
+        lambda _connection, resolved: coverage_verified.append(resolved.fingerprint),
+    )
+    monkeypatch.setattr(
+        store,
+        "_verify_retained_source_bytes",
+        lambda resolved: verified.append(resolved.fingerprint),
+    )
+
+    assert store.resolve_coverage(state_fingerprint=coverage.fingerprint) == coverage
+    result = store.query(
+        state_fingerprint=coverage.fingerprint,
+        source_layer="os-open-roads/RoadLink",
+        bbox=(350_001, 160_001, 359_999, 169_999),
+    )
+    assert [row.logical_key for row in result.rows] == ["roadlink:100"]
+    assert coverage_verified == []
+    assert verified == []
+
+    assert store.resolve_coverage(state_fingerprint=coverage.fingerprint, verify=True) == coverage
+    store.query(
+        state_fingerprint=coverage.fingerprint,
+        source_layer="os-open-roads/RoadLink",
+        bbox=(350_001, 160_001, 359_999, 169_999),
+        verify=True,
+    )
+    assert coverage_verified == [coverage.fingerprint, coverage.fingerprint]
+    assert verified == [coverage.fingerprint, coverage.fingerprint]
 
 
 @pytest.mark.skipif(
@@ -1632,9 +1651,7 @@ def test_query_treats_covered_no_data_as_an_exact_empty_result(tmp_path: Path) -
     coverage = store.refresh(
         source_export=_source_export_for(source_path, format="GeoJSON"),
         ingestion_contract=_open_roads_contract(),
-        partition_keys=(
-            EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST58"),
-        ),
+        partition_keys=(EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST58"),),
     ).coverage
 
     result = store.query(
@@ -1704,9 +1721,7 @@ def test_query_is_deterministic_and_independent_of_the_current_pointer(
     store.refresh(
         source_export=_source_export_for(source_path, format="GeoJSON"),
         ingestion_contract=_open_roads_contract(),
-        partition_keys=(
-            EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST58"),
-        ),
+        partition_keys=(EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST58"),),
     )
     after = store.query(
         **{
@@ -1868,16 +1883,12 @@ def test_query_keeps_the_same_logical_key_from_distinct_source_exports(
     store.refresh(
         source_export=first_export,
         ingestion_contract=_open_roads_contract(),
-        partition_keys=(
-            EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST56"),
-        ),
+        partition_keys=(EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST56"),),
     )
     coverage = store.refresh(
         source_export=second_export,
         ingestion_contract=_open_roads_contract(),
-        partition_keys=(
-            EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST76"),
-        ),
+        partition_keys=(EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST76"),),
     ).coverage
 
     result = store.query(
@@ -1910,9 +1921,7 @@ def test_query_reports_explicit_unknown_and_detects_retained_source_mutation(
     source_path = _write_open_roads_fixture(tmp_path / "RoadLink.geojson")
     source_export = _source_export_for(source_path, format="GeoJSON")
     contract = _open_roads_contract()
-    unknown_key = EvidencePartitionKey(
-        "os-open-roads/RoadLink", "bng-10km/v1", "ST58"
-    )
+    unknown_key = EvidencePartitionKey("os-open-roads/RoadLink", "bng-10km/v1", "ST58")
     monkeypatch.setattr(
         store,
         "_read_open_roads_partition",
@@ -1948,4 +1957,5 @@ def test_query_reports_explicit_unknown_and_detects_retained_source_mutation(
             state_fingerprint=coverage.fingerprint,
             source_layer="os-open-roads/RoadLink",
             bbox=(350_001, 180_001, 359_999, 189_999),
+            verify=True,
         )

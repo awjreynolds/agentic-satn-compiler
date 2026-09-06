@@ -4,7 +4,6 @@ import copy
 import hashlib
 import json
 import shutil
-from pathlib import Path
 
 import geopandas as gpd
 import numpy as np
@@ -53,12 +52,13 @@ def _identities() -> dict[str, str]:
     }
 
 
-def test_edge_enrichment_fingerprint_binds_compiled_network_codec(tmp_path, monkeypatch) -> None:
+def test_edge_enrichment_fingerprint_uses_explicit_compiler_revision(monkeypatch) -> None:
     original = pipeline_module._edge_enrichment_implementation_fingerprint()
-    codec_path = Path(pipeline_module.compiled_network_bundle_codec.__file__ or "")
-    altered = tmp_path / "compiled_network_bundle.py"
-    altered.write_bytes(codec_path.read_bytes() + b"\n# codec probe\n")
-    monkeypatch.setattr(pipeline_module.compiled_network_bundle_codec, "__file__", str(altered))
+    monkeypatch.setattr(
+        pipeline_module.compilation_dependencies,
+        "COMPILER_CACHE_REVISION",
+        "poc-test-change",
+    )
 
     assert pipeline_module._edge_enrichment_implementation_fingerprint() != original
 
@@ -100,9 +100,7 @@ def test_marked_network_wire_round_trips_primitive_ndarray_cells() -> None:
 @pytest.mark.parametrize("dtype", [object, "<M8[ns]", "|V4", [("field", "i4")]])
 def test_marked_network_wire_rejects_unsafe_ndarray_dtypes(dtype: object) -> None:
     frame = _frame()
-    frame["highway"] = pd.Series(
-        [np.empty(1, dtype=dtype), np.empty(1, dtype=dtype)], dtype=object
-    )
+    frame["highway"] = pd.Series([np.empty(1, dtype=dtype), np.empty(1, dtype=dtype)], dtype=object)
     with pytest.raises(BundleCodecError, match="unsupported ndarray dtype"):
         encode_routable_edge_enrichment(frame, identities=_identities())
 
@@ -165,9 +163,10 @@ def test_routing_replay_bypasses_mark_ncn_edges(tmp_path, monkeypatch) -> None: 
     assert replayed.metadata["edge_enrichment_disposition"] == "hit"
     assert replayed.metadata["routing_bundle_disposition"] == "hit"
     assert replayed.metadata["edge_enrichment_artifact_id"]
-    assert replayed.metadata["routing_bundle_artifact_id"] == cold.metadata[
-        "routing_bundle_artifact_id"
-    ]
+    assert (
+        replayed.metadata["routing_bundle_artifact_id"]
+        == cold.metadata["routing_bundle_artifact_id"]
+    )
 
 
 def test_routing_only_rebuild_hits_edge_enrichment(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -198,12 +197,8 @@ def test_route_and_semantic_artifacts_have_exact_edge_lineage(tmp_path) -> None:
     route = store.resolve(cold.metadata["routing_bundle_artifact_id"]).artifact
     semantic = store.resolve(cold.metadata["semantic_bundle_artifact_id"]).artifact
     assert route is not None and semantic is not None
-    assert route.manifest.upstream_artifact_ids == (
-        cold.metadata["edge_enrichment_artifact_id"],
-    )
-    assert semantic.manifest.upstream_artifact_ids == (
-        cold.metadata["routing_bundle_artifact_id"],
-    )
+    assert route.manifest.upstream_artifact_ids == (cold.metadata["edge_enrichment_artifact_id"],)
+    assert semantic.manifest.upstream_artifact_ids == (cold.metadata["routing_bundle_artifact_id"],)
 
 
 def test_targeted_edge_rebuild_forces_descendants(tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -220,9 +215,10 @@ def test_targeted_edge_rebuild_forces_descendants(tmp_path) -> None:  # type: ig
     assert rebuilt.metadata["edge_enrichment_disposition"] == "build"
     assert rebuilt.metadata["routing_bundle_disposition"] == "build"
     assert rebuilt.metadata["semantic_bundle_disposition"] == "build"
-    assert rebuilt.metadata["edge_enrichment_artifact_id"] == cold.metadata[
-        "edge_enrichment_artifact_id"
-    ]
+    assert (
+        rebuilt.metadata["edge_enrichment_artifact_id"]
+        == cold.metadata["edge_enrichment_artifact_id"]
+    )
 
 
 def test_corrupt_edge_enrichment_is_quarantined_and_rebuilt(tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -240,9 +236,7 @@ def test_corrupt_edge_enrichment_is_quarantined_and_rebuilt(tmp_path) -> None:  
     rebuilt = compile(config, artifact_root=artifact_root)
 
     assert rebuilt.metadata["edge_enrichment_disposition"] == "build"
-    assert any(
-        path.name.startswith(edge_id) for path in (artifact_root / "quarantine").iterdir()
-    )
+    assert any(path.name.startswith(edge_id) for path in (artifact_root / "quarantine").iterdir())
 
 
 def test_changed_context_misses_edge_enrichment_identity(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -265,9 +259,10 @@ def test_changed_context_misses_edge_enrichment_identity(tmp_path, monkeypatch) 
     rebuilt = compile(config, artifact_root=artifact_root)
 
     assert rebuilt.metadata["edge_enrichment_disposition"] == "build"
-    assert rebuilt.metadata["edge_enrichment_artifact_id"] != cold.metadata[
-        "edge_enrichment_artifact_id"
-    ]
+    assert (
+        rebuilt.metadata["edge_enrichment_artifact_id"]
+        != cold.metadata["edge_enrichment_artifact_id"]
+    )
 
 
 def test_edge_identity_failure_does_not_create_rootless_descendants(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

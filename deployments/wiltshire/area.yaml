@@ -6,10 +6,18 @@ deployment_id: wiltshire
 source:
   kind: fixture
   fixture_dir: ../../examples/wiltshire/source
-  source_identifier: "ons-ctyua-december-2025 + osm-wiltshire-extract-2026-07-24"
-  source_attribution: "Office for National Statistics; OpenStreetMap contributors (ODbL); OSM extract via GEO2day"
+  source_identifier: "ons-ctyua-december-2025 + osm-wiltshire-extract-2026-07-24 + os-open-roads-2026-04-07 + connected-context-2026-09-06"
+  source_attribution: "Office for National Statistics; OpenStreetMap contributors (ODbL); OSM extract via GEO2day; Contains OS data © Crown copyright and database rights 2026 (OGL v3.0)"
   snapshot_dir: ../../data/snapshots
-  snapshot_id: wiltshire-osm-2026-07-24-ons-2025
+  snapshot_id: wiltshire-osm-open-roads-2026-07-24-ons-2025-connected-context-20260906
+  retained_core_source:
+    snapshot_id: wiltshire-osm-open-roads-2026-07-24-ons-2025
+    manifest_sha256: a531f9bbc83aa1b46a35cf7329347576c39751381b8787914a8441255d22134c
+  official_road_classification:
+    path: ../../data/governed/wiltshire-os-open-roads-2026-04-07-connected-context-2026-09-06.geojson
+    source_id: os-open-roads-2026-04-07
+    effective_date: 2026-04-07
+    licence: Open Government Licence v3.0
 compilation:
   max_connection_km: 15
   criteria_version: "1"
@@ -17,6 +25,13 @@ compilation:
     provider: fake
     response_mode: direct-runtime
     review_statuses: [amber, red]
+  network_selection:
+    profile_id: wiltshire-network-selection-v1
+    candidate_source_precedence:
+      - verified-existing-asset
+      - a-road-corridor
+      - b-road-corridor
+      - other-routable
 publication:
   output_dir: ../../build/compiled/wiltshire
   title: Wiltshire Strategic Active Travel Network Review

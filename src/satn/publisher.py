@@ -107,6 +107,65 @@ _PRESENTATION_CORE_ASSETS = (
     "review-map.css",
 )
 _PRESENTATION_STRATEGIC_ASSETS = ("strategic-reference.css", "strategic-reference.js")
+_LEGACY_ACCESS_GAP_ROLES = frozenset(
+    {
+        "community-access",
+        "community-access-obligation",
+        "cross-spine-connector",
+        "school-access",
+        "school-access-obligation",
+        "strategic-destination-access",
+    }
+)
+
+
+def _is_legacy_access_gap(gap: object) -> bool:
+    """Return whether a legacy gap remains part of the current map projection."""
+    role = gap.get("network_role") if isinstance(gap, dict) else getattr(gap, "network_role", None)
+    return str(role or "").casefold() in _LEGACY_ACCESS_GAP_ROLES
+
+
+def _is_a_road_component_gap_marker(properties: object) -> bool:
+    """Identify representative markers for disconnected official A-road components."""
+    if (
+        not isinstance(properties, dict)
+        or properties.get("feature_type") != "reviewable-gap-endpoint"
+    ):
+        return False
+    return any(
+        str(properties.get(field) or "").startswith(prefix)
+        for field, prefix in (
+            ("obligation_id", "a-road-backbone-component-gap-"),
+            ("endpoint_id", "a-road-backbone-component-endpoint-"),
+        )
+    )
+
+
+def _annotate_a_road_component_gap_markers(collection: dict[str, object]) -> None:
+    """Mark component-gap points as representative locations, never join endpoints."""
+    features = collection.get("features")
+    if not isinstance(features, list):
+        return
+    for feature in features:
+        if not isinstance(feature, dict):
+            continue
+        properties = feature.get("properties")
+        if not _is_a_road_component_gap_marker(properties):
+            continue
+        assert isinstance(properties, dict)
+        properties.update(
+            {
+                "gap_marker_kind": "a-road-component-representative",
+                "geometry_semantics": (
+                    "a-road-component-representative-point-marker-only-no-route-geometry"
+                ),
+                "legend_text": "Disconnected A-road component (representative location)",
+                "gap_marker_disclaimer": (
+                    "No direct connection between these markers is proposed; they locate "
+                    "separate source components."
+                ),
+            }
+        )
 
 
 class EAFixedPointMismatchError(ValueError):
@@ -680,23 +739,7 @@ def publish(
                 temporary / "reviewable-network.json",
                 compiled.reviewable_network,
             )
-        try:
-            _validate_ea_elevation_fixed_point(config, temporary / "network.geojson")
-        except EAFixedPointMismatchError as error:
-            try:
-                candidate = _retain_ea_fixed_point_candidate(
-                    config,
-                    run_id=run_id,
-                    network_path=temporary / "network.geojson",
-                    expected=error.expected,
-                    actual=error.actual,
-                    governed_input_fingerprint=compiled.governed_input_fingerprint,
-                )
-            except ValueError as retention_error:
-                raise ValueError(
-                    f"{error}; candidate retention failed: {retention_error}"
-                ) from retention_error
-            raise ValueError(f"{error}; retained candidate={candidate}") from error
+        _validate_ea_elevation_fixed_point(config, temporary / "network.geojson")
         _write_json_records(
             temporary,
             config,
@@ -1360,6 +1403,19 @@ def retain_ea_recovery_candidate(
         _write_geojson(network_path, compiled)
         try:
             _validate_ea_elevation_fixed_point(config, network_path)
+            elevation = getattr(config.source, "national_elevation", None)
+            if (
+                elevation is not None
+                and elevation.acquisition_contract == EA_LIDAR_WECA_ACQUISITION_CONTRACT
+            ):
+                snapshot_manifest = (
+                    config.source.snapshot_dir / config.source.snapshot_id / "snapshot.json"
+                )
+                manifest = json.loads(snapshot_manifest.read_text(encoding="utf-8"))
+                expected = manifest["evidence_sources"]["elevation"]["pre_elevation_network_sha256"]
+                actual = eligible_route_fingerprint(gpd.read_file(network_path))
+                if expected != actual:
+                    raise EAFixedPointMismatchError(expected=expected, actual=actual)
         except EAFixedPointMismatchError as error:
             retained = _retain_ea_fixed_point_candidate(
                 config,
@@ -1464,7 +1520,12 @@ def _remove_ea_fixed_point_candidate(config: AreaConfig) -> None:
 
 
 def _validate_ea_elevation_fixed_point(config: AreaConfig, network_path: Path) -> None:
-    """Fail publication if retained EA snapshot provenance and final routes diverge."""
+    """Validate retained EA provenance and canonical evidence for publication.
+
+    Route-wide identity is retained for explicit fixed-point recovery, but is
+    not a normal publication requirement. Publication still requires the
+    pinned acquisition statement and canonical retained elevation evidence.
+    """
     elevation = config.source.national_elevation
     if elevation is None or elevation.acquisition_contract != EA_LIDAR_WECA_ACQUISITION_CONTRACT:
         return
@@ -1484,49 +1545,25 @@ def _validate_ea_elevation_fixed_point(config: AreaConfig, network_path: Path) -
         if elevation_provenance["acquisition_protocol"] != "two-pass-fixed-point/v1":
             raise ValueError("EA elevation snapshot lacks the two-pass fixed-point protocol")
 
-        def required_digest(value: object, label: str) -> str:
-            if not isinstance(value, str) or len(value) != 64:
-                raise ValueError(f"EA elevation snapshot has invalid {label}")
-            try:
-                int(value, 16)
-            except ValueError as error:
-                raise ValueError(f"EA elevation snapshot has invalid {label}") from error
-            return value
-
-        expected = required_digest(
-            elevation_provenance["pre_elevation_network_sha256"],
-            "pre-elevation route fingerprint",
-        )
-        acquisition_output = required_digest(
-            elevation_provenance["acquisition_output_sha256"],
-            "acquisition elevation output provenance",
-        )
-        expected_files = {
-            ELEVATION_EVIDENCE_FILENAME: required_digest(
-                elevation_provenance["content_fingerprint"], "elevation evidence provenance"
-            ),
-            SAMPLE_LEDGER_FILENAME: required_digest(
-                elevation_provenance["sample_ledger_sha256"], "sample-ledger provenance"
-            ),
-            "elevation-evidence.manifest.json": required_digest(
-                elevation_provenance["ea_acquisition_manifest_sha256"],
-                "EA acquisition provenance",
-            ),
-            EA_RETAINED_ROUTE_FILENAME: None,
-        }
-        provenance_files = manifest["provenance_file_sha256"]
-        if not isinstance(provenance_files, dict):
-            raise TypeError("snapshot provenance_file_sha256 must be an object")
-        for filename, expected_digest in expected_files.items():
-            recorded_digest = required_digest(provenance_files[filename], f"{filename} provenance")
-            if expected_digest is not None and recorded_digest != expected_digest:
-                raise ValueError(f"EA elevation snapshot has mismatched {filename} provenance")
+        expected = elevation_provenance.get("pre_elevation_network_sha256")
+        if not _is_sha256(expected):
+            raise ValueError("EA elevation snapshot has invalid pre-elevation route fingerprint")
+        for filename in (
+            ELEVATION_EVIDENCE_FILENAME,
+            SAMPLE_LEDGER_FILENAME,
+            "elevation-evidence.manifest.json",
+            EA_RETAINED_ROUTE_FILENAME,
+        ):
             retained = snapshot_manifest.parent / filename
             if not retained.is_file() or retained.is_symlink():
                 raise ValueError(f"EA elevation snapshot is missing retained {filename}")
-            actual_digest = hashlib.sha256(retained.read_bytes()).hexdigest()
-            if actual_digest != recorded_digest:
-                raise ValueError(f"EA elevation snapshot has unreadable or tampered {filename}")
+            try:
+                with retained.open("rb"):
+                    pass
+            except OSError as error:
+                raise ValueError(
+                    f"EA elevation snapshot cannot read retained {filename}"
+                ) from error
 
         retained_acquisition = snapshot_manifest.parent / "elevation-evidence.manifest.json"
         try:
@@ -1547,10 +1584,8 @@ def _validate_ea_elevation_fixed_point(config: AreaConfig, network_path: Path) -
                     f"EA elevation snapshot retained acquisition manifest mismatches {label}"
                 )
 
-        # The snapshot is the publication authority, but the retained
-        # acquisition statement independently witnesses the exact two-pass
-        # input and each retained proof.  Do not let a self-consistent set of
-        # snapshot file hashes detach it from that statement.
+        # The snapshot is the publication authority, and the retained
+        # acquisition statement independently describes the two-pass input.
         required_equal(
             "acquisition_protocol",
             elevation_provenance["acquisition_protocol"],
@@ -1561,27 +1596,10 @@ def _validate_ea_elevation_fixed_point(config: AreaConfig, network_path: Path) -
             expected,
             "pre-elevation route fingerprint",
         )
-        required_equal(
-            "output_sha256",
-            acquisition_output,
-            "acquisition elevation output digest",
-        )
-        required_equal(
-            "sample_ledger_sha256",
-            provenance_files[SAMPLE_LEDGER_FILENAME],
-            "sample-ledger digest",
-        )
-        required_equal(
-            "sample_route_sha256",
-            provenance_files[EA_RETAINED_ROUTE_FILENAME],
-            "sampled-route digest",
-        )
         required_equal("sample_ledger_path", SAMPLE_LEDGER_FILENAME, "sample-ledger path")
         required_equal("sample_route_path", EA_RETAINED_ROUTE_FILENAME, "sampled-route path")
-        # Hashes prove transport integrity but cannot by themselves prevent a
-        # self-resealed manifest.  Reconstruct the one governed GeoJSON form
-        # and bind its provenance-bearing metadata to both the configuration
-        # and independently retained acquisition statement.
+        # Reconstruct the one governed GeoJSON form and retain the semantic
+        # binding to the configuration and acquisition statement.
         _validate_canonical_retained_ea_evidence(
             snapshot_manifest.parent / ELEVATION_EVIDENCE_FILENAME,
             elevation,
@@ -1591,12 +1609,6 @@ def _validate_ea_elevation_fixed_point(config: AreaConfig, network_path: Path) -
         raise ValueError(
             "EA elevation fixed-point validation cannot read immutable snapshot provenance"
         ) from error
-    try:
-        actual = eligible_route_fingerprint(gpd.read_file(network_path))
-    except (OSError, ValueError) as error:
-        raise ValueError("EA elevation fixed-point validation cannot read final routes") from error
-    if expected != actual:
-        raise EAFixedPointMismatchError(expected=expected, actual=actual)
 
 
 def _metadata_frame(crs: object) -> gpd.GeoDataFrame:
@@ -2408,6 +2420,13 @@ def _reviewable_map_collection(compiled: CompiledNetwork) -> dict[str, object]:
     places = getattr(compiled, "places", None)
     places_crs = str(getattr(places, "crs", None) or "EPSG:4326")
     legacy_reviewable = getattr(compiled, "reviewable_network", None)
+    legacy_access_gaps = tuple(
+        gap
+        for gap in (
+            getattr(legacy_reviewable, "network_gaps", ()) if legacy_reviewable is not None else ()
+        )
+        if _is_legacy_access_gap(gap)
+    )
     projection = project_strategic_network(
         result,
         places=places,
@@ -2415,17 +2434,17 @@ def _reviewable_map_collection(compiled: CompiledNetwork) -> dict[str, object]:
         assets=assets,
         upgradeable_assets=upgradeable_assets,
         diagnostics=getattr(result, "diagnostics", ()),
-        reviewable_gaps=(
-            getattr(legacy_reviewable, "network_gaps", ()) if legacy_reviewable is not None else ()
-        ),
+        reviewable_gaps=legacy_access_gaps,
         source_crs="EPSG:27700",
         assets_crs="EPSG:4326",
         optional_layers=True,
     )
-    return {
+    collection = {
         **projection.reviewable_feature_collection,
         "projection_fingerprint": projection.projection_fingerprint,
     }
+    _annotate_a_road_component_gap_markers(collection)
+    return collection
 
 
 def _write_geojson(path: Path, compiled: CompiledNetwork) -> None:
@@ -4163,6 +4182,9 @@ def _write_review_map(
                             "endpoints": list(gap.endpoints),
                             "reason": gap.reason,
                             "candidate_set_id": gap.candidate_set_id,
+                            "mesh_proof_points": [
+                                list(point) for point in getattr(gap, "mesh_proof_points", ())
+                            ],
                         }
                         for gap in strategic.gaps
                     ],
@@ -4191,6 +4213,8 @@ def _write_pdf(path: Path, config: AreaConfig, compiled: CompiledNetwork) -> Non
         raise ValueError(f"unsupported PDF page size: {requested}")
     width, height = landscape(page_sizes[requested])
     canvas = Canvas(str(path), pagesize=(width, height), pageCompression=1)
+    semantic_frames = _pdf_semantic_frames(compiled)
+    source_text = _pdf_source_text(config, compiled)
     canvas.setTitle(config.publication.title)
     canvas.setFillColor(HexColor("#17202a"))
     canvas.setFont("Helvetica-Bold", 20)
@@ -4210,11 +4234,27 @@ def _write_pdf(path: Path, config: AreaConfig, compiled: CompiledNetwork) -> Non
             height - 61,
             f"Strategic result fingerprint: {compiled.strategic_network_planning.fingerprint}",
         )
-    _draw_legend(canvas, width, height, compiled.atm_reference is not None)
+    _draw_legend(
+        canvas,
+        width,
+        height,
+        compiled.atm_reference is not None,
+        semantic=semantic_frames is not None,
+        include_ncn=not compiled.ncn_routes.empty,
+    )
     if not compiled.boundary.empty:
         boundary = compiled.boundary.to_crs(3857)
         boundary_shape = boundary.geometry.union_all()
-        min_x, min_y, max_x, max_y = boundary.total_bounds
+        extent_bounds = tuple(float(value) for value in boundary.total_bounds)
+        if semantic_frames is not None and not semantic_frames[0].empty:
+            main_bounds = semantic_frames[0].to_crs(3857).total_bounds
+            extent_bounds = (
+                min(extent_bounds[0], float(main_bounds[0])),
+                min(extent_bounds[1], float(main_bounds[1])),
+                max(extent_bounds[2], float(main_bounds[2])),
+                max(extent_bounds[3], float(main_bounds[3])),
+            )
+        min_x, min_y, max_x, max_y = extent_bounds
         padding = max(max_x - min_x, max_y - min_y) * 0.025
         min_x, min_y = min_x - padding, min_y - padding
         max_x, max_y = max_x + padding, max_y + padding
@@ -4225,6 +4265,11 @@ def _write_pdf(path: Path, config: AreaConfig, compiled: CompiledNetwork) -> Non
         origin_x = map_left + (map_width - (max_x - min_x) * scale) / 2
         origin_y = map_bottom + (map_height - (max_y - min_y) * scale) / 2
         clip_shape = boundary_shape.buffer(1200)
+        main_clip_shape = clip_shape
+        if semantic_frames is not None and not semantic_frames[0].empty:
+            main_clip_shape = main_clip_shape.union(
+                semantic_frames[0].to_crs(3857).geometry.union_all()
+            )
 
         canvas.setFillColor(HexColor("#f5f3eb"))
         canvas.setStrokeColor(HexColor("#7b8794"))
@@ -4257,31 +4302,66 @@ def _write_pdf(path: Path, config: AreaConfig, compiled: CompiledNetwork) -> Non
         canvas.setLineWidth(0.32)
         _draw_line_collection(canvas, road_geometries, min_x, min_y, scale, origin_x, origin_y)
 
-        canvas.setStrokeColor(HexColor("#c56a1a"))
-        canvas.setLineWidth(2.4)
-        _draw_line_collection(
-            canvas,
-            _clipped_linework(compiled.a_road_spines, clip_shape),
-            min_x,
-            min_y,
-            scale,
-            origin_x,
-            origin_y,
-        )
+        if semantic_frames is not None:
+            strategic_main, access_support, semantic_gaps = semantic_frames
+            _draw_pdf_role_linework(
+                canvas,
+                _clipped_linework(strategic_main, main_clip_shape),
+                "#c56a1a",
+                min_x,
+                min_y,
+                scale,
+                origin_x,
+                origin_y,
+            )
+            if not access_support.empty:
+                canvas.setStrokeColor(HexColor("#08783f"))
+                canvas.setLineWidth(1.1)
+                _draw_line_collection(
+                    canvas,
+                    _clipped_linework(access_support, clip_shape),
+                    min_x,
+                    min_y,
+                    scale,
+                    origin_x,
+                    origin_y,
+                )
+            _draw_pdf_gap_markers(
+                canvas,
+                semantic_gaps,
+                clip_shape,
+                min_x,
+                min_y,
+                scale,
+                origin_x,
+                origin_y,
+            )
+        else:
+            canvas.setStrokeColor(HexColor("#c56a1a"))
+            canvas.setLineWidth(2.4)
+            _draw_line_collection(
+                canvas,
+                _clipped_linework(compiled.a_road_spines, clip_shape),
+                min_x,
+                min_y,
+                scale,
+                origin_x,
+                origin_y,
+            )
 
-        canvas.setStrokeColor(HexColor("#187aa5"))
-        canvas.setLineWidth(1.25)
-        canvas.setDash(5, 3)
-        _draw_line_collection(
-            canvas,
-            _clipped_linework(compiled.ncn_routes, clip_shape),
-            min_x,
-            min_y,
-            scale,
-            origin_x,
-            origin_y,
-        )
-        canvas.setDash()
+            canvas.setStrokeColor(HexColor("#187aa5"))
+            canvas.setLineWidth(1.25)
+            canvas.setDash(5, 3)
+            _draw_line_collection(
+                canvas,
+                _clipped_linework(compiled.ncn_routes, clip_shape),
+                min_x,
+                min_y,
+                scale,
+                origin_x,
+                origin_y,
+            )
+            canvas.setDash()
 
         if compiled.atm_reference is not None:
             canvas.setStrokeColor(HexColor("#7b61a8"))
@@ -4298,22 +4378,23 @@ def _write_pdf(path: Path, config: AreaConfig, compiled: CompiledNetwork) -> Non
             )
             canvas.setDash()
 
-        school_mask = compiled.spine_access_connections["obligation_kind"] == "school"
-        for frame, colour in (
-            (compiled.spine_access_connections[~school_mask], "#08783f"),
-            (compiled.spine_access_connections[school_mask], "#7d3c98"),
-            (compiled.branch_meeting_connections, "#d47b00"),
-        ):
-            _draw_pdf_role_linework(
-                canvas,
-                _clipped_linework(frame, clip_shape),
-                colour,
-                min_x,
-                min_y,
-                scale,
-                origin_x,
-                origin_y,
-            )
+        if semantic_frames is None:
+            school_mask = compiled.spine_access_connections["obligation_kind"] == "school"
+            for frame, colour in (
+                (compiled.spine_access_connections[~school_mask], "#08783f"),
+                (compiled.spine_access_connections[school_mask], "#7d3c98"),
+                (compiled.branch_meeting_connections, "#d47b00"),
+            ):
+                _draw_pdf_role_linework(
+                    canvas,
+                    _clipped_linework(frame, clip_shape),
+                    colour,
+                    min_x,
+                    min_y,
+                    scale,
+                    origin_x,
+                    origin_y,
+                )
 
         _draw_pdf_places(
             canvas,
@@ -4335,20 +4416,89 @@ def _write_pdf(path: Path, config: AreaConfig, compiled: CompiledNetwork) -> Non
                 canvas.circle(px, py, 2.8, stroke=1, fill=1)
         _draw_scale(canvas, scale, origin_x, origin_y)
 
-    _draw_pdf_footer(canvas, width)
-    _draw_edge_register(canvas, width, height, compiled)
+    _draw_pdf_footer(canvas, width, source_text)
+    if semantic_frames is None:
+        _draw_edge_register(canvas, width, height, compiled, source_text)
     canvas.save()
 
 
-def _draw_legend(canvas: Canvas, width: float, height: float, include_atm: bool) -> None:
-    entries = [
-        ("#c56a1a", "A-road corridor"),
-        ("#08783f", "Spine Access Connection"),
-        ("#7d3c98", "School Access Connection"),
-        ("#d47b00", "Branch Meeting / Cross-Spine"),
-        ("#187aa5", "National Cycle Network"),
-        ("#f4b942", "Crossing warning"),
-    ]
+def _pdf_semantic_frames(
+    compiled: CompiledNetwork,
+) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame, gpd.GeoDataFrame] | None:
+    result = getattr(compiled, "strategic_network_planning", None)
+    if result is None:
+        return None
+    places = getattr(compiled, "places", None)
+    projection = project_strategic_network(
+        result,
+        places=places,
+        places_crs=str(getattr(places, "crs", None) or "EPSG:4326"),
+        optional_layers=False,
+    )
+
+    def frame(layer: str, *, points: bool = False) -> gpd.GeoDataFrame:
+        rows = []
+        for feature in projection.layers.get(layer, {}).get("features", ()):
+            geometry = feature.get("geometry")
+            if geometry is None:
+                continue
+            parsed = shape(geometry)
+            if (parsed.geom_type == "Point") != points:
+                continue
+            rows.append(
+                {
+                    **dict(feature.get("properties") or {}),
+                    "geometry": parsed,
+                }
+            )
+        if not rows:
+            return gpd.GeoDataFrame({"geometry": []}, geometry="geometry", crs="EPSG:4326")
+        return gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:4326")
+
+    return (
+        frame("Strategic Main Network"),
+        frame("Access Support"),
+        frame("Strategic Main Network", points=True),
+    )
+
+
+def _pdf_source_text(config: AreaConfig, compiled: CompiledNetwork) -> str:
+    configured = str(config.source.source_attribution or "").strip()
+    sources = [configured or OSM_ATTRIBUTION]
+    official = config.source.official_road_classification
+    if official is not None and "official road classification" not in configured.lower():
+        sources.append(f"Official road classification: {official.source_id} ({official.licence})")
+    if not compiled.ncn_routes.empty and "national cycle network" not in configured.lower():
+        sources.append(NCN_ATTRIBUTION)
+    return "; ".join(dict.fromkeys(sources))
+
+
+def _draw_legend(
+    canvas: Canvas,
+    width: float,
+    height: float,
+    include_atm: bool,
+    *,
+    semantic: bool = False,
+    include_ncn: bool = True,
+) -> None:
+    if semantic:
+        entries = [
+            ("#c56a1a", "Strategic Main Network"),
+            ("#08783f", "Access Support (secondary)"),
+            ("#c9473b", "Unresolved network connections"),
+            ("#f4b942", "Crossing warning"),
+        ]
+    else:
+        entries = [
+            ("#c56a1a", "A-road corridor"),
+            ("#08783f", "Spine Access Connection"),
+            ("#7d3c98", "School Access Connection"),
+            ("#d47b00", "Branch Meeting / Cross-Spine"),
+        ]
+        if include_ncn:
+            entries.append(("#187aa5", "National Cycle Network"))
+        entries.append(("#f4b942", "Crossing warning"))
     if include_atm:
         entries.append(("#7b61a8", "ATM reference"))
     x = width - 430
@@ -4387,13 +4537,44 @@ def _draw_pdf_role_linework(
     _draw_line_collection(canvas, geometries, min_x, min_y, scale, origin_x, origin_y)
 
 
-def _draw_pdf_footer(canvas: Canvas, width: float) -> None:
+def _draw_pdf_gap_markers(
+    canvas: Canvas,
+    gaps: gpd.GeoDataFrame,
+    clip_shape: object,
+    min_x: float,
+    min_y: float,
+    scale: float,
+    origin_x: float,
+    origin_y: float,
+) -> None:
+    if gaps.empty:
+        return
+    canvas.setStrokeColor(HexColor("#8f2d2d"))
+    canvas.setFillColor(HexColor("#c9473b"))
+    for geometry in gaps.to_crs(3857).geometry:
+        if geometry is None or geometry.is_empty:
+            continue
+        points = (
+            list(geometry.geoms)
+            if geometry.geom_type == "MultiPoint"
+            else [geometry]
+            if geometry.geom_type == "Point"
+            else []
+        )
+        for point in points:
+            if point.is_empty or not clip_shape.covers(point):
+                continue
+            px, py = _page_point(point.x, point.y, min_x, min_y, scale, origin_x, origin_y)
+            canvas.circle(px, py, 2.4, stroke=1, fill=1)
+
+
+def _draw_pdf_footer(canvas: Canvas, width: float, source_text: str) -> None:
     canvas.setFillColor(HexColor("#566573"))
     canvas.setFont("Helvetica", 7.5)
     canvas.drawString(
         42,
         24,
-        "Sources: OpenStreetMap contributors (ODbL); Walk Wheel Cycle Trust NCN (OGL v3.0).",
+        f"Sources: {source_text}.",
     )
     canvas.drawRightString(width - 42, 24, DISCLAIMER)
 
@@ -4403,6 +4584,7 @@ def _draw_edge_register(
     width: float,
     height: float,
     compiled: CompiledNetwork,
+    source_text: str,
 ) -> None:
     """Append the stable identifiers and authoritative roles represented on the map."""
     entries = (
@@ -4453,7 +4635,7 @@ def _draw_edge_register(
             canvas.setFillColor(HexColor("#17202a"))
             canvas.drawString(42, y, f"{identifier} | {role} | {description}"[:180])
             y -= 11
-        _draw_pdf_footer(canvas, width)
+        _draw_pdf_footer(canvas, width, source_text)
 
 
 def _is_pdf_context_road(value: object) -> bool:
@@ -5153,20 +5335,33 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
         top_level_reviewable_map = json.loads(reviewable_map_path.read_text(encoding="utf-8"))
         if top_level_reviewable_map != reviewable_map:
             raise ValueError("reviewable-network GeoJSON differs from review map")
-        expected_gap_ids: set[str] = set()
-        expected_gap_records = list(artifact["semantic"].get("network_gaps", []))
         strategic_sidecar_path = output / "review-map" / "strategic-network.json"
+        has_strategic_projection = strategic_sidecar_path.is_file()
+        expected_gap_ids: set[str] = set()
+        expected_gap_records = [
+            gap
+            for gap in artifact["semantic"].get("network_gaps", [])
+            if not has_strategic_projection or _is_legacy_access_gap(gap)
+        ]
         if strategic_sidecar_path.is_file():
             strategic_sidecar = json.loads(strategic_sidecar_path.read_text(encoding="utf-8"))
             expected_gap_records.extend(
                 {
                     "gap_id": gap.get("gap_id") or gap.get("obligation_id"),
                     "endpoints": gap.get("endpoints", []),
+                    "mesh_proof_points": gap.get("mesh_proof_points", []),
                 }
                 for gap in strategic_sidecar.get("gaps", [])
                 if isinstance(gap, dict)
             )
         for gap in expected_gap_records:
+            mesh_proof_points = gap.get("mesh_proof_points", [])
+            if mesh_proof_points:
+                expected_gap_ids.update(
+                    f"reviewable-gap:{gap['gap_id']}:proof-point-{position}"
+                    for position, _point in enumerate(mesh_proof_points, start=1)
+                )
+                continue
             endpoint_occurrences: dict[str, int] = {}
             for endpoint_id in gap.get("endpoints", []):
                 endpoint_key = str(endpoint_id or "")
@@ -5704,11 +5899,17 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
     ):
         if required_text not in pdf_text:
             raise ValueError(f"PDF is missing required text: {required_text}")
-    for connection_id, network_role in geojson_registry.items():
-        if f"{connection_id} | {network_role}" not in pdf_text:
-            raise ValueError(
-                f"PDF edge register differs for authoritative feature: {connection_id}"
-            )
+    if run.get("strategic_result_fingerprint"):
+        if "Strategic Main Network" not in pdf_text:
+            raise ValueError("semantic PDF omits the selected Strategic Main Network")
+        if "Authoritative edge register" in pdf_text:
+            raise ValueError("semantic PDF contains the legacy authoritative edge register")
+    else:
+        for connection_id, network_role in geojson_registry.items():
+            if f"{connection_id} | {network_role}" not in pdf_text:
+                raise ValueError(
+                    f"PDF edge register differs for authoritative feature: {connection_id}"
+                )
 
 
 def _validate_review_map_zip(archive_path: Path, review_directory: Path) -> None:

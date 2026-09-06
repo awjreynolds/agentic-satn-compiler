@@ -3,6 +3,9 @@
 import json
 from types import SimpleNamespace
 
+import geopandas as gpd
+from shapely.geometry import Point
+
 from satn.alignment_selection import CanonicalLineString
 from satn.publisher import _reviewable_map_collection
 from satn.strategic_network_planning import ReviewableNetworkGap
@@ -208,6 +211,27 @@ def test_gaps_are_null_geometry_and_candidates_remain_optional() -> None:
     assert (
         projection.layers["Candidates discarded"]["features"][0]["geometry"]["type"] == "LineString"
     )
+
+
+def test_structural_gap_coordinates_publish_endpoint_markers_without_places() -> None:
+    gap = ReviewableNetworkGap(
+        obligation_id="a-road-obligation",
+        network_role="interurban-spine",
+        endpoints=("official-start", "official-end"),
+        reason="official A-road endpoint is not attached",
+        endpoint_coordinates=((100000.0, 200000.0), (100100.0, 200100.0)),
+    )
+
+    projection = project_strategic_network(_result(gaps=(gap,)))
+
+    features = projection.layers["Strategic Main Network"]["features"]
+    markers = [
+        feature
+        for feature in features
+        if feature["properties"].get("feature_type") == "reviewable-gap-endpoint"
+    ]
+    assert [feature["geometry"]["type"] for feature in markers] == ["Point", "Point"]
+    assert all(not feature["properties"]["missing_endpoint_geometry"] for feature in markers)
 
 
 def test_projection_is_json_serialisable_and_permutation_stable() -> None:
@@ -439,6 +463,41 @@ def test_projection_gaps_with_empty_duplicate_endpoints_have_stable_fallback_ids
         feature["properties"]["endpoint_identity_fallback"] is True and feature["geometry"] is None
         for feature in gap_features
     )
+
+
+def test_publisher_projection_resolves_geodataframe_place_endpoints() -> None:
+    gap = SimpleNamespace(
+        gap_id="place-gap",
+        obligation_id="place-gap-obligation",
+        network_role="strategic-destination-access",
+        endpoints=("place-a", "place-b"),
+        reason="missing access connection",
+    )
+    places = gpd.GeoDataFrame(
+        [
+            {"place_id": "place-a", "geometry": Point(-2.1, 51.3)},
+            {"place_id": "place-b", "geometry": Point(-2.0, 51.4)},
+        ],
+        geometry="geometry",
+        crs="EPSG:4326",
+    )
+    compiled = SimpleNamespace(
+        strategic_network_planning=_result(gaps=(gap,)),
+        places=places,
+        asset_accounting={"records": []},
+    )
+
+    payload = _reviewable_map_collection(compiled)
+    gap_features = [
+        feature
+        for feature in payload["features"]
+        if feature["properties"].get("feature_type") == "reviewable-gap-endpoint"
+    ]
+
+    assert [feature["geometry"] for feature in gap_features] == [
+        {"type": "Point", "coordinates": [-2.1, 51.3]},
+        {"type": "Point", "coordinates": [-2.0, 51.4]},
+    ]
 
 
 def test_projection_distinguishes_gap_findings_for_the_same_obligation() -> None:

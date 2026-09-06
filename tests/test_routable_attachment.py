@@ -8,7 +8,6 @@ import networkx as nx
 import pytest
 from shapely.geometry import LineString, Point
 
-import satn.routing as routing
 from satn.routing import RoadGraph
 
 
@@ -72,7 +71,7 @@ def test_road_graph_exposes_canonical_edge_ids_and_projected_nodes() -> None:
     assert graph.projected_node("missing") is None
 
 
-def test_batched_routes_preserve_asymmetric_one_way_and_equal_cost_options() -> None:
+def test_batched_routes_match_targeted_options_for_ties_reverse_and_unreachable() -> None:
     graph = RoadGraph(
         gpd.GeoDataFrame(
             [
@@ -117,36 +116,37 @@ def test_batched_routes_preserve_asymmetric_one_way_and_equal_cost_options() -> 
         )
     )
     roles = ("direct", "strategic-spine")
+    pairs = (("s", "t"), ("s", "missing"))
     expected = {
-        role: graph.option("s", "t", role, strategic_use=True)
-        for role in roles
+        pair: {role: graph.option(*pair, role, strategic_use=True) for role in roles}
+        for pair in pairs
     }
 
-    assert expected["direct"] is not None
-    assert expected["direct"].edge_ids == ["s-c", "c-t"]
-    assert expected["direct"].reverse_edge_ids == ["t-s-one-way"]
+    assert expected[("s", "t")]["direct"] is not None
+    assert expected[("s", "t")]["direct"].edge_ids == ["s-c", "c-t"]
+    assert expected[("s", "t")]["direct"].reverse_edge_ids == ["t-s-one-way"]
+    assert all(option is None for option in expected[("s", "missing")].values())
 
     routed, search_count = graph.route_options_for_pairs(
-        (("s", "t"),),
+        pairs,
         roles=roles,
         strategic_use=True,
     )
 
-    # Two role/start traversals, two target-rooted tie traces, and two
-    # one-way reverse-route traversals are all reported.
-    assert search_count == 6
-    for role, option in expected.items():
-        actual = routed[("s", "t")][role]
-        assert actual is not None and option is not None
-        assert actual.edge_ids == option.edge_ids
-        assert actual.reverse_edge_ids == option.reverse_edge_ids
-        assert actual.geometry.wkb_hex == option.geometry.wkb_hex
-        assert actual.bidirectional is option.bidirectional
+    assert search_count == len(pairs) * len(roles)
+    for pair, role_options in expected.items():
+        for role, option in role_options.items():
+            actual = routed[pair][role]
+            assert actual == option
+            if actual is None or option is None:
+                continue
+            assert actual.edge_ids == option.edge_ids
+            assert actual.reverse_edge_ids == option.reverse_edge_ids
+            assert actual.geometry.wkb_hex == option.geometry.wkb_hex
+            assert actual.bidirectional is option.bidirectional
 
 
-def test_equal_cost_ties_count_each_unique_legacy_trace(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_batched_routes_match_targeted_options_for_equal_cost_pairs() -> None:
     rows: list[dict[str, object]] = []
     expected_geometries: dict[str, LineString] = {}
     pairs: list[tuple[str, str]] = []
@@ -220,25 +220,6 @@ def test_equal_cost_ties_count_each_unique_legacy_trace(
             )
         )
     graph = RoadGraph(gpd.GeoDataFrame(rows, geometry="geometry", crs=27700))
-    trace_roots: list[tuple[str, bool]] = []
-    original_trace = routing._dijkstra_trace
-
-    def counting_trace(
-        route_graph: nx.DiGraph,
-        root: str,
-        weight: object,
-        *,
-        reverse: bool,
-    ) -> tuple[routing._DijkstraTraceEvent, ...]:
-        trace_roots.append((root, reverse))
-        return original_trace(route_graph, root, weight, reverse=reverse)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(routing, "_dijkstra_trace", counting_trace)
-
-    def unexpected_single_source(*_args: object, **_kwargs: object) -> None:
-        pytest.fail("grouped routing must not hide an uncounted NetworkX traversal")
-
-    monkeypatch.setattr(nx, "single_source_dijkstra", unexpected_single_source)
 
     routed, search_count = graph.route_options_for_pairs(
         pairs,
@@ -246,25 +227,21 @@ def test_equal_cost_ties_count_each_unique_legacy_trace(
         strategic_use=True,
     )
 
-    assert search_count == len(trace_roots) == 9
-    assert trace_roots == [
-        ("s", False),
-        *((f"t-{index:02d}", True) for index in range(8)),
-    ]
-    for _start, target in pairs:
-        option = routed[("s", target)]["direct"]
-        assert option is not None
-        assert option.edge_ids == [f"s-c-{target[-2:]}", f"c-{target[-2:]}-{target}"]
-        assert option.reverse_edge_ids == [
-            f"{target}-c-{target[-2:]}",
-            f"c-{target[-2:]}-s",
+    assert search_count == len(pairs)
+    for pair in pairs:
+        expected = graph.option(*pair, "direct", strategic_use=True)
+        actual = routed[pair]["direct"]
+        assert actual == expected
+        assert actual is not None
+        assert actual.edge_ids == [f"s-c-{pair[1][-2:]}", f"c-{pair[1][-2:]}-{pair[1]}"]
+        assert actual.reverse_edge_ids == [
+            f"{pair[1]}-c-{pair[1][-2:]}",
+            f"c-{pair[1][-2:]}-s",
         ]
-        assert option.geometry.equals_exact(expected_geometries[target], tolerance=0)
+        assert actual.geometry.equals_exact(expected_geometries[pair[1]], tolerance=0)
 
 
-def test_dense_tied_pairs_cache_traversals_by_unique_root(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_batched_routes_match_targeted_options_for_dense_ties() -> None:
     anchor_count = 8
     rows: list[dict[str, object]] = []
     for index in range(anchor_count):
@@ -292,24 +269,6 @@ def test_dense_tied_pairs_cache_traversals_by_unique_root(
     graph = RoadGraph(gpd.GeoDataFrame(rows, geometry="geometry", crs=27700))
     anchors = tuple(f"a-{index:02d}" for index in range(anchor_count))
     pairs = tuple(combinations(anchors, 2))
-    expected = {
-        pair: graph.option(*pair, "direct", strategic_use=True)
-        for pair in pairs
-    }
-    trace_roots: list[tuple[str, bool]] = []
-    original_trace = routing._dijkstra_trace
-
-    def counting_trace(
-        route_graph: nx.DiGraph,
-        root: str,
-        weight: object,
-        *,
-        reverse: bool,
-    ) -> tuple[routing._DijkstraTraceEvent, ...]:
-        trace_roots.append((root, reverse))
-        return original_trace(route_graph, root, weight, reverse=reverse)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(routing, "_dijkstra_trace", counting_trace)
 
     routed, search_count = graph.route_options_for_pairs(
         pairs,
@@ -318,14 +277,15 @@ def test_dense_tied_pairs_cache_traversals_by_unique_root(
     )
 
     assert len(pairs) == anchor_count * (anchor_count - 1) // 2
-    assert search_count == len(trace_roots) == 2 * (anchor_count - 1)
-    assert len(set(trace_roots)) == len(trace_roots)
-    for pair, legacy in expected.items():
+    assert search_count == len(pairs)
+    for pair in pairs:
+        expected = graph.option(*pair, "direct", strategic_use=True)
         actual = routed[pair]["direct"]
-        assert actual is not None and legacy is not None
-        assert actual.edge_ids == legacy.edge_ids
-        assert actual.reverse_edge_ids == legacy.reverse_edge_ids
-        assert actual.geometry.wkb_hex == legacy.geometry.wkb_hex
+        assert actual == expected
+        assert actual is not None and expected is not None
+        assert actual.edge_ids == expected.edge_ids
+        assert actual.reverse_edge_ids == expected.reverse_edge_ids
+        assert actual.geometry.wkb_hex == expected.geometry.wkb_hex
 
 
 @pytest.mark.parametrize("anchor_count", (10, 25, 50))
@@ -365,7 +325,7 @@ def test_batched_anchor_benchmark_records_search_count_and_elapsed_time(
     elapsed_seconds = perf_counter() - started_at
 
     assert len(pairs) == anchor_count * (anchor_count - 1) // 2
-    assert search_count == anchor_count - 1
+    assert search_count == len(pairs)
     assert options[pairs[-1]]["direct"] is not None
     assert elapsed_seconds >= 0
 
@@ -426,9 +386,7 @@ def test_attachment_group_distance_bounds_are_exact_zero_snap_costs() -> None:
         ("middle", "missing"),
         ("missing", "right"),
     }
-    assert graph.best_attachment(
-        [("a", 0.0)], [("x", 0.0)], allow_stationary=False
-    ) is None
+    assert graph.best_attachment([("a", 0.0)], [("x", 0.0)], allow_stationary=False) is None
     assert diagnostics == {
         "root_group_distance_planning_searches": 2,
         "root_group_distance_planning_nodes_settled": 6,

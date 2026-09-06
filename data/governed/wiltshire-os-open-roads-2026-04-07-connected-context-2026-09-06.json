@@ -1,0 +1,581 @@
+{
+  "schema_version": "satn-governed-open-roads-extract/v1",
+  "product": "OS Open Roads",
+  "source_id": "os-open-roads-2026-04-07",
+  "effective_date": "2026-04-07",
+  "licence": "Open Government Licence v3.0",
+  "attribution": "Contains OS data © Crown copyright and database rights 2026.",
+  "download_url": "https://api.os.uk/downloads/v1/products/OpenRoads/downloads?area=GB&format=GeoPackage&redirect",
+  "source_archive": "oproad_gpkg_gb.zip",
+  "source_archive_size_bytes": 1016021285,
+  "source_archive_md5": "2ee5d30899c4a44df321e5e1a66989ac",
+  "source_layer": "road_link",
+  "source_crs": "EPSG:27700",
+  "target_crs": "EPSG:4326",
+  "connected_context": "2026-09-06",
+  "boundary_snapshot_id": "wiltshire-osm-open-roads-2026-07-24-ons-2025",
+  "boundary_file": "boundary.geojson",
+  "boundary_sha256": "29099b70d127c2c6c94cfe010c0271e453d4e29611c08890d718e61032a81e7f",
+  "selection": {
+    "predicate": "existing-wiltshire-export-plus-exact-source-feature-ids",
+    "geometry_treatment": "retain-whole-source-feature",
+    "existing_export": "wiltshire-os-open-roads-2026-04-07.geojson",
+    "existing_export_sha256": "2a7a2c71b5e438ab8b6ab914504fd55e95a46f842efdbc36632cdad2b9f88136",
+    "existing_feature_count": 42398,
+    "added_feature_ids": [
+      "0135FC24-CEA0-40A5-BA45-5DBE9D243298",
+      "020BE155-F20A-4045-8EEA-256B92459EB3",
+      "021CB7E6-5DE7-471D-B396-A19C1BB20C6F",
+      "0B433FC4-4CE5-404C-82DC-7E55E5E96E13",
+      "0CC7A9E1-195D-4239-BA84-3D1F597C50DB",
+      "11EC8F71-2CA3-4FC7-9DB6-F315E42C2455",
+      "134E2F35-5E70-46CD-9D44-521C64F07773",
+      "163ACE17-3EA5-426D-BED5-7BB505A6D810",
+      "16A7177B-E34C-48D9-A1E8-D0ED8C2F9746",
+      "1D6080A7-0CA3-4037-A043-604DC9DCC0EC",
+      "207DC5E7-7EDB-4322-A096-4F0606538D29",
+      "23B53B91-15C2-4AED-8684-E541DE2C89EA",
+      "30910332-837C-4253-B9ED-79A19B7357E0",
+      "3199A12A-0220-44A7-9FDE-B10AD3696AA3",
+      "33AD3BB7-1020-472C-903D-7696FCDB9CD1",
+      "35A32447-5987-467F-B96D-0DE9A508BFAE",
+      "39F16520-6CDB-49AA-BFCF-7B774D5085DF",
+      "3FC6B2FB-1E29-4389-B42C-D3AEBB26A1D4",
+      "407B6DDF-C183-40D9-944C-BC35887290FC",
+      "462FE4EA-161A-4611-B090-5ECEE4BE699A",
+      "49F526C0-29A5-479D-A88F-FA709D8DC5DF",
+      "4B1C4872-D5C8-4DCD-9575-61F8570FC740",
+      "52C054E8-C618-4F77-8B54-827F1DF34B59",
+      "5D9EA8B9-9C54-4427-8C0D-CDCE03FAF40C",
+      "62B0A683-9F4F-4B46-975E-88BF590AFB91",
+      "691EB402-BC04-436E-B5AB-F8EA2C34F7F5",
+      "6C282800-D9FB-4874-9D42-5BDC7BDD269A",
+      "7F2FA20F-45F9-430A-ABE0-812FA67B4CB9",
+      "8424CCA6-7609-46D0-BAC0-6AFD724A66B2",
+      "86A26402-D746-4EE7-A708-4672D649C90A",
+      "9590B73C-EC55-4DE3-A6BE-33659C0F8D5B",
+      "A953BE52-80AC-4E58-A53F-5C11F94115F9",
+      "AA2EA395-5E82-4DC6-ADA6-FA6B326BC5FC",
+      "ACE07CAC-1031-4FE9-8906-0D6D889A7CC3",
+      "AD1139DD-2DA5-4DE4-8456-5F857EA1C9E1",
+      "AE387AF2-43EA-4CFA-9FAF-7F29D24DB83D",
+      "AFBDD777-4345-4C8E-AD3E-EA618F3502B0",
+      "B40223FD-C9F3-483E-AFD9-D3AA8A1F2C40",
+      "BD876497-5BED-44D9-8EA5-98242C6C3EBC",
+      "C3777E5B-3237-481A-AAA8-E69F6B3BCE6D",
+      "C40770B7-BA85-4CEB-A400-D0447F07A961",
+      "C6E8B3DE-DEBA-4AA8-B825-1B31E14EAEBD",
+      "C707A41C-0CE4-4069-A255-7AC10DEBA4F4",
+      "D3C7EC57-7348-473B-B941-486E58BE2457",
+      "D4209C74-37E7-402D-8027-791EA8C83CFD",
+      "DE9E6A37-177F-43A7-9273-124650451612",
+      "E854BC14-7F98-487F-B017-95B454D8EA93",
+      "FB6E3E23-B18E-4FF7-BD2B-187C47D2FD7D"
+    ],
+    "added_feature_count": 48,
+    "connection_evidence": [
+      {
+        "road_classification_number": "A36",
+        "basis": "same-number continuation from the main component to Wiltshire component 3",
+        "source_length_m": 12315,
+        "source_ids": [
+          "30910332-837C-4253-B9ED-79A19B7357E0",
+          "9590B73C-EC55-4DE3-A6BE-33659C0F8D5B",
+          "11EC8F71-2CA3-4FC7-9DB6-F315E42C2455",
+          "021CB7E6-5DE7-471D-B396-A19C1BB20C6F",
+          "020BE155-F20A-4045-8EEA-256B92459EB3",
+          "6C282800-D9FB-4874-9D42-5BDC7BDD269A",
+          "33AD3BB7-1020-472C-903D-7696FCDB9CD1",
+          "62B0A683-9F4F-4B46-975E-88BF590AFB91",
+          "C6E8B3DE-DEBA-4AA8-B825-1B31E14EAEBD",
+          "3199A12A-0220-44A7-9FDE-B10AD3696AA3",
+          "AE387AF2-43EA-4CFA-9FAF-7F29D24DB83D",
+          "D4209C74-37E7-402D-8027-791EA8C83CFD",
+          "4B1C4872-D5C8-4DCD-9575-61F8570FC740",
+          "52C054E8-C618-4F77-8B54-827F1DF34B59",
+          "39F16520-6CDB-49AA-BFCF-7B774D5085DF",
+          "5D9EA8B9-9C54-4427-8C0D-CDCE03FAF40C",
+          "A953BE52-80AC-4E58-A53F-5C11F94115F9",
+          "462FE4EA-161A-4611-B090-5ECEE4BE699A",
+          "7F2FA20F-45F9-430A-ABE0-812FA67B4CB9",
+          "207DC5E7-7EDB-4322-A096-4F0606538D29",
+          "23B53B91-15C2-4AED-8684-E541DE2C89EA",
+          "BD876497-5BED-44D9-8EA5-98242C6C3EBC",
+          "E854BC14-7F98-487F-B017-95B454D8EA93",
+          "16A7177B-E34C-48D9-A1E8-D0ED8C2F9746",
+          "B40223FD-C9F3-483E-AFD9-D3AA8A1F2C40",
+          "AFBDD777-4345-4C8E-AD3E-EA618F3502B0",
+          "D3C7EC57-7348-473B-B941-486E58BE2457",
+          "C707A41C-0CE4-4069-A255-7AC10DEBA4F4",
+          "8424CCA6-7609-46D0-BAC0-6AFD724A66B2",
+          "3FC6B2FB-1E29-4389-B42C-D3AEBB26A1D4",
+          "407B6DDF-C183-40D9-944C-BC35887290FC",
+          "C3777E5B-3237-481A-AAA8-E69F6B3BCE6D",
+          "49F526C0-29A5-479D-A88F-FA709D8DC5DF",
+          "691EB402-BC04-436E-B5AB-F8EA2C34F7F5",
+          "FB6E3E23-B18E-4FF7-BD2B-187C47D2FD7D",
+          "C40770B7-BA85-4CEB-A400-D0447F07A961",
+          "0B433FC4-4CE5-404C-82DC-7E55E5E96E13",
+          "86A26402-D746-4EE7-A708-4672D649C90A",
+          "0135FC24-CEA0-40A5-BA45-5DBE9D243298",
+          "134E2F35-5E70-46CD-9D44-521C64F07773",
+          "DE9E6A37-177F-43A7-9273-124650451612",
+          "163ACE17-3EA5-426D-BED5-7BB505A6D810",
+          "AA2EA395-5E82-4DC6-ADA6-FA6B326BC5FC",
+          "ACE07CAC-1031-4FE9-8906-0D6D889A7CC3",
+          "35A32447-5987-467F-B96D-0DE9A508BFAE"
+        ]
+      },
+      {
+        "road_classification_number": "A433",
+        "basis": "same-number continuation joining Wiltshire components 4 and 5",
+        "source_length_m": 896,
+        "source_ids": [
+          "1D6080A7-0CA3-4037-A043-604DC9DCC0EC",
+          "0CC7A9E1-195D-4239-BA84-3D1F597C50DB",
+          "AD1139DD-2DA5-4DE4-8456-5F857EA1C9E1"
+        ]
+      }
+    ],
+    "added_source_records": [
+      {
+        "id": "0135FC24-CEA0-40A5-BA45-5DBE9D243298",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "4751B0F5-00E4-46FE-A49C-5675D3052A29",
+        "end_node": "7A22C7CF-3A37-4D7A-8964-680B4CD05028",
+        "source_length_m": 915
+      },
+      {
+        "id": "020BE155-F20A-4045-8EEA-256B92459EB3",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "AAB9B30E-7279-4CE3-828A-40BC90C3637C",
+        "end_node": "00FB18BE-E918-4A17-8663-B24EB005E1F7",
+        "source_length_m": 285
+      },
+      {
+        "id": "021CB7E6-5DE7-471D-B396-A19C1BB20C6F",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "03E7088A-7858-4999-87BD-4A2DBAFBA437",
+        "end_node": "AAB9B30E-7279-4CE3-828A-40BC90C3637C",
+        "source_length_m": 217
+      },
+      {
+        "id": "0B433FC4-4CE5-404C-82DC-7E55E5E96E13",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "5D0C334E-1CBF-46F3-B45C-63918A0A86AC",
+        "end_node": "EBF813FA-45E1-4279-A742-3F729D4015C9",
+        "source_length_m": 36
+      },
+      {
+        "id": "0CC7A9E1-195D-4239-BA84-3D1F597C50DB",
+        "road_classification": "A Road",
+        "road_classification_number": "A433",
+        "name_1": null,
+        "start_node": "2F494F98-AFD5-4DEA-9AEB-A74228FE3213",
+        "end_node": "3AD1035E-791C-4BF2-9AB1-8EC20C51E8D9",
+        "source_length_m": 145
+      },
+      {
+        "id": "11EC8F71-2CA3-4FC7-9DB6-F315E42C2455",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": "Warminster Road",
+        "start_node": "14091E59-F7EF-4E91-9EEB-D6515208B64B",
+        "end_node": "03E7088A-7858-4999-87BD-4A2DBAFBA437",
+        "source_length_m": 179
+      },
+      {
+        "id": "134E2F35-5E70-46CD-9D44-521C64F07773",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "7A22C7CF-3A37-4D7A-8964-680B4CD05028",
+        "end_node": "04729902-5D78-4865-8808-6C78BCA00953",
+        "source_length_m": 245
+      },
+      {
+        "id": "163ACE17-3EA5-426D-BED5-7BB505A6D810",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "DA97CFC5-ADE1-44E7-8B47-B98E581C05B3",
+        "end_node": "D7FDD6E1-1EBA-490C-91A2-F6F3FB16E0E9",
+        "source_length_m": 333
+      },
+      {
+        "id": "16A7177B-E34C-48D9-A1E8-D0ED8C2F9746",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "741430C4-DFBA-4649-B791-D630BECE0600",
+        "end_node": "BF7C3836-0C1D-4EBE-8F64-CF7E223CE899",
+        "source_length_m": 30
+      },
+      {
+        "id": "1D6080A7-0CA3-4037-A043-604DC9DCC0EC",
+        "road_classification": "A Road",
+        "road_classification_number": "A433",
+        "name_1": null,
+        "start_node": "3AD1035E-791C-4BF2-9AB1-8EC20C51E8D9",
+        "end_node": "CA2AD01B-B48A-4C15-899A-29A72E86EBB8",
+        "source_length_m": 322
+      },
+      {
+        "id": "207DC5E7-7EDB-4322-A096-4F0606538D29",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "4AF08082-69F0-4455-B257-4F5591DC844D",
+        "end_node": "1F5954A2-E954-485A-ABA9-953122D8A134",
+        "source_length_m": 43
+      },
+      {
+        "id": "23B53B91-15C2-4AED-8684-E541DE2C89EA",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "115B33FE-8F15-470E-BB31-AAF194D1040C",
+        "end_node": "4AF08082-69F0-4455-B257-4F5591DC844D",
+        "source_length_m": 83
+      },
+      {
+        "id": "30910332-837C-4253-B9ED-79A19B7357E0",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": "Warminster Road",
+        "start_node": "8112BD1A-CDEA-486D-933F-703C2F7208F3",
+        "end_node": "EE560958-82D4-4B16-9F14-467C76554C16",
+        "source_length_m": 521
+      },
+      {
+        "id": "3199A12A-0220-44A7-9FDE-B10AD3696AA3",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "187ACD94-720F-43B0-8437-8D66C817BD3D",
+        "end_node": "DFFB0DA6-81E7-4F04-ABFC-843C6A11152E",
+        "source_length_m": 199
+      },
+      {
+        "id": "33AD3BB7-1020-472C-903D-7696FCDB9CD1",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "54CB4263-0D82-4CF8-89C6-274BEB1F44B3",
+        "end_node": "4698C13C-7A49-4E41-9F19-E471E89BC527",
+        "source_length_m": 257
+      },
+      {
+        "id": "35A32447-5987-467F-B96D-0DE9A508BFAE",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "6F9CCEC6-8FB8-4B5E-8D40-4A7CBB0EA353",
+        "end_node": "5F54294D-DE17-4CCF-B176-0A4F82C150A2",
+        "source_length_m": 106
+      },
+      {
+        "id": "39F16520-6CDB-49AA-BFCF-7B774D5085DF",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "F2E25A8F-A9E4-489C-AC5B-658F825054AB",
+        "end_node": "EFD18D1E-061B-4182-A0C1-39B9EBEF7EF6",
+        "source_length_m": 167
+      },
+      {
+        "id": "3FC6B2FB-1E29-4389-B42C-D3AEBB26A1D4",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "CA9152A5-ABD6-4408-85A9-9031C6F56B43",
+        "end_node": "1EB74D8B-5704-4700-8BAC-5B3421B911F8",
+        "source_length_m": 160
+      },
+      {
+        "id": "407B6DDF-C183-40D9-944C-BC35887290FC",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "1EB74D8B-5704-4700-8BAC-5B3421B911F8",
+        "end_node": "B20A9C25-AD6A-4118-94B7-2F0D96BA1579",
+        "source_length_m": 101
+      },
+      {
+        "id": "462FE4EA-161A-4611-B090-5ECEE4BE699A",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "E66BBD97-162B-43E6-8F9B-C0B7378323FB",
+        "end_node": "1B78C080-40BB-4287-8A23-BDFC4E8BB015",
+        "source_length_m": 466
+      },
+      {
+        "id": "49F526C0-29A5-479D-A88F-FA709D8DC5DF",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "5143AFD7-33F4-4095-86BA-64C895C5B741",
+        "end_node": "7544B501-2E36-474A-A0C2-5C23A7F8AD3F",
+        "source_length_m": 34
+      },
+      {
+        "id": "4B1C4872-D5C8-4DCD-9575-61F8570FC740",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "E9761C11-45B1-46EB-AB66-A6F01EF0C8C4",
+        "end_node": "07E41127-7BD5-46AB-A240-F190506452C4",
+        "source_length_m": 135
+      },
+      {
+        "id": "52C054E8-C618-4F77-8B54-827F1DF34B59",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "07E41127-7BD5-46AB-A240-F190506452C4",
+        "end_node": "F2E25A8F-A9E4-489C-AC5B-658F825054AB",
+        "source_length_m": 725
+      },
+      {
+        "id": "5D9EA8B9-9C54-4427-8C0D-CDCE03FAF40C",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "4049C587-3A8C-47CC-8114-D0C5464DEEC0",
+        "end_node": "EFD18D1E-061B-4182-A0C1-39B9EBEF7EF6",
+        "source_length_m": 551
+      },
+      {
+        "id": "62B0A683-9F4F-4B46-975E-88BF590AFB91",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "4698C13C-7A49-4E41-9F19-E471E89BC527",
+        "end_node": "21157530-27BD-475D-AA87-2B375E3A3B11",
+        "source_length_m": 264
+      },
+      {
+        "id": "691EB402-BC04-436E-B5AB-F8EA2C34F7F5",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "7544B501-2E36-474A-A0C2-5C23A7F8AD3F",
+        "end_node": "79D2624F-106C-4331-BE93-ED177A594890",
+        "source_length_m": 35
+      },
+      {
+        "id": "6C282800-D9FB-4874-9D42-5BDC7BDD269A",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "00FB18BE-E918-4A17-8663-B24EB005E1F7",
+        "end_node": "54CB4263-0D82-4CF8-89C6-274BEB1F44B3",
+        "source_length_m": 12
+      },
+      {
+        "id": "7F2FA20F-45F9-430A-ABE0-812FA67B4CB9",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "1F5954A2-E954-485A-ABA9-953122D8A134",
+        "end_node": "E66BBD97-162B-43E6-8F9B-C0B7378323FB",
+        "source_length_m": 913
+      },
+      {
+        "id": "8424CCA6-7609-46D0-BAC0-6AFD724A66B2",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "EBEF76C6-428D-4EEE-88D5-5C0AB5C88448",
+        "end_node": "CA9152A5-ABD6-4408-85A9-9031C6F56B43",
+        "source_length_m": 422
+      },
+      {
+        "id": "86A26402-D746-4EE7-A708-4672D649C90A",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "EBF813FA-45E1-4279-A742-3F729D4015C9",
+        "end_node": "4751B0F5-00E4-46FE-A49C-5675D3052A29",
+        "source_length_m": 344
+      },
+      {
+        "id": "9590B73C-EC55-4DE3-A6BE-33659C0F8D5B",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": "Warminster Road",
+        "start_node": "14091E59-F7EF-4E91-9EEB-D6515208B64B",
+        "end_node": "8112BD1A-CDEA-486D-933F-703C2F7208F3",
+        "source_length_m": 11
+      },
+      {
+        "id": "A953BE52-80AC-4E58-A53F-5C11F94115F9",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "1B78C080-40BB-4287-8A23-BDFC4E8BB015",
+        "end_node": "4049C587-3A8C-47CC-8114-D0C5464DEEC0",
+        "source_length_m": 663
+      },
+      {
+        "id": "AA2EA395-5E82-4DC6-ADA6-FA6B326BC5FC",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "D7FDD6E1-1EBA-490C-91A2-F6F3FB16E0E9",
+        "end_node": "8DE591DC-5F9D-475D-9CD4-D0A2D32B5A61",
+        "source_length_m": 208
+      },
+      {
+        "id": "ACE07CAC-1031-4FE9-8906-0D6D889A7CC3",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "8DE591DC-5F9D-475D-9CD4-D0A2D32B5A61",
+        "end_node": "6F9CCEC6-8FB8-4B5E-8D40-4A7CBB0EA353",
+        "source_length_m": 95
+      },
+      {
+        "id": "AD1139DD-2DA5-4DE4-8456-5F857EA1C9E1",
+        "road_classification": "A Road",
+        "road_classification_number": "A433",
+        "name_1": null,
+        "start_node": "F4AB9CC6-5F48-4EA3-BD9E-2F5E7BBD06EE",
+        "end_node": "2F494F98-AFD5-4DEA-9AEB-A74228FE3213",
+        "source_length_m": 429
+      },
+      {
+        "id": "AE387AF2-43EA-4CFA-9FAF-7F29D24DB83D",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "187ACD94-720F-43B0-8437-8D66C817BD3D",
+        "end_node": "EDD8F5A4-6892-42D8-935A-05D11FC6803C",
+        "source_length_m": 690
+      },
+      {
+        "id": "AFBDD777-4345-4C8E-AD3E-EA618F3502B0",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "5638763A-CDEC-4DEA-9F5D-C3E21C57CEBF",
+        "end_node": "4AAECEF6-C100-4784-8339-3F57B787723B",
+        "source_length_m": 35
+      },
+      {
+        "id": "B40223FD-C9F3-483E-AFD9-D3AA8A1F2C40",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "4AAECEF6-C100-4784-8339-3F57B787723B",
+        "end_node": "741430C4-DFBA-4649-B791-D630BECE0600",
+        "source_length_m": 73
+      },
+      {
+        "id": "BD876497-5BED-44D9-8EA5-98242C6C3EBC",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "E53263DE-6625-4317-A083-B36D9BE672EC",
+        "end_node": "115B33FE-8F15-470E-BB31-AAF194D1040C",
+        "source_length_m": 7
+      },
+      {
+        "id": "C3777E5B-3237-481A-AAA8-E69F6B3BCE6D",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "B20A9C25-AD6A-4118-94B7-2F0D96BA1579",
+        "end_node": "5143AFD7-33F4-4095-86BA-64C895C5B741",
+        "source_length_m": 647
+      },
+      {
+        "id": "C40770B7-BA85-4CEB-A400-D0447F07A961",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "6F1F8687-0EDE-40E0-AE5C-4573691818B7",
+        "end_node": "5D0C334E-1CBF-46F3-B45C-63918A0A86AC",
+        "source_length_m": 64
+      },
+      {
+        "id": "C6E8B3DE-DEBA-4AA8-B825-1B31E14EAEBD",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "21157530-27BD-475D-AA87-2B375E3A3B11",
+        "end_node": "DFFB0DA6-81E7-4F04-ABFC-843C6A11152E",
+        "source_length_m": 425
+      },
+      {
+        "id": "C707A41C-0CE4-4069-A255-7AC10DEBA4F4",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "EBEF76C6-428D-4EEE-88D5-5C0AB5C88448",
+        "end_node": "0030E267-0EEF-46CC-A3D5-9C650CDF8D8A",
+        "source_length_m": 155
+      },
+      {
+        "id": "D3C7EC57-7348-473B-B941-486E58BE2457",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "0030E267-0EEF-46CC-A3D5-9C650CDF8D8A",
+        "end_node": "5638763A-CDEC-4DEA-9F5D-C3E21C57CEBF",
+        "source_length_m": 362
+      },
+      {
+        "id": "D4209C74-37E7-402D-8027-791EA8C83CFD",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "EDD8F5A4-6892-42D8-935A-05D11FC6803C",
+        "end_node": "E9761C11-45B1-46EB-AB66-A6F01EF0C8C4",
+        "source_length_m": 6
+      },
+      {
+        "id": "DE9E6A37-177F-43A7-9273-124650451612",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "DA97CFC5-ADE1-44E7-8B47-B98E581C05B3",
+        "end_node": "04729902-5D78-4865-8808-6C78BCA00953",
+        "source_length_m": 41
+      },
+      {
+        "id": "E854BC14-7F98-487F-B017-95B454D8EA93",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "E53263DE-6625-4317-A083-B36D9BE672EC",
+        "end_node": "BF7C3836-0C1D-4EBE-8F64-CF7E223CE899",
+        "source_length_m": 56
+      },
+      {
+        "id": "FB6E3E23-B18E-4FF7-BD2B-187C47D2FD7D",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": null,
+        "start_node": "79D2624F-106C-4331-BE93-ED177A594890",
+        "end_node": "6F1F8687-0EDE-40E0-AE5C-4573691818B7",
+        "source_length_m": 999
+      }
+    ],
+    "coordinate_handling": "source geometry reprojected EPSG:27700 to EPSG:4326 and serialized at existing export coordinate precision",
+    "final_feature_count": 42446,
+    "diff_semantics": "only the 48 listed RoadLink IDs and their whole source geometries are added; no A-only spanning-tree or B4014 corridor is included"
+  },
+  "extract_file": "wiltshire-os-open-roads-2026-04-07-connected-context-2026-09-06.geojson",
+  "extract_size_bytes": 20527943,
+  "extract_sha256": "2bc626ffbb89acf6ef5e89a88db324c4137f4df49b484002c9b1a25ee31853ab"
+}
