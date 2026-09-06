@@ -159,6 +159,7 @@ def request(
     fallback_profile=None,
     selection_profile=None,
     compiler_preferred_candidate_ids=(),
+    officer_candidate_choices=(),
 ):
     return StrategicNetworkPlanningRequest(
         area_fingerprint="a" * 64,
@@ -169,6 +170,7 @@ def request(
         fallback_profile=fallback_profile or StrategicPlanningFallbackProfile(),
         selection_profile=selection_profile,
         compiler_preferred_candidate_ids=compiler_preferred_candidate_ids,
+        officer_candidate_choices=officer_candidate_choices,
     )
 
 
@@ -395,6 +397,43 @@ def test_governed_compiler_preference_is_applied_without_reordering_candidates()
 
     assert result.selections[0].compiler_candidate_id == road_id
     assert result.effective_network.sections[0].routing_edge_ids == ("a-road",)
+    assert result.selections[0].selection_reason == (
+        "compiler selection: supplied preference; selection rationale unavailable"
+    )
+    supplied_alternatives = tuple(
+        item for item in result.unselected_candidates if item.disposition == "unselected"
+    )
+    assert supplied_alternatives
+    assert all(
+        item.comparison_reason is not None
+        and "supplied preference rationale unavailable" in item.comparison_reason
+        for item in supplied_alternatives
+    )
+
+
+def test_compiler_selection_exposes_governed_comparison_reason() -> None:
+    graph = fixture_graph()
+    discovered = discovery(graph, CorridorObligation("corridor-a-d", "A", "D"))
+
+    cycle_id = next(
+        item.candidate_id
+        for item in discovered.candidate_records
+        if item.edge_ids == ("cycle-ab", "cycle-bd")
+    )
+    candidate_set_id = discovered.candidate_sets[0].candidate_set_id
+
+    result = compile_strategic_network(request(graph, discovered))
+
+    selection = result.selections[0]
+    assert selection.candidate_set_id == candidate_set_id
+    assert selection.compiler_candidate_id == cycle_id
+    assert selection.effective_candidate_id == cycle_id
+    assert selection.selection_reason.startswith("compiler selection: ")
+    assert "reuse-class" in selection.selection_reason
+    assert "existing-cycle-provision" in selection.selection_reason
+    assert "a-road-major-protected-infrastructure" in selection.selection_reason
+    assert selection.decision_id is None
+    assert selection.decision_maker is None
 
 
 def test_candidate_discovery_gaps_survive_into_reviewable_network() -> None:
@@ -589,13 +628,94 @@ def test_cycleway_is_effective_and_a_road_remains_inspectable() -> None:
     assert result.status == "complete"
     assert result.effective_network.sections[0].routing_edge_ids == ("cycle-ab", "cycle-bd")
     assert result.effective_network.sections[0].geometry_wkt == "LINESTRING (0 0, 0 60, 100 0)"
-    assert any(
-        item.candidate_id
-        == next(
-            item.candidate_id
-            for item in result.unselected_candidates
-            if item.reason == "admitted alternative retained for review"
+    alternatives = tuple(
+        item
+        for item in result.unselected_candidates
+        if item.reason == "admitted alternative retained for review"
+    )
+    assert alternatives
+    compiler_id = result.selections[0].compiler_candidate_id
+    assert compiler_id is not None
+    assert all(item.comparison_reason is not None for item in alternatives)
+    assert all(compiler_id in item.comparison_reason for item in alternatives)
+    assert all(item.candidate_id in item.comparison_reason for item in alternatives)
+
+
+def test_cycleway_replaces_matching_injected_a_road_section() -> None:
+    graph = fixture_graph()
+    graph = replace(
+        graph,
+        edge_records=(
+            *graph.edge_records,
+            edge(
+                "independent-a",
+                "X",
+                "Y",
+                "LINESTRING (200 0, 300 0)",
+                highway="primary",
+                ref="A2",
+                length_m=100,
+            ),
+        ),
+        graph_fingerprint="6" * 64,
+    )
+    discovered = discovery(graph, CorridorObligation("corridor-a-d", "A", "D"))
+    required_a = EffectiveStrategicSection(
+        "urban-a-road",
+        "urban-structure:urban-a-road",
+        None,
+        "urban-main-road-spine",
+        ("a-road",),
+        (),
+        "LINESTRING (0 0, 100 0)",
+        PlanningAuthority.COMPILER,
+        ("a-road",),
+        "a-road",
+        "upgrade-required",
+        "upgrade-required",
+        "urban",
+    )
+    independent_a = EffectiveStrategicSection(
+        "urban-independent-a",
+        "urban-structure:urban-independent-a",
+        None,
+        "urban-main-road-spine",
+        ("independent-a",),
+        (),
+        "LINESTRING (200 0, 300 0)",
+        PlanningAuthority.COMPILER,
+        ("a-road",),
+        "a-road",
+        "upgrade-required",
+        "upgrade-required",
+        "urban",
+    )
+
+    result = compile_strategic_network(
+        replace(
+            request(graph, discovered),
+            required_sections=(required_a, independent_a),
         )
+    )
+
+    assert result.status == "complete"
+    assert "urban-a-road" not in {
+        section.section_id for section in result.effective_network.sections
+    }
+    assert any(
+        section.routing_edge_ids == ("cycle-ab", "cycle-bd")
+        for section in result.effective_network.sections
+    )
+    assert "urban-independent-a" in {
+        section.section_id for section in result.effective_network.sections
+    }
+    road_candidate_id = next(
+        item.candidate_id for item in discovered.candidate_records if item.edge_ids == ("a-road",)
+    )
+    assert any(
+        item.candidate_id == road_candidate_id
+        and item.disposition == "unselected"
+        and item.reason == "admitted alternative retained for review"
         for item in result.unselected_candidates
     )
 
@@ -652,6 +772,35 @@ def test_officer_choice_applies_without_expiry_and_divergence_is_retained() -> N
     result = compile_strategic_network(request(graph, discovered, officer_decisions=ledger))
     assert result.effective_network.sections[0].routing_edge_ids == ("a-road",)
     assert result.divergences[0].compiler_candidate_id != result.divergences[0].officer_candidate_id
+    selection = result.selections[0]
+    assert selection.selection_reason == "officer decision: retain the direct strategic corridor"
+    assert selection.decision_id == "decision-road"
+    assert selection.decision_maker == "officer"
+
+
+def test_preloaded_officer_choice_keeps_missing_attribution_explicit() -> None:
+    graph = fixture_graph()
+    discovered = discovery(graph, CorridorObligation("corridor-a-d", "A", "D"))
+    cycle_id = next(
+        item.candidate_id
+        for item in discovered.candidate_records
+        if item.edge_ids == ("cycle-ab", "cycle-bd")
+    )
+
+    result = compile_strategic_network(
+        request(
+            graph,
+            discovered,
+            officer_candidate_choices=((cycle_id, "decision-preloaded"),),
+        )
+    )
+
+    selection = result.selections[0]
+    assert selection.selection_reason == (
+        "officer selection: supplied candidate choice; decision rationale unavailable"
+    )
+    assert selection.decision_id == "decision-preloaded"
+    assert selection.decision_maker is None
 
 
 def test_unknown_officer_target_is_diagnostic_and_compiler_continues() -> None:
@@ -896,6 +1045,11 @@ def test_custom_route_length_first_profile_controls_compiler_preference() -> Non
     discovered = discovery_with_profile(graph, profile, CorridorObligation("valid", "A", "D"))
     result = compile_strategic_network(request(graph, discovered, selection_profile=profile))
     assert result.effective_network.sections[0].routing_edge_ids == ("a-road",)
+    assert result.selections[0].selection_reason.startswith(
+        "compiler selection: route-length ranked candidate "
+    )
+    assert "(100m) ahead of candidate" in result.selections[0].selection_reason
+    assert result.selections[0].selection_reason.endswith("(130m)")
 
 
 def test_conflicting_active_officer_choices_are_not_overwritten() -> None:

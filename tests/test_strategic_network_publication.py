@@ -101,6 +101,85 @@ def test_selected_network_and_places_are_the_only_default_layers() -> None:
     )
 
 
+def test_projection_exports_choice_reasons_and_attribution_by_candidate_set() -> None:
+    preferred = SimpleNamespace(
+        candidate_id="candidate-selected",
+        geometry=CanonicalLineString(coordinates=((100000.0, 200000.0), (100100.0, 200100.0))),
+        evidence_fingerprints=(),
+        intervention_state="existing-provision",
+        alignment_bases=("cycleway",),
+        primary_alignment_basis="cycleway",
+    )
+    alternative = SimpleNamespace(
+        candidate_id="candidate-alternative",
+        geometry=CanonicalLineString(coordinates=((100000.0, 200000.0), (100100.0, 200000.0))),
+        evidence_fingerprints=(),
+        intervention_state="upgrade-required",
+        alignment_bases=("a-road",),
+        primary_alignment_basis="a-road",
+    )
+    result = SimpleNamespace(
+        fingerprint="a" * 64,
+        effective_network=SimpleNamespace(sections=(_section("selected"),)),
+        candidate_sets=(
+            SimpleNamespace(
+                candidate_set_id="candidate-set-1",
+                connection_id="connection-1",
+                network_role="interurban-spine",
+                candidates=(preferred, alternative),
+                admissions=(),
+            ),
+        ),
+        selections=(
+            SimpleNamespace(
+                effective_candidate_id="candidate-selected",
+                candidate_set_id="candidate-set-1",
+                selection_disposition="selected",
+                compiler_candidate_id="candidate-selected",
+                authority="compiler",
+                selection_reason="compiler selected the shorter governed route",
+                decision_id="compiler-decision-1",
+                decision_maker="compiler",
+            ),
+        ),
+        unselected_candidates=(
+            SimpleNamespace(
+                candidate_set_id="candidate-set-1",
+                candidate_id="candidate-alternative",
+                disposition="unselected",
+                reason="admitted alternative retained for review",
+                comparison_reason=(
+                    "route-length ranked candidate-selected ahead of candidate-alternative"
+                ),
+            ),
+        ),
+        gaps=(),
+        divergences=(),
+    )
+
+    projection = project_strategic_network(result, optional_layers=True)
+    selected = next(
+        feature
+        for feature in projection.layers["Strategic Main Network"]["features"]
+        if feature["properties"].get("candidate_id") == "candidate-selected"
+    )["properties"]
+    alternative_properties = projection.layers["Candidates discarded"]["features"][0]["properties"]
+
+    assert (
+        selected["candidate_set_id"]
+        == alternative_properties["candidate_set_id"]
+        == "candidate-set-1"
+    )
+    assert selected["authority"] == "compiler"
+    assert selected["selection_reason"] == "compiler selected the shorter governed route"
+    assert selected["decision_id"] == "compiler-decision-1"
+    assert selected["decision_maker"] == "compiler"
+    assert alternative_properties["comparison_reason"] == (
+        "route-length ranked candidate-selected ahead of candidate-alternative"
+    )
+    assert alternative_properties["reason"] == "admitted alternative retained for review"
+
+
 def test_stored_roles_are_published_as_main_or_access_support_without_roster_loss() -> None:
     main_roles = {
         "interurban-spine",

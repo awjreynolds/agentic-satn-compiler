@@ -118,6 +118,14 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .alignment-comparison { margin-top: .75rem; padding-top: .65rem; border-top: 2px solid #7c4a93; }
 .alignment-comparison h4 { margin: 0; font-size: .86rem; }
 .comparison-note { margin: .25rem 0 .45rem; color: var(--muted); font-size: .74rem; }
+.route-choice-list { display: grid; gap: .45rem; }
+.route-choice-card { padding: .45rem; border: 1px solid #ccd1d1; border-left: 4px solid #7f8c8d; background: #f8f9f9; }
+.route-choice-card.preferred { border-left-color: #196f3d; background: #eef8f1; }
+.route-choice-card h5 { margin: 0 0 .2rem; font-size: .78rem; }
+.route-choice-card dl { margin: 0; font-size: .72rem; }
+.route-choice-technical { margin-top: .45rem; font-size: .72rem; }
+.route-choice-technical summary { cursor: pointer; font-weight: 700; }
+.route-choice-technical dl { margin: .35rem 0 0; }
 .alignment-radar { display: grid; gap: .35rem; overflow-x: auto; }
 .alignment-radar svg { display: block; width: min(100%, 22rem); min-width: 18rem; margin: auto; }
 .radar-grid { fill: none; stroke: #ccd1d1; stroke-width: 1; }

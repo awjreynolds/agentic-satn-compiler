@@ -6,6 +6,7 @@ import geopandas as gpd
 from shapely.geometry import LineString
 from test_strategic_network_planning import discovery, fixture_graph, request
 
+from satn.alignment_selection import admit_candidate_set
 from satn.candidate_discovery import CorridorObligation
 from satn.effective_strategic_network import (
     EffectiveStrategicNetworkRequest,
@@ -17,6 +18,7 @@ from satn.effective_strategic_network import (
     compile_effective_strategic_network,
     planning_graph_from_compiler_edges,
 )
+from satn.network_selection import NetworkSelectionProfile
 from satn.routing import RoadGraph
 from satn.strategic_mesh import StrategicMainNetworkProfile
 from satn.strategic_network_publication import project_strategic_network
@@ -59,6 +61,52 @@ def _fixture_preparation(graph):
             "issues": (),
             "preparation_fingerprint": "a" * 64,
             "profile_fingerprint": discovered.candidate_sets[0].profile_fingerprint,
+        },
+    )()
+
+
+def _legacy_fixture_preparation(graph):
+    preparation = _fixture_preparation(graph)
+    source_set = preparation.units[0].candidate_set
+    profile = NetworkSelectionProfile.model_validate(
+        {
+            "profile_id": "effective-legacy-preference-fixture",
+            "candidate_source_precedence": [
+                "verified-existing-asset",
+                "a-road-corridor",
+                "other-routable",
+            ],
+        }
+    )
+    legacy_set = admit_candidate_set(
+        profile,
+        network_role=source_set.network_role,
+        endpoints=source_set.endpoints,
+        candidates=source_set.candidates,
+        mandatory_network_place_ids=source_set.mandatory_network_place_ids,
+        mandatory_access_obligation_ids=source_set.mandatory_access_obligation_ids,
+        mandatory_strategic_destination_ids=source_set.mandatory_strategic_destination_ids,
+    )
+    unit = type(
+        "LegacyUnit",
+        (),
+        {
+            "unit_id": preparation.units[0].unit_id,
+            "unit_role": preparation.units[0].unit_role,
+            "candidate_set": legacy_set,
+            "candidate_records": preparation.units[0].candidate_records,
+            "routing_start_node_id": preparation.units[0].routing_start_node_id,
+            "routing_end_node_id": preparation.units[0].routing_end_node_id,
+        },
+    )()
+    return type(
+        "LegacyPreparation",
+        (),
+        {
+            "units": (unit,),
+            "issues": (),
+            "preparation_fingerprint": preparation.preparation_fingerprint,
+            "profile_fingerprint": legacy_set.profile_fingerprint,
         },
     )()
 
@@ -204,6 +252,47 @@ def test_complete_routable_snapshot_and_preparation_use_one_canonical_selector()
     assert not state.gaps
 
 
+def test_effective_compile_reports_legacy_source_precedence_reason() -> None:
+    routable_network = _fixture_routable_network()
+    graph = planning_graph_from_compiler_edges(
+        routable_network,
+        source_export_fingerprint="3" * 64,
+    )
+    preparation = _legacy_fixture_preparation(graph)
+
+    state = compile_effective_strategic_network(
+        EffectiveStrategicNetworkRequest(
+            routable_network=routable_network,
+            preparation=preparation,
+            area_fingerprint="b" * 64,
+            snapshot_fingerprint=graph.source_export_fingerprint,
+        )
+    )
+
+    assert state.status is EffectiveStrategicNetworkStatus.EVALUATED
+    selection = state.selections[0]
+    expected = next(
+        candidate
+        for candidate in preparation.units[0].candidate_set.admitted_candidates
+        if candidate.source_class.value == "verified-existing-asset"
+    )
+    alternative = next(
+        candidate
+        for candidate in preparation.units[0].candidate_set.admitted_candidates
+        if candidate.source_class.value == "a-road-corridor"
+    )
+    assert selection.compiler_candidate_id == expected.candidate_id
+    assert selection.effective_candidate_id == expected.candidate_id
+    assert selection.selection_reason.startswith(
+        "compiler selection: candidate-source-precedence ranked candidate "
+    )
+    assert expected.candidate_id in selection.selection_reason
+    assert alternative.candidate_id in selection.selection_reason
+    assert "verified-existing-asset" in selection.selection_reason
+    assert "a-road-corridor" in selection.selection_reason
+    assert alternative.candidate_id != expected.candidate_id
+
+
 def test_governed_access_connections_are_retained_as_access_support() -> None:
     network = _fixture_routable_network()
     graph = planning_graph_from_compiler_edges(
@@ -292,10 +381,160 @@ def test_urban_a_road_defaults_are_protected_by_authoritative_mesh_selection() -
     assert not any(
         section.network_role == "interurban-spine" for section in state.effective_network.sections
     )
-    assert "urban-spine-bristol-b4051" in {
+
+
+def test_supplied_b_road_village_branch_is_not_a_main_section() -> None:
+    routable_network = _fixture_routable_network()
+    graph = planning_graph_from_compiler_edges(
+        routable_network,
+        source_export_fingerprint="3" * 64,
+    )
+    urban_spines = gpd.GeoDataFrame(
+        [
+            {
+                "structure_id": "urban-spine-village-b-branch",
+                "official_classification": "b-road",
+                "geometry": LineString([(0, 0), (0, 500)]),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+
+    state = compile_effective_strategic_network(
+        EffectiveStrategicNetworkRequest(
+            routable_network=routable_network,
+            preparation=_fixture_preparation(graph),
+            area_fingerprint="b" * 64,
+            snapshot_fingerprint=graph.source_export_fingerprint,
+            urban_spines=urban_spines,
+        )
+    )
+
+    assert state.status is EffectiveStrategicNetworkStatus.EVALUATED
+    assert "urban-spine-village-b-branch" not in {
+        section.section_id for section in state.effective_network.sections
+    }
+    assert "urban-spine-village-b-branch" not in {
         diagnostic.subject_id
         for diagnostic in state.diagnostics
-        if diagnostic.code == "strategic-mesh-section-omitted"
+        if diagnostic.code == "strategic-main-attachment-gap"
+    }
+
+
+def test_b_road_graph_edge_can_connect_selected_main_components() -> None:
+    routable_network = gpd.GeoDataFrame(
+        [
+            {
+                "source_id": "a-west",
+                "u": "A",
+                "v": "B",
+                "highway": "primary",
+                "oneway": False,
+                "geometry": LineString([(0, 0), (100, 0)]),
+            },
+            {
+                "source_id": "a-west-reverse",
+                "u": "B",
+                "v": "A",
+                "highway": "primary",
+                "oneway": False,
+                "geometry": LineString([(100, 0), (0, 0)]),
+            },
+            {
+                "source_id": "b-gap",
+                "u": "B",
+                "v": "C",
+                "highway": "secondary",
+                "oneway": False,
+                "geometry": LineString([(100, 0), (200, 0)]),
+            },
+            {
+                "source_id": "b-gap-reverse",
+                "u": "C",
+                "v": "B",
+                "highway": "secondary",
+                "oneway": False,
+                "geometry": LineString([(200, 0), (100, 0)]),
+            },
+            {
+                "source_id": "a-east",
+                "u": "C",
+                "v": "D",
+                "highway": "primary",
+                "oneway": False,
+                "geometry": LineString([(200, 0), (300, 0)]),
+            },
+            {
+                "source_id": "a-east-reverse",
+                "u": "D",
+                "v": "C",
+                "highway": "primary",
+                "oneway": False,
+                "geometry": LineString([(300, 0), (200, 0)]),
+            },
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    graph = planning_graph_from_compiler_edges(
+        routable_network,
+        source_export_fingerprint="7" * 64,
+    )
+    urban_spines = gpd.GeoDataFrame(
+        [
+            {
+                "structure_id": "urban-main-west",
+                "official_classification": "a-road",
+                "geometry": LineString([(0, 0), (100, 0)]),
+            },
+            {
+                "structure_id": "urban-b-gap",
+                "official_classification": "b-road",
+                "geometry": LineString([(100, 0), (200, 0)]),
+            },
+            {
+                "structure_id": "urban-main-east",
+                "official_classification": "a-road",
+                "geometry": LineString([(200, 0), (300, 0)]),
+            },
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    preparation = type(
+        "EmptyPreparation",
+        (),
+        {
+            "units": (),
+            "issues": (),
+            "preparation_fingerprint": "d" * 64,
+            "profile_fingerprint": "e" * 64,
+        },
+    )()
+
+    state = compile_effective_strategic_network(
+        EffectiveStrategicNetworkRequest(
+            routable_network=routable_network,
+            preparation=preparation,
+            area_fingerprint="f" * 64,
+            snapshot_fingerprint=graph.source_export_fingerprint,
+            urban_spines=urban_spines,
+        )
+    )
+
+    assert state.status is EffectiveStrategicNetworkStatus.EVALUATED
+    sections = {section.section_id: section for section in state.effective_network.sections}
+    assert "urban-b-gap" not in sections
+    connectors = tuple(
+        section
+        for section in state.effective_network.sections
+        if section.network_role == "strategic-main-connector"
+    )
+    assert len(connectors) == 1
+    assert set((*connectors[0].routing_edge_ids, *connectors[0].reverse_routing_edge_ids)) == {
+        "b-gap",
+        "b-gap-reverse",
     }
 
 

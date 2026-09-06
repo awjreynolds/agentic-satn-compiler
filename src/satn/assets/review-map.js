@@ -129,7 +129,8 @@
     "review-lens-highlight-fill",
     "review-lens-highlight-outline",
     "review-lens-highlight-line",
-    "review-lens-highlight-point"
+    "review-lens-highlight-point",
+    "review-lens-related-alternatives"
   ]);
 
   const map = new maplibregl.Map({
@@ -1329,10 +1330,49 @@
     }[featureType] || (networkRole && humanLabel(networkRole)) || humanLabel(featureType || artifact.layerId);
   }
 
+  function artifactChoiceLabel(properties) {
+    const featureType = String(properties?.feature_type || "");
+    if (featureType === "reviewable-selected-route") return "Preferred route";
+    if (featureType === "reviewable-unselected-candidate") return "Considered alternative";
+    return null;
+  }
+
+  function artifactSelectionReason(properties) {
+    return firstDataValue(
+      properties?.selection_reason,
+      properties?.decision_reason,
+      properties?.selection_rationale
+    );
+  }
+
+  function artifactComparisonReason(properties) {
+    return firstDataValue(properties?.comparison_reason);
+  }
+
+  function artifactChoiceAttribution(properties) {
+    const authority = String(
+      firstDataValue(
+        properties?.decision_attribution,
+        properties?.selection_authority,
+        properties?.authority
+      ) || ""
+    ).toLowerCase();
+    if (["compiler", "officer", "governed-reference", "governed-reference-provisional", "gap"].includes(authority)) {
+      return authority === "governed-reference" || authority === "governed-reference-provisional"
+        ? "Governed reference"
+        : humanLabel(authority);
+    }
+    const variant = String(properties?.divergence_variant || "").toLowerCase();
+    if (["compiler", "officer"].includes(variant)) return humanLabel(variant);
+    return null;
+  }
+
   function artifactRecordedReason(properties) {
     return firstDataValue(
       properties.rationale,
       properties.selection_reason,
+      properties.decision_reason,
+      properties.comparison_reason,
       properties.admission_rationale,
       properties.reason
     );
@@ -1382,8 +1422,9 @@
     return `Shown as ${String(role).toLowerCase()}.`;
   }
 
-  function appendArtifactSemanticSummary(panel, artifact) {
+  function appendArtifactSemanticSummary(panel, artifact, { includeChoiceDetails = true } = {}) {
     const properties = artifact.feature.properties || {};
+    const featureType = String(properties.feature_type || "");
     const heading = document.createElement("h3");
     heading.id = "details-heading";
     heading.textContent = artifactName(artifact);
@@ -1393,13 +1434,38 @@
     roleText.textContent = `Role: ${role}`;
     const whyText = document.createElement("p");
     whyText.className = "artifact-why";
-    const recordedReason = artifactRecordedReason(properties);
-    whyText.textContent = hasDataValue(recordedReason)
-      ? `Recorded reason: ${contextualText(recordedReason)}`
-      : `Purpose: ${artifactWhyShown(artifact, role)}`;
+    const choice = artifactChoiceLabel(properties);
+    const choiceReason = includeChoiceDetails && featureType === "reviewable-selected-route"
+      ? artifactSelectionReason(properties)
+      : includeChoiceDetails && featureType === "reviewable-unselected-candidate"
+        ? artifactComparisonReason(properties)
+        : null;
+    const recordedReason = includeChoiceDetails ? artifactRecordedReason(properties) : null;
+    if (hasDataValue(choiceReason)) {
+      whyText.textContent = `${featureType === "reviewable-unselected-candidate" ? "Comparison reason" : "Selection reason"}: ${contextualText(choiceReason)}`;
+    } else if (choice === "Considered alternative") {
+      whyText.textContent = "Purpose: Considered alongside the preferred route; comparison reason not recorded.";
+    } else if (!includeChoiceDetails && choice) {
+      whyText.textContent = `Purpose: ${choice} for this journey; see the comparison below.`;
+    } else {
+      whyText.textContent = hasDataValue(recordedReason)
+        ? `Recorded reason: ${contextualText(recordedReason)}`
+        : `Purpose: ${artifactWhyShown(artifact, role)}`;
+    }
     const list = document.createElement("dl");
     const status = firstDataValue(properties.disposition, properties.status, properties.display_state);
     if (hasDataValue(status)) addDefinition(list, "Status", humanStatus(status));
+    if (choice) addDefinition(list, "Choice", choice);
+    const attribution = artifactChoiceAttribution(properties);
+    if (includeChoiceDetails && choice && hasDataValue(attribution)) {
+      addDefinition(list, "Choice attribution", attribution);
+    }
+    if (includeChoiceDetails && choice && hasDataValue(properties.decision_id)) {
+      addDefinition(list, "Decision record", properties.decision_id);
+    }
+    if (includeChoiceDetails && choice && hasDataValue(properties.decision_maker)) {
+      addDefinition(list, "Decision maker", properties.decision_maker);
+    }
     if (artifact.sourceId === "places") {
       const accessStatus = firstDataValue(
         properties.access_status,
@@ -1498,6 +1564,18 @@
     return reviewLensState.artifactRecord(original || rendered, sourceId, layerId);
   }
 
+  function resolveRelatedAlternative(rendered) {
+    const renderedId = reviewLensState.stableArtifactId(rendered);
+    const candidateId = rendered.properties?.candidate_id;
+    const original = sourceFeatures("reviewable").find(
+      (candidate) => reviewLensState.stableArtifactId(candidate) === renderedId ||
+        candidate.properties?.candidate_id === candidateId
+    );
+    return original
+      ? reviewLensState.artifactRecord(original, "reviewable", "reviewable-unselected-candidates")
+      : null;
+  }
+
   function networkArtifact(id, layerId = "feature-index") {
     const artifact = lensCatalog.find("network", String(id));
     return artifact ? reviewLensState.artifactRecord(artifact.feature, "network", layerId) : null;
@@ -1515,6 +1593,15 @@
   }
 
   function artifactAt(point) {
+    if (map.getLayer("review-lens-related-alternatives")) {
+      const related = map.queryRenderedFeatures(point, {
+        layers: ["review-lens-related-alternatives"]
+      });
+      if (related.length) {
+        const relatedArtifact = resolveRelatedAlternative(related[0]);
+        if (relatedArtifact) return relatedArtifact;
+      }
+    }
     const layers = selectableArtifactLayers();
     if (!layers.length) return null;
     const rendered = map.queryRenderedFeatures(point, { layers });
@@ -1547,6 +1634,30 @@
     );
   }
 
+  function setLensRelatedAlternatives(artifacts) {
+    const source = map.getSource("review-lens-related-alternatives");
+    if (!source || typeof source.setData !== "function") return;
+    const features = artifacts.map((artifact) => ({
+      type: "Feature",
+      id: artifact.id,
+      geometry: JSON.parse(JSON.stringify(artifact.feature.geometry)),
+      properties: {
+        candidate_set_id: artifact.feature.properties?.candidate_set_id,
+        feature_type: artifact.feature.properties?.feature_type,
+        candidate_id: artifact.feature.properties?.candidate_id,
+        rendered_feature_id: artifact.id
+      }
+    }));
+    source.setData({ type: "FeatureCollection", features });
+    if (map.getLayer("review-lens-related-alternatives")) {
+      map.setLayoutProperty(
+        "review-lens-related-alternatives",
+        "visibility",
+        features.length ? "visible" : "none"
+      );
+    }
+  }
+
   function renderEmptyArtifactPanel() {
     const lens = document.querySelector("#review-lens");
     const panel = document.querySelector("#feature-details");
@@ -1562,6 +1673,7 @@
     gradientDetails.hidden = true;
     gradientDetails.setAttribute("aria-expanded", "false");
     document.querySelector("#linear-evidence-view").hidden = true;
+    setLensRelatedAlternatives([]);
   }
 
   function showReviewLens() {
@@ -1641,7 +1753,7 @@
     return panel;
   }
 
-  function appendArtifactReviewEvidence(list, properties) {
+  function appendArtifactReviewEvidence(list, properties, { includeChoiceDetails = true } = {}) {
     const addAvailable = (label, ...candidates) => {
       const raw = candidates.find(hasDataValue);
       if (raw !== undefined) addDefinition(list, label, contextualText(raw));
@@ -1675,11 +1787,21 @@
       firstDataValue(properties.to_place_name, placeNameForId(properties.to_place_id), placeNameForId(properties.to_place))
     ].filter(hasDataValue);
     if (endpointNames.length) addDefinition(list, "Endpoints", [...new Set(endpointNames)].join(", "));
-    const recordedReason = artifactRecordedReason(properties);
     const isSelectedRoute = properties.feature_type === "reviewable-selected-route" ||
       properties.layer === "Strategic Main Network";
-    if (isSelectedRoute && !hasDataValue(recordedReason)) {
-      addDefinition(list, "Selection reason", "Not recorded");
+    const isAlternative = properties.feature_type === "reviewable-unselected-candidate";
+    if (includeChoiceDetails && isSelectedRoute) {
+      addDefinition(
+        list,
+        "Selection reason",
+        contextualText(artifactSelectionReason(properties) || "Not recorded")
+      );
+    } else if (includeChoiceDetails && isAlternative) {
+      addDefinition(
+        list,
+        "Comparison reason",
+        contextualText(artifactComparisonReason(properties) || "Not recorded")
+      );
     }
   }
 
@@ -1818,7 +1940,175 @@
     return chart;
   }
 
+  function reviewableChoiceMembers(artifact) {
+    if (artifact.sourceId !== "reviewable") return null;
+    const candidateSetId = artifact.feature.properties?.candidate_set_id;
+    if (!hasDataValue(candidateSetId)) return null;
+    const features = sourceFeatures("reviewable").filter(
+      (feature) => feature.properties?.candidate_set_id === candidateSetId
+    );
+    const preferred = features.filter(
+      (feature) => feature.properties?.feature_type === "reviewable-selected-route"
+    );
+    const alternatives = features.filter(
+      (feature) => feature.properties?.feature_type === "reviewable-unselected-candidate" &&
+        feature.properties?.admission_disposition === "admitted"
+    );
+    return {
+      candidateSetId,
+      preferred: preferred.map((feature) =>
+        reviewLensState.artifactRecord(feature, "reviewable", "reviewable-route-comparison")
+      ),
+      alternatives: alternatives.map((feature) =>
+        reviewLensState.artifactRecord(feature, "reviewable", "reviewable-route-comparison")
+      )
+    };
+  }
+
+  function reviewableChoiceDisplayName(artifact) {
+    const properties = artifact.feature.properties || {};
+    const explicitName = firstDataValue(
+      properties.name,
+      properties.route_name,
+      properties.title,
+      properties.label
+    );
+    if (hasDataValue(explicitName)) return String(explicitName);
+    const basis = firstDataValue(properties.primary_alignment_basis, properties.alignment_basis);
+    if (hasDataValue(basis)) return humanBasis(basis);
+    const endpointNames = [
+      ...parseList(properties.endpoints),
+      properties.from_place_name,
+      properties.to_place_name,
+      properties.spine_name
+    ]
+      .filter(hasDataValue)
+      .map((item) => placeNameForId(item) || String(item))
+      .filter((item) => !/^(candidate|connection|obligation|section|endpoint)([-_]|$)/i.test(item));
+    const uniqueEndpointNames = [...new Set(endpointNames)];
+    if (uniqueEndpointNames.length >= 2) return uniqueEndpointNames.slice(0, 2).join(" → ");
+    const role = firstDataValue(properties.network_role);
+    if (hasDataValue(role)) return humanLabel(role);
+    return artifact.feature.properties?.feature_type === "reviewable-selected-route"
+      ? "Selected route"
+      : "Considered alternative";
+  }
+
+  function readableChoiceReason(raw, members) {
+    if (!hasDataValue(raw)) return "Not recorded";
+    let reason = contextualText(raw);
+    members
+      .map((member) => [member.feature.properties?.candidate_id, reviewableChoiceDisplayName(member)])
+      .filter(([candidateId, label]) => hasDataValue(candidateId) && hasDataValue(label))
+      .sort(([left], [right]) => String(right).length - String(left).length)
+      .forEach(([candidateId, label]) => {
+        reason = reason.split(String(candidateId)).join(String(label));
+      });
+    const dimensions = {
+      "candidate-source-precedence": "candidate source precedence",
+      "mandatory-obligation-service": "mandatory obligation service",
+      "reuse-class": "reuse class",
+      "intervention-state": "intervention state",
+      "route-length": "route length",
+      "route-detour": "route detour",
+      "stable-candidate-id": "stable candidate ID"
+    };
+    Object.entries(dimensions).forEach(([rawDimension, readableDimension]) => {
+      reason = reason.replaceAll(rawDimension, readableDimension);
+    });
+    return reason;
+  }
+
+  function renderReviewableChoiceComparison(panel, artifact) {
+    const choiceMembers = reviewableChoiceMembers(artifact);
+    if (!choiceMembers || !choiceMembers.preferred.length || !choiceMembers.alternatives.length) {
+      setLensRelatedAlternatives([]);
+      return;
+    }
+    setLensRelatedAlternatives(
+      choiceMembers.alternatives.filter((member) => member.id !== artifact.id)
+    );
+    const members = [...choiceMembers.preferred, ...choiceMembers.alternatives];
+    const section = document.createElement("section");
+    section.className = "alignment-comparison route-choice-comparison";
+    section.setAttribute("aria-label", "Journey comparison");
+    const heading = document.createElement("h4");
+    heading.textContent = `Journey comparison (${members.length})`;
+    const note = document.createElement("p");
+    note.className = "comparison-note";
+    note.textContent = "Preferred route and admitted considered alternatives for this journey.";
+    const list = document.createElement("div");
+    list.className = "route-choice-list";
+    members.forEach((member) => {
+      const properties = member.feature.properties || {};
+      const choice = artifactChoiceLabel(properties);
+      const card = document.createElement("article");
+      card.className = `route-choice-card ${choice === "Preferred route" ? "preferred" : "alternative"}`;
+      const title = document.createElement("h5");
+      title.textContent = `${choice || "Route option"}: ${reviewableChoiceDisplayName(member)}`;
+      const details = document.createElement("dl");
+      if (choice === "Preferred route") {
+        addDefinition(
+          details,
+          "Selection reason",
+          readableChoiceReason(artifactSelectionReason(properties), members)
+        );
+        const attribution = artifactChoiceAttribution(properties);
+        if (hasDataValue(attribution)) addDefinition(details, "Choice attribution", attribution);
+      } else {
+        addDefinition(
+          details,
+          "Comparison reason",
+          readableChoiceReason(artifactComparisonReason(properties), members)
+        );
+        addDefinition(details, "Admission", "Admitted alternative");
+      }
+      card.append(title, details);
+      list.append(card);
+    });
+    const technical = document.createElement("details");
+    technical.className = "route-choice-technical";
+    const technicalSummary = document.createElement("summary");
+    technicalSummary.textContent = "Technical comparison identifiers";
+    const technicalList = document.createElement("dl");
+    addDefinition(technicalList, "Candidate set ID", choiceMembers.candidateSetId);
+    addDefinition(
+      technicalList,
+      "Preferred candidate ID",
+      choiceMembers.preferred.map((member) => member.feature.properties?.candidate_id || member.id).join(", ")
+    );
+    addDefinition(
+      technicalList,
+      "Admitted alternative candidate IDs",
+      choiceMembers.alternatives.map((member) => member.feature.properties?.candidate_id || member.id).join(", ")
+    );
+    addDefinition(
+      technicalList,
+      "Recorded selection reason",
+      choiceMembers.preferred
+        .map((member) => artifactSelectionReason(member.feature.properties))
+        .filter(hasDataValue)
+        .join("; ") || "Not recorded"
+    );
+    addDefinition(
+      technicalList,
+      "Recorded comparison reasons",
+      choiceMembers.alternatives
+        .map((member) => artifactComparisonReason(member.feature.properties))
+        .filter(hasDataValue)
+        .join("; ") || "Not recorded"
+    );
+    technical.append(technicalSummary, technicalList);
+    section.append(heading, note, list, technical);
+    panel.append(section);
+  }
+
   function renderAlignmentComparison(panel, artifact) {
+    if (artifact.sourceId === "reviewable") {
+      renderReviewableChoiceComparison(panel, artifact);
+      return;
+    }
+    setLensRelatedAlternatives([]);
     if (artifact.sourceId !== "reference-satn-options") return;
     const properties = artifact.feature.properties || {};
     const candidateSetId = properties.candidate_set_id;
@@ -1922,6 +2212,7 @@
 
   function renderSegmentComparison(artifacts) {
     setLensArtifactHighlight(null);
+    setLensRelatedAlternatives([]);
     const panel = document.querySelector("#feature-details");
     panel.replaceChildren();
     const heading = document.createElement("h3");
@@ -1956,30 +2247,31 @@
     } else if (canonical) {
       showDetails(canonical.id);
     } else if (artifact.sourceId === "reviewable") {
-      renderReviewableDetails(artifact);
+      renderReviewableDetails(artifact, { includeChoiceDetails: false });
     } else {
       renderArtifactPreview(artifact, { includeEvidence: true });
     }
     setLensArtifactHighlight(artifact);
     if (pinned) {
       const panel = document.querySelector("#feature-details");
+      if (artifact.sourceId === "reviewable") renderAlignmentComparison(panel, artifact);
       appendArtifactContext(panel, artifact);
       appendArtifactAppearance(panel, artifact);
-      renderAlignmentComparison(panel, artifact);
+      if (artifact.sourceId !== "reviewable") renderAlignmentComparison(panel, artifact);
       renderPopulationSelectionSummary(panel);
     }
     showReviewLens();
   }
 
-  function renderReviewableDetails(artifact) {
+  function renderReviewableDetails(artifact, { includeChoiceDetails = true } = {}) {
     const properties = artifact.feature.properties || {};
     const panel = document.querySelector("#feature-details");
     panel.replaceChildren();
-    const list = appendArtifactSemanticSummary(panel, artifact);
+    const list = appendArtifactSemanticSummary(panel, artifact, { includeChoiceDetails });
     const addData = (label, raw) => {
       if (hasDataValue(raw)) addDefinition(list, label, contextualText(raw));
     };
-    appendArtifactReviewEvidence(list, properties);
+    appendArtifactReviewEvidence(list, properties, { includeChoiceDetails });
     const allBases = parseList(properties.alignment_bases).filter(hasDataValue);
     if (allBases.length) addData("Alignment bases", allBases.map(humanBasis).join(", "));
     if (isMeshGapMarker(properties)) {
@@ -2095,7 +2387,7 @@
       properties.layer === "Strategic Main Network" ||
       ["strategic-spine", "a-road-spine", "ncn-route", "ncn-link", "declassified-ncn-route", "greenway-cycleway"]
         .includes(properties.feature_type);
-    if (isSelectedRoute && !hasDataValue(artifactRecordedReason(properties))) {
+    if (isSelectedRoute && !hasDataValue(artifactSelectionReason(properties))) {
       addDefinition(list, "Selection reason", "Not recorded");
     }
     if (!artifact) {
@@ -2239,7 +2531,41 @@
     }
   }
 
+  function isReviewableChoicePair(left, right) {
+    if (!left || !right || left.sourceId !== "reviewable" || right.sourceId !== "reviewable") {
+      return false;
+    }
+    const leftType = left.feature.properties?.feature_type;
+    const rightType = right.feature.properties?.feature_type;
+    if (![
+      "reviewable-selected-route",
+      "reviewable-unselected-candidate"
+    ].includes(leftType) || ![
+      "reviewable-selected-route",
+      "reviewable-unselected-candidate"
+    ].includes(rightType)) {
+      return false;
+    }
+    const leftSet = left.feature.properties?.candidate_set_id;
+    const rightSet = right.feature.properties?.candidate_set_id;
+    return hasDataValue(leftSet) && leftSet === rightSet && left.id !== right.id;
+  }
+
+  function selectReviewableChoiceArtifact(artifact) {
+    const next = reviewLensState.reduceLens(
+      reviewLensState.createInitialLensState(),
+      { type: reviewLensState.ActionType.TOGGLE_PIN_ARTIFACT, artifact }
+    );
+    syncLensState(next);
+    showArtifactDetails(artifact);
+    updateGradientCandidate();
+  }
+
   function toggleArtifactPin(artifact) {
+    if (isReviewableChoicePair(lensState.pinnedArtifact, artifact)) {
+      selectReviewableChoiceArtifact(artifact);
+      return;
+    }
     const next = syncLensState(reviewLensState.reduceLens(
       lensState,
       { type: reviewLensState.ActionType.TOGGLE_PIN_ARTIFACT, artifact }
@@ -2507,6 +2833,7 @@
       "gradient-section-highlight",
       "inspection-path",
       "inspection-path-direction",
+      "review-lens-related-alternatives",
       "review-lens-highlight-fill",
       "review-lens-highlight-outline",
       "review-lens-highlight-line",
@@ -2724,6 +3051,11 @@
     });
     map.addSource("review-lens-highlight", {
       type: "geojson",
+      data: { type: "FeatureCollection", features: [] }
+    });
+    map.addSource("review-lens-related-alternatives", {
+      type: "geojson",
+      promoteId: "rendered_feature_id",
       data: { type: "FeatureCollection", features: [] }
     });
     if (referenceRecord && referenceOptions.features.length) {
@@ -3120,6 +3452,19 @@
         "line-color": "#c0392b",
         "line-width": ["interpolate", ["linear"], ["zoom"], 8, 4, 13, 6],
         "line-opacity": .92
+      }
+    });
+    map.addLayer({
+      id: "review-lens-related-alternatives",
+      type: "line",
+      source: "review-lens-related-alternatives",
+      filter: ["in", ["geometry-type"], ["literal", ["LineString", "MultiLineString"]]],
+      layout: { visibility: "none" },
+      paint: {
+        "line-color": "#7f8c8d",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 7, 4, 13, 7],
+        "line-dasharray": [2, 2],
+        "line-opacity": .88
       }
     });
     map.addLayer({

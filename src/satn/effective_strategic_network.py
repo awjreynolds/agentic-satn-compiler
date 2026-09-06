@@ -1020,6 +1020,10 @@ def _planning_graph_with_urban_spines(
         "b-road": "b-road",
         "classified-unnumbered": "classified-unnumbered-road",
     }
+    # B-road rows remain in ``combined`` above so they are available as
+    # routable graph context.  They are not authoritative Main sections just
+    # because the source inventory supplied them as urban spines; a later
+    # continuity choice must establish an interurban connection first.
     required_sections = tuple(
         EffectiveStrategicSection(
             section_id=section_id,
@@ -1037,6 +1041,7 @@ def _planning_graph_with_urban_spines(
             network_scope="urban",
         )
         for section_id in sorted(classification_by_id)
+        if classification_by_id[section_id] != "b-road"
     )
     original_source_ids = {
         _source_edge_id(row, index)
@@ -1307,9 +1312,6 @@ def compile_effective_strategic_network(
             request.preparation.units[0].candidate_set.profile
             if getattr(request.preparation, "units", ())
             else None
-        ),
-        compiler_preferred_candidate_ids=_compiler_preferences(
-            request.preparation, prepared_candidate_sets
         ),
         routing_endpoint_bindings=tuple(
             (

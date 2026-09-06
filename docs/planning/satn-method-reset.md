@@ -55,12 +55,22 @@ Source: [B&NES ATM Part 6, existing-network discussion and Table 8.1, printed pp
 
 The dictated “Temple Comb” waypoint remains unconfirmed. Do not silently substitute Temple Cloud or Templecombe. The Radstock–South Bristol example above can test the method without claiming to fulfil that exact waypoint request.
 
-## Delivery priority remains a separate decision
+## Agreed delivery priority
 
-For the POC, recommend retaining strategic benefit and practical deliverability as separate explanations. Do not introduce council approval workflows, invented cost estimates, numerical weights or automatic short/medium/long-term labels.
+[Strategic importance leads the programme](https://github.com/awjreynolds/agentic-satn-compiler/issues/425), with practical deliverability shown separately. Officers can identify achievable near-term opportunities without silently demoting difficult connections the network needs. Network membership is unchanged by investment priority.
 
-A programme ranking still needs a policy choice when a high-value difficult connection competes with an easier improvement delivering less network benefit. Route reuse preference does not by itself settle that investment choice. Record that choice before presenting an ordered programme as the preferred recommendation; an unranked improvement list can remain useful meanwhile.
+Use available evidence and explain uncertainty. This decision does not authorise numerical weights, invented costs or demand, automatic funding decisions, or replacing an explicitly configured council appraisal policy. Keep missing observations visible and do not fabricate an ordered programme when the required strategic evidence is absent.
 
 ## Scope of the handoff
 
 No new runtime provider, security framework, audit infrastructure, scheme-design process or regional deployment is needed to prove this method. Implementation should change only what prevents the agreed journey and comparison behaviour, with focused checks against the reference journeys. These planning notes do not authorise claims that the current outputs meet those checks.
+
+## Implementation evidence
+
+The first implementation increment removes automatic promotion of supplied urban B-road branches into Main, while retaining routable B-road evidence for necessary continuity connections. An unreachable component no longer prevents connections among other reachable Main components.
+
+A selected alternative can displace an injected urban A-road section when an admitted A-road candidate has the exact same routing edges and endpoints, and the selected candidate serves the same connection and role. Independent A-road sections remain protected. This closes a demonstrated duplication case; it does not establish that every real-world overlapping corridor is recognised as the same journey.
+
+Selection records now distinguish the actual choice explanation and attribution from candidate admission. Ordinary compilation records its existing comparator's reason directly; explicit external preferences without a rationale remain marked as such. Selecting a route opens its same-journey comparison and reveals admitted alternatives as dashed linework without enabling the wider alternatives layer. Closing the comparison clears that focused linework.
+
+Focused compiler, publication and browser tests exercise these behaviours. The browser fixture uses synthetic Bath–Saltford geometry through the production compilation and publication path; it is not geographic validation of the reference journeys above. Those journey checks remain unproven, and existing regional deployments do not contain this increment.

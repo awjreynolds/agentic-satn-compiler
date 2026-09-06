@@ -918,6 +918,17 @@ def project_strategic_network(
                     "compiler_candidate_id": getattr(selection, "compiler_candidate_id", None),
                 }
             )
+        if selection is not None:
+            for key in (
+                "effective_candidate_id",
+                "compiler_candidate_id",
+                "selection_reason",
+                "decision_id",
+                "decision_maker",
+            ):
+                value = getattr(selection, key, None)
+                if value is not None:
+                    properties[key] = value
         properties["layer"] = publication_layer
         feature = _feature(
             feature_id=str(section.section_id),
@@ -998,6 +1009,9 @@ def project_strategic_network(
                         "strategic_result_fingerprint": result_fingerprint,
                     }
                 )
+                comparison_reason = getattr(disposition, "comparison_reason", None)
+                if comparison_reason is not None:
+                    candidate_properties["comparison_reason"] = comparison_reason
                 candidate_features.append(
                     _feature(
                         feature_id=f"candidate-{candidate_id}",

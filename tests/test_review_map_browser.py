@@ -5,9 +5,11 @@ import shutil
 from pathlib import Path
 
 import pytest
+from bath_saltford_fixture import configured_bath_saltford
 from playwright.sync_api import sync_playwright
 
 from satn import compile
+from satn.filesystem_safety import publication_destination_authority
 from satn.models import CouncilConfig
 from satn.sources import snapshot
 
@@ -1208,5 +1210,330 @@ def test_gradient_inspection_path_popovers_and_linear_evidence(tmp_path: Path) -
         assert "No path selected" in page.locator("#gradient-path-status").inner_text()
         assert gradient_details.is_hidden()
         assert page.locator("#linear-evidence-view").is_hidden()
+
+        browser.close()
+
+
+@pytest.mark.browser
+def test_route_choices_show_preferred_alternative_and_explicit_attribution(
+    tmp_path: Path,
+) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    result = compile(
+        config,
+        publication_authority=publication_destination_authority(workspace_root=tmp_path),
+    )
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1440, "height": 900})
+        page.route("https://tile.openstreetmap.org/**", lambda route: route.abort())
+        page.goto(result.artifacts["review_map"].as_uri())
+        page.wait_for_function("document.documentElement.dataset.mapReady === 'true'")
+        page.wait_for_function("!window.SATN_REVIEW_MAP.isMoving()")
+
+        route_points = page.evaluate(
+            """() => {
+              const map = window.SATN_REVIEW_MAP;
+              const features = window.SATN_DATA.reviewable_network.features;
+              const preferred = features.find((feature) =>
+                feature.properties?.feature_type === 'reviewable-selected-route' &&
+                feature.properties?.layer === 'Strategic Main Network'
+              );
+              const alternative = features.find((feature) =>
+                feature.properties?.feature_type === 'reviewable-unselected-candidate' &&
+                feature.properties?.candidate_set_id === preferred?.properties?.candidate_set_id
+              );
+              if (!preferred || !alternative) return null;
+              const project = (feature, preferInterior = false) => {
+                const coordinates = feature.geometry.coordinates;
+                const coordinate = preferInterior && coordinates.length > 2
+                  ? coordinates[Math.floor(coordinates.length / 2)]
+                  : coordinates[0].map((value, index) =>
+                    (value + coordinates[coordinates.length - 1][index]) / 2
+                  );
+                const point = map.project(coordinate);
+                return {x: point.x, y: point.y, id: feature.id};
+              };
+              return {
+                candidateSetId: preferred.properties.candidate_set_id,
+                preferred: project(preferred, true),
+                alternative: project(alternative)
+              };
+            }"""
+        )
+        assert route_points is not None
+
+        page.get_by_text("Asset and alignment evidence", exact=True).click()
+        page.locator("#layer-unselected-candidates").check()
+        route_points = page.evaluate(
+            """(candidateSetId) => {
+              const map = window.SATN_REVIEW_MAP;
+              const features = window.SATN_DATA.reviewable_network.features;
+              const preferred = features.find((feature) =>
+                feature.properties?.feature_type === 'reviewable-selected-route' &&
+                feature.properties?.layer === 'Strategic Main Network' &&
+                feature.properties?.candidate_set_id === candidateSetId
+              );
+              const alternative = features.find((feature) =>
+                feature.properties?.feature_type === 'reviewable-unselected-candidate' &&
+                feature.properties?.candidate_set_id === candidateSetId
+              );
+              if (!preferred || !alternative) return null;
+              const project = (feature, preferInterior = false) => {
+                const coordinates = feature.geometry.coordinates;
+                const coordinate = preferInterior && coordinates.length > 2
+                  ? coordinates[Math.floor(coordinates.length / 2)]
+                  : coordinates[0].map((value, index) =>
+                    (value + coordinates[coordinates.length - 1][index]) / 2
+                  );
+                const point = map.project(coordinate);
+                return {x: point.x, y: point.y, id: feature.id};
+              };
+              return {
+                candidateSetId,
+                preferredReason: preferred.properties?.selection_reason || null,
+                preferredAuthority: preferred.properties?.authority || null,
+                alternativeComparisonReason: alternative.properties?.comparison_reason || null,
+                preferred: project(preferred, true),
+                alternative: project(alternative)
+              };
+            }""",
+            route_points["candidateSetId"],
+        )
+        assert route_points is not None
+        map_box = page.locator("#map").bounding_box()
+        assert map_box is not None
+        dash_array = page.evaluate(
+            "window.SATN_REVIEW_MAP.getPaintProperty("
+            "'reviewable-unselected-candidates', 'line-dasharray')"
+        )
+        assert dash_array and len(dash_array) >= 2
+        preferred = route_points["preferred"]
+        page.wait_for_function(
+            "(point) => window.SATN_REVIEW_MAP.queryRenderedFeatures(point, "
+            "{layers: ['reviewable-strategic-main-network']}).length > 0",
+            arg=preferred,
+        )
+        canvas = page.locator(".maplibregl-canvas")
+        canvas.hover(position={"x": preferred["x"], "y": preferred["y"]})
+        page.wait_for_function("document.querySelector('#feature-details').innerText.length > 0")
+        canvas.click(position={"x": preferred["x"], "y": preferred["y"]})
+        page.wait_for_function("document.querySelector('#feature-details').innerText.length > 0")
+        preferred_text = page.locator("#feature-details").inner_text()
+        assert "Preferred route" in preferred_text
+        assert "Choice attribution" in preferred_text
+        assert route_points["preferredAuthority"] == "compiler"
+        assert "Compiler" in preferred_text
+        assert "Selection reason" in preferred_text
+        preferred_technical = page.locator(".route-choice-technical")
+        preferred_technical.locator("summary").click()
+        assert (route_points["preferredReason"] or "Not recorded") in (
+            preferred_technical.inner_text()
+        )
+        assert "Officer" not in preferred_text
+
+        page.get_by_role("button", name="Close route review lens").click()
+        alternative = route_points["alternative"]
+        map_box = page.locator("#map").bounding_box()
+        assert map_box is not None
+        canvas.hover(position={"x": alternative["x"], "y": alternative["y"]})
+        page.wait_for_function("document.querySelector('#feature-details').innerText.length > 0")
+        canvas.click(position={"x": alternative["x"], "y": alternative["y"]})
+        page.wait_for_function("document.querySelector('#feature-details').innerText.length > 0")
+        alternative_text = page.locator("#feature-details").inner_text()
+        assert "Considered alternative" in alternative_text
+        assert "Comparison reason" in alternative_text
+        alternative_technical = page.locator(".route-choice-technical")
+        alternative_technical.locator("summary").click()
+        assert (route_points["alternativeComparisonReason"] or "Not recorded") in (
+            alternative_technical.inner_text()
+        )
+        assert (
+            "Choice attribution" not in page.locator(".route-choice-card.alternative").inner_text()
+        )
+
+        browser.close()
+
+
+@pytest.mark.browser
+def test_selecting_route_opens_same_journey_comparison_without_enabling_alternatives(
+    tmp_path: Path,
+) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    result = compile(
+        config,
+        publication_authority=publication_destination_authority(workspace_root=tmp_path),
+    )
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1440, "height": 900})
+        page.route("https://tile.openstreetmap.org/**", lambda route: route.abort())
+        page.goto(result.artifacts["review_map"].as_uri())
+        page.wait_for_function("document.documentElement.dataset.mapReady === 'true'")
+        page.wait_for_function("!window.SATN_REVIEW_MAP.isMoving()")
+
+        page.get_by_text("Asset and alignment evidence", exact=True).click()
+        alternatives = page.locator("#layer-unselected-candidates")
+        assert not alternatives.is_checked()
+        assert page.evaluate(
+            "window.SATN_REVIEW_MAP.getLayoutProperty("
+            "'reviewable-unselected-candidates', 'visibility') === 'none'"
+        )
+
+        route_points = page.evaluate(
+            """() => {
+              const map = window.SATN_REVIEW_MAP;
+              const features = window.SATN_DATA.reviewable_network.features;
+              const preferred = features.find((feature) =>
+                feature.properties?.feature_type === 'reviewable-selected-route' &&
+                feature.properties?.layer === 'Strategic Main Network'
+              );
+              const alternative = features.find((feature) =>
+                feature.properties?.feature_type === 'reviewable-unselected-candidate' &&
+                feature.properties?.candidate_set_id === preferred?.properties?.candidate_set_id &&
+                feature.properties?.admission_disposition === 'admitted'
+              );
+              if (!preferred || !alternative) return null;
+              const project = (feature, preferInterior = false) => {
+                const coordinates = feature.geometry.coordinates;
+                const coordinate = preferInterior && coordinates.length > 2
+                  ? coordinates[Math.floor(coordinates.length / 2)]
+                  : coordinates[0].map((value, index) =>
+                    (value + coordinates[coordinates.length - 1][index]) / 2
+                  );
+                const point = map.project(coordinate);
+                return {x: point.x, y: point.y};
+              };
+              return {
+                candidateSetId: preferred.properties.candidate_set_id,
+                preferredCandidateId: preferred.properties.candidate_id,
+                alternativeCandidateId: alternative.properties.candidate_id,
+                preferredBasis: preferred.properties.primary_alignment_basis || null,
+                alternativeBasis: alternative.properties.primary_alignment_basis || null,
+                preferredReason: preferred.properties.selection_reason || null,
+                preferredAuthority: preferred.properties.authority || null,
+                alternativeReason: alternative.properties.comparison_reason || null,
+                preferred: project(preferred, true),
+                alternative: project(alternative)
+              };
+            }"""
+        )
+        assert route_points is not None
+        canvas = page.locator(".maplibregl-canvas")
+        preferred = route_points["preferred"]
+        page.wait_for_function(
+            "(point) => window.SATN_REVIEW_MAP.queryRenderedFeatures(point, "
+            "{layers: ['reviewable-strategic-main-network']}).length > 0",
+            arg=preferred,
+        )
+        canvas.click(position={"x": preferred["x"], "y": preferred["y"]})
+
+        comparison = page.locator(".route-choice-comparison")
+        assert comparison.is_visible()
+        comparison_text = comparison.inner_text()
+        assert "Journey comparison" in comparison_text
+        assert "Preferred route" in comparison_text
+        assert "Considered alternative" in comparison_text
+        assert route_points["candidateSetId"] not in comparison_text
+        assert route_points["preferredCandidateId"] not in comparison_text
+        assert route_points["alternativeCandidateId"] not in comparison_text
+        assert "Current NCN" in comparison_text
+        assert "A Road" in comparison_text
+        readable_preferred_reason = (
+            (route_points["preferredReason"] or "Not recorded")
+            .replace(route_points["preferredCandidateId"], "Current NCN")
+            .replace(route_points["alternativeCandidateId"], "A Road")
+            .replace("candidate-source-precedence", "candidate source precedence")
+        )
+        readable_alternative_reason = (
+            (route_points["alternativeReason"] or "Not recorded")
+            .replace(route_points["preferredCandidateId"], "Current NCN")
+            .replace(route_points["alternativeCandidateId"], "A Road")
+            .replace("candidate-source-precedence", "candidate source precedence")
+        )
+        assert readable_preferred_reason in comparison_text
+        assert readable_alternative_reason in comparison_text
+        assert "Choice attribution" in comparison_text
+        assert "Compiler" in comparison_text
+        ordinary_summary = page.locator(".artifact-why").inner_text()
+        assert route_points["preferredCandidateId"] not in ordinary_summary
+        assert route_points["alternativeCandidateId"] not in ordinary_summary
+        assert route_points["preferredReason"] not in ordinary_summary
+        assert page.evaluate(
+            """() => {
+              const panel = document.querySelector('#feature-details');
+              const comparison = panel?.querySelector('.route-choice-comparison');
+              const technical = panel?.querySelector('.artifact-context');
+              return Boolean(
+                comparison && technical &&
+                (comparison.compareDocumentPosition(technical) & Node.DOCUMENT_POSITION_FOLLOWING)
+              );
+            }"""
+        )
+        assert page.locator(".route-choice-card dt", has_text="Selection reason").count() == 1
+        assert page.locator(".route-choice-card dt", has_text="Comparison reason").count() == 1
+        technical = page.locator(".route-choice-technical")
+        assert technical.is_visible()
+        technical.locator("summary").click()
+        technical_text = technical.inner_text()
+        assert route_points["candidateSetId"] in technical_text
+        assert route_points["preferredCandidateId"] in technical_text
+        assert route_points["alternativeCandidateId"] in technical_text
+        assert page.evaluate(
+            "window.SATN_REVIEW_MAP.getLayoutProperty("
+            "'reviewable-unselected-candidates', 'visibility') === 'none'"
+        )
+        assert page.evaluate(
+            "window.SATN_REVIEW_MAP.getLayoutProperty("
+            "'review-lens-related-alternatives', 'visibility') === 'visible'"
+        )
+        assert page.evaluate(
+            "window.SATN_REVIEW_MAP.getPaintProperty("
+            "'review-lens-related-alternatives', 'line-dasharray').length >= 2"
+        )
+        assert page.evaluate(
+            "window.SATN_REVIEW_MAP.getSource("
+            "'review-lens-related-alternatives')._data.features.length >= 1"
+        )
+
+        alternative = route_points["alternative"]
+        page.wait_for_function(
+            "(point) => window.SATN_REVIEW_MAP.queryRenderedFeatures(point, "
+            "{layers: ['review-lens-related-alternatives']}).length > 0",
+            arg=alternative,
+        )
+        canvas.click(position={"x": alternative["x"], "y": alternative["y"]})
+        assert comparison.is_visible()
+        comparison_text = comparison.inner_text()
+        assert "Preferred route" in comparison_text
+        assert "Considered alternative" in comparison_text
+        assert route_points["candidateSetId"] not in comparison_text
+        assert route_points["preferredCandidateId"] not in comparison_text
+        assert route_points["alternativeCandidateId"] not in comparison_text
+
+        page.get_by_role("button", name="Close route review lens").click()
+        assert page.locator("#review-lens").is_hidden()
+        assert not alternatives.is_checked()
+        assert page.evaluate(
+            "window.SATN_REVIEW_MAP.getLayoutProperty("
+            "'reviewable-unselected-candidates', 'visibility') === 'none'"
+        )
+        assert page.evaluate(
+            "window.SATN_REVIEW_MAP.getLayoutProperty("
+            "'review-lens-related-alternatives', 'visibility') === 'none'"
+        )
+        assert (
+            page.evaluate(
+                """() => window.SATN_DATA.reviewable_network.features.find((feature) =>
+              feature.properties?.feature_type === 'reviewable-selected-route' &&
+              feature.properties?.layer === 'Strategic Main Network'
+            )?.properties?.selection_disposition"""
+            )
+            == "selected"
+        )
 
         browser.close()

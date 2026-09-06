@@ -319,6 +319,9 @@ class EffectiveReviewableSelection:
     routing_edge_ids: tuple[str, ...]
     reverse_routing_edge_ids: tuple[str, ...]
     geometry_wkt: str
+    selection_reason: str = "selection reason unavailable"
+    decision_id: str | None = None
+    decision_maker: str | None = None
 
 
 @dataclass(frozen=True)
@@ -328,6 +331,7 @@ class CandidateDisposition:
     candidate_id: str
     disposition: str
     reason: str
+    comparison_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -678,7 +682,160 @@ def _preferred_candidate(
             (item for item in candidates if item.candidate_id == governed_candidate_id),
             None,
         )
-    return min(candidates, key=lambda item: _reuse_first_sort_key(candidate_set.profile, item))
+    return min(candidates, key=lambda item: _compiler_candidate_sort_key(candidate_set, item))
+
+
+def _compiler_candidate_sort_key(
+    candidate_set: AlignmentCandidateSet,
+    candidate: object,
+) -> tuple[object, ...]:
+    """Return the configured compiler ordering for one Candidate Set.
+
+    Legacy profiles retain their existing source-precedence/directness/id
+    comparator.  vNext keeps its governed reuse-first comparator unchanged.
+    """
+
+    profile = candidate_set.profile
+    if profile.contract == "satn-network-selection-profile/vNext":
+        return _reuse_first_sort_key(profile, candidate)
+    precedence = {
+        source: index for index, source in enumerate(candidate_set.candidate_source_precedence)
+    }
+    return (
+        precedence.get(candidate.source_class, len(precedence)),
+        candidate.directness_m,
+        candidate.candidate_id,
+    )
+
+
+def _compiler_comparison_dimensions(candidate_set: AlignmentCandidateSet) -> tuple[object, ...]:
+    profile = candidate_set.profile
+    if profile.contract == "satn-network-selection-profile/vNext":
+        return tuple(getattr(profile, "comparator_order", ()) or ())
+    return ("candidate-source-precedence", "route-length", "stable-candidate-id")
+
+
+def _candidate_comparison_label(candidate: object, dimension: object) -> str:
+    """Render the governed fact used by one comparator dimension.
+
+    This is deliberately a view of the existing lexicographic comparator.  It
+    does not add a score or infer an admission rationale for the selected
+    candidate.
+    """
+
+    name = str(getattr(dimension, "value", dimension))
+    if name == "reuse-class":
+        value = getattr(candidate, "reuse_class", None)
+        return str(getattr(value, "value", value))
+    if name == "candidate-source-precedence":
+        value = getattr(candidate, "source_class", None)
+        return str(getattr(value, "value", value))
+    if name == "intervention-state":
+        value = getattr(candidate, "intervention_state", None)
+        return str(getattr(value, "value", value))
+    if name in {"route-length", "route-detour"}:
+        return f"{float(candidate.directness_m):g}m"
+    if name == "route-effort":
+        value = getattr(candidate, "total_absolute_elevation_change_m", None)
+        return "unknown" if value is None else f"{float(value):g}m elevation"
+    if name == "transition-fragmentation-burden":
+        transitions = getattr(candidate, "transition_count", None)
+        fragments = getattr(candidate, "fragmentation_count", None)
+        if transitions is None or fragments is None:
+            return "unknown"
+        return f"{transitions + fragments} transitions/fragments"
+    if name == "stable-candidate-id":
+        return str(getattr(candidate, "candidate_id", "unknown candidate"))
+    value = getattr(candidate, name.replace("-", "_"), None)
+    return "unknown" if value is None else str(value)
+
+
+def _compiler_pairwise_comparison_reason(
+    candidate_set: AlignmentCandidateSet,
+    selected: object,
+    alternative: object,
+) -> str:
+    comparator_order = _compiler_comparison_dimensions(candidate_set)
+    selected_key = _compiler_candidate_sort_key(candidate_set, selected)
+    alternative_key = _compiler_candidate_sort_key(candidate_set, alternative)
+    for dimension, selected_value, alternative_value in zip(
+        comparator_order, selected_key, alternative_key, strict=True
+    ):
+        if selected_value == alternative_value:
+            continue
+        dimension_name = str(getattr(dimension, "value", dimension))
+        if selected_value < alternative_value:
+            return (
+                f"{dimension_name} ranked candidate {selected.candidate_id} "
+                f"({_candidate_comparison_label(selected, dimension)}) ahead of candidate "
+                f"{alternative.candidate_id} "
+                f"({_candidate_comparison_label(alternative, dimension)})"
+            )
+        return (
+            f"{dimension_name} ranked candidate {alternative.candidate_id} "
+            f"({_candidate_comparison_label(alternative, dimension)}) ahead of candidate "
+            f"{selected.candidate_id} ({_candidate_comparison_label(selected, dimension)})"
+        )
+    return (
+        f"governed comparator tied candidate {selected.candidate_id} and "
+        f"candidate {alternative.candidate_id}"
+    )
+
+
+def _compiler_selection_reason(
+    candidate_set: AlignmentCandidateSet,
+    selected: object | None,
+    supplied_preference: str | None,
+) -> str:
+    """Explain the actual compiler choice from the configured comparator."""
+
+    if supplied_preference is not None:
+        return "compiler selection: supplied preference; selection rationale unavailable"
+    if selected is None:
+        return "compiler selection: no admitted candidate"
+    candidates = tuple(candidate_set.admitted_candidates)
+    comparator_order = _compiler_comparison_dimensions(candidate_set)
+    if not comparator_order:
+        return "compiler selection: governed comparator unavailable"
+    try:
+        _compiler_candidate_sort_key(candidate_set, selected)
+    except (AssertionError, KeyError, TypeError, ValueError):
+        return "compiler selection: governed comparator unavailable"
+    for alternative in sorted(
+        (item for item in candidates if item.candidate_id != selected.candidate_id),
+        key=lambda item: _compiler_candidate_sort_key(candidate_set, item),
+    ):
+        return "compiler selection: " + _compiler_pairwise_comparison_reason(
+            candidate_set, selected, alternative
+        )
+    return "compiler selection: governed comparator selected the candidate"
+
+
+def _compiler_alternative_comparison_reason(
+    candidate_set: AlignmentCandidateSet,
+    compiler: object | None,
+    alternative: object,
+    supplied_preference: str | None,
+) -> str:
+    alternative_id = str(alternative.candidate_id)
+    if compiler is None:
+        return (
+            f"compiler comparison unavailable for candidate {alternative_id}: no compiler candidate"
+        )
+    compiler_id = str(compiler.candidate_id)
+    if supplied_preference is not None:
+        return (
+            f"compiler comparison unavailable between candidate {compiler_id} and candidate "
+            f"{alternative_id}: supplied preference rationale unavailable"
+        )
+    if compiler_id == alternative_id:
+        return (
+            f"compiler comparison: candidate {compiler_id} was compiler-preferred; "
+            "another authority supplied the effective choice"
+        )
+    return "compiler comparison: " + _compiler_pairwise_comparison_reason(
+        candidate_set, compiler, alternative
+    )
 
 
 def _active_officer_choices(ledger: object | None) -> tuple[tuple[str, str], ...]:
@@ -698,6 +855,60 @@ def _active_officer_choices(ledger: object | None) -> tuple[tuple[str, str], ...
         if isinstance(target_id, str):
             choices.append((target_id, decision_id))
     return tuple(sorted(choices))
+
+
+def _active_officer_choice_metadata(
+    ledger: object | None,
+) -> dict[str, tuple[str, str | None, str | None]]:
+    """Return rationale and attribution only for active ledger choices."""
+
+    if ledger is None:
+        return {}
+    metadata: dict[str, tuple[str, str | None, str | None]] = {}
+    for decision in getattr(ledger, "decisions", ()):
+        status = getattr(decision, "status", "active")
+        if getattr(status, "value", status) != "active":
+            continue
+        action = getattr(decision, "action", None)
+        if getattr(action, "kind", None) != "select-alignment":
+            continue
+        target = getattr(decision, "target", None)
+        target_id = getattr(target, "target_id", None)
+        decision_id = getattr(decision, "decision_id", "officer-decision")
+        if not isinstance(target_id, str) or not isinstance(decision_id, str):
+            continue
+        rationale = getattr(decision, "rationale", None)
+        decision_maker = getattr(decision, "decision_maker", None)
+        metadata[target_id] = (
+            decision_id,
+            rationale.strip() if isinstance(rationale, str) and rationale.strip() else None,
+            decision_maker.strip()
+            if isinstance(decision_maker, str) and decision_maker.strip()
+            else None,
+        )
+    return metadata
+
+
+def _officer_selection_details(
+    candidate_id: str,
+    decision_id: str,
+    active_metadata: Mapping[str, tuple[str, str | None, str | None]],
+) -> tuple[str, str, str | None]:
+    ledger_choice = active_metadata.get(candidate_id)
+    if ledger_choice is not None and ledger_choice[0] == decision_id:
+        rationale = ledger_choice[1]
+        return (
+            f"officer decision: {rationale}"
+            if rationale is not None
+            else "officer decision: rationale unavailable",
+            decision_id,
+            ledger_choice[2],
+        )
+    return (
+        "officer selection: supplied candidate choice; decision rationale unavailable",
+        decision_id,
+        None,
+    )
 
 
 def _display_state(intervention_state: object | None) -> str:
@@ -799,6 +1010,14 @@ def _main_continuity_sections(
         for index, component in enumerate(components)
         if any(item.section_id == root_id for item in component)
     )
+    component_index_by_section_id = {
+        item.section_id: index for index, component in enumerate(components) for item in component
+    }
+    selected_component_order = {
+        component_index_by_section_id[section_id]: order
+        for order, section_id in enumerate(root_selection.selected_section_ids)
+        if section_id in component_index_by_section_id
+    }
 
     records_by_endpoints: dict[tuple[str, str], list[object]] = {}
     for edge in graph.edge_records:
@@ -911,7 +1130,14 @@ def _main_continuity_sections(
     while remaining:
         sources = sorted(connected_nodes.intersection(route_graph))
         if not sources:
-            break
+            next_root = min(
+                remaining,
+                key=lambda index: (selected_component_order.get(index, len(components)), index),
+            )
+            remaining.remove(next_root)
+            connected_nodes = set(component_nodes[next_root])
+            connected_components = {next_root}
+            continue
         distances, paths = nx.multi_source_dijkstra(
             route_graph,
             sources,
@@ -924,7 +1150,14 @@ def _main_continuity_sections(
             if node_id in distances
         ]
         if not reachable:
-            break
+            next_root = min(
+                remaining,
+                key=lambda index: (selected_component_order.get(index, len(components)), index),
+            )
+            remaining.remove(next_root)
+            connected_nodes = set(component_nodes[next_root])
+            connected_components = {next_root}
+            continue
         _distance, target_node, component_index = min(reachable)
         path_nodes = paths[target_node]
         if len(path_nodes) < 2:
@@ -1109,6 +1342,77 @@ def _mesh_materialized_sections(
     )
     candidates.extend(continuity_candidates)
     normalized_sections.extend(continuity_sections)
+
+    selected_candidate_ids = {
+        section.candidate_id for section in sections if section.candidate_id is not None
+    }
+    candidate_records = {
+        record.candidate_id: record for record in request.discovery.candidate_records
+    }
+    candidate_set_by_id = {
+        candidate.candidate_id: candidate_set
+        for candidate_set in request.discovery.candidate_sets
+        for candidate in candidate_set.candidates
+    }
+    admitted_candidate_ids = {
+        candidate.candidate_id
+        for candidate_set in request.discovery.candidate_sets
+        for candidate in candidate_set.admitted_candidates
+    }
+
+    def _a_section_replaced_by_compared_candidate(
+        section: EffectiveStrategicSection,
+    ) -> bool:
+        if (
+            section.network_role.casefold() != "urban-main-road-spine"
+            or "a-road" not in section.alignment_bases
+            or section.candidate_id is not None
+            or not section.routing_edge_ids
+        ):
+            return False
+        first_edge = edge_by_id.get(section.routing_edge_ids[0])
+        last_edge = edge_by_id.get(section.routing_edge_ids[-1])
+        if first_edge is None or last_edge is None:
+            return False
+        section_endpoints = (first_edge.from_node_id, last_edge.to_node_id)
+        for record in request.discovery.candidate_records:
+            if record.candidate_id not in admitted_candidate_ids:
+                continue
+            if record.candidate_id in selected_candidate_ids:
+                continue
+            if record.edge_ids != section.routing_edge_ids:
+                continue
+            if record.endpoints != section_endpoints:
+                continue
+            if record.primary_alignment_basis != "a-road" and (
+                "a-road" not in record.alignment_bases
+            ):
+                continue
+            candidate_set = candidate_set_by_id.get(record.candidate_id)
+            if candidate_set is None:
+                continue
+            selected_ids_in_set = {
+                candidate.candidate_id
+                for candidate in candidate_set.admitted_candidates
+                if candidate.candidate_id in selected_candidate_ids
+            }
+            if not selected_ids_in_set:
+                continue
+            candidate_role = str(
+                getattr(candidate_set.network_role, "value", candidate_set.network_role)
+            ).casefold()
+            if candidate_role != "interurban-spine":
+                continue
+            if any(
+                selected_id != record.candidate_id
+                and candidate_records.get(selected_id) is not None
+                and candidate_records[selected_id].endpoints == record.endpoints
+                and candidate_records[selected_id].network_role == record.network_role
+                for selected_id in selected_ids_in_set
+            ):
+                return True
+        return False
+
     protected_section_ids = {
         section.section_id
         for section in normalized_sections
@@ -1116,6 +1420,7 @@ def _mesh_materialized_sections(
         or (
             section.network_role.casefold() == "urban-main-road-spine"
             and "a-road" in section.alignment_bases
+            and not _a_section_replaced_by_compared_candidate(section)
         )
     }
     assembly = assemble_strategic_main_network(
@@ -1574,6 +1879,7 @@ def compile_strategic_network(
             )
         )
     )
+    active_officer_metadata = _active_officer_choice_metadata(request.officer_decisions)
     preferred_by_set = dict(request.compiler_preferred_candidate_ids)
     routing_endpoints_by_set = dict(request.routing_endpoint_bindings)
     officer_by_candidate: dict[str, tuple[str, ...]] = {}
@@ -1629,6 +1935,11 @@ def compile_strategic_network(
                 )
             )
         compiler_id = None if compiler is None else compiler.candidate_id
+        compiler_reason = _compiler_selection_reason(
+            candidate_set,
+            compiler,
+            governed_preference,
+        )
         set_candidate_ids = {item.candidate_id for item in candidate_set.candidates}
         officer_ids = tuple(
             candidate_id
@@ -1710,6 +2021,25 @@ def compile_strategic_network(
                 break
             if effective is not None or authority is PlanningAuthority.GOVERNED_REFERENCE:
                 break
+        selection_reason = compiler_reason
+        decision_id: str | None = None
+        decision_maker: str | None = None
+        if authority is PlanningAuthority.OFFICER and officer_id is not None:
+            officer_decision_ids = officer_by_candidate.get(officer_id, ())
+            if len(officer_decision_ids) == 1:
+                selection_reason, decision_id, decision_maker = _officer_selection_details(
+                    officer_id,
+                    officer_decision_ids[0],
+                    active_officer_metadata,
+                )
+            else:
+                selection_reason = (
+                    "officer selection: multiple decision attributions; rationale unavailable"
+                )
+        elif authority is PlanningAuthority.GOVERNED_REFERENCE:
+            selection_reason = (
+                "governed reference route: supplied fallback; compiler comparison unavailable"
+            )
         if (
             officer_id is not None
             and compiler_id is not None
@@ -1743,6 +2073,7 @@ def compile_strategic_network(
                     reference.routing_edge_ids,
                     (),
                     reference_geometry,
+                    selection_reason=selection_reason,
                 )
             )
             sections.append(
@@ -1844,6 +2175,9 @@ def compile_strategic_network(
                         edge_ids,
                         reverse_ids,
                         geometry,
+                        selection_reason=selection_reason,
+                        decision_id=decision_id,
+                        decision_maker=decision_maker,
                     )
                 )
                 section_id = effective.candidate_id
@@ -1892,16 +2226,27 @@ def compile_strategic_network(
                 )
                 continue
             if candidate.candidate_id in selected_ids:
-                disposition, reason = (
+                disposition, reason, comparison_reason = (
                     "effective",
                     "candidate is effective in the immutable strategic network",
+                    None,
                 )
             elif getattr(admission.disposition, "value", admission.disposition) == "admitted":
-                disposition, reason = "unselected", "admitted alternative retained for review"
+                disposition, reason, comparison_reason = (
+                    "unselected",
+                    "admitted alternative retained for review",
+                    _compiler_alternative_comparison_reason(
+                        candidate_set,
+                        compiler,
+                        candidate,
+                        governed_preference,
+                    ),
+                )
             else:
-                disposition, reason = (
+                disposition, reason, comparison_reason = (
                     "rejected",
                     getattr(admission.rationale, "value", str(admission.rationale)),
+                    None,
                 )
             dispositions.append(
                 CandidateDisposition(
@@ -1910,6 +2255,7 @@ def compile_strategic_network(
                     candidate.candidate_id,
                     disposition,
                     reason,
+                    comparison_reason,
                 )
             )
 
