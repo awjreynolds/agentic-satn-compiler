@@ -16,15 +16,16 @@ inclusive, but it can bypass settlements, have weak natural surveillance, or lac
 cycling rights. A country lane can form a useful strategic link only when its actual
 speed, traffic volume, surface, visibility and management make mixed traffic suitable.
 
-For this simplified SATN, make the A-road corridor a mandatory candidate
-consideration for each genuine interurban connection, while allowing another
+For this simplified SATN, the owner policy can make the A-road corridor a mandatory
+candidate consideration for each genuine interurban connection, while allowing another
 evidence-backed corridor to be selected when it gives the more coherent, direct,
-safe, comfortable and usable connection. Prefer current or reclassified NCN,
-existing cycleway/Greenway and suitable bridleway or restricted-byway corridors as
-reusable source evidence. Admit a B-road to the Strategic Main Network only to fill
-a genuine missing interurban link after the preferred source corridors cannot provide
-a credible continuous connection. Keep village access as Access Support rather than
-using village streets to inflate or substitute for the interurban Main connection.
+safe, comfortable and usable connection. Prefer current/former NCN, existing
+cycleway/Greenway and suitable bridleway or restricted-byway corridors as reusable
+source evidence. Admit a B-road to the Strategic Main Network only to fill a genuine
+missing interurban link after the preferred source corridors cannot provide a
+credible continuous connection. Retain through-village sections when they carry
+that interurban Main connection; keep village-only branches and local access as
+Access Support.
 
 That policy is a POC recommendation, not a rule stated by ATE or DfT. ATE expressly
 says that the three rural route-creation families (busy roads, quiet mixed-traffic
@@ -38,9 +39,9 @@ evidence and officer choice.
 | Source | Version and exact URL | Relevant scope |
 | --- | --- | --- |
 | Active Travel England, *Designing accessible rural active travel* landing page | Published 14 July 2026: <https://www.gov.uk/government/publications/designing-accessible-rural-active-travel> | Confirms the guide is the July 2026 rural guidance, 253 pages, with a separate 172-page case-study volume; applies to England. |
-| ATE, *Rural Design Guide* | July 2026 PDF: <https://assets.publishing.service.gov.uk/media/6a6c4638bf4a7aca8f897759/active-travel-england-rural-design-guide.pdf> (253 pages; retrieved 2026-09-06; SHA-256 `eb9b7441bae15e3d2371074071bbe4f23b12a04d69eca61936be9164d63051fa`) | Primary route-planning, design, rights, social-safety and delivery evidence below. Printed page numbers are used. |
-| ATE, *Rural Design Guide – Case Studies* | July 2026 PDF: <https://assets.publishing.service.gov.uk/media/6a6c46618319ab05f7caa277/active-travel-england-rural-design-case-studies.pdf> (172 pages; retrieved 2026-09-06; SHA-256 `360463b2e0370cb87e20a6964fea64460719f3e50ac1de9dcd27b82b1100dda9`) | Relevant examples: A27 East of Lewes, St Peter’s Greenway, Exeter Green Lanes and Keswick to Threlkeld. |
-| DfT, *Cycle Infrastructure Design, LTN 1/20* | Published July 2020: <https://www.gov.uk/government/publications/cycle-infrastructure-design-ltn-120>; PDF: <https://assets.publishing.service.gov.uk/media/5ffa1f96d3bf7f65d9e35825/cycle-infrastructure-design-ltn-1-20.pdf> (188 pages; retrieved 2026-09-06; SHA-256 `5ae10a29d52f41c661e394fdd381806d027f0d696c427421cc125fd4d5772c9b`) | National cycling baseline that ATE says it complements and extends to rural walking, wheeling and equestrian use. |
+| ATE, *Rural Design Guide* | July 2026 PDF: <https://assets.publishing.service.gov.uk/media/6a6c4638bf4a7aca8f897759/active-travel-england-rural-design-guide.pdf> (253 pages; retrieved 2026-09-06) | Primary route-planning, design, rights, social-safety and delivery evidence below. Printed page numbers are used. |
+| ATE, *Rural Design Guide – Case Studies* | July 2026 PDF: <https://assets.publishing.service.gov.uk/media/6a6c46618319ab05f7caa277/active-travel-england-rural-design-case-studies.pdf> (172 pages; retrieved 2026-09-06) | Relevant examples: A27 East of Lewes, St Peter’s Greenway, Exeter Green Lanes and Keswick to Threlkeld. |
+| DfT, *Cycle Infrastructure Design, LTN 1/20* | Published July 2020: <https://www.gov.uk/government/publications/cycle-infrastructure-design-ltn-120>; PDF: <https://assets.publishing.service.gov.uk/media/5ffa1f96d3bf7f65d9e35825/cycle-infrastructure-design-ltn-1-20.pdf> (188 PDF pages; retrieved 2026-09-06) | National cycling baseline that ATE says it complements and extends to rural walking, wheeling and equestrian use. Citations below use the document’s printed page numbers; its numbered content runs to printed p. 195, so Appendix C printed pp. 185–190 are PDF pp. 177–182. |
 
 ## What ATE’s rural guide says
 
@@ -132,10 +133,12 @@ dazzle, air quality and route attractiveness; moving a path farther from the roa
 also reduce perceived personal safety, so regular access/egress and lighting must be
 considered (pp. 53–55).
 
-ATE’s guidance therefore supports mandatory A-road consideration for directness and
-network continuity, while rejecting an automatic A-road selection. It also rejects a
-blanket B-road or quiet-lane safety assumption: the candidate needs measured
-conditions and a credible intervention.
+ATE’s guidance supports considering the most direct main-road corridor for directness
+and network continuity, while requiring route-level comparison rather than automatic
+selection by road class. It does not mandate A-road consideration. The simplified
+SATN’s mandatory A-road consideration and B-road exception are owner policy layered
+onto that evidence. ATE also rejects a blanket B-road or quiet-lane safety assumption:
+the candidate needs measured conditions and a credible intervention.
 
 ### Social safety, including dark everyday travel
 
@@ -232,18 +235,22 @@ consents may be required (pp. 227–229).
 
 LTN 1/20 gives the same legal distinction: a footpath is on-foot-only, a bridleway
 has rights on foot, horseback and bicycle, a restricted byway admits non-motor
-transport, and a BOAT admits motor traffic as well (Appendix C, pp. 185–186). It
-also says there is no general statutory right to cycle on a towpath, and cautions that
-permissive licences can be withdrawn at short notice; where possible, higher-level
-rights such as a cycle track, restricted byway or bridleway are preferred (pp. 185,
-189–190).
+transport, and a BOAT admits motor traffic as well (Appendix C, printed pp. 185–186;
+PDF pp. 177–178). It also says there is no general statutory right to cycle on a
+towpath, and cautions that permissive licences can be withdrawn at short notice;
+where possible, higher-level rights such as a cycle track, restricted byway or
+bridleway are preferred (printed pp. 185, 189–190; PDF pp. 177, 181–182).
 
 The compiler should therefore retain `Alignment Basis` (for example,
-`current-ncn`, `reclassified-ncn`, `public-bridleway`, `cycle-track`, `former-railway`,
+`current-ncn`, `former-ncn`, `public-bridleway`, `cycle-track`, `former-railway`,
 `a-road`, `b-road`) separately from `Intervention State` (`existing-provision`,
-`upgrade-required`, `proposed-new-link`, `unresolved-gap`). Existing mapped geometry
-does not establish current quality; legal or permissive access does not establish
-surface, width, continuity, land security or after-dark usability.
+`upgrade-required`, `proposed-new-link`, `unresolved-gap`). Use
+`existing-provision` to record an observed or mapped existing asset before a full
+suitability appraisal. It must not imply that the asset is selected, safe, accessible
+to every intended user or in good condition. Record surface, width, continuity, land
+security, rights and after-dark usability as separate assessed fields, with known
+limitations and unknowns visible; legal or permissive access does not establish those
+qualities.
 
 ## What LTN 1/20 adds or sharpens
 
@@ -323,21 +330,24 @@ national selection rule.
 ## POC recommendations
 
 1. **Candidate admission.** For each interurban Network Place connection, require an
-   A-road corridor to be considered. Include available current/reclassified NCN,
-   existing cycleway/Greenway, bridleway/restricted-byway and other traffic-free
-   corridors as preferred reusable evidence where they can form a credible
-   connection. Consider a B-road for Main only when it fills a genuine missing
-   interurban link and no preferred corridor can provide a credible continuous
-   connection. Preserve rejected or unselected options as inspectable candidates.
-2. **Village boundary.** Keep village and small-town internal access in Access
-   Support. An interurban Main option may connect to a village portal or gateway, but
-   local street treatment, school access and place-making should not silently become
-   the Main corridor decision.
-3. **Continuity.** Require each Alignment Option to be a continuous, bidirectional
-   chain between its canonical endpoints, with every change of basis and every
-   crossing/transition represented. A nearby line or proposed intervention cannot
-   silently close a missing link; publish `unresolved-gap` when the evidence-backed
-   chain is absent.
+   A-road corridor to be considered. Include available current/former NCN, existing
+   cycleway/Greenway, bridleway/restricted-byway and other traffic-free corridors as
+   preferred reusable evidence where they can form a credible connection. Consider a
+   B-road for Main only when it fills a genuine missing interurban link and no
+   preferred corridor can provide a credible continuous connection. Preserve rejected
+   or unselected options as inspectable candidates.
+2. **Village boundary.** Retain through-village sections when they carry the
+   interurban Main connection. Keep village-only branches, local street treatment,
+   school access and place-making in Access Support; they should not silently become
+   the Main corridor decision or substitute for a through-village connection.
+3. **Continuity and uncertainty.** Require each Alignment Option to expose a
+   continuous, bidirectional corridor between its canonical endpoints wherever the
+   physical geometry is known or proposed, with every change of basis and every
+   crossing/transition represented. A proposed physical corridor can remain an
+   option when its delivery, access or legal feasibility is uncertain; show those
+   uncertainties rather than deleting it or treating it as an abstract network
+   disconnect. If geometry itself is missing, publish `unresolved-gap` and do not
+   invent a line as built.
 4. **Evidence-led comparison.** Keep directness, gradient/effort, traffic exposure,
    crossings, surface/width, social safety, dark usability, accessibility, rights,
    land security, maintenance and intervention need as separate observations. ATE’s
@@ -348,12 +358,15 @@ national selection rule.
    escape/access points, lighting, maintenance and user-group safety. Do not infer
    “safer” from A-road, B-road, NCN, bridleway or off-road labels. Treat unknown
    social safety and dark use as explicit evidence gaps.
-6. **Rights and intervention state.** A current mapped asset may be `existing-provision`
-   only when current cycling access, physical continuity and usable condition are
-   evidenced. A bridleway, former railway, former NCN or footpath may instead be
-   `upgrade-required`; a missing bridge, right or link is `unresolved-gap` until a
-   credible proposed intervention and legal/access basis exists. Permissive access
-   remains revocable and must not be presented as a permanent public right.
+6. **Observed assets and intervention state.** Keep observed or mapped existing assets
+   distinct from assessed suitability. An existing cycleway, current/former NCN,
+   bridleway, former railway or footpath can be shown as an existing corridor with
+   its evidence source, without requiring a full quality, rights or safety survey
+   first. Record those assessments separately and expose their limitations. Use
+   `upgrade-required` when
+   a known intervention is needed; use `proposed-new-link` or `unresolved-gap` for
+   missing links or rights. Permissive access remains revocable and must not be
+   presented as a permanent public right.
 7. **Quiet-lane handling.** Keep Quiet Lane designation, traffic management,
    access-only restriction, speed, flow, surface and personal-safety claims separate.
    A quiet lane enters Main only where the evidence and any required intervention
@@ -376,9 +389,8 @@ owner when two continuous, legally plausible options both satisfy the baseline:
   preference. Recommendation: retain both options and require an attributable
   qualitative officer choice using the separate evidence claims; do not invent a
   global weight.
-- Should a route with unresolved after-dark social-safety evidence remain
-  `Reviewable` while it is a strategically necessary connection, or be withheld from
-  a `Complete` network until a dark-use assessment and credible mitigation exist?
-  Recommendation: retain it as a visible reviewable option/gap, but do not represent
-  it as Complete until the required safety/access evidence and intervention are
-  resolved, consistent with issue #15’s resolution.
+- How should the POC expose unresolved after-dark social-safety evidence on a proposed
+  strategic route? Recommendation: show the route with explicit unknowns and its
+  intervention state, while reserving claims that it is built or safe for evidence.
+  No universal survey gate is proposed; product status semantics remain an owner
+  choice.
