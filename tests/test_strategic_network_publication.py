@@ -250,6 +250,29 @@ def test_required_urban_spine_is_published_as_selected_strategic_geometry() -> N
     assert feature["properties"]["display_state"] == "upgrade-required"
 
 
+def test_non_candidate_section_publishes_canonical_alignment_basis() -> None:
+    section = SimpleNamespace(
+        section_id="urban-spine-canonical-basis",
+        obligation_id="urban-structure:canonical-basis",
+        candidate_id=None,
+        network_role="urban-main-road-spine",
+        routing_edge_ids=("urban-edge-canonical-basis",),
+        reverse_routing_edge_ids=(),
+        geometry_wkt="LINESTRING (100000 200000, 100100 200100)",
+        authority="compiler",
+        alignment_bases=("current-ncn", "mapped-cycleway"),
+        primary_alignment_basis="current-ncn",
+        intervention_state="upgrade-required",
+        display_state="upgrade-required",
+    )
+
+    projection = project_strategic_network(_result(section))
+
+    properties = projection.layers["Strategic Main Network"]["features"][0]["properties"]
+    assert properties["alignment_bases"] == ["current-ncn", "mapped-cycleway"]
+    assert properties["primary_alignment_basis"] == "current-ncn"
+
+
 def test_reference_and_divergence_are_explicit_non_grey_variants() -> None:
     reference = _section(
         "reference", authority="governed-reference-provisional", display="reference-route"

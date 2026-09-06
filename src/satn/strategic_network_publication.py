@@ -880,6 +880,8 @@ def project_strategic_network(
             "authority": authority,
             "alignment_basis": basis_label,
             "alignment_basis_key": basis_key,
+            "alignment_bases": list(getattr(section, "alignment_bases", ()) or ()),
+            "primary_alignment_basis": getattr(section, "primary_alignment_basis", None),
             "intervention_state": getattr(section, "intervention_state", None),
             "display_state": getattr(section, "display_state", None),
             "routing_edge_ids": list(getattr(section, "routing_edge_ids", ())),
