@@ -49,6 +49,7 @@ from satn.routing import (
     _coordinate_id,
     _directed_edge_identity,
     _present,
+    _source_edge_id,
     _truthy,
 )
 from satn.strategic_corridors import StrategicCorridorPreparationResult
@@ -149,16 +150,6 @@ def _canonical(value: object) -> object:
     if hasattr(value, "value"):
         return value.value
     return value
-
-
-def _source_edge_id(row: object, index: object) -> str:
-    if "osmid" in row and _present(row.get("osmid")):
-        return str(row.get("osmid"))
-    if "source_id" in row and _present(row.get("source_id")):
-        return str(row.get("source_id"))
-    if "edge_id" in row and _present(row.get("edge_id")):
-        return str(row.get("edge_id"))
-    return str(index)
 
 
 def _component_id(kind: str, nodes: Iterable[str]) -> str:

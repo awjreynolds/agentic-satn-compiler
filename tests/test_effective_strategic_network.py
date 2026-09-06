@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 
 import geopandas as gpd
 from shapely.geometry import LineString
@@ -188,6 +189,126 @@ def test_repeated_osmid_rows_keep_directed_identity_and_contiguous_route_geometr
         (1.0, 0.0),
         (2.0, 0.0),
     ]
+
+
+def test_collection_osmid_survives_public_preparation_effective_compile() -> None:
+    network = gpd.GeoDataFrame(
+        [
+            {
+                "osmid": [56752458, 25286883],
+                "u": "A",
+                "v": "B",
+                "oneway": True,
+                "highway": "cycleway",
+                "bicycle": "designated",
+                "geometry": LineString([(0, 0), (100, 0)]),
+            },
+            {
+                "osmid": [56752458, 25286883],
+                "u": "B",
+                "v": "D",
+                "oneway": True,
+                "highway": "cycleway",
+                "bicycle": "designated",
+                "geometry": LineString([(100, 0), (200, 0)]),
+            },
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    effective_graph = planning_graph_from_compiler_edges(
+        network,
+        source_export_fingerprint="3" * 64,
+    )
+    routing_graph = RoadGraph(network)
+    canonical_ids = {
+        (str(start), str(end)): str(attrs["directed_edge_id"])
+        for start, end, attrs in routing_graph.graph.edges(data=True)
+    }
+    replacement_ids = {
+        record.directed_edge_id: canonical_ids[(record.from_node_id, record.to_node_id)]
+        for record in effective_graph.edge_records
+    }
+    preparation_graph = replace(
+        effective_graph,
+        edge_records=tuple(
+            replace(
+                record,
+                directed_edge_id=replacement_ids[record.directed_edge_id],
+            )
+            for record in effective_graph.edge_records
+        ),
+        component_records=tuple(
+            replace(
+                component,
+                directed_edge_ids=tuple(
+                    replacement_ids.get(edge_id, edge_id) for edge_id in component.directed_edge_ids
+                ),
+            )
+            for component in effective_graph.component_records
+        ),
+    )
+    preparation = _fixture_preparation(preparation_graph)
+
+    state = compile_effective_strategic_network(
+        EffectiveStrategicNetworkRequest(
+            routable_network=network,
+            preparation=preparation,
+            area_fingerprint="b" * 64,
+            snapshot_fingerprint=effective_graph.source_export_fingerprint,
+        )
+    )
+
+    assert state.status is EffectiveStrategicNetworkStatus.EVALUATED
+    assert len(state.selections) == 1
+    assert not state.gaps
+
+
+def test_unique_edge_id_is_preserved_through_public_compile() -> None:
+    network = gpd.GeoDataFrame(
+        [
+            {
+                "edge_id": "fallback-edge",
+                "u": "A",
+                "v": "D",
+                "oneway": True,
+                "highway": "cycleway",
+                "bicycle": "designated",
+                "geometry": LineString([(0, 0), (200, 0)]),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    graph = planning_graph_from_compiler_edges(
+        network,
+        source_export_fingerprint="3" * 64,
+    )
+    routing_graph = RoadGraph(network)
+
+    assert graph.edge_records[0].source_edge_id == "fallback-edge"
+    assert graph.edge_records[0].directed_edge_id == "fallback-edge"
+    road_edge = next(iter(routing_graph.graph.edges(data=True)))[2]
+    assert road_edge["edge_id"] == "fallback-edge"
+    assert road_edge["directed_edge_id"] == "fallback-edge"
+
+    state = compile_effective_strategic_network(
+        EffectiveStrategicNetworkRequest(
+            routable_network=network,
+            preparation=_fixture_preparation(graph),
+            area_fingerprint="b" * 64,
+            snapshot_fingerprint=graph.source_export_fingerprint,
+        )
+    )
+
+    assert state.status is EffectiveStrategicNetworkStatus.EVALUATED
+    selected_sections = tuple(
+        section
+        for section in state.effective_network.sections
+        if section.network_role == "interurban-spine"
+    )
+    assert len(selected_sections) == 1
+    assert selected_sections[0].routing_edge_ids == ("fallback-edge",)
 
 
 def test_evaluation_is_the_canonical_state_and_preserves_planning_parity() -> None:

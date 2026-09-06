@@ -1441,7 +1441,13 @@ def _present(value: object) -> bool:
 
 def _source_edge_id(row: pd.Series, fallback: object) -> str:
     """Return one stable identity for scalar or collection-valued OSM IDs."""
-    return str(source_identity(row, ("osmid", "source_id", "osm_id", "id"), fallback))
+    return str(
+        source_identity(
+            row,
+            ("osmid", "source_id", "osm_id", "id", "edge_id"),
+            fallback,
+        )
+    )
 
 
 def _edge_row_sort_key(item: tuple[object, pd.Series]) -> tuple[str, ...]:
