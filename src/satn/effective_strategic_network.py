@@ -1011,10 +1011,11 @@ def _planning_graph_with_urban_spines(
         "b-road": "b-road",
         "classified-unnumbered": "classified-unnumbered-road",
     }
-    # B-road rows remain in ``combined`` above so they are available as
-    # routable graph context.  They are not authoritative Main sections just
-    # because the source inventory supplied them as urban spines; a later
-    # continuity choice must establish an interurban connection first.
+    # B-road and classified-unnumbered rows remain in ``combined`` above so
+    # they are available as routable graph context.  They are not authoritative
+    # Main sections just because the source inventory supplied them as urban
+    # spines; a later continuity choice must establish an interurban connection
+    # first.
     required_sections = tuple(
         EffectiveStrategicSection(
             section_id=section_id,
@@ -1032,50 +1033,7 @@ def _planning_graph_with_urban_spines(
             network_scope="urban",
         )
         for section_id in sorted(classification_by_id)
-        if classification_by_id[section_id] != "b-road"
-    )
-    original_source_ids = {
-        _source_edge_id(row, index)
-        for index, row in routable_network.iterrows()
-        if isinstance(row.geometry, LineString) and len(row.geometry.coords) >= 2
-    }
-    original_edge_ids = {
-        edge.directed_edge_id
-        for edge in graph.edge_records
-        if edge.source_edge_id in original_source_ids
-    }
-    weak_component_by_edge = {
-        edge_id: component
-        for component in graph.component_records
-        if component.kind == "weak"
-        for edge_id in component.directed_edge_ids
-    }
-    component_by_section: dict[str, GraphComponentRecord | None] = {
-        section.section_id: next(
-            (
-                weak_component_by_edge[edge_id]
-                for edge_id in section.routing_edge_ids
-                if edge_id in weak_component_by_edge
-            ),
-            None,
-        )
-        for section in required_sections
-    }
-    section_ids_by_component: dict[str, list[str]] = {}
-    for section_id, component in component_by_section.items():
-        if component is not None:
-            section_ids_by_component.setdefault(component.component_id, []).append(section_id)
-    excluded_section_ids: set[str] = set()
-    for section_ids in section_ids_by_component.values():
-        component = component_by_section[section_ids[0]]
-        if component is None or original_edge_ids.intersection(component.directed_edge_ids):
-            continue
-        classifications = {classification_by_id[section_id] for section_id in section_ids}
-        if classifications == {"classified-unnumbered"}:
-            excluded_section_ids.update(section_ids)
-
-    required_sections = tuple(
-        section for section in required_sections if section.section_id not in excluded_section_ids
+        if classification_by_id[section_id] == "a-road"
     )
     return graph, required_sections
 

@@ -4,6 +4,7 @@ import sys
 from dataclasses import replace
 
 import geopandas as gpd
+import pytest
 from shapely.geometry import LineString
 from test_strategic_network_planning import discovery, fixture_graph, request
 
@@ -543,7 +544,14 @@ def test_supplied_b_road_village_branch_is_not_a_main_section() -> None:
     }
 
 
-def test_b_road_graph_edge_can_connect_selected_main_components() -> None:
+@pytest.mark.parametrize(
+    ("gap_highway", "urban_classification"),
+    (("secondary", "b-road"), ("tertiary", "classified-unnumbered")),
+)
+def test_non_main_urban_spine_can_connect_selected_main_components(
+    gap_highway: str,
+    urban_classification: str,
+) -> None:
     routable_network = gpd.GeoDataFrame(
         [
             {
@@ -566,7 +574,7 @@ def test_b_road_graph_edge_can_connect_selected_main_components() -> None:
                 "source_id": "b-gap",
                 "u": "B",
                 "v": "C",
-                "highway": "secondary",
+                "highway": gap_highway,
                 "oneway": False,
                 "geometry": LineString([(100, 0), (200, 0)]),
             },
@@ -574,7 +582,7 @@ def test_b_road_graph_edge_can_connect_selected_main_components() -> None:
                 "source_id": "b-gap-reverse",
                 "u": "C",
                 "v": "B",
-                "highway": "secondary",
+                "highway": gap_highway,
                 "oneway": False,
                 "geometry": LineString([(200, 0), (100, 0)]),
             },
@@ -611,7 +619,7 @@ def test_b_road_graph_edge_can_connect_selected_main_components() -> None:
             },
             {
                 "structure_id": "urban-b-gap",
-                "official_classification": "b-road",
+                "official_classification": urban_classification,
                 "geometry": LineString([(100, 0), (200, 0)]),
             },
             {
@@ -1028,7 +1036,7 @@ def test_detached_classified_unnumbered_spine_is_excluded_but_context_remains() 
     )
 
 
-def test_detached_mixed_a_and_classified_unnumbered_component_keeps_both_sections() -> None:
+def test_detached_mixed_a_and_classified_unnumbered_component_keeps_a_only() -> None:
     routable_network = gpd.GeoDataFrame(
         [
             {
@@ -1071,23 +1079,20 @@ def test_detached_mixed_a_and_classified_unnumbered_component_keeps_both_section
         required_sections,
     )
 
-    assert {section.section_id for section in required_sections} == {
-        "urban-detached-a",
-        "urban-detached-unnumbered",
-    }
+    assert {section.section_id for section in required_sections} == {"urban-detached-a"}
     assert [
         diagnostic.subject_id
         for diagnostic in diagnostics.diagnostics
         if diagnostic.code == "strategic-main-attachment-gap"
     ] == ["urban-detached-a"]
-    assert not any(
+    assert any(
         diagnostic.subject_id == "urban-detached-unnumbered"
         and diagnostic.code == "strategic-main-section-excluded"
         for diagnostic in diagnostics.diagnostics
     )
 
 
-def test_attached_classified_unnumbered_spine_remains_required() -> None:
+def test_attached_classified_unnumbered_spine_is_excluded_but_context_remains() -> None:
     routable_network = gpd.GeoDataFrame(
         [
             {
@@ -1125,5 +1130,9 @@ def test_attached_classified_unnumbered_spine_remains_required() -> None:
         required_sections,
     )
 
-    assert [section.section_id for section in required_sections] == ["urban-attached-unnumbered"]
+    assert required_sections == ()
+    urban_edge = next(
+        edge for edge in graph.edge_records if edge.source_edge_id == "urban-attached-unnumbered"
+    )
+    assert urban_edge.geometry_wkt == "LINESTRING (500 0, 600 0)"
     assert diagnostics.diagnostics == ()
