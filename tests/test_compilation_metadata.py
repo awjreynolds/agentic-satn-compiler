@@ -48,6 +48,17 @@ def test_area_deployment_preserves_compilation_metadata(tmp_path: Path) -> None:
     run = json.loads((result.output_dir / "run.json").read_text(encoding="utf-8"))
     publication = json.loads((deployment / "publication.json").read_text(encoding="utf-8"))
     assert publication["compilation_metadata"] == run["compilation_metadata"]
+    compiler_run = json.loads((deployment / "compiler-run.json").read_text(encoding="utf-8"))
+    assert "compilation_diagnostics" in run
+    assert "compilation_diagnostics" not in compiler_run
+    assert "compilation_diagnostics" not in publication
+    assert publication["run_id"] == compiler_run["run_id"] == run["run_id"]
+    assert (
+        publication["compilation_input_fingerprint"]
+        == compiler_run["compilation_input_fingerprint"]
+        == run["compilation_input_fingerprint"]
+    )
+    assert set(compiler_run) == set(run) - {"compilation_diagnostics"}
     assert _satn_data(deployment / "data.js")["compilation_metadata"] == run["compilation_metadata"]
     for relative_path in (
         "compiler-run.json",

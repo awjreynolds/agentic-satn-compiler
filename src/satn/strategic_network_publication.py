@@ -10,13 +10,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
 from pyproj import Transformer
+from shapely import STRtree
 from shapely.geometry import Point, mapping, shape
 from shapely.ops import transform as transform_geometry
+from shapely.ops import unary_union
 from shapely.wkt import loads as load_wkt
 
 from satn.constants import DISCLAIMER
@@ -66,6 +69,217 @@ _ACCESS_SUPPORT_ROLES = frozenset(
         "strategic-destination-access",
     }
 )
+
+_PUBLICATION_FINDING_KIND = "selected-main-physical-discontinuity"
+_PUBLICATION_CONTINUITY_REASON = (
+    "Selected Main component is physically separate; representative location only; "
+    "no direct connection proposed"
+)
+_PUBLICATION_CONTINUITY_METHOD = (
+    "EPSG:27700 endpoint-to-line contacts within canonical geometry tolerance and "
+    "linear overlaps connect; bare interior crossings are reported, not joined"
+)
+
+
+@dataclass(frozen=True)
+class StrategicPublicationFinding:
+    """A publication-only finding derived from retained selected geometry."""
+
+    gap_id: str
+    obligation_id: str
+    network_role: str
+    reason: str
+    representative_coordinates: tuple[float, float]
+    component_section_ids: tuple[str, ...]
+    component_obligation_ids: tuple[str, ...]
+    canonical_geometry_tolerance_m: float
+    publication_finding_kind: str = _PUBLICATION_FINDING_KIND
+    candidate_set_id: str | None = None
+    endpoints: tuple[str, ...] = ()
+    mesh_proof_points: tuple[tuple[float, float], ...] = ()
+
+
+def publication_finding_payload(finding: StrategicPublicationFinding) -> dict[str, object]:
+    """Return the stable sidecar/map record for one publication finding."""
+
+    return {
+        "gap_id": finding.gap_id,
+        "obligation_id": finding.obligation_id,
+        "network_role": finding.network_role,
+        "endpoints": list(finding.endpoints),
+        "reason": finding.reason,
+        "candidate_set_id": finding.candidate_set_id,
+        "mesh_proof_points": [list(point) for point in finding.mesh_proof_points],
+        "representative_point": list(finding.representative_coordinates),
+        "representative_point_crs": "EPSG:27700",
+        "publication_finding_kind": finding.publication_finding_kind,
+        "component_section_ids": list(finding.component_section_ids),
+        "component_obligation_ids": list(finding.component_obligation_ids),
+        "canonical_geometry_tolerance_m": finding.canonical_geometry_tolerance_m,
+        "continuity_method": _PUBLICATION_CONTINUITY_METHOD,
+    }
+
+
+def _canonical_a_road_component_gap(gap: object) -> bool:
+    """Return whether a retained gap already represents an official A component."""
+
+    return str(getattr(gap, "obligation_id", "") or "").startswith(
+        "a-road-backbone-component-gap-"
+    ) or any(
+        str(endpoint_id or "").startswith("a-road-backbone-component-endpoint-")
+        for endpoint_id in tuple(getattr(gap, "endpoints", ()))
+    )
+
+
+def _geometry_tolerance_m(result: object) -> float | None:
+    """Read one canonical geometry tolerance from retained candidate-set profiles."""
+
+    tolerances: set[float] = set()
+    for candidate_set in tuple(getattr(result, "candidate_sets", ())):
+        profile = getattr(candidate_set, "geometry_equivalence_profile", None)
+        tolerance = getattr(profile, "tolerance_m", None)
+        if tolerance is None:
+            continue
+        value = float(tolerance)
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError("publication geometry tolerance must be finite and positive")
+        tolerances.add(value)
+    if not tolerances:
+        return None
+    if len(tolerances) != 1:
+        raise ValueError("publication requires one canonical geometry tolerance")
+    return tolerances.pop()
+
+
+def _selected_main_physical_components(
+    result: object, tolerance_m: float
+) -> tuple[tuple[tuple[str, ...], tuple[str, ...], object], ...]:
+    """Partition selected Main sections using the existing physical-contact proof."""
+
+    effective = getattr(result, "effective_network", None)
+    records: list[tuple[str, str, object]] = []
+    for section in sorted(
+        tuple(getattr(effective, "sections", ())),
+        key=lambda item: str(item.section_id),
+    ):
+        if _publication_layer_for_role(getattr(section, "network_role", None)) != (
+            StrategicPublicationLayer.STRATEGIC_MAIN_NETWORK.value
+        ):
+            continue
+        geometry = load_wkt(str(getattr(section, "geometry_wkt", "")))
+        if geometry.geom_type != "LineString" or geometry.is_empty or len(geometry.coords) < 2:
+            raise ValueError("selected Main publication geometry must be a non-empty LineString")
+        records.append(
+            (
+                str(getattr(section, "section_id", "")),
+                str(getattr(section, "obligation_id", "")),
+                geometry,
+            )
+        )
+    if not records:
+        return ()
+
+    lines = [record[2] for record in records]
+    tree = STRtree(lines)
+    parent = list(range(len(lines)))
+
+    def root(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root, right_root = root(left), root(right)
+        if left_root != right_root:
+            parent[max(left_root, right_root)] = min(left_root, right_root)
+
+    for index, line in enumerate(lines):
+        for coordinate in (line.coords[0], line.coords[-1]):
+            endpoint = Point(coordinate)
+            for candidate in tree.query(endpoint.buffer(tolerance_m)):
+                other = int(candidate)
+                if other != index and endpoint.distance(lines[other]) <= tolerance_m:
+                    union(index, other)
+        for candidate in tree.query(line, predicate="intersects"):
+            other = int(candidate)
+            if other <= index:
+                continue
+            intersection = line.intersection(lines[other])
+            if intersection.length > tolerance_m:
+                union(index, other)
+            # Bare interior crossings intentionally do not union components.
+
+    groups: dict[int, list[int]] = {}
+    for index in range(len(lines)):
+        groups.setdefault(root(index), []).append(index)
+    components = []
+    for members in groups.values():
+        section_ids = tuple(sorted(records[index][0] for index in members))
+        obligation_ids = tuple(sorted({records[index][1] for index in members}))
+        linework = unary_union([lines[index] for index in members])
+        components.append(
+            (
+                section_ids,
+                obligation_ids,
+                linework,
+                len(members),
+                sum(lines[index].length for index in members),
+            )
+        )
+    components.sort(key=lambda item: (-item[3], -item[4], item[0]))
+    return tuple((item[0], item[1], item[2]) for item in components)
+
+
+def publication_continuity_findings(result: object) -> tuple[StrategicPublicationFinding, ...]:
+    """Find selected Main components that remain physically unrepresented."""
+
+    tolerance_m = _geometry_tolerance_m(result)
+    if tolerance_m is None:
+        return ()
+    components = _selected_main_physical_components(result, tolerance_m)
+    if len(components) <= 1:
+        return ()
+
+    represented_components: set[int] = set()
+    for gap in tuple(getattr(result, "gaps", ())):
+        if not _canonical_a_road_component_gap(gap):
+            continue
+        for coordinates in tuple(getattr(gap, "endpoint_coordinates", ())):
+            point = Point(float(coordinates[0]), float(coordinates[1]))
+            represented_components.update(
+                index
+                for index, (_section_ids, _obligation_ids, geometry) in enumerate(components)
+                if geometry.distance(point) <= tolerance_m
+            )
+
+    findings: list[StrategicPublicationFinding] = []
+    # The largest component is the retained Main component.  Only smaller,
+    # unrepresented components receive a publication marker.
+    for index, (section_ids, obligation_ids, geometry) in enumerate(components[1:], start=1):
+        if index in represented_components:
+            continue
+        identity = _fingerprint(
+            {
+                "kind": _PUBLICATION_FINDING_KIND,
+                "component_section_ids": section_ids,
+                "component_obligation_ids": obligation_ids,
+            }
+        )[:24]
+        representative = geometry.representative_point()
+        findings.append(
+            StrategicPublicationFinding(
+                gap_id=f"publication-gap-selected-main-component-{identity}",
+                obligation_id=f"publication-selected-main-component-{identity}",
+                network_role="strategic-main-network",
+                reason=_PUBLICATION_CONTINUITY_REASON,
+                representative_coordinates=(float(representative.x), float(representative.y)),
+                component_section_ids=section_ids,
+                component_obligation_ids=obligation_ids,
+                canonical_geometry_tolerance_m=tolerance_m,
+            )
+        )
+    return tuple(findings)
 
 
 def _publication_layer_for_role(role: object) -> str:
@@ -949,7 +1163,9 @@ def project_strategic_network(
         StrategicPublicationLayer.STRATEGIC_MAIN_NETWORK.value: [],
         StrategicPublicationLayer.ACCESS_SUPPORT.value: [],
     }
+    publication_findings = publication_continuity_findings(result)
     result_gaps = list(getattr(result, "gaps", ()))
+    result_gaps.extend(publication_findings)
     known_gap_keys = {
         key
         for item in result_gaps
@@ -976,6 +1192,55 @@ def project_strategic_network(
         gap_id = str(getattr(gap, "gap_id", getattr(gap, "obligation_id", "gap")))
         endpoints = tuple(getattr(gap, "endpoints", ()))
         mesh_proof_points = tuple(getattr(gap, "mesh_proof_points", ()))
+        representative_coordinates = getattr(gap, "representative_coordinates", None)
+        if representative_coordinates is not None:
+            identity_key = "representative-point"
+            geometry = _geometry_json(Point(representative_coordinates), source_crs)
+            properties = {
+                "layer": publication_layer,
+                "feature_type": "reviewable-gap-endpoint",
+                "gap_id": gap_id,
+                "obligation_id": getattr(gap, "obligation_id", gap_id),
+                "endpoint_id": None,
+                "endpoint_identity_key": identity_key,
+                "endpoint_position": None,
+                "endpoint_identity_fallback": False,
+                "network_role": getattr(gap, "network_role", None),
+                "endpoints": list(endpoints),
+                "candidate_set_id": getattr(gap, "candidate_set_id", None),
+                "display_state": "unresolved-gap",
+                "missing_endpoint_geometry": False,
+                "geometry_semantics": (
+                    "selected-main-component-representative-point-marker-only-no-route-geometry"
+                ),
+                "gap_marker_kind": "selected-main-component-representative",
+                "legend_text": "Disconnected selected Main component (representative location)",
+                "gap_marker_disclaimer": getattr(gap, "reason", _PUBLICATION_CONTINUITY_REASON),
+                "reason": getattr(gap, "reason", _PUBLICATION_CONTINUITY_REASON),
+                "publication_finding_kind": getattr(
+                    gap, "publication_finding_kind", _PUBLICATION_FINDING_KIND
+                ),
+                "representative_point": list(representative_coordinates),
+                "representative_point_crs": "EPSG:27700",
+                "component_section_ids": list(getattr(gap, "component_section_ids", ())),
+                "component_obligation_ids": list(getattr(gap, "component_obligation_ids", ())),
+                "canonical_geometry_tolerance_m": getattr(
+                    gap, "canonical_geometry_tolerance_m", None
+                ),
+                "continuity_method": _PUBLICATION_CONTINUITY_METHOD,
+                "core": _INTERVENTION_STYLES["unresolved-gap"]["core"],
+                "halo": _INTERVENTION_STYLES["unresolved-gap"]["halo"],
+                "pattern": _INTERVENTION_STYLES["unresolved-gap"]["pattern"],
+                "strategic_result_fingerprint": result_fingerprint,
+            }
+            gap_features_by_layer[publication_layer].append(
+                _feature(
+                    feature_id=f"reviewable-gap:{gap_id}:{identity_key}",
+                    geometry=geometry,
+                    properties=properties,
+                )
+            )
+            continue
         for proof_position, coordinates in enumerate(mesh_proof_points, start=1):
             identity_key = f"proof-point-{proof_position}"
             geometry = _geometry_json(Point(coordinates), source_crs)
@@ -1057,6 +1322,10 @@ def project_strategic_network(
         "contract": "satn-reviewable-map/v1",
         "disclaimer": DISCLAIMER,
         "strategic_result_fingerprint": result_fingerprint,
+        "publication_finding_count": len(publication_findings),
+        "publication_findings": [
+            publication_finding_payload(finding) for finding in publication_findings
+        ],
         "features": layers[StrategicPublicationLayer.STRATEGIC_MAIN_NETWORK.value]["features"]
         + layers[StrategicPublicationLayer.PLACES.value]["features"],
     }
@@ -1086,6 +1355,10 @@ def project_strategic_network(
         "optional_layers": list(OPTIONAL_LAYERS),
         "legend": _legend(),
         "diagnostics": list(layers[StrategicPublicationLayer.DIAGNOSTICS.value].get("records", ())),
+        "publication_finding_count": len(publication_findings),
+        "publication_findings": [
+            publication_finding_payload(finding) for finding in publication_findings
+        ],
         "features": reviewable_features,
     }
     projection_payload = {
@@ -1095,6 +1368,10 @@ def project_strategic_network(
         "layers": layers,
         "feature_collection": core,
         "reviewable_feature_collection": reviewable,
+        "publication_finding_count": len(publication_findings),
+        "publication_findings": [
+            publication_finding_payload(finding) for finding in publication_findings
+        ],
         "legend": _legend(),
     }
     return StrategicNetworkPublicationProjection(
@@ -1117,8 +1394,11 @@ __all__ = [
     "DEFAULT_LAYERS",
     "OPTIONAL_LAYERS",
     "StrategicNetworkPublicationProjection",
+    "StrategicPublicationFinding",
     "StrategicPublicationLayer",
     "project_review_map",
     "project_strategic_network",
+    "publication_continuity_findings",
+    "publication_finding_payload",
     "publish_strategic_network_projection",
 ]

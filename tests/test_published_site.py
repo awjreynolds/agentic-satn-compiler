@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 import shutil
@@ -73,7 +74,14 @@ def test_area_deployment_is_progressive_portable_and_not_git_path_bound(
     )
 
     publication = json.loads((deployment / "publication.json").read_text(encoding="utf-8"))
-    network = json.loads((deployment / "network.geojson").read_text(encoding="utf-8"))
+    data = json.loads(
+        (deployment / "data.js")
+        .read_text(encoding="utf-8")
+        .removeprefix("window.SATN_DATA = ")
+        .removesuffix(";\n")
+    )
+    network_path = deployment / data["network_url"]
+    network = json.loads(gzip.decompress(network_path.read_bytes()))
     layer_manifest = json.loads((deployment / "layer-manifest.json").read_text(encoding="utf-8"))
     topography_manifest = json.loads(
         (deployment / "topography-manifest.json").read_text(encoding="utf-8")
@@ -117,6 +125,10 @@ def test_area_deployment_is_progressive_portable_and_not_git_path_bound(
         == hashlib.sha256(definition.config_path.read_bytes()).hexdigest()
     )
     assert publication["disclaimer"] == DISCLAIMER
+    assert publication["network_url"] == "network.geojson.gz"
+    assert publication["network_compression"] == "gzip"
+    deployment_html = (deployment / "index.html").read_text(encoding="utf-8")
+    assert 'href="network.geojson.gz" download>Network GeoJSON (gzip)</a>' in deployment_html
     assert publication["network_model"] == "backbone-outward"
     assert publication["layer_manifest"] == "layer-manifest.json"
     assert publication["topography_manifest"] == "topography-manifest.json"
@@ -183,7 +195,8 @@ def test_area_deployment_is_progressive_portable_and_not_git_path_bound(
 
     assert "topography-profile-evidence.json" not in service_worker
     assert 'event.data?.type !== "cache-core"' in service_worker
-    assert '"network_url":"network.geojson"' in (deployment / "data.js").read_text()
+    assert '"network_url":"network.geojson.gz"' in (deployment / "data.js").read_text()
+    assert '"network_compression":"gzip"' in (deployment / "data.js").read_text()
     assert '"layer_manifest_url":"layer-manifest.json"' in (deployment / "data.js").read_text()
 
     deferred_features = [
@@ -359,7 +372,7 @@ def test_area_deployment_omits_redundant_standalone_audits_but_keeps_embedded_re
     )
     assert "reviewable_network" in data
     assert "reviewable" not in data
-    assert (deployment / "network.geojson").is_file()
+    assert (deployment / "network.geojson.gz").is_file()
     assert (deployment / "compiler-run.json").is_file()
     assert (deployment / "publication.json").is_file()
 

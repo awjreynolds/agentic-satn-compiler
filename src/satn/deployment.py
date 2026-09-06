@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import json
 import math
@@ -63,6 +64,41 @@ def _write_collection(path: Path, features: list[dict[str, object]]) -> int:
 def _compact_json_file(path: Path) -> None:
     payload = json.loads(path.read_text(encoding="utf-8"))
     path.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+
+
+def _refresh_deployment_review_map_asset(directory: Path) -> None:
+    """Refresh the deployment's browser loader after a presentation-only change."""
+    source = PROJECT / "src" / "satn" / "assets" / "review-map.js"
+    assets = directory / "assets"
+    index = directory / "index.html"
+    content = source.read_bytes()
+    fingerprint = f"review-map.{hashlib.sha256(content).hexdigest()[:12]}.js"
+    (assets / "review-map.js").write_bytes(content)
+    (assets / fingerprint).write_bytes(content)
+    html = index.read_text(encoding="utf-8")
+    current = f"assets/{fingerprint}"
+    if current not in html:
+        previous = next(
+            (path for path in assets.glob("review-map.*.js") if f"assets/{path.name}" in html),
+            None,
+        )
+        if previous is None:
+            raise SystemExit("deployment review map does not reference a fingerprinted loader")
+        html = html.replace(f"assets/{previous.name}", current)
+        index.write_text(html, encoding="utf-8")
+    for path in assets.glob("review-map.*.js"):
+        if path.name != fingerprint:
+            path.unlink()
+
+
+def _rewrite_network_download_link(index: Path) -> None:
+    html = index.read_text(encoding="utf-8")
+    old = '<a href="network.geojson" download>Network GeoJSON</a>'
+    new = '<a href="network.geojson.gz" download>Network GeoJSON (gzip)</a>'
+    if old in html:
+        index.write_text(html.replace(old, new), encoding="utf-8")
+    elif new not in html:
+        raise SystemExit("deployment review map is missing the network download link")
 
 
 def _coordinates(geometry: dict[str, object] | None) -> list[tuple[float, float]]:
@@ -298,7 +334,18 @@ def build_area_deployment(
             ignore=ignore_redundant_audits,
         )
         content = temporary
-        shutil.copy2(run_path, content / "compiler-run.json")
+        _refresh_deployment_review_map_asset(content)
+        _rewrite_network_download_link(content / "index.html")
+        # Keep the local compiler run authoritative and complete, while the
+        # Pages deployment carries its compact identity/audit projection. The
+        # diagnostics are already available in the compiled run and are not
+        # consumed by the runtime deployment; copying them here would duplicate
+        # tens of megabytes per area without adding review functionality.
+        deployment_run = dict(run)
+        deployment_run.pop("compilation_diagnostics", None)
+        (content / "compiler-run.json").write_text(
+            json.dumps(deployment_run, separators=(",", ":")), encoding="utf-8"
+        )
         _compact_json_file(content / "compiler-run.json")
         strategic_network_path = content / "strategic-network.json"
         if strategic_network_path.is_file():
@@ -347,6 +394,11 @@ def build_area_deployment(
                 core.append(feature)
         network["features"] = core
         network_path.write_text(json.dumps(network, separators=(",", ":")), encoding="utf-8")
+        compressed_network_path = content / "network.geojson.gz"
+        compressed_network_path.write_bytes(
+            gzip.compress(network_path.read_bytes(), compresslevel=9, mtime=0)
+        )
+        network_path.unlink()
 
         layer_directory = content / "layers"
         groups: dict[str, dict[str, object]] = {}
@@ -489,7 +541,8 @@ def build_area_deployment(
             data.pop("reviewable")
         data["area_id"] = definition.area_id
         data["area_name"] = definition.area_name
-        data["network_url"] = "network.geojson"
+        data["network_url"] = "network.geojson.gz"
+        data["network_compression"] = "gzip"
         data["layer_manifest_url"] = "layer-manifest.json"
         data["topography_manifest_url"] = "topography-manifest.json"
         data["profile_evidence_index_url"] = "topography-profile-evidence.json"
@@ -539,6 +592,8 @@ def build_area_deployment(
             ),
             "compilation_input_fingerprint": run["compilation_input_fingerprint"],
             "compiler_run": "compiler-run.json",
+            "network_url": "network.geojson.gz",
+            "network_compression": "gzip",
             "network_model": run["network_model"],
             "connection_count": run["connection_count"],
             "gap_count": run["gap_count"],
@@ -546,7 +601,6 @@ def build_area_deployment(
             "superseded_hypotheses": run["superseded_hypotheses"],
             "layer_counts": run["layer_counts"],
             "criteria": run["criteria"],
-            "compilation_diagnostics": run["compilation_diagnostics"],
             "comparison_role": comparison["comparison_role"],
             "layer_manifest": "layer-manifest.json",
             "topography_manifest": "topography-manifest.json",

@@ -83,6 +83,8 @@ from satn.sources import (
 from satn.strategic_network_publication import (
     gap_endpoint_identity,
     project_strategic_network,
+    publication_continuity_findings,
+    publication_finding_payload,
 )
 from satn.strategic_reference_application import StrategicReferenceApplicationDisposition
 from satn.strategic_reference_publication import StrategicReferencePublicationRecord
@@ -150,22 +152,22 @@ def _annotate_a_road_component_gap_markers(collection: dict[str, object]) -> Non
         if not isinstance(feature, dict):
             continue
         properties = feature.get("properties")
-        if not _is_a_road_component_gap_marker(properties):
+        if not isinstance(properties, dict):
             continue
-        assert isinstance(properties, dict)
-        properties.update(
-            {
-                "gap_marker_kind": "a-road-component-representative",
-                "geometry_semantics": (
-                    "a-road-component-representative-point-marker-only-no-route-geometry"
-                ),
-                "legend_text": "Disconnected A-road component (representative location)",
-                "gap_marker_disclaimer": (
-                    "No direct connection between these markers is proposed; they locate "
-                    "separate source components."
-                ),
-            }
-        )
+        if _is_a_road_component_gap_marker(properties):
+            properties.update(
+                {
+                    "gap_marker_kind": "a-road-component-representative",
+                    "geometry_semantics": (
+                        "a-road-component-representative-point-marker-only-no-route-geometry"
+                    ),
+                    "legend_text": "Disconnected A-road component (representative location)",
+                    "gap_marker_disclaimer": (
+                        "No direct connection between these markers is proposed; they locate "
+                        "separate source components."
+                    ),
+                }
+            )
 
 
 class EAFixedPointMismatchError(ValueError):
@@ -662,6 +664,52 @@ def _validate_effective_strategic_artifacts(output: Path) -> None:
         raise ValueError("GeoPackage effective strategic-network fingerprint mismatch")
     if sidecar.get("feature_collection") != reviewable:
         raise ValueError("effective strategic-network sidecar differs from review map")
+    if "publication_finding_count" in sidecar or "publication_findings" in sidecar:
+        publication_finding_count = sidecar.get("publication_finding_count")
+        publication_findings = sidecar.get("publication_findings")
+        if (
+            not isinstance(publication_finding_count, int)
+            or isinstance(publication_finding_count, bool)
+            or not isinstance(publication_findings, list)
+            or publication_finding_count != len(publication_findings)
+        ):
+            raise ValueError("strategic publication finding metadata is malformed")
+        if (
+            reviewable.get("publication_finding_count") != publication_finding_count
+            or reviewable.get("publication_findings") != publication_findings
+        ):
+            raise ValueError("strategic publication finding metadata differs from review map")
+        effective_metadata = run.get("effective_strategic_network")
+        if (
+            not isinstance(effective_metadata, dict)
+            or effective_metadata.get("publication_finding_count") != publication_finding_count
+        ):
+            raise ValueError("run omits the strategic publication finding count")
+        marker_properties = {
+            str(feature.get("id")): feature.get("properties")
+            for feature in reviewable.get("features", [])
+            if isinstance(feature, dict)
+            and feature.get("properties", {}).get("publication_finding_kind")
+            == "selected-main-physical-discontinuity"
+        }
+        for finding in publication_findings:
+            if (
+                not isinstance(finding, dict)
+                or not isinstance(finding.get("gap_id"), str)
+                or finding.get("publication_finding_kind") != "selected-main-physical-discontinuity"
+                or not isinstance(finding.get("representative_point"), list)
+            ):
+                raise ValueError("strategic publication finding is malformed")
+            finding_id = finding.get("gap_id")
+            expected_marker_id = f"reviewable-gap:{finding_id}:representative-point"
+            marker = marker_properties.get(expected_marker_id)
+            if (
+                not isinstance(marker, dict)
+                or marker.get("reason") != finding.get("reason")
+                or marker.get("representative_point") != finding.get("representative_point")
+                or marker.get("publication_finding_kind") != finding.get("publication_finding_kind")
+            ):
+                raise ValueError("strategic publication finding marker is missing")
     data_text = (output / "review-map" / "data.js").read_text(encoding="utf-8")
     prefix = "window.SATN_DATA = "
     if not data_text.startswith(prefix) or not data_text.rstrip().endswith(";"):
@@ -669,6 +717,15 @@ def _validate_effective_strategic_artifacts(output: Path) -> None:
     data = json.loads(data_text[len(prefix) :].strip().removesuffix(";"))
     if data.get("strategic_result_fingerprint") != fingerprint:
         raise ValueError("review-map data strategic fingerprint mismatch")
+    if "publication_finding_count" in sidecar:
+        strategic_data = data.get("strategic_network")
+        if (
+            not isinstance(strategic_data, dict)
+            or strategic_data.get("publication_finding_count")
+            != sidecar.get("publication_finding_count")
+            or strategic_data.get("publication_findings") != sidecar.get("publication_findings")
+        ):
+            raise ValueError("review-map data omits strategic publication finding metadata")
     pdf_text = "".join(
         page.extract_text() or "" for page in PdfReader(str(output / "network-map.pdf")).pages
     )
@@ -2447,6 +2504,22 @@ def _reviewable_map_collection(compiled: CompiledNetwork) -> dict[str, object]:
     return collection
 
 
+def _strategic_gap_payload(gap: object) -> dict[str, object]:
+    """Serialize compiler gaps and publication findings through one sidecar shape."""
+
+    if getattr(gap, "representative_coordinates", None) is not None:
+        return publication_finding_payload(gap)  # type: ignore[arg-type]
+    return {
+        "gap_id": getattr(gap, "gap_id", getattr(gap, "obligation_id", "gap")),
+        "obligation_id": getattr(gap, "obligation_id", None),
+        "network_role": getattr(gap, "network_role", None),
+        "endpoints": list(getattr(gap, "endpoints", ())),
+        "reason": getattr(gap, "reason", None),
+        "candidate_set_id": getattr(gap, "candidate_set_id", None),
+        "mesh_proof_points": [list(point) for point in getattr(gap, "mesh_proof_points", ())],
+    }
+
+
 def _write_geojson(path: Path, compiled: CompiledNetwork) -> None:
     path.write_text(json.dumps(_network_collection(compiled), indent=2), encoding="utf-8")
 
@@ -2712,12 +2785,15 @@ def _write_json_records(
             for item in compiled.reviewable_network.semantic_payload["officer_decision_input"]
         ]
     if compiled.strategic_network_planning is not None:
-        run["strategic_result_fingerprint"] = compiled.strategic_network_planning.fingerprint
+        strategic = compiled.strategic_network_planning
+        publication_finding_count = len(publication_continuity_findings(strategic))
+        run["strategic_result_fingerprint"] = strategic.fingerprint
         run["effective_strategic_network"] = {
-            "status": compiled.strategic_network_planning.status,
-            "selection_count": len(compiled.strategic_network_planning.selections),
-            "gap_count": len(compiled.strategic_network_planning.gaps),
-            "divergence_count": len(compiled.strategic_network_planning.divergences),
+            "status": strategic.status,
+            "selection_count": len(strategic.selections),
+            "gap_count": len(strategic.gaps),
+            "divergence_count": len(strategic.divergences),
+            "publication_finding_count": publication_finding_count,
         }
     (output / "run.json").write_text(json.dumps(run, indent=2), encoding="utf-8")
     records = {
@@ -4098,12 +4174,15 @@ def _write_review_map(
         data["compilation_metadata"] = dict(compilation_metadata)
     if compiled.strategic_network_planning is not None:
         data["strategic_result_fingerprint"] = compiled.strategic_network_planning.fingerprint
+        publication_finding_count = int(reviewable_map.get("publication_finding_count", 0))
         data["strategic_network"] = {
             "status": compiled.strategic_network_planning.status,
             "projection_fingerprint": reviewable_map["projection_fingerprint"],
             "default_layers": reviewable_map["default_layers"],
             "optional_layers": reviewable_map["optional_layers"],
             "legend": reviewable_map["legend"],
+            "publication_finding_count": publication_finding_count,
+            "publication_findings": reviewable_map.get("publication_findings", []),
         }
     if reference_record is not None and reference_options is not None:
         data["reference_satn"] = reference_publication.payload()
@@ -4163,6 +4242,8 @@ def _write_review_map(
     )
     if compiled.strategic_network_planning is not None:
         strategic = compiled.strategic_network_planning
+        publication_findings = tuple(publication_continuity_findings(strategic))
+        sidecar_gaps = tuple(strategic.gaps) + publication_findings
         (review / "strategic-network.json").write_text(
             json.dumps(
                 {
@@ -4174,20 +4255,11 @@ def _write_review_map(
                     "default_layers": reviewable_map["default_layers"],
                     "optional_layers": reviewable_map["optional_layers"],
                     "legend": reviewable_map["legend"],
-                    "gaps": [
-                        {
-                            "gap_id": gap.gap_id,
-                            "obligation_id": gap.obligation_id,
-                            "network_role": gap.network_role,
-                            "endpoints": list(gap.endpoints),
-                            "reason": gap.reason,
-                            "candidate_set_id": gap.candidate_set_id,
-                            "mesh_proof_points": [
-                                list(point) for point in getattr(gap, "mesh_proof_points", ())
-                            ],
-                        }
-                        for gap in strategic.gaps
+                    "publication_finding_count": len(publication_findings),
+                    "publication_findings": [
+                        publication_finding_payload(finding) for finding in publication_findings
                     ],
+                    "gaps": [_strategic_gap_payload(gap) for gap in sidecar_gaps],
                     "feature_collection": reviewable_map,
                     "disclaimer": DISCLAIMER,
                 },
@@ -5347,6 +5419,7 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
             strategic_sidecar = json.loads(strategic_sidecar_path.read_text(encoding="utf-8"))
             expected_gap_records.extend(
                 {
+                    **gap,
                     "gap_id": gap.get("gap_id") or gap.get("obligation_id"),
                     "endpoints": gap.get("endpoints", []),
                     "mesh_proof_points": gap.get("mesh_proof_points", []),
@@ -5355,6 +5428,9 @@ def _validate_artifacts(output: Path, config: AreaConfig) -> None:
                 if isinstance(gap, dict)
             )
         for gap in expected_gap_records:
+            if gap.get("representative_point") is not None:
+                expected_gap_ids.add(f"reviewable-gap:{gap['gap_id']}:representative-point")
+                continue
             mesh_proof_points = gap.get("mesh_proof_points", [])
             if mesh_proof_points:
                 expected_gap_ids.update(

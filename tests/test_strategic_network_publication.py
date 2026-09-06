@@ -26,6 +26,7 @@ def _section(
     authority: str = "compiler",
     display: str = "existing-provision",
     network_role: str = "interurban-spine",
+    geometry_wkt: str = "LINESTRING (100000 200000, 100100 200100)",
 ):
     return SimpleNamespace(
         section_id=section_id,
@@ -34,7 +35,7 @@ def _section(
         network_role=network_role,
         routing_edge_ids=(f"edge-{section_id}",),
         reverse_routing_edge_ids=(f"reverse-{section_id}",),
-        geometry_wkt="LINESTRING (100000 200000, 100100 200100)",
+        geometry_wkt=geometry_wkt,
         authority=authority,
         alignment_bases=("cycleway",),
         primary_alignment_basis="cycleway",
@@ -43,18 +44,23 @@ def _section(
     )
 
 
-def _result(*sections, gaps=(), divergences=(), candidates=()):
-    candidate_set = SimpleNamespace(
-        candidate_set_id="candidate-set-1",
-        network_role="interurban-spine",
-        candidates=tuple(candidates),
-    )
+def _result(*sections, gaps=(), divergences=(), candidates=(), geometry_tolerance=None):
+    candidate_set_kwargs = {
+        "candidate_set_id": "candidate-set-1",
+        "network_role": "interurban-spine",
+        "candidates": tuple(candidates),
+    }
+    if geometry_tolerance is not None:
+        candidate_set_kwargs["geometry_equivalence_profile"] = SimpleNamespace(
+            tolerance_m=geometry_tolerance
+        )
+    candidate_set = SimpleNamespace(**candidate_set_kwargs)
     return SimpleNamespace(
         fingerprint="a" * 64,
         effective_network=SimpleNamespace(sections=tuple(sections)),
         gaps=tuple(gaps),
         divergences=tuple(divergences),
-        candidate_sets=(candidate_set,) if candidates else (),
+        candidate_sets=(candidate_set,) if candidates or geometry_tolerance is not None else (),
         unselected_candidates=tuple(
             SimpleNamespace(
                 candidate_id=item.candidate_id, disposition="unselected", reason="alternative"
@@ -232,6 +238,95 @@ def test_structural_gap_coordinates_publish_endpoint_markers_without_places() ->
     ]
     assert [feature["geometry"]["type"] for feature in markers] == ["Point", "Point"]
     assert all(not feature["properties"]["missing_endpoint_geometry"] for feature in markers)
+
+
+def test_unrepresented_selected_main_component_gets_one_located_publication_finding() -> None:
+    result = _result(
+        _section("main-a", geometry_wkt="LINESTRING (100000 200000, 100100 200100)"),
+        _section("main-b", geometry_wkt="LINESTRING (100100 200100, 100200 200200)"),
+        _section("island", geometry_wkt="LINESTRING (101000 201000, 101100 201100)"),
+        geometry_tolerance=0.05,
+    )
+
+    projection = project_strategic_network(result)
+
+    markers = [
+        feature
+        for feature in projection.layers["Strategic Main Network"]["features"]
+        if feature["properties"].get("feature_type") == "reviewable-gap-endpoint"
+    ]
+    assert projection.reviewable_feature_collection["publication_finding_count"] == 1
+    assert len(projection.reviewable_feature_collection["publication_findings"]) == 1
+    assert len(markers) == 1
+    marker = markers[0]
+    assert marker["id"].endswith(":representative-point")
+    assert marker["geometry"]["type"] == "Point"
+    assert marker["properties"]["publication_finding_kind"] == (
+        "selected-main-physical-discontinuity"
+    )
+    assert marker["properties"]["reason"] == (
+        "Selected Main component is physically separate; representative location only; "
+        "no direct connection proposed"
+    )
+    assert marker["properties"]["geometry_semantics"] == (
+        "selected-main-component-representative-point-marker-only-no-route-geometry"
+    )
+    assert {
+        feature["properties"]["section_id"]
+        for feature in projection.layers["Strategic Main Network"]["features"]
+        if feature["properties"].get("feature_type") == "reviewable-selected-route"
+    } == {"main-a", "main-b", "island"}
+
+
+def test_connected_selected_main_components_add_no_publication_finding() -> None:
+    result = _result(
+        _section("main-a", geometry_wkt="LINESTRING (100000 200000, 100100 200100)"),
+        _section("main-b", geometry_wkt="LINESTRING (100100 200100, 100200 200200)"),
+        geometry_tolerance=0.05,
+    )
+
+    projection = project_strategic_network(result)
+
+    assert projection.reviewable_feature_collection["publication_finding_count"] == 0
+    assert not projection.reviewable_feature_collection["publication_findings"]
+    assert not [
+        feature
+        for feature in projection.layers["Strategic Main Network"]["features"]
+        if feature["properties"].get("feature_type") == "reviewable-gap-endpoint"
+    ]
+
+
+def test_existing_canonical_a_component_gap_suppresses_publication_duplicate() -> None:
+    canonical_gap = SimpleNamespace(
+        gap_id="a-road-component-gap",
+        obligation_id="a-road-backbone-component-gap-existing",
+        network_role="interurban-spine",
+        endpoints=(
+            "a-road-backbone-component-endpoint-island",
+            "a-road-backbone-component-endpoint-main",
+        ),
+        endpoint_coordinates=((101000.0, 201000.0), (100000.0, 200000.0)),
+        reason="official A-road backbone component remains disconnected",
+        candidate_set_id=None,
+        mesh_proof_points=(),
+    )
+    result = _result(
+        _section("main-a", geometry_wkt="LINESTRING (100000 200000, 100100 200100)"),
+        _section("main-b", geometry_wkt="LINESTRING (100100 200100, 100200 200200)"),
+        _section("island", geometry_wkt="LINESTRING (101000 201000, 101100 201100)"),
+        gaps=(canonical_gap,),
+        geometry_tolerance=0.05,
+    )
+
+    projection = project_strategic_network(result)
+
+    assert projection.reviewable_feature_collection["publication_finding_count"] == 0
+    markers = [
+        feature
+        for feature in projection.layers["Strategic Main Network"]["features"]
+        if feature["properties"].get("feature_type") == "reviewable-gap-endpoint"
+    ]
+    assert {marker["properties"]["gap_id"] for marker in markers} == {"a-road-component-gap"}
 
 
 def test_projection_is_json_serialisable_and_permutation_stable() -> None:

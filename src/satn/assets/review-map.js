@@ -32,6 +32,17 @@
   }
 
   renderCompilationStatus();
+  async function loadNetworkData(url, compression) {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Network evidence failed to load (${response.status}).`);
+    if (compression !== "gzip") return response.json();
+    if (typeof DecompressionStream !== "function" || !response.body) {
+      throw new Error("This browser cannot read the compressed network evidence.");
+    }
+    const decompressed = response.body.pipeThrough(new DecompressionStream("gzip"));
+    return JSON.parse(await new Response(decompressed).text());
+  }
+
   const isProgressiveDeployment = Boolean(
     data.area_id && data.network_url && data.layer_manifest_url && data.topography_manifest_url
   );
@@ -42,9 +53,7 @@
     ? navigator.serviceWorker.register("service-worker.js")
     : null;
   if (!data.network && data.network_url) {
-    const response = await fetch(data.network_url);
-    if (!response.ok) throw new Error(`Network evidence failed to load (${response.status}).`);
-    data.network = await response.json();
+    data.network = await loadNetworkData(data.network_url, data.network_compression);
   }
   const network = data.network;
   const reviewable = data.reviewable_network || data.reviewable || {

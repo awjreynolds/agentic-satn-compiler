@@ -406,6 +406,54 @@ def test_pdf_semantic_frames_are_projected_from_effective_network() -> None:
     assert gaps.empty
 
 
+def test_pdf_semantic_frames_include_located_selected_main_component_finding() -> None:
+    sections = tuple(
+        SimpleNamespace(
+            section_id=section_id,
+            obligation_id=f"obligation-{section_id}",
+            candidate_id=f"candidate-{section_id}",
+            network_role="interurban-spine",
+            routing_edge_ids=(),
+            reverse_routing_edge_ids=(),
+            geometry_wkt=geometry_wkt,
+            authority="compiler",
+            alignment_bases=("a-road",),
+            primary_alignment_basis="a-road",
+            intervention_state="upgrade-required",
+            display_state="upgrade-required",
+        )
+        for section_id, geometry_wkt in (
+            ("main-a", "LINESTRING (100000 200000, 100100 200100)"),
+            ("main-b", "LINESTRING (100100 200100, 100200 200200)"),
+            ("island", "LINESTRING (101000 201000, 101100 201100)"),
+        )
+    )
+    result = SimpleNamespace(
+        fingerprint="a" * 64,
+        effective_network=SimpleNamespace(sections=sections),
+        candidate_sets=(
+            SimpleNamespace(
+                geometry_equivalence_profile=SimpleNamespace(tolerance_m=0.05),
+            ),
+        ),
+        gaps=(),
+    )
+    compiled = SimpleNamespace(
+        strategic_network_planning=result,
+        places=gpd.GeoDataFrame({"geometry": []}, geometry="geometry", crs="EPSG:4326"),
+    )
+
+    _main, _access, gaps = _pdf_semantic_frames(compiled)
+
+    assert len(gaps) == 1
+    assert gaps.iloc[0]["publication_finding_kind"] == "selected-main-physical-discontinuity"
+    assert gaps.iloc[0]["reason"] == (
+        "Selected Main component is physically separate; representative location only; "
+        "no direct connection proposed"
+    )
+    assert gaps.iloc[0].geometry.geom_type == "Point"
+
+
 def test_pdf_renderer_semantic_branch_draws_only_projected_layers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
