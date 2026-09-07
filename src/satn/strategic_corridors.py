@@ -46,7 +46,11 @@ from satn.psa_evidence_loaders import (
     load_education_access_evidence,
     load_population_reach_evidence,
 )
-from satn.route_source_facts import derive_route_source_facts
+from satn.route_source_facts import (
+    RouteSourceFactIndexes,
+    build_route_source_fact_indexes,
+    derive_route_source_facts,
+)
 from satn.routing import RoadGraph, RouteOption, _coordinate_id, _present, _truthy, choose_alignment
 from satn.section_population import (
     MaterialPopulationDifference,
@@ -488,6 +492,11 @@ def prepare_strategic_corridors(
 
     started_at = perf_counter()
     profile = NetworkSelectionProfile.model_validate(profile.model_dump(mode="json"))
+    source_fact_indexes = (
+        build_route_source_fact_indexes(road_graph)
+        if profile.candidate_source_precedence is not None
+        else None
+    )
     missing: list[str] = []
     population = source_config.population_reach_evidence
     if population is None:
@@ -572,6 +581,7 @@ def prepare_strategic_corridors(
         urban_spines,
         context,
         route_options,
+        source_fact_indexes=source_fact_indexes,
     )
     cycle_units, cycle_issues = _typed_cycle_corridor_units(
         profile,
@@ -580,6 +590,7 @@ def prepare_strategic_corridors(
         context,
         route_options,
         excluded_cycle_pairs,
+        source_fact_indexes=source_fact_indexes,
     )
     if urban_journeys is None or not urban_journeys.places:
         units, issues = _interurban_units(
@@ -588,6 +599,7 @@ def prepare_strategic_corridors(
             anchors,
             context,
             route_options,
+            source_fact_indexes=source_fact_indexes,
         )
     else:
         units, issues = _urban_interurban_units(
@@ -596,6 +608,7 @@ def prepare_strategic_corridors(
             urban_journeys,
             context,
             route_options,
+            source_fact_indexes=source_fact_indexes,
         )
     destination_units, destination_issues = _destination_units(
         profile,
@@ -604,6 +617,7 @@ def prepare_strategic_corridors(
         context,
         education,
         route_options,
+        source_fact_indexes=source_fact_indexes,
     )
     units = tuple(
         sorted(
@@ -1448,6 +1462,8 @@ def _typed_cycle_corridor_units(
     context: gpd.GeoDataFrame,
     route_options: Mapping[tuple[str, str], Mapping[str, RouteOption | None]],
     excluded_pairs: set[frozenset[str]],
+    *,
+    source_fact_indexes: RouteSourceFactIndexes | None = None,
 ) -> tuple[tuple[PreparedStrategicCorridorUnit, ...], tuple[StrategicCorridorIssue, ...]]:
     """Prepare source-bound cycle corridor obligations from marked graph chains."""
 
@@ -1519,6 +1535,7 @@ def _typed_cycle_corridor_units(
             strategic_destination_id=None,
             precomputed_options=route_options.get(pair),
             exact_backbone_option=exact_option,
+            source_fact_indexes=source_fact_indexes,
         )
         if not candidate_set.candidates:
             continue
@@ -1567,6 +1584,8 @@ def _a_road_backbone_units(
     urban_spines: gpd.GeoDataFrame | None,
     context: gpd.GeoDataFrame,
     route_options: Mapping[tuple[str, str], Mapping[str, RouteOption | None]],
+    *,
+    source_fact_indexes: RouteSourceFactIndexes | None = None,
 ) -> tuple[tuple[PreparedStrategicCorridorUnit, ...], tuple[StrategicCorridorIssue, ...]]:
     """Prepare one finite Candidate Set for each governed A-road chain."""
 
@@ -1782,6 +1801,7 @@ def _a_road_backbone_units(
             exact_backbone_option=exact_option,
             forbidden_interior_nodes=forbidden_nodes,
             edge_nodes_by_id=edge_nodes_by_id,
+            source_fact_indexes=source_fact_indexes,
         )
         units.append(
             PreparedStrategicCorridorUnit(
@@ -1824,6 +1844,8 @@ def _interurban_units(
     anchors: tuple[dict[str, str], ...],
     context: gpd.GeoDataFrame,
     route_options: Mapping[tuple[str, str], Mapping[str, RouteOption | None]],
+    *,
+    source_fact_indexes: RouteSourceFactIndexes | None = None,
 ) -> tuple[tuple[PreparedStrategicCorridorUnit, ...], tuple[StrategicCorridorIssue, ...]]:
     units: list[PreparedStrategicCorridorUnit] = []
     issues: list[StrategicCorridorIssue] = []
@@ -1855,6 +1877,7 @@ def _interurban_units(
                 context=context,
                 strategic_destination_id=None,
                 precomputed_options=route_options.get((start, end)),
+                source_fact_indexes=source_fact_indexes,
             )
             unit_id = _stable_id(
                 "alignment-unit",
@@ -1907,6 +1930,8 @@ def _urban_interurban_units(
     urban_journeys: UrbanJourneyPreparation,
     context: gpd.GeoDataFrame,
     route_options: Mapping[tuple[str, str], Mapping[str, RouteOption | None]],
+    *,
+    source_fact_indexes: RouteSourceFactIndexes | None = None,
 ) -> tuple[tuple[PreparedStrategicCorridorUnit, ...], tuple[StrategicCorridorIssue, ...]]:
     """Turn preferred observed urban adjacencies into ordinary route comparisons.
 
@@ -1983,6 +2008,7 @@ def _urban_interurban_units(
             context=context,
             strategic_destination_id=None,
             precomputed_options=route_options.get((start, end)),
+            source_fact_indexes=source_fact_indexes,
         )
         unit_id = _stable_id(
             "alignment-unit",
@@ -2026,6 +2052,8 @@ def _destination_units(
     context: gpd.GeoDataFrame,
     education: EducationAccessEvidenceLoad | None,
     route_options: Mapping[tuple[str, str], Mapping[str, RouteOption | None]],
+    *,
+    source_fact_indexes: RouteSourceFactIndexes | None = None,
 ) -> tuple[tuple[PreparedStrategicCorridorUnit, ...], tuple[StrategicCorridorIssue, ...]]:
     if education is None or not education.strategic_admission_records:
         return (), ()
@@ -2111,6 +2139,7 @@ def _destination_units(
             context=context,
             strategic_destination_id=destination_id,
             precomputed_options=route_options.get((anchor["routing_node"], destination_node)),
+            source_fact_indexes=source_fact_indexes,
         )
         unit_id = _stable_id(
             "alignment-unit",
@@ -2166,6 +2195,7 @@ def _candidate_set(
     exact_backbone_option: RouteOption | None = None,
     forbidden_interior_nodes: set[str] | frozenset[str] = frozenset(),
     edge_nodes_by_id: Mapping[str, tuple[str, str]] | None = None,
+    source_fact_indexes: RouteSourceFactIndexes | None = None,
 ) -> tuple[AlignmentCandidateSet, tuple[StrategicCorridorCandidateRecord, ...]]:
     _selected, options, _rationale = choose_alignment(
         graph,
@@ -2202,7 +2232,12 @@ def _candidate_set(
         ):
             continue
         source_facts = (
-            derive_route_source_facts(option, graph, profile.candidate_source_precedence)
+            derive_route_source_facts(
+                option,
+                graph,
+                profile.candidate_source_precedence,
+                source_fact_indexes=source_fact_indexes,
+            )
             if profile.candidate_source_precedence is not None
             else None
         )

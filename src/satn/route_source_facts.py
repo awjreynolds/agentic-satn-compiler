@@ -78,10 +78,27 @@ class RouteSourceFacts:
     unresolved_edge_ids: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class RouteSourceFactIndexes:
+    """Request-scoped edge indexes used to derive route source facts."""
+
+    by_directed: Mapping[str, tuple[Mapping[str, object], ...]]
+    by_source: Mapping[str, tuple[Mapping[str, object], ...]]
+
+
+def build_route_source_fact_indexes(graph: RoadGraph | object) -> RouteSourceFactIndexes:
+    """Build edge indexes for a stable route-facts preparation request."""
+
+    by_directed, by_source = _edge_indexes(graph)
+    return RouteSourceFactIndexes(by_directed=by_directed, by_source=by_source)
+
+
 def derive_route_source_facts(
     route: RouteOption | Iterable[str],
     graph: RoadGraph,
     source_precedence: Sequence[CandidateSourceClass | str],
+    *,
+    source_fact_indexes: RouteSourceFactIndexes | None = None,
 ) -> RouteSourceFacts:
     """Classify exact route edges by physical extent and governed precedence.
 
@@ -95,7 +112,9 @@ def derive_route_source_facts(
     requested = _route_edge_ids(route)
     if not requested:
         return RouteSourceFacts(None, (), None, complete=False)
-    edges_by_directed, edges_by_source = _edge_indexes(graph)
+    indexes = source_fact_indexes or build_route_source_fact_indexes(graph)
+    edges_by_directed = indexes.by_directed
+    edges_by_source = indexes.by_source
     resolved: list[Mapping[str, object]] = []
     unresolved: list[str] = []
     seen: set[str] = set()
@@ -276,4 +295,9 @@ def _sort_bases(values: Iterable[str]) -> tuple[str, ...]:
     return tuple(sorted(set(values), key=_basis_key))
 
 
-__all__ = ["RouteSourceFacts", "derive_route_source_facts"]
+__all__ = [
+    "RouteSourceFactIndexes",
+    "RouteSourceFacts",
+    "build_route_source_fact_indexes",
+    "derive_route_source_facts",
+]

@@ -48,7 +48,11 @@ from satn.planning_graph import (
     PlanningGraphSnapshot,
     PlanningNodeRecord,
 )
-from satn.route_source_facts import derive_route_source_facts
+from satn.route_source_facts import (
+    RouteSourceFactIndexes,
+    build_route_source_fact_indexes,
+    derive_route_source_facts,
+)
 from satn.routing import (
     RoadGraph,
     _coordinate_id,
@@ -398,6 +402,8 @@ def _facts(
     graph: PlanningGraphSnapshot,
     edge_ids: tuple[str, ...],
     source_precedence: Sequence[CandidateSourceClass | str] = (),
+    *,
+    source_fact_indexes: RouteSourceFactIndexes | None = None,
 ):
     """Return legacy edge-derived facts while leaving vNext facts immutable."""
 
@@ -418,7 +424,12 @@ def _facts(
             candidate_source,
         )
 
-    facts = derive_route_source_facts(edge_ids, graph, source_precedence)
+    facts = derive_route_source_facts(
+        edge_ids,
+        graph,
+        source_precedence,
+        source_fact_indexes=source_fact_indexes,
+    )
     bases = tuple(sorted(set((*facts.alignment_bases, *explicit_bases))))
     if not facts.complete:
         # The legacy record still has to materialise for the review model, but
@@ -531,6 +542,7 @@ def discovery_from_preparation(
     gaps: list[CandidateSetGapEvidence] = []
     requests: list[EvidenceRequest] = []
     candidate_sets = []
+    source_fact_indexes: RouteSourceFactIndexes | None = None
     for unit in preparation.units:
         valid_candidates = []
         for prepared in unit.candidate_records:
@@ -576,11 +588,14 @@ def discovery_from_preparation(
                     )
                 )
                 continue
+            if source_fact_indexes is None and unit.candidate_set.candidate_source_precedence:
+                source_fact_indexes = build_route_source_fact_indexes(graph)
             reuse, intervention, bases, primary, source_class = _facts(
                 candidate,
                 graph,
                 prepared.routing_edge_ids,
                 unit.candidate_set.candidate_source_precedence,
+                source_fact_indexes=source_fact_indexes,
             )
             candidate_payload = {
                 **candidate.model_dump(mode="python", exclude={"candidate_id"}),

@@ -10,6 +10,7 @@ from bath_saltford_fixture import configured_bath_saltford
 from shapely.affinity import translate
 from shapely.geometry import LineString, Point
 
+import satn.strategic_corridors as strategic_corridors_module
 from satn.agents import FakeAgentRuntime
 from satn.compiler import compile_network, governed_input_binding
 from satn.evidence import mark_ncn_edges
@@ -1045,6 +1046,31 @@ def test_strategic_preparation_reports_batched_route_phase_diagnostics(
     assert diagnostics["unique_alignments"] == 3
     assert diagnostics["sections"] == len(preparation.section_population.sections)
     assert diagnostics["elapsed_seconds"] >= 0
+
+
+def test_strategic_preparation_builds_source_fact_indexes_once_for_multiple_units(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    calls = []
+    original = strategic_corridors_module.build_route_source_fact_indexes
+
+    def counted(graph):
+        calls.append(graph)
+        return original(graph)
+
+    monkeypatch.setattr(
+        strategic_corridors_module,
+        "build_route_source_fact_indexes",
+        counted,
+    )
+
+    _config, _source, compiled = _compiled(tmp_path)
+    preparation = compiled.strategic_corridor_preparation
+
+    assert preparation is not None
+    assert len(preparation.units) > 1
+    assert len(calls) == 1
 
 
 def test_legacy_urban_mode_retains_governed_a_road_backbone_obligation(

@@ -5,6 +5,7 @@ from shapely.geometry import LineString
 from test_candidate_discovery import partial_cycleway_graph
 from test_effective_strategic_network import _legacy_fixture_preparation
 
+import satn.effective_strategic_network as effective_strategic_network_module
 from satn.alignment_selection import AlignmentCandidateInput, admit_candidate_set
 from satn.effective_strategic_network import (
     EffectiveStrategicNetworkRequest,
@@ -12,7 +13,10 @@ from satn.effective_strategic_network import (
     compile_effective_strategic_network,
 )
 from satn.network_selection import CandidateSourceClass
-from satn.route_source_facts import derive_route_source_facts
+from satn.route_source_facts import (
+    build_route_source_fact_indexes,
+    derive_route_source_facts,
+)
 from satn.routing import RoadGraph
 
 PRECEDENCE = (
@@ -102,6 +106,96 @@ def test_route_source_facts_uses_edge_extent_and_retains_minor_bases() -> None:
     assert plain_cycle_facts.alignment_bases == ("mapped-cycleway",)
     assert plain_cycle_facts.primary_alignment_basis == "mapped-cycleway"
     assert "current-ncn" not in plain_cycle_facts.alignment_bases
+
+
+def test_route_source_facts_reuses_prepared_indexes_for_repeated_and_parallel_sources() -> None:
+    graph = _graph()
+    indexes = build_route_source_fact_indexes(graph)
+    route = graph.option("r0", "r2", "direct")
+    assert route is not None
+
+    first = derive_route_source_facts(
+        route,
+        graph,
+        PRECEDENCE,
+        source_fact_indexes=indexes,
+    )
+    repeated = derive_route_source_facts(
+        route,
+        graph,
+        PRECEDENCE,
+        source_fact_indexes=indexes,
+    )
+
+    assert repeated == first
+
+    parallel_graph = RoadGraph(
+        gpd.GeoDataFrame(
+            [
+                {
+                    "u": "x",
+                    "v": "y",
+                    "osmid": "parallel-way",
+                    "highway": "path",
+                    "oneway": True,
+                    "length": 10.0,
+                    "geometry": LineString([(0, 0), (1, 0)]),
+                },
+                {
+                    "u": "y",
+                    "v": "z",
+                    "osmid": "parallel-way",
+                    "highway": "path",
+                    "oneway": True,
+                    "length": 10.0,
+                    "geometry": LineString([(1, 0), (2, 0)]),
+                },
+            ],
+            geometry="geometry",
+            crs=27700,
+        )
+    )
+    parallel_indexes = build_route_source_fact_indexes(parallel_graph)
+    parallel_facts = derive_route_source_facts(
+        ("parallel-way",),
+        parallel_graph,
+        PRECEDENCE,
+        source_fact_indexes=parallel_indexes,
+    )
+
+    assert parallel_facts.complete is False
+    assert parallel_facts.unresolved_edge_ids == ("parallel-way",)
+
+
+def test_legacy_effective_discovery_builds_source_fact_indexes_once(
+    monkeypatch,
+) -> None:
+    calls = []
+    original = effective_strategic_network_module.build_route_source_fact_indexes
+
+    def counted(graph):
+        calls.append(graph)
+        return original(graph)
+
+    monkeypatch.setattr(
+        effective_strategic_network_module,
+        "build_route_source_fact_indexes",
+        counted,
+    )
+
+    graph = partial_cycleway_graph()
+    preparation = _legacy_fixture_preparation(graph)
+    state = compile_effective_strategic_network(
+        EffectiveStrategicNetworkRequest(
+            routable_network=graph,
+            preparation=preparation,
+            area_fingerprint="b" * 64,
+            snapshot_fingerprint=graph.source_export_fingerprint,
+        )
+    )
+
+    assert state.status is EffectiveStrategicNetworkStatus.EVALUATED
+    assert len(calls) == 1
 
 
 def test_route_source_facts_keeps_unresolved_edges_unclassified() -> None:
