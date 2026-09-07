@@ -394,7 +394,7 @@ def validate_pages_rendering(pages_directory: str | Path) -> tuple[DeploymentRen
             context = browser.new_context()
             # Complete raster loading without making the overlay check depend on OSM.
             blank_tile = base64.b64decode(
-                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aFioAAAAASUVORK5CYII="
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII="
             )
             context.route(
                 "https://tile.openstreetmap.org/**",

@@ -141,7 +141,7 @@
           attributionControl: true,
         });
         window.SATN_BASELINE_MAP = map;
-        map.on("load", () => {
+        map.on("style.load", () => {
           if (publication.bbox && publication.bbox.length === 4) {
             map.fitBounds([[publication.bbox[0], publication.bbox[1]], [publication.bbox[2], publication.bbox[3]]], { padding: 36, duration: 0 });
           }
