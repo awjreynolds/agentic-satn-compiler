@@ -46,6 +46,20 @@ EXISTING_CYCLEWAY_KINDS = frozenset(
         "shared-use-path",
     }
 )
+BASELINE_CATEGORIES = (
+    "a-road",
+    "cycleway",
+    "current-ncn",
+    "former-ncn",
+    "bridleway",
+    "abandoned-railway",
+)
+BRIDLEWAY_DESIGNATIONS = frozenset({"bridleway", "public_bridleway"})
+ABANDONED_RAILWAY_VALUES = frozenset({"abandoned", "disused", "dismantled", "razed"})
+BRIDLEWAY_CONTEXT_TYPES = frozenset({"bridleway", "public-bridleway"})
+FORMER_RAILWAY_CONTEXT_TYPES = frozenset(
+    {"former-railway", "abandoned-railway", "disused-railway", "dismantled-railway"}
+)
 
 
 def _text(value: object) -> str | None:
@@ -55,6 +69,12 @@ def _text(value: object) -> str | None:
 
 def _values(value: object) -> tuple[str, ...]:
     return tuple(sorted(set(canonical_tag_values(value))))
+
+
+def _normalised_values(value: object) -> set[str]:
+    return {
+        item.casefold().replace("-", "_").replace(" ", "_") for item in canonical_tag_values(value)
+    }
 
 
 def _date_text(value: object) -> str | None:
@@ -152,6 +172,8 @@ def _base_properties(
     publisher = _text(row.get("publisher"))
     effective_date = _date_text(row.get("effective_date"))
     licence = _text(row.get("licence"))
+    designation = _text(row.get("designation")) or _text(row.get("prow_class"))
+    railway = _text(row.get("railway"))
     return {
         "category": category,
         "classification": classification,
@@ -164,6 +186,8 @@ def _base_properties(
         "publisher": publisher,
         "effective_date": effective_date,
         "licence": licence,
+        "designation": designation,
+        "railway": railway,
         "source_attribution": metadata.get("attribution"),
     }
 
@@ -207,6 +231,8 @@ def _append_feature(
                 "publishers": set(),
                 "effective_dates": set(),
                 "licences": set(),
+                "designations": set(),
+                "railways": set(),
                 "attributions": set(),
             },
         )
@@ -219,6 +245,8 @@ def _append_feature(
             ("publishers", "publisher"),
             ("effective_dates", "effective_date"),
             ("licences", "licence"),
+            ("designations", "designation"),
+            ("railways", "railway"),
             ("attributions", "source_attribution"),
         ):
             value = properties.get(value_key)
@@ -231,23 +259,60 @@ def _network_features(
     boundary: object,
     metadata: Mapping[str, object],
     records: dict[tuple[str, tuple[tuple[float, float], ...]], dict[str, object]],
+    *,
+    source_kind: str = "osm-network",
+    include_existing_categories: bool = True,
 ) -> None:
     for index, row in network.iterrows():
         if row.geometry is None or row.geometry.is_empty:
             continue
-        values = {value.casefold() for value in _values(row.get("ncn"))}
-        if values & {"yes", "true", "1", "designated"}:
+        highways = _normalised_values(row.get("highway"))
+        designations = _normalised_values(row.get("designation"))
+        railway_values = _normalised_values(row.get("railway"))
+        is_bridleway = bool("bridleway" in highways or designations & BRIDLEWAY_DESIGNATIONS)
+        is_former_railway = bool(railway_values & ABANDONED_RAILWAY_VALUES)
+        bridleway_classification = (
+            "public-bridleway" if "public_bridleway" in designations else "bridleway"
+        )
+        if is_bridleway:
             _append_feature(
                 records,
-                category="current-ncn",
-                classification="current-ncn",
-                source_kind="osm-network",
+                category="bridleway",
+                classification=bridleway_classification,
+                source_kind=source_kind,
                 row=row,
                 fallback=index,
                 geometry=row.geometry,
                 boundary=boundary,
                 metadata=metadata,
             )
+        if is_former_railway:
+            _append_feature(
+                records,
+                category="abandoned-railway",
+                classification="abandoned-railway",
+                source_kind=source_kind,
+                row=row,
+                fallback=index,
+                geometry=row.geometry,
+                boundary=boundary,
+                metadata=metadata,
+            )
+        values = _normalised_values(row.get("ncn"))
+        if include_existing_categories and values & {"yes", "true", "1", "designated"}:
+            _append_feature(
+                records,
+                category="current-ncn",
+                classification="current-ncn",
+                source_kind=source_kind,
+                row=row,
+                fallback=index,
+                geometry=row.geometry,
+                boundary=boundary,
+                metadata=metadata,
+            )
+            continue
+        if not include_existing_categories:
             continue
         kind = network_kind(row)
         if kind not in EXISTING_CYCLEWAY_KINDS:
@@ -256,7 +321,7 @@ def _network_features(
             records,
             category="cycleway",
             classification=kind or "cycleway",
-            source_kind="osm-network",
+            source_kind=source_kind,
             row=row,
             fallback=index,
             geometry=row.geometry,
@@ -308,13 +373,24 @@ def _context_features(
     records: dict[tuple[str, tuple[tuple[float, float], ...]], dict[str, object]],
 ) -> None:
     for index, row in context.iterrows():
-        feature_type = (_text(row.get("feature_type")) or "").casefold()
+        feature_type = (
+            (_text(row.get("feature_type")) or "").casefold().replace("_", "-").replace(" ", "-")
+        )
         if feature_type in CURRENT_NCN_TYPES:
             category, classification = "current-ncn", "current-ncn"
         elif feature_type in FORMER_NCN_TYPES:
             category, classification = "former-ncn", "former-ncn"
         elif feature_type in GREENWAY_TYPES:
             category, classification = "cycleway", "greenway"
+        elif feature_type in BRIDLEWAY_CONTEXT_TYPES:
+            category = "bridleway"
+            classification = (
+                "public-bridleway" if feature_type == "public-bridleway" else "bridleway"
+            )
+        elif feature_type in FORMER_RAILWAY_CONTEXT_TYPES or (
+            _normalised_values(row.get("railway")) & ABANDONED_RAILWAY_VALUES
+        ):
+            category, classification = "abandoned-railway", "abandoned-railway"
         else:
             continue
         if row.geometry is None or row.geometry.is_empty:
@@ -356,6 +432,8 @@ def _property_values(record: Mapping[str, object]) -> dict[str, object]:
         "publisher": ", ".join(values("publishers")) or None,
         "effective_date": ", ".join(values("effective_dates")) or None,
         "licence": ", ".join(values("licences")) or None,
+        "designation": ", ".join(values("designations")) or None,
+        "railway": ", ".join(values("railways")) or None,
         "source_attribution": ", ".join(values("attributions")) or None,
     }
 
@@ -367,7 +445,7 @@ def _feature_collection(
     output_crs: object,
 ) -> tuple[dict[str, object], dict[str, int], list[float] | None]:
     features: list[dict[str, object]] = []
-    counts = {category: 0 for category in ("a-road", "cycleway", "current-ncn", "former-ncn")}
+    counts = {category: 0 for category in BASELINE_CATEGORIES}
     all_geometry = []
     for index, record in enumerate(
         sorted(records, key=lambda item: (str(item["category"]), item["coordinates"]))
@@ -409,6 +487,7 @@ def _build_area(area_path: Path, destination: Path) -> dict[str, object]:
     boundary = _read_frame(snapshot / "boundary.geojson")
     network = _read_frame(snapshot / "network.geojson")
     context = _read_frame(snapshot / "context.geojson")
+    source_corridors = _read_frame(area_path.parent / "source-corridors.geojson")
     official_path = snapshot / "official-road-classification.geojson"
     if not official_path.exists() and definition.source.official_road_classification is not None:
         official_path = definition.source.official_road_classification.path
@@ -424,6 +503,15 @@ def _build_area(area_path: Path, destination: Path) -> dict[str, object]:
     records: dict[tuple[str, tuple[tuple[float, float], ...]], dict[str, object]] = {}
     _official_features(official.to_crs(working_crs), boundary_geometry, metadata, records)
     _network_features(network.to_crs(working_crs), boundary_geometry, metadata, records)
+    if not source_corridors.empty:
+        _network_features(
+            source_corridors.to_crs(working_crs),
+            boundary_geometry,
+            metadata,
+            records,
+            source_kind="source-corridors",
+            include_existing_categories=False,
+        )
     _context_features(context.to_crs(working_crs), boundary_geometry, metadata, records)
     network_payload, counts, bbox = _feature_collection(
         records.values(), input_crs=working_crs, output_crs=4326
@@ -466,6 +554,10 @@ def _build_area(area_path: Path, destination: Path) -> dict[str, object]:
     assets.mkdir(exist_ok=True)
     for filename in MAP_ASSETS:
         shutil.copyfile(PROJECT / "src" / "satn" / "assets" / filename, assets / filename)
+    shutil.copyfile(
+        PROJECT / "src" / "satn" / "assets" / "source-baseline-service-worker.js",
+        area_destination / "service-worker.js",
+    )
     return {
         "deployment_id": deployment_id,
         "area_id": definition.area_id,

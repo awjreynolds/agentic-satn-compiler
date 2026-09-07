@@ -4,8 +4,9 @@ Build an inspectable Strategic Active Travel Network from governed evidence, exp
 planning rules and bounded human or AI choices.
 
 The current publication step is a **source baseline**: A roads, mapped cycleways
-and cycle routes, and current/former National Cycle Network routes, with their
-source classifications. Village connections, route selection and delivery
+and cycle routes, current/former National Cycle Network routes, bridleways and
+former railway corridors, with their source classifications. It supplies evidence
+for a separately drawn strategic network. Village connections, route selection and delivery
 prioritisation are deferred. The fuller compiler workflow described below is
 retained for later stages.
 
@@ -19,6 +20,10 @@ snapshots, then check that all three render:
 
 This publication path reads the source linework directly and does not run the
 network compiler. Outputs are written to `build/source-baseline-pages`.
+
+Supplemental former-railway extracts are kept beside each Area Definition in
+`source-corridors.geojson`, including the OpenStreetMap query and retrieval date.
+The builder clips this evidence to the area boundary.
 
 > Experimental proof of concept — not an adopted plan, scheme design, safety audit,
 > legal-access finding or investment case.

@@ -23,6 +23,8 @@
       .cycleway { background: #2e8b57; }
       .current-ncn { background: #1976a3; }
       .former-ncn { background: #7e57c2; }
+      .bridleway { background: #5d4037; }
+      .abandoned-railway { background: #8e24aa; }
       #source-detail { margin-top: 1rem; padding-top: .65rem; border-top: 1px solid #d5dbdb; }
       #source-detail dl { margin: .4rem 0; }
       dt { margin-top: .4rem; font-weight: 700; }
@@ -37,13 +39,15 @@
       <aside>
         <h1 id="title">Source baseline</h1>
         <p id="area" class="muted">Loading area…</p>
-        <p class="notice">Source baseline only. Lines are not assessed for quality, safety, feasibility, funding, or chosen priority.</p>
+        <p class="notice">Source baseline only. Lines are not assessed for quality, safety, feasibility, funding, or chosen priority. An abandoned, disused, dismantled, or razed railway line is source evidence only and does not assert cycling access.</p>
         <h2>Sources</h2>
         <div class="source-list">
           <label><input type="checkbox" data-layer="baseline-a-road" checked><span class="swatch a-road"></span>A roads</label>
           <label><input type="checkbox" data-layer="baseline-cycleway" checked><span class="swatch cycleway"></span>Mapped cycle routes / cycleways</label>
           <label><input type="checkbox" data-layer="baseline-current-ncn" checked><span class="swatch current-ncn"></span>Current NCN</label>
           <label><input type="checkbox" data-layer="baseline-former-ncn" checked><span class="swatch former-ncn"></span>Former / declassified NCN</label>
+          <label><input type="checkbox" data-layer="baseline-bridleway" checked><span class="swatch bridleway"></span>Bridleway evidence</label>
+          <label><input type="checkbox" data-layer="baseline-abandoned-railway" checked><span class="swatch abandoned-railway"></span>Abandoned / disused / dismantled / razed railway evidence</label>
         </div>
         <p id="counts" class="muted">Loading source counts…</p>
         <p id="attribution" class="muted"></p>
@@ -62,12 +66,16 @@
         "baseline-cycleway",
         "baseline-current-ncn",
         "baseline-former-ncn",
+        "baseline-bridleway",
+        "baseline-abandoned-railway",
       ];
       const colors = {
         "a-road": "#b03a2e",
         "cycleway": "#2e8b57",
         "current-ncn": "#1976a3",
         "former-ncn": "#7e57c2",
+        "bridleway": "#5d4037",
+        "abandoned-railway": "#8e24aa",
       };
       function text(value) {
         return value === null || value === undefined || value === "" ? "Unavailable" : String(value);
@@ -84,6 +92,8 @@
           ["Source", "source_kind"],
           ["Source ID", "source_id"],
           ["Feature ID", "source_feature_id"],
+          ["Designation", "designation"],
+          ["Railway status", "railway"],
           ["Dataset", "dataset"],
           ["Effective date", "effective_date"],
           ["Licence", "licence"],
@@ -97,6 +107,10 @@
         detail.append(dl);
       }
       (async () => {
+        if ("serviceWorker" in navigator) {
+          const registration = await navigator.serviceWorker.getRegistration();
+          if (registration) await registration.update();
+        }
         const [publication, network] = await Promise.all([
           fetch("publication.json", { cache: "no-store" }).then(response => response.json()),
           fetch("network.geojson", { cache: "no-store" }).then(response => response.json()),

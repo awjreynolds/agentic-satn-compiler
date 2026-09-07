@@ -77,7 +77,7 @@ The baseline strategic network comprising all in-scope A roads, current or forme
 _Avoid_: complete Backbone-and-Access Network, access tree, town-centre-only skeleton, every routable asset, proximity-pruned spanning tree, universal 1,500 m grid
 
 **Source Baseline**:
-The mapped A-road network, existing cycle routes and cycleways, and current and former National Cycle Network routes within the area, retaining their source classifications. It is the starting point for planning, before village connections, alignment choices, quality assessment or delivery prioritisation.
+An evidence map of the mapped A-road network, existing cycle routes and cycleways, current and former National Cycle Network routes, bridleways and former railway corridors within the area, retaining their source classifications. It informs a separate proposed strategic network and explicit assessments of existing provision, improvements and substantial new work. A former railway does not imply current cycling access or deliverability. Footpaths remain a possible optional context layer, not part of the present baseline.
 _Avoid_: selected network, prioritised programme, connected-network claim, assessed cycle provision
 
 **Strategic Main Connector**:

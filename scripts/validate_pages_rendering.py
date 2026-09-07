@@ -348,7 +348,10 @@ def _inspect_source_baseline(
             """() => {
               const map = window.SATN_BASELINE_MAP;
               const features = map.getSource('baseline')._data.features;
-              const categories = ['a-road', 'cycleway', 'current-ncn', 'former-ncn'];
+              const categories = [
+                'a-road', 'cycleway', 'current-ncn', 'former-ncn',
+                'bridleway', 'abandoned-railway'
+              ];
               return {
                 total: features.length,
                 unexpected: features.filter(

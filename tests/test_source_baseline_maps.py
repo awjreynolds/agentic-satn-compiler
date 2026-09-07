@@ -66,6 +66,45 @@ def _write_test_area(root: Path) -> Path:
                 "cycleway": "proposed",
                 "geometry": LineString([(0, 2), (10, 2)]),
             },
+            {
+                "source_id": "bridleway-ncn",
+                "highway": "bridleway",
+                "designation": "permissive",
+                "ncn": "yes",
+                "geometry": LineString([(0, 8), (10, 8)]),
+            },
+            {
+                "source_id": "bridleway-designation",
+                "highway": "path",
+                "designation": "public_bridleway",
+                "geometry": LineString([(0, 8.5), (10, 8.5)]),
+            },
+            {
+                "source_id": "active-railway",
+                "railway": "rail",
+                "geometry": LineString([(0, 9), (10, 9)]),
+            },
+            {
+                "source_id": "abandoned-railway",
+                "railway": "abandoned",
+                "highway": "cycleway",
+                "geometry": LineString([(0, 9.2), (10, 9.2)]),
+            },
+            {
+                "source_id": "disused-railway-reverse",
+                "railway": "disused",
+                "geometry": LineString([(10, 9.2), (0, 9.2)]),
+            },
+            {
+                "source_id": "dismantled-railway",
+                "railway": "dismantled",
+                "geometry": LineString([(0, 9.5), (10, 9.5)]),
+            },
+            {
+                "source_id": "razed-railway",
+                "railway": "razed",
+                "geometry": LineString([(0, 9.7), (10, 9.7)]),
+            },
         ],
         geometry="geometry",
         crs=4326,
@@ -101,6 +140,27 @@ def _write_test_area(root: Path) -> Path:
                 "source_id": "greenway-source",
                 "name": "Greenway",
                 "geometry": LineString([(0, 5), (10, 5)]),
+            },
+            {
+                "evidence_id": "bridleway-evidence",
+                "feature_type": "bridleway",
+                "source_id": "context-bridleway",
+                "name": "Context bridleway",
+                "geometry": LineString([(0, 6.5), (10, 6.5)]),
+            },
+            {
+                "evidence_id": "public-bridleway-evidence",
+                "feature_type": "public-bridleway",
+                "source_id": "context-public-bridleway",
+                "name": "Context public bridleway",
+                "geometry": LineString([(0, 6.8), (10, 6.8)]),
+            },
+            {
+                "evidence_id": "former-railway-evidence",
+                "feature_type": "former-railway",
+                "source_id": "context-former-railway",
+                "name": "Context former railway",
+                "geometry": LineString([(0, 7.1), (10, 7.1)]),
             },
             {
                 "evidence_id": "outside-evidence",
@@ -196,11 +256,35 @@ def test_source_baseline_builder_clips_and_retains_source_classes(tmp_path: Path
 
     features = network["features"]
     categories = [feature["properties"]["category"] for feature in features]
-    assert set(categories) == {"a-road", "cycleway", "current-ncn", "former-ncn"}
+    assert set(categories) == {
+        "a-road",
+        "cycleway",
+        "current-ncn",
+        "former-ncn",
+        "bridleway",
+        "abandoned-railway",
+    }
     assert categories.count("a-road") == 1
-    assert categories.count("current-ncn") == 2
+    assert categories.count("current-ncn") == 3
     assert categories.count("former-ncn") == 1
-    assert categories.count("cycleway") == 3
+    assert categories.count("cycleway") == 4
+    assert categories.count("bridleway") == 4
+    assert categories.count("abandoned-railway") == 4
+    bridleway_ncn = next(
+        feature for feature in features if "bridleway-ncn" in feature["properties"]["source_ids"]
+    )
+    assert bridleway_ncn["properties"]["classification"] == "bridleway"
+    railway_sources = {
+        source_id
+        for feature in features
+        if feature["properties"]["category"] == "abandoned-railway"
+        for source_id in feature["properties"]["source_ids"]
+    }
+    assert {
+        "abandoned-railway",
+        "disused-railway-reverse",
+        "razed-railway",
+    } <= railway_sources
     assert all(
         all(-1e-9 <= coordinate <= 10.000000001 for coordinate in point)
         for feature in features
@@ -213,9 +297,11 @@ def test_source_baseline_builder_clips_and_retains_source_classes(tmp_path: Path
     assert publication["publication_kind"] == "source-baseline"
     assert publication["counts"] == {
         "a-road": 1,
-        "cycleway": 3,
-        "current-ncn": 2,
+        "cycleway": 4,
+        "current-ncn": 3,
         "former-ncn": 1,
+        "bridleway": 4,
+        "abandoned-railway": 4,
     }
     assert catalogue["deployments"][0]["publication_kind"] == "source-baseline"
     assert catalogue["deployments"][0]["artifacts"]["review_map"] == (
@@ -223,3 +309,64 @@ def test_source_baseline_builder_clips_and_retains_source_classes(tmp_path: Path
     )
     assert (destination / "index.html").exists()
     assert (destination / ".nojekyll").exists()
+    assert (deployment / "service-worker.js").exists()
+    html = (deployment / "index.html").read_text(encoding="utf-8")
+    assert 'data-layer="baseline-bridleway"' in html
+    assert 'data-layer="baseline-abandoned-railway"' in html
+    assert "Bridleway evidence" in html
+    assert "razed railway evidence" in html
+    assert "does not assert cycling access" in html
+
+
+def test_source_baseline_reads_adjacent_source_corridors(tmp_path: Path) -> None:
+    area = _write_test_area(tmp_path)
+    gpd.GeoDataFrame(
+        [
+            {
+                "source_id": "adjacent-former-railway",
+                "railway": "disused",
+                "dataset": "explicit-railway-extract",
+                "publisher": "Test railway publisher",
+                "effective_date": "2026-09-07",
+                "licence": "Test licence",
+                "geometry": LineString([(0, 7.4), (10, 7.4)]),
+            },
+            {
+                "source_id": "adjacent-razed-railway",
+                "railway": "razed",
+                "highway": "cycleway",
+                "dataset": "explicit-railway-extract",
+                "geometry": LineString([(0, 7.6), (10, 7.6)]),
+            },
+        ],
+        geometry="geometry",
+        crs=4326,
+    ).to_file(area.parent / "source-corridors.geojson", driver="GeoJSON")
+
+    destination = tmp_path / "source-baseline-pages"
+    build_source_baseline_maps([area], destination)
+
+    network = json.loads(
+        (destination / "deployments" / "source-baseline-test" / "network.geojson").read_text(
+            encoding="utf-8"
+        )
+    )
+    adjacent = [
+        feature
+        for feature in network["features"]
+        if "adjacent-former-railway" in feature["properties"]["source_ids"]
+    ]
+    assert len(adjacent) == 1
+    assert adjacent[0]["properties"]["category"] == "abandoned-railway"
+    assert adjacent[0]["properties"]["source_kind"] == "source-corridors"
+    assert adjacent[0]["properties"]["dataset"] == "explicit-railway-extract"
+    razed = [
+        feature
+        for feature in network["features"]
+        if "adjacent-razed-railway" in feature["properties"]["source_ids"]
+    ]
+    assert len(razed) == 1
+    assert razed[0]["properties"]["category"] == "abandoned-railway"
+    assert (
+        sum(feature["properties"]["category"] == "cycleway" for feature in network["features"]) == 4
+    )
