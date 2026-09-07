@@ -105,6 +105,8 @@ def _inspect_deployment(
     origin: str,
     entry: dict[str, object],
 ) -> DeploymentRenderResult:
+    if entry.get("publication_kind") == "source-baseline":
+        return _inspect_source_baseline(context, origin, entry)
     deployment_id = entry.get("deployment_id")
     artifacts = entry.get("artifacts")
     if not isinstance(deployment_id, str) or not isinstance(artifacts, dict):
@@ -303,6 +305,61 @@ def _inspect_deployment(
             access_connections=counts["spine-access-connection"],
             cross_spine_connectors=counts["cross-spine-connector"],
             rendered_strategic_spines=rendered,
+        )
+    finally:
+        page.close()
+
+
+def _inspect_source_baseline(
+    context: BrowserContext,
+    origin: str,
+    entry: dict[str, object],
+) -> DeploymentRenderResult:
+    """Check that the direct source map loads and paints each populated class."""
+    deployment_id = str(entry["deployment_id"])
+    artifacts = entry["artifacts"]
+    if not isinstance(artifacts, dict):
+        raise ValueError(f"invalid baseline artifacts: {deployment_id}")
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    try:
+        page.goto(f"{origin}/{artifacts['review_map']}", wait_until="domcontentloaded")
+        page.wait_for_function(
+            "document.documentElement.dataset.mapReady === 'true' && "
+            "window.SATN_BASELINE_MAP?.isSourceLoaded('baseline') && "
+            "!window.SATN_BASELINE_MAP.isMoving()"
+        )
+        inspection = page.evaluate(
+            """() => {
+              const map = window.SATN_BASELINE_MAP;
+              const features = map.getSource('baseline')._data.features;
+              const categories = ['a-road', 'cycleway', 'current-ncn', 'former-ncn'];
+              return {
+                total: features.length,
+                unexpected: features.filter(
+                  f => !categories.includes(f.properties.category)
+                ).length,
+                classes: categories.map(category => ({
+                  category,
+                  count: features.filter(f => f.properties.category === category).length,
+                  rendered: map.getLayer('baseline-' + category)
+                    ? map.queryRenderedFeatures({layers: ['baseline-' + category]}).length : 0
+                }))
+              };
+            }"""
+        )
+        if errors or inspection["total"] == 0 or inspection["unexpected"]:
+            raise ValueError(f"{deployment_id} invalid source baseline: {inspection}; {errors}")
+        for item in inspection["classes"]:
+            if item["count"] and not item["rendered"]:
+                raise ValueError(f"{deployment_id} source class did not render: {item['category']}")
+        return DeploymentRenderResult(
+            deployment_id=deployment_id,
+            strategic_spines=inspection["total"],
+            access_connections=0,
+            cross_spine_connectors=0,
+            rendered_strategic_spines=sum(item["rendered"] for item in inspection["classes"]),
         )
     finally:
         page.close()

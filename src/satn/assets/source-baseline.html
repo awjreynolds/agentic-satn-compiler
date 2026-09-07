@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>__BASELINE_TITLE__</title>
+    <link rel="stylesheet" href="assets/maplibre-gl.css">
+    <style>
+      :root { color-scheme: light; font: 15px/1.4 system-ui, sans-serif; color: #17202a; }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      main { display: grid; grid-template-columns: minmax(17rem, 22rem) 1fr; height: 100%; }
+      aside { overflow: auto; padding: 1rem; border-right: 1px solid #b8c1c7; background: #f8fafb; }
+      h1 { margin: 0 0 .45rem; font-size: 1.2rem; }
+      h2 { margin: 1rem 0 .35rem; font-size: .98rem; }
+      p { margin: .45rem 0; }
+      .muted { color: #566573; font-size: .83rem; }
+      .notice { padding: .65rem; border-left: 4px solid #2e86c1; background: #eef6fc; font-size: .84rem; }
+      .source-list { display: grid; gap: .4rem; margin: .6rem 0; }
+      label { display: flex; gap: .45rem; align-items: center; }
+      .swatch { display: inline-block; width: 1.1rem; height: .25rem; border-radius: .2rem; }
+      .a-road { background: #b03a2e; }
+      .cycleway { background: #2e8b57; }
+      .current-ncn { background: #1976a3; }
+      .former-ncn { background: #7e57c2; }
+      #source-detail { margin-top: 1rem; padding-top: .65rem; border-top: 1px solid #d5dbdb; }
+      #source-detail dl { margin: .4rem 0; }
+      dt { margin-top: .4rem; font-weight: 700; }
+      dd { margin: 0; overflow-wrap: anywhere; }
+      #map { min-width: 0; min-height: 100%; }
+      button:focus-visible, input:focus-visible { outline: 3px solid #f4d03f; outline-offset: 1px; }
+      @media (max-width: 700px) { main { grid-template-columns: 1fr; grid-template-rows: auto 1fr; } aside { max-height: 45vh; border-right: 0; border-bottom: 1px solid #b8c1c7; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <aside>
+        <h1 id="title">Source baseline</h1>
+        <p id="area" class="muted">Loading area…</p>
+        <p class="notice">Source baseline only. Lines are not assessed for quality, safety, feasibility, funding, or chosen priority.</p>
+        <h2>Sources</h2>
+        <div class="source-list">
+          <label><input type="checkbox" data-layer="baseline-a-road" checked><span class="swatch a-road"></span>A roads</label>
+          <label><input type="checkbox" data-layer="baseline-cycleway" checked><span class="swatch cycleway"></span>Mapped cycle routes / cycleways</label>
+          <label><input type="checkbox" data-layer="baseline-current-ncn" checked><span class="swatch current-ncn"></span>Current NCN</label>
+          <label><input type="checkbox" data-layer="baseline-former-ncn" checked><span class="swatch former-ncn"></span>Former / declassified NCN</label>
+        </div>
+        <p id="counts" class="muted">Loading source counts…</p>
+        <p id="attribution" class="muted"></p>
+        <section id="source-detail" aria-live="polite">
+          <h2>Selected source</h2>
+          <p class="muted">Click a line to inspect its source identity and classification.</p>
+        </section>
+      </aside>
+      <div id="map" role="application" aria-label="Source baseline map"></div>
+    </main>
+    <script src="assets/maplibre-gl.js"></script>
+    <script>
+      window.SATN_BASELINE_MAP = null;
+      const layerIds = [
+        "baseline-a-road",
+        "baseline-cycleway",
+        "baseline-current-ncn",
+        "baseline-former-ncn",
+      ];
+      const colors = {
+        "a-road": "#b03a2e",
+        "cycleway": "#2e8b57",
+        "current-ncn": "#1976a3",
+        "former-ncn": "#7e57c2",
+      };
+      function text(value) {
+        return value === null || value === undefined || value === "" ? "Unavailable" : String(value);
+      }
+      function showFeature(feature) {
+        const properties = feature.properties || {};
+        const detail = document.getElementById("source-detail");
+        detail.innerHTML = "<h2>Selected source</h2>";
+        const dl = document.createElement("dl");
+        for (const [label, key] of [
+          ["Class", "classification"],
+          ["Name", "name"],
+          ["Reference", "ref"],
+          ["Source", "source_kind"],
+          ["Source ID", "source_id"],
+          ["Feature ID", "source_feature_id"],
+          ["Dataset", "dataset"],
+          ["Effective date", "effective_date"],
+          ["Licence", "licence"],
+        ]) {
+          const dt = document.createElement("dt");
+          dt.textContent = label;
+          const dd = document.createElement("dd");
+          dd.textContent = text(properties[key]);
+          dl.append(dt, dd);
+        }
+        detail.append(dl);
+      }
+      (async () => {
+        const [publication, network] = await Promise.all([
+          fetch("publication.json", { cache: "no-store" }).then(response => response.json()),
+          fetch("network.geojson", { cache: "no-store" }).then(response => response.json()),
+        ]);
+        document.getElementById("title").textContent = `${publication.area_name} source baseline`;
+        document.getElementById("area").textContent = `Snapshot: ${text(publication.snapshot_id)} · ${text(publication.date)}`;
+        document.getElementById("counts").textContent = Object.entries(publication.counts || {})
+          .map(([category, count]) => `${category}: ${count}`).join(" · ");
+        document.getElementById("attribution").textContent = text(publication.attribution);
+        const map = new maplibregl.Map({
+          container: "map",
+          center: [-1.5, 52.5],
+          zoom: 8,
+          style: {
+            version: 8,
+            sources: {
+              osm: {
+                type: "raster",
+                tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+                tileSize: 256,
+                attribution: "© OpenStreetMap contributors",
+              },
+              baseline: { type: "geojson", data: network },
+            },
+            layers: [
+              {
+                id: "baseline-osm",
+                type: "raster",
+                source: "osm",
+                paint: { "raster-opacity": 0.72 },
+              },
+              ...layerIds.map(layerId => ({
+              id: layerId,
+              type: "line",
+              source: "baseline",
+              filter: ["==", ["get", "category"], layerId.replace("baseline-", "")],
+              layout: { "line-cap": "round", "line-join": "round", visibility: "visible" },
+              paint: { "line-color": colors[layerId.replace("baseline-", "")], "line-width": 3.5 },
+              })),
+            ],
+          },
+          attributionControl: true,
+        });
+        window.SATN_BASELINE_MAP = map;
+        map.on("load", () => {
+          if (publication.bbox && publication.bbox.length === 4) {
+            map.fitBounds([[publication.bbox[0], publication.bbox[1]], [publication.bbox[2], publication.bbox[3]]], { padding: 36, duration: 0 });
+          }
+          for (const input of document.querySelectorAll("input[data-layer]")) {
+            input.addEventListener("change", () => {
+              map.setLayoutProperty(input.dataset.layer, "visibility", input.checked ? "visible" : "none");
+            });
+          }
+          map.on("click", event => {
+            const features = map.queryRenderedFeatures(event.point, { layers: layerIds });
+            if (features.length) showFeature(features[0]);
+          });
+          const ready = () => {
+            if (!map.isSourceLoaded("baseline") || !layerIds.every(layerId => !!map.getLayer(layerId))) {
+              return;
+            }
+            const populatedLayerIds = layerIds.filter(layerId => network.features.some(
+              feature => feature.properties && feature.properties.category === layerId.replace("baseline-", "")
+            ));
+            const unpainted = populatedLayerIds.some(layerId =>
+              !map.queryRenderedFeatures({ layers: [layerId] }).length
+            );
+            if (network.features.length && unpainted) {
+              return;
+            }
+            document.documentElement.dataset.mapReady = "true";
+          };
+          map.on("idle", ready);
+          map.on("render", ready);
+        });
+      })().catch(error => {
+        document.getElementById("area").textContent = `Source baseline failed to load: ${error}`;
+        document.documentElement.dataset.mapReady = "false";
+      });
+    </script>
+  </body>
+</html>

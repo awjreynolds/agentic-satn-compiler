@@ -5,7 +5,32 @@
 - Selection policy amended 2026-09-06 by [the SATN method reset](https://github.com/awjreynolds/agentic-satn-compiler/issues/421) and [case-by-case route selection](https://github.com/awjreynolds/agentic-satn-compiler/issues/424): A-road consideration is required, universal segment retention is not; B-roads require a missing interurban connection. This is a planning amendment, not evidence that the compiler has been changed. The historical rationale below remains for context; its universal-retention requirements do not govern the planned POC method.
 - Supersedes: ADR 0024's smallest coverage-preserving mesh as the primary selection objective
 
-## Corridor hierarchy clarification, 7 September 2026
+## Source baseline clarification, 7 September 2026
+
+### Immediate release scope
+
+The owner subsequently asked to stop at a simple source baseline and publish
+that first. The immediate release therefore draws the A-road network, existing
+cycleways and cycle routes, and current/former NCN routes directly from the
+source data. It does not run route selection, infer missing connections, add
+village access, or prioritise delivery. The other compiler code is retained for
+later work. This release is a source map, not evidence that the wider compiler
+or its connected-network planning has been completed.
+
+The owner's subsequent clarification supersedes the selection-based membership
+described above: the baseline is all in-scope A roads, NCN routes and existing
+cycleways. Assemble their actual source geometry and topology first. Selecting
+town-to-town routes, assigning delivery priority or assessing upgrade needs must
+not determine whether those sources belong to the strategic network.
+
+Preferred alignments and dashed alternatives remain inspectable decisions within
+that baseline. Genuine missing connections are explicit additions; village access
+is separate. Neither arbitrary grid generation nor blanket B-road promotion is
+implied. This changes the assembly premise, rather than adding another exception
+to route selection. Implementation and all three regional outputs still require
+verification against the baseline before release can be called complete.
+
+## Earlier corridor hierarchy clarification, 7 September 2026
 
 The owner confirmed that A roads and NCN routes are top-tier strategic corridors.
 The case-by-case amendment permits a credible alternative alignment; it does not

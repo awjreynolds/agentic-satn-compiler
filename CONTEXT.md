@@ -73,8 +73,12 @@ A delivery-led structure composed of the Strategic Main Network and Access Suppo
 _Avoid_: Strategic Main Network, pairwise network, nearest-neighbour network, spider's web
 
 **Strategic Main Network**:
-The coherent, simplified strategic network whose top-tier corridors include A roads and current or former National Cycle Network routes, with existing cycleways, Greenways and suitable bridleways providing strategic alignments and case-by-case alternatives. A corridor's strategic role survives local access use, upgrade needs and travel through an area without a town endpoint; an alternative replaces a corridor only where it preserves the strategic connection and its access, while village-only branches remain Access Support and B-roads enter only for a genuine missing interurban connection.
+The baseline strategic network comprising all in-scope A roads, current or former National Cycle Network routes and existing cycleways, together with explicit connections needed to close genuine gaps. Prioritisation and preferred-alignment decisions describe improvements and alternatives within that network without removing source corridors from it; village access remains separate and B-roads qualify only where they close a genuine missing interurban connection.
 _Avoid_: complete Backbone-and-Access Network, access tree, town-centre-only skeleton, every routable asset, proximity-pruned spanning tree, universal 1,500 m grid
+
+**Source Baseline**:
+The mapped A-road network, existing cycle routes and cycleways, and current and former National Cycle Network routes within the area, retaining their source classifications. It is the starting point for planning, before village connections, alignment choices, quality assessment or delivery prioritisation.
+_Avoid_: selected network, prioritised programme, connected-network claim, assessed cycle provision
 
 **Strategic Main Connector**:
 A compiler-selected, bidirectionally routable path used only to join otherwise disconnected Strategic Main Network components through the governed Planning Graph. Connector search prefers existing cycle provision first, A-road corridors second and other routable edges only when continuity requires them; it does not promote unrelated Access Support.
@@ -93,11 +97,11 @@ A deliberately bounded, informative and inspectable layered picture whose initia
 _Avoid_: final scheme map, cycle-route inventory, undifferentiated linework
 
 **Strategic Network Route Layer**:
-The inspectable selected Strategic Main Network layer, presented consistently as the structural network overview. Optional Alignment review detail communicates Network Display State through the line core and primary Alignment Basis through its halo; Access Support, material gaps and officer–compiler divergences retain separate inspectable identities.
+The inspectable Strategic Main Network baseline, showing preferred alignments and retained alternatives as the structural network overview. Optional Alignment review detail communicates Network Display State through the line core and primary Alignment Basis through its halo; Access Support, material gaps and officer–compiler divergences retain separate inspectable identities.
 _Avoid_: complete access network, uniform-red route, hidden connectors, contextual asset inventory, colour-only meaning
 
 **Effective Strategic Network**:
-The single fingerprinted network state produced by the authoritative network-selection step for one exact compilation request. It distinguishes selected Strategic Main Network sections from Access Support while retaining both with gaps and evidence; publication artifacts and Review Lens interaction state remain projections or views and never select again.
+The single authoritative network state for one compilation request, containing the Strategic Main Network baseline, preferred alignments, retained alternatives and separate Access Support with their gaps and evidence. Publication artifacts and Review Lens interaction state are views of that state and never redefine strategic membership.
 _Avoid_: candidate set, preparation roster, published map, review selection, route winner
 
 **Alignment Basis**:
@@ -117,11 +121,11 @@ The map-facing union of the three routable Intervention States and `unresolved-g
 _Avoid_: route score, colour-only state, alignment source
 
 **Existing and Upgradeable Assets Layer**:
-An optional inventory layer containing every governed in-scope reusable asset whether selected, complementary, unselected, incomplete or topologically unconnected. OSM-mapped cycleway assets are available as separately styled contextual evidence. An unselected existing asset retains its basis identity rather than becoming an anonymous grey alternative and never masquerades as selected network geometry.
+An optional inventory layer containing every governed in-scope reusable asset whether preferred, complementary, incomplete or topologically unconnected. Existing cycleways also belong to the Strategic Main Network baseline; the inventory supplies their asset detail rather than substituting for strategic membership.
 _Avoid_: selected network, hidden asset loss, feasibility inventory
 
 **Unselected Candidates Layer**:
-An optional view of considered route alternatives not selected into the active strategic network, retaining their identity, comparison reason and decision attribution. It distinguishes coherent alternatives from the raw asset inventory; visibility does not make an alternative part of Main.
+An optional view of considered route alternatives, retaining their identity, comparison reason and decision attribution. A non-preferred A-road, NCN or existing cycleway alignment retains strategic baseline membership; other candidate alternatives do not become Main merely because they are visible.
 _Avoid_: discarded geometry, deleted options, grey divergence
 
 **Backbone-Outward Assembly**:
