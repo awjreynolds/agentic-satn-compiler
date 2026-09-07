@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import threading
@@ -325,11 +326,24 @@ def _inspect_source_baseline(
     page.on("pageerror", lambda error: errors.append(str(error)))
     try:
         page.goto(f"{origin}/{artifacts['review_map']}", wait_until="domcontentloaded")
-        page.wait_for_function(
-            "document.documentElement.dataset.mapReady === 'true' && "
-            "window.SATN_BASELINE_MAP?.isSourceLoaded('baseline') && "
-            "!window.SATN_BASELINE_MAP.isMoving()"
-        )
+        try:
+            page.wait_for_function(
+                "document.documentElement.dataset.mapReady === 'true' && "
+                "window.SATN_BASELINE_MAP?.isSourceLoaded('baseline') && "
+                "!window.SATN_BASELINE_MAP.isMoving()"
+            )
+        except PlaywrightTimeoutError as error:
+            details = page.evaluate(
+                """() => ({
+                  ready: document.documentElement.dataset.mapReady,
+                  message: document.getElementById('area')?.textContent,
+                  mapPresent: Boolean(window.SATN_BASELINE_MAP),
+                  sourceLoaded: window.SATN_BASELINE_MAP?.isSourceLoaded('baseline')
+                })"""
+            )
+            raise ValueError(
+                f"{deployment_id} source baseline did not render: {details}; {errors}"
+            ) from error
         inspection = page.evaluate(
             """() => {
               const map = window.SATN_BASELINE_MAP;
@@ -378,7 +392,14 @@ def validate_pages_rendering(pages_directory: str | Path) -> tuple[DeploymentRen
             browser = playwright.chromium.launch(headless=True)
         try:
             context = browser.new_context()
-            context.route("https://tile.openstreetmap.org/**", lambda route: route.abort())
+            # Complete raster loading without making the overlay check depend on OSM.
+            blank_tile = base64.b64decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aFioAAAAASUVORK5CYII="
+            )
+            context.route(
+                "https://tile.openstreetmap.org/**",
+                lambda route: route.fulfill(content_type="image/png", body=blank_tile),
+            )
             return tuple(_inspect_deployment(context, origin, entry) for entry in entries)
         finally:
             browser.close()
