@@ -27,7 +27,8 @@ CompilerPath = Literal[
 MANIFEST_SCHEMA_VERSION: Final = "satn-compilation-dependency-manifest/v4"
 # Preserve genuine closed required routes through mesh admission.
 # Rebind canonical urban city/town anchors within the governed urban scope.
-COMPILER_CACHE_REVISION: Final = "poc-v9"
+# Preserve governed A-road and typed cycle-corridor obligations beside urban journeys.
+COMPILER_CACHE_REVISION: Final = "poc-v10"
 _REVISION = re.compile(r"^[a-z0-9]+(?:[-._/][a-z0-9]+)*$")
 _COMPILER_PATHS = frozenset({"network", "reference", "strategic-reference", "ea-recovery"})
 

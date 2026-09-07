@@ -1045,3 +1045,222 @@ def test_strategic_preparation_reports_batched_route_phase_diagnostics(
     assert diagnostics["unique_alignments"] == 3
     assert diagnostics["sections"] == len(preparation.section_population.sections)
     assert diagnostics["elapsed_seconds"] >= 0
+
+
+def test_legacy_urban_mode_retains_governed_a_road_backbone_obligation(
+    tmp_path: Path,
+) -> None:
+    """Urban pair selection must not discard a separately governed A-road chain."""
+
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    source = load_snapshot(config)
+    labels = source["label_places"].copy()
+    labels["kind"] = "town"
+    labels["element"] = "node"
+    labels["id"] = ["bath", "saltford"]
+    labels["name"] = ["Bath", "Saltford"]
+    source["label_places"] = labels
+
+    # This is the exact supplied A4 source segment.  The official frame is
+    # governed input for the public compiler seam, rather than a test-only
+    # route or endpoint invented for the assertion.
+    a4_spine = (
+        source["network"]
+        .loc[source["network"]["source_id"].eq("a4-spine-forward"), "geometry"]
+        .iloc[0]
+    )
+    source["official_road_classification"] = gpd.GeoDataFrame(
+        [
+            {
+                "official_feature_id": "bath-saltford-a4-spine",
+                "official_classification": "a-road",
+                "official_road_number": "A4",
+                "source_id": "a4-spine-forward",
+                "content_fingerprint": "a" * 64,
+                "geometry": a4_spine,
+            }
+        ],
+        geometry="geometry",
+        crs=source["network"].crs,
+    )
+
+    compiled = compile_network(config, source, FakeAgentRuntime())
+    preparation = compiled.strategic_corridor_preparation
+    assert preparation is not None
+
+    backbone_units = [
+        unit
+        for unit in preparation.units
+        if unit.unit_role is StrategicCorridorUnitRole.A_ROAD_BACKBONE
+    ]
+    assert backbone_units
+    assert all(unit.backbone_required for unit in backbone_units)
+    assert any(
+        candidate.source_class.value == "a-road-corridor"
+        for unit in backbone_units
+        for candidate in unit.candidate_set.candidates
+    )
+
+    planning = compiled.strategic_network_planning
+    assert planning is not None
+    backbone = backbone_units[0]
+    selection = next(item for item in planning.selections if item.obligation_id == backbone.unit_id)
+    assert selection.authority.value == "compiler"
+    assert any(
+        section.obligation_id == backbone.unit_id
+        and section.candidate_id == selection.effective_candidate_id
+        and section.primary_alignment_basis == "a-road"
+        for section in planning.effective_network.sections
+    )
+
+
+def test_legacy_urban_mode_retains_typed_cycle_corridor_outside_town_pair(
+    tmp_path: Path,
+) -> None:
+    """A typed cycle corridor remains a required comparison beside town journeys."""
+
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    source = load_snapshot(config)
+    labels = source["label_places"].copy()
+    labels["kind"] = "town"
+    labels["element"] = "node"
+    labels["id"] = ["bath", "saltford"]
+    labels["name"] = ["Bath", "Saltford"]
+    source["label_places"] = labels
+
+    # This reciprocal graph branch is governed by the added context row below
+    # and shares the existing source graph at A4-root.  It is deliberately
+    # outside the Bath-Saltford town-pair endpoints.
+    branch = gpd.GeoDataFrame(
+        [
+            {
+                "source_id": "ncn-out-forward",
+                "u": "a4-root",
+                "v": "ncn-out-end",
+                "highway": "cycleway",
+                "geometry": LineString([(-2.39, 51.37), (-2.38, 51.36)]),
+            },
+            {
+                "source_id": "ncn-out-reverse",
+                "u": "ncn-out-end",
+                "v": "a4-root",
+                "highway": "cycleway",
+                "geometry": LineString([(-2.38, 51.36), (-2.39, 51.37)]),
+            },
+            {
+                "source_id": "former-out-forward",
+                "u": "a4-attach",
+                "v": "former-out-end",
+                "highway": "cycleway",
+                "geometry": LineString([(-2.39, 51.385), (-2.38, 51.375)]),
+            },
+            {
+                "source_id": "former-out-reverse",
+                "u": "former-out-end",
+                "v": "a4-attach",
+                "highway": "cycleway",
+                "geometry": LineString([(-2.38, 51.375), (-2.39, 51.385)]),
+            },
+            {
+                "source_id": "plain-out-forward",
+                "u": "ncn-out-end",
+                "v": "plain-out-end",
+                "highway": "cycleway",
+                "geometry": LineString([(-2.38, 51.36), (-2.37, 51.35)]),
+            },
+            {
+                "source_id": "plain-out-reverse",
+                "u": "plain-out-end",
+                "v": "ncn-out-end",
+                "highway": "cycleway",
+                "geometry": LineString([(-2.37, 51.35), (-2.38, 51.36)]),
+            },
+        ],
+        geometry="geometry",
+        crs=source["network"].crs,
+    )
+    source["network"] = gpd.GeoDataFrame(
+        pd.concat([source["network"], branch], ignore_index=True, sort=False),
+        geometry="geometry",
+        crs=source["network"].crs,
+    )
+    cycle_context = gpd.GeoDataFrame(
+        [
+            {
+                "evidence_id": "ncn-out-evidence",
+                "feature_type": "ncn-route",
+                "name": "Governed outer NCN branch",
+                "source_id": "ncn-out",
+                "geometry": LineString([(-2.39, 51.37), (-2.38, 51.36)]),
+            },
+            {
+                "evidence_id": "former-out-evidence",
+                "feature_type": "declassified-ncn-route",
+                "name": "Governed former NCN branch",
+                "source_id": "former-out",
+                "geometry": LineString([(-2.39, 51.385), (-2.38, 51.375)]),
+            },
+        ],
+        geometry="geometry",
+        crs=source["context"].crs,
+    )
+    source["context"] = gpd.GeoDataFrame(
+        pd.concat([source["context"], cycle_context], ignore_index=True, sort=False),
+        geometry="geometry",
+        crs=source["context"].crs,
+    )
+
+    compiled = compile_network(config, source, FakeAgentRuntime())
+    preparation = compiled.strategic_corridor_preparation
+    assert preparation is not None
+    cycle_units = [
+        unit
+        for unit in preparation.units
+        if unit.backbone_required
+        and any(
+            "ncn-out" in source_id
+            for record in unit.candidate_records
+            for source_id in record.source_ids
+        )
+    ]
+    assert cycle_units
+    cycle = cycle_units[0]
+    assert cycle.unit_role is StrategicCorridorUnitRole.INTERURBAN_SPINE
+    assert any(
+        "current-ncn" in candidate.alignment_bases for candidate in cycle.candidate_set.candidates
+    )
+
+    planning = compiled.strategic_network_planning
+    assert planning is not None
+    selection = next(item for item in planning.selections if item.obligation_id == cycle.unit_id)
+    assert any(
+        section.obligation_id == cycle.unit_id
+        and section.candidate_id == selection.effective_candidate_id
+        and "current-ncn" in section.alignment_bases
+        for section in planning.effective_network.sections
+    )
+
+    former_units = [
+        unit
+        for unit in preparation.units
+        if unit.backbone_required
+        and any(
+            "former-out" in source_id
+            for record in unit.candidate_records
+            for source_id in record.source_ids
+        )
+    ]
+    assert former_units
+    assert any(
+        "reclassified-ncn" in candidate.alignment_bases
+        for unit in former_units
+        for candidate in unit.candidate_set.candidates
+    )
+    assert not any(
+        "plain-out" in source_id
+        for unit in preparation.units
+        for record in unit.candidate_records
+        for source_id in record.source_ids
+    )

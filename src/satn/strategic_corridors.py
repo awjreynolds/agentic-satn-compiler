@@ -66,6 +66,7 @@ STRATEGIC_CORRIDOR_PREPARATION_CONTRACT = "satn-strategic-corridor-preparation/v
 STRATEGIC_DESTINATION_GRAPH_BINDING_CONTRACT = "satn-strategic-destination-graph-binding/v1"
 _ID = re.compile(r"^[a-z0-9][a-z0-9._:-]*$")
 _ROUTING_ROLES = ("direct", "strategic-spine", "ncn-informed", "low-traffic")
+_TYPED_CYCLE_ALIGNMENT_BASES = frozenset({"current-ncn", "reclassified-ncn", "greenway"})
 
 
 def _fingerprint(value: object) -> str:
@@ -278,7 +279,11 @@ class PreparedStrategicCorridorUnit:
             raise ValueError("strategic corridor unit backbone component IDs are not canonical")
         if self.backbone_required:
             if (
-                self.unit_role is not StrategicCorridorUnitRole.A_ROAD_BACKBONE
+                self.unit_role
+                not in {
+                    StrategicCorridorUnitRole.A_ROAD_BACKBONE,
+                    StrategicCorridorUnitRole.INTERURBAN_SPINE,
+                }
                 or self.anchor_connection_ids
                 or self.anchor_obligation_ids
                 or binding.network_place_ids
@@ -290,7 +295,7 @@ class PreparedStrategicCorridorUnit:
                     for candidate in self.candidate_set.candidates
                 )
             ):
-                raise ValueError("A-road backbone unit must use mechanical endpoints only")
+                raise ValueError("required backbone unit must use mechanical endpoints only")
         elif self.unit_role is StrategicCorridorUnitRole.INTERURBAN_SPINE:
             if self.urban_journey_id is not None:
                 valid = (
@@ -531,6 +536,7 @@ def prepare_strategic_corridors(
         and urban_journeys is not None
         and any(item.preferred for item in urban_journeys.adjacencies)
     )
+    typed_cycle_chains = _typed_cycle_corridor_chains(road_graph)
     if urban_journey_mode:
         assert urban_journeys is not None
         route_pairs = {item.routing_node_ids for item in urban_journeys.adjacencies}
@@ -538,30 +544,43 @@ def prepare_strategic_corridors(
         route_pairs = set(_strategic_route_pairs(road_graph, anchors, context, education))
         if urban_journeys is not None and urban_journeys.places:
             route_pairs.update(item.routing_node_ids for item in urban_journeys.adjacencies)
-        # Backbone pairs use the same targeted route-option seam as ordinary
-        # strategic pairs. Unbound official junctions are intentionally omitted
-        # here and remain explicit preparation issues below.
-        for chain in _official_a_road_chains(official_road_classification):
-            start_node = _bound_backbone_node(road_graph, chain["start_point"])
-            end_node = _bound_backbone_node(road_graph, chain["end_point"])
-            if start_node is not None and end_node is not None and start_node != end_node:
-                route_pairs.add((start_node, end_node))
+    # Backbone pairs use the same targeted route-option seam as ordinary
+    # strategic pairs, including when an urban journey is the selected mode.
+    # Unbound official junctions are intentionally omitted here and remain
+    # explicit preparation issues below.
+    for chain in _official_a_road_chains(official_road_classification):
+        start_node = _bound_backbone_node(road_graph, chain["start_point"])
+        end_node = _bound_backbone_node(road_graph, chain["end_point"])
+        if start_node is not None and end_node is not None and start_node != end_node:
+            route_pairs.add((start_node, end_node))
+    excluded_cycle_pairs = {frozenset(pair) for pair in route_pairs}
+    for chain in typed_cycle_chains:
+        path_nodes = tuple(str(item) for item in chain["path_nodes"])
+        if len(path_nodes) > 1 and path_nodes[0] != path_nodes[-1]:
+            pair = (path_nodes[0], path_nodes[-1])
+            if pair not in route_pairs and pair[::-1] not in route_pairs:
+                route_pairs.add(pair)
     route_options, route_searches = road_graph.route_options_for_pairs(
         tuple(sorted(route_pairs)),
         roles=_ROUTING_ROLES,
         strategic_use=True,
     )
-    if urban_journey_mode:
-        backbone_units, backbone_issues = (), ()
-    else:
-        backbone_units, backbone_issues = _a_road_backbone_units(
-            profile,
-            road_graph,
-            official_road_classification,
-            urban_spines,
-            context,
-            route_options,
-        )
+    backbone_units, backbone_issues = _a_road_backbone_units(
+        profile,
+        road_graph,
+        official_road_classification,
+        urban_spines,
+        context,
+        route_options,
+    )
+    cycle_units, cycle_issues = _typed_cycle_corridor_units(
+        profile,
+        road_graph,
+        typed_cycle_chains,
+        context,
+        route_options,
+        excluded_cycle_pairs,
+    )
     if urban_journeys is None or not urban_journeys.places:
         units, issues = _interurban_units(
             profile,
@@ -587,9 +606,17 @@ def prepare_strategic_corridors(
         route_options,
     )
     units = tuple(
-        sorted((*backbone_units, *units, *destination_units), key=lambda item: item.unit_id)
+        sorted(
+            (*backbone_units, *cycle_units, *units, *destination_units),
+            key=lambda item: item.unit_id,
+        )
     )
-    issues = tuple(sorted((*backbone_issues, *issues, *destination_issues), key=_issue_key))
+    issues = tuple(
+        sorted(
+            (*backbone_issues, *cycle_issues, *issues, *destination_issues),
+            key=_issue_key,
+        )
+    )
     section_population = None
     if (
         population_load is not None
@@ -623,6 +650,8 @@ def prepare_strategic_corridors(
         "pairs": len(route_pairs),
         "a_road_backbone_units": len(backbone_units),
         "a_road_backbone_issues": len(backbone_issues),
+        "typed_cycle_corridor_units": len(cycle_units),
+        "typed_cycle_corridor_issues": len(cycle_issues),
         "route_searches": route_searches,
         "urban_places": len(urban_journeys.places) if urban_journeys is not None else 0,
         "urban_adjacencies": len(urban_journeys.adjacencies) if urban_journeys is not None else 0,
@@ -651,6 +680,7 @@ def prepare_strategic_corridors(
             }
             for item in issues
         )
+        and not any(item.reason.startswith("strategic-cycle-corridor-") for item in issues)
         else "incomplete"
     )
     provisional = {
@@ -1226,6 +1256,308 @@ def _backbone_path_nodes(
     if not pairs:
         return ()
     return (pairs[0][0], *(pair[1] for pair in pairs))
+
+
+def _typed_cycle_corridor_chains(graph: RoadGraph) -> tuple[dict[str, object], ...]:
+    """Return exact physical chains carrying typed cycle-route evidence.
+
+    The chain inventory is derived from the graph edges already annotated by
+    ``mark_ncn_edges``.  It therefore retains current, reclassified and
+    Greenway bases without treating a route option's aggregate share or a
+    context label as a source classification.  Reciprocal edge rows are
+    collapsed by their exact endpoint pair and geometry; no proximity rule is
+    introduced here.
+    """
+
+    records: dict[tuple[tuple[str, str], tuple[tuple[float, float], ...]], dict[str, object]] = {}
+    for left, right, data in graph.graph.edges(data=True):
+        bases = tuple(
+            sorted(
+                {
+                    str(item)
+                    for item in tuple(data.get("cycle_alignment_bases", ()))
+                    if str(item) in _TYPED_CYCLE_ALIGNMENT_BASES
+                }
+            )
+        )
+        geometry = data.get("geometry")
+        if not bases or not isinstance(geometry, LineString) or len(geometry.coords) < 2:
+            continue
+        coordinates = tuple((float(x), float(y)) for x, y in geometry.coords)
+        canonical_coordinates = min(coordinates, tuple(reversed(coordinates)))
+        endpoints = tuple(sorted((str(left), str(right))))
+        key = (endpoints, canonical_coordinates)
+        entry = records.setdefault(
+            key,
+            {
+                "left": endpoints[0],
+                "right": endpoints[1],
+                "source_ids": set(),
+                "alignment_bases": set(),
+            },
+        )
+        source_ids = entry["source_ids"]
+        alignment_bases = entry["alignment_bases"]
+        assert isinstance(source_ids, set)
+        assert isinstance(alignment_bases, set)
+        source_ids.add(str(data.get("edge_id") or data.get("directed_edge_id")))
+        alignment_bases.update(bases)
+
+    if not records:
+        return ()
+
+    adjacency: dict[str, list[tuple[tuple[str, str], tuple[tuple[float, float], ...]]]] = (
+        defaultdict(list)
+    )
+    for key, entry in records.items():
+        left = str(entry["left"])
+        right = str(entry["right"])
+        adjacency[left].append(key)
+        adjacency[right].append(key)
+    for node_id in adjacency:
+        adjacency[node_id].sort(key=repr)
+
+    components: list[set[tuple[tuple[str, str], tuple[tuple[float, float], ...]]]] = []
+    remaining = set(records)
+    while remaining:
+        first = min(remaining, key=repr)
+        remaining.remove(first)
+        component = {first}
+        pending = [first]
+        while pending:
+            key = pending.pop()
+            entry = records[key]
+            for node_id in (str(entry["left"]), str(entry["right"])):
+                for neighbour in adjacency[node_id]:
+                    if neighbour in remaining:
+                        remaining.remove(neighbour)
+                        component.add(neighbour)
+                        pending.append(neighbour)
+        components.append(component)
+
+    chains: list[dict[str, object]] = []
+    for component in sorted(components, key=lambda item: repr(sorted(item, key=repr))):
+        component_adjacency = {
+            node_id: [key for key in keys if key in component]
+            for node_id, keys in adjacency.items()
+            if any(key in component for key in keys)
+        }
+        structural_nodes = sorted(
+            node_id for node_id, keys in component_adjacency.items() if len(keys) != 2
+        )
+        paths: list[tuple[tuple[str, ...], tuple[object, ...]]] = []
+        visited: set[tuple[tuple[str, str], tuple[tuple[float, float], ...]]] = set()
+
+        def walk(
+            start: str,
+            first_key: tuple[tuple[str, str], tuple[tuple[float, float], ...]],
+            *,
+            _visited=visited,
+            _structural_nodes=structural_nodes,
+            _component_adjacency=component_adjacency,
+            _records=records,
+            _paths=paths,
+        ):
+            path_nodes = [start]
+            path_keys: list[tuple[tuple[str, str], tuple[tuple[float, float], ...]]] = []
+            current = start
+            key = first_key
+            while key not in _visited:
+                _visited.add(key)
+                path_keys.append(key)
+                entry = _records[key]
+                left = str(entry["left"])
+                right = str(entry["right"])
+                if current == left:
+                    next_node = right
+                elif current == right:
+                    next_node = left
+                else:
+                    break
+                path_nodes.append(next_node)
+                if next_node in _structural_nodes:
+                    break
+                next_keys = [
+                    candidate
+                    for candidate in _component_adjacency[next_node]
+                    if candidate not in _visited
+                ]
+                if not next_keys:
+                    break
+                current = next_node
+                key = next_keys[0]
+            if len(path_nodes) > 1 and path_keys:
+                if path_nodes[0] == path_nodes[-1]:
+                    # A branch node can be the only structural point of a
+                    # closed typed loop.  Keep each exact edge as its own
+                    # finite obligation instead of dropping the loop at the
+                    # later distinct-endpoint check.
+                    _paths.extend(
+                        (
+                            (str(_records[key]["left"]), str(_records[key]["right"])),
+                            (key,),
+                        )
+                        for key in path_keys
+                    )
+                else:
+                    _paths.append((tuple(path_nodes), tuple(path_keys)))
+
+        if structural_nodes:
+            for start in structural_nodes:
+                for key in component_adjacency[start]:
+                    if key not in visited:
+                        walk(start, key)
+        else:
+            # A closed source loop has no authoritative terminal.  Keep each
+            # exact supplied physical edge as a finite obligation rather than
+            # inventing a break point or a preferred direction.
+            for key in sorted(component, key=repr):
+                entry = records[key]
+                paths.append(((str(entry["left"]), str(entry["right"])), (key,)))
+
+        for path_nodes, path_keys in paths:
+            source_ids = tuple(
+                sorted({source_id for key in path_keys for source_id in records[key]["source_ids"]})
+            )
+            alignment_bases = tuple(
+                sorted({basis for key in path_keys for basis in records[key]["alignment_bases"]})
+            )
+            if source_ids and alignment_bases:
+                chains.append(
+                    {
+                        "path_nodes": path_nodes,
+                        "source_ids": source_ids,
+                        "alignment_bases": alignment_bases,
+                    }
+                )
+    return tuple(
+        sorted(
+            chains,
+            key=lambda item: (
+                tuple(item["path_nodes"]),
+                tuple(item["source_ids"]),
+            ),
+        )
+    )
+
+
+def _typed_cycle_corridor_units(
+    profile: NetworkSelectionProfile,
+    graph: RoadGraph,
+    chains: tuple[dict[str, object], ...],
+    context: gpd.GeoDataFrame,
+    route_options: Mapping[tuple[str, str], Mapping[str, RouteOption | None]],
+    excluded_pairs: set[frozenset[str]],
+) -> tuple[tuple[PreparedStrategicCorridorUnit, ...], tuple[StrategicCorridorIssue, ...]]:
+    """Prepare source-bound cycle corridor obligations from marked graph chains."""
+
+    units: list[PreparedStrategicCorridorUnit] = []
+    issues: list[StrategicCorridorIssue] = []
+    for chain in chains:
+        raw_nodes = tuple(str(item) for item in chain["path_nodes"])
+        if len(raw_nodes) < 2 or raw_nodes[0] == raw_nodes[-1]:
+            continue
+        path_nodes = raw_nodes
+        strategic_graph = graph._graph_for_role("strategic-spine", strategic_use=True)
+        if not all(strategic_graph.has_edge(left, right) for left, right in pairwise(path_nodes)):
+            reversed_nodes = tuple(reversed(path_nodes))
+            if all(
+                strategic_graph.has_edge(left, right) for left, right in pairwise(reversed_nodes)
+            ):
+                path_nodes = reversed_nodes
+            else:
+                continue
+        start_node, end_node = path_nodes[0], path_nodes[-1]
+        if frozenset((start_node, end_node)) in excluded_pairs:
+            continue
+        pair = (start_node, end_node)
+        exact_option = graph._option_from_nodes(
+            list(path_nodes), "ncn-informed", strategic_use=True
+        )
+        if exact_option is None:
+            issues.append(
+                StrategicCorridorIssue(
+                    StrategicCorridorUnitRole.INTERURBAN_SPINE,
+                    "strategic-cycle-corridor-no-current-route",
+                    "typed cycle-route graph chain cannot be materialized as a current route",
+                    obligation_id=_stable_id(
+                        "strategic-cycle-corridor",
+                        (tuple(chain["source_ids"]), tuple(chain["alignment_bases"])),
+                    ),
+                    endpoints=(
+                        _stable_id(
+                            "strategic-cycle-endpoint",
+                            (tuple(chain["source_ids"]), "start"),
+                        ),
+                        _stable_id(
+                            "strategic-cycle-endpoint",
+                            (tuple(chain["source_ids"]), "end"),
+                        ),
+                    ),
+                    network_role=NetworkRole.INTERURBAN_SPINE.value,
+                    endpoint_coordinates=(),
+                )
+            )
+            continue
+        source_ids = tuple(str(item) for item in chain["source_ids"])
+        alignment_bases = tuple(str(item) for item in chain["alignment_bases"])
+        endpoints = (
+            _stable_id("strategic-cycle-endpoint", (source_ids, "start")),
+            _stable_id("strategic-cycle-endpoint", (source_ids, "end")),
+        )
+        candidate_set, records = _candidate_set(
+            profile,
+            graph,
+            unit_role=StrategicCorridorUnitRole.INTERURBAN_SPINE,
+            endpoints=endpoints,
+            mandatory_network_place_ids=(),
+            start_node=start_node,
+            end_node=end_node,
+            source_ids=source_ids,
+            evidence_ids=(),
+            context=context,
+            strategic_destination_id=None,
+            precomputed_options=route_options.get(pair),
+            exact_backbone_option=exact_option,
+        )
+        if not candidate_set.candidates:
+            continue
+        start_point = graph.node_points[start_node]
+        end_point = graph.node_points[end_node]
+        projected_points = gpd.GeoSeries([start_point, end_point], crs=graph.crs).to_crs(27700)
+        unit_id = _stable_id(
+            "strategic-cycle-corridor",
+            (source_ids, alignment_bases, start_node, end_node),
+        )
+        units.append(
+            PreparedStrategicCorridorUnit(
+                unit_id=unit_id,
+                unit_role=StrategicCorridorUnitRole.INTERURBAN_SPINE,
+                candidate_set=candidate_set,
+                endpoint_binding=StrategicCorridorEndpointBinding(
+                    candidate_endpoints=candidate_set.endpoints,
+                    routing_node_ids=(start_node, end_node),
+                    network_place_ids=(),
+                    strategic_destination_ids=(),
+                ),
+                anchor_connection_ids=(),
+                anchor_obligation_ids=(),
+                routing_start_node_id=start_node,
+                routing_end_node_id=end_node,
+                strategic_destination_id=None,
+                site_id=None,
+                access_point_evidence_ids=(),
+                candidate_records=records,
+                network_scope="rural",
+                backbone_required=True,
+                endpoint_coordinates=tuple(
+                    (float(point.x), float(point.y)) for point in projected_points
+                ),
+            )
+        )
+    return tuple(sorted(units, key=lambda item: item.unit_id)), tuple(
+        sorted(issues, key=_issue_key)
+    )
 
 
 def _a_road_backbone_units(

@@ -720,6 +720,112 @@ def test_cycleway_replaces_matching_injected_a_road_section() -> None:
     )
 
 
+def test_access_attachment_keeps_exact_parent_corridor_with_cycle_substitute() -> None:
+    base_graph = fixture_graph()
+    new_edges = (
+        *(
+            edge_record
+            for edge_record in base_graph.edge_records
+            if edge_record.directed_edge_id != "a-road"
+        ),
+        edge(
+            "a-road-am",
+            "A",
+            "M",
+            "LINESTRING (0 0, 50 0)",
+            highway="primary",
+            ref="A1",
+            length_m=50,
+        ),
+        edge(
+            "a-road-md",
+            "M",
+            "D",
+            "LINESTRING (50 0, 100 0)",
+            highway="primary",
+            ref="A1",
+            length_m=50,
+        ),
+        edge(
+            "feeder",
+            "F",
+            "M",
+            "LINESTRING (50 -20, 50 0)",
+            highway="residential",
+            length_m=20,
+        ),
+    )
+    graph = replace(
+        base_graph,
+        edge_records=new_edges,
+        node_records=tuple(
+            PlanningNodeRecord(node_id, "main", "main")
+            for node_id in ("A", "B", "D", "F", "M", "Q")
+        ),
+        component_records=(
+            GraphComponentRecord(
+                "main",
+                "weak",
+                ("A", "B", "D", "F", "M", "Q"),
+                tuple(item.directed_edge_id for item in new_edges),
+                6,
+                len(new_edges),
+            ),
+        ),
+        graph_fingerprint="6" * 64,
+    )
+    discovered = discovery(graph, CorridorObligation("corridor-a-d", "A", "D"))
+    parent_corridor = EffectiveStrategicSection(
+        "urban-a-road",
+        "urban-structure:urban-a-road",
+        None,
+        "urban-main-road-spine",
+        ("a-road-am", "a-road-md"),
+        (),
+        "LINESTRING (0 0, 50 0, 100 0)",
+        PlanningAuthority.COMPILER,
+        ("a-road",),
+        "a-road",
+        "upgrade-required",
+        "upgrade-required",
+        "urban",
+    )
+    feeder = EffectiveStrategicSection(
+        "feeder-access",
+        "feeder-obligation",
+        None,
+        "community-access",
+        ("feeder",),
+        (),
+        "LINESTRING (50 -20, 50 0)",
+        PlanningAuthority.COMPILER,
+        ("access-support",),
+        "access-support",
+        "upgrade-required",
+        "upgrade-required",
+        "urban",
+        ("M",),
+    )
+
+    result = compile_strategic_network(
+        StrategicNetworkPlanningRequest(
+            graph=graph,
+            discovery=discovered,
+            area_fingerprint="a" * 64,
+            required_sections=(parent_corridor, feeder),
+        )
+    )
+
+    assert result.status == "complete"
+    selected_main_edges = {
+        edge_id
+        for section in result.effective_network.sections
+        if section.network_role != "community-access"
+        for edge_id in section.routing_edge_ids
+    }
+    assert {"a-road-am", "a-road-md"} <= selected_main_edges
+
+
 def test_graph_and_candidate_permutations_are_fingerprint_stable() -> None:
     graph = fixture_graph()
     first = compile_strategic_network(

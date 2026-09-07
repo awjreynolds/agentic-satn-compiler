@@ -328,7 +328,10 @@ def test_public_compile_uses_city_town_labels_and_mesh_keeps_selected_journey(tm
     urban_unit = urban_units[0]
     assert urban_unit.anchor_connection_ids == ()
     assert urban_unit.anchor_obligation_ids == ()
-    assert all(unit.unit_role.value != "a-road-backbone" for unit in preparation.units)
+    assert any(
+        unit.unit_role.value == "a-road-backbone" and unit.backbone_required
+        for unit in preparation.units
+    )
     assert {candidate.source_class.value for candidate in urban_unit.candidate_set.candidates} == {
         "a-road-corridor",
         "verified-existing-asset",

@@ -22,7 +22,7 @@ from shapely.wkt import loads as load_wkt
 
 from satn.alignment_selection import AlignmentCandidateSet, _reuse_first_sort_key
 from satn.candidate_discovery import CandidateDiscoveryResult
-from satn.planning_graph import PlanningGraphSnapshot
+from satn.planning_graph import PlanningEdgeRecord, PlanningGraphSnapshot
 from satn.strategic_mesh import (
     CandidateRouteSection,
     MeshCoveragePoint,
@@ -287,6 +287,8 @@ class EffectiveStrategicSection:
     intervention_state: str | None = None
     display_state: str | None = None
     network_scope: str | None = None
+    attachment_node_ids: tuple[str, ...] = ()
+    parent_obligation_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         scope = self.network_scope
@@ -295,6 +297,14 @@ class EffectiveStrategicSection:
         if scope not in {"urban", "rural"}:
             raise ValueError("effective strategic section network_scope must be urban or rural")
         object.__setattr__(self, "network_scope", scope)
+        attachment_nodes = tuple(str(item) for item in self.attachment_node_ids if str(item))
+        if len(set(attachment_nodes)) != len(attachment_nodes):
+            raise ValueError("effective strategic section attachment node IDs must be unique")
+        object.__setattr__(self, "attachment_node_ids", attachment_nodes)
+        parent_ids = tuple(str(item) for item in self.parent_obligation_ids if str(item))
+        if len(set(parent_ids)) != len(parent_ids):
+            raise ValueError("effective strategic section parent obligation IDs must be unique")
+        object.__setattr__(self, "parent_obligation_ids", parent_ids)
 
 
 @dataclass(frozen=True)
@@ -444,7 +454,10 @@ def _canonical_gap_scope(
         if role == "a-road-backbone" and issue_id:
             required_obligation_ids.add(str(issue_id))
         elif role == "interurban-spine" and issue_id:
-            if getattr(issue, "reason", None) == "urban-place-no-cross-region-adjacency":
+            if getattr(issue, "reason", None) in {
+                "urban-place-no-cross-region-adjacency",
+                "strategic-cycle-corridor-no-current-route",
+            }:
                 required_obligation_ids.add(str(issue_id))
         elif role == "strategic-destination-access" and issue_id:
             access_issue_ids.add(str(issue_id))
@@ -1289,6 +1302,18 @@ def _mesh_materialized_sections(
     edge_by_id = {edge.directed_edge_id: edge for edge in request.graph.edge_records}
     candidates: list[CandidateRouteSection] = []
     normalized_sections: list[EffectiveStrategicSection] = []
+    support_attachment_nodes = {
+        node_id
+        for section in sections
+        if section.network_role.casefold()
+        in {
+            "community-access",
+            "school-access",
+            "strategic-destination-access",
+            "cross-spine-connector",
+        }
+        for node_id in section.attachment_node_ids
+    }
     for section in sections:
         geometry = load_wkt(section.geometry_wkt)
         if not isinstance(geometry, LineString) or geometry.is_empty:
@@ -1300,8 +1325,14 @@ def _mesh_materialized_sections(
             "cross-spine-connector",
         }
         if is_access_support:
-            first_node_id = f"access-support:{section.section_id}:start"
-            last_node_id = f"access-support:{section.section_id}:end"
+            if len(section.attachment_node_ids) >= 2:
+                first_node_id, last_node_id = section.attachment_node_ids[0:2]
+            elif section.attachment_node_ids:
+                first_node_id = f"access-support:{section.section_id}:start"
+                last_node_id = section.attachment_node_ids[0]
+            else:
+                first_node_id = f"access-support:{section.section_id}:start"
+                last_node_id = f"access-support:{section.section_id}:end"
         else:
             if not section.routing_edge_ids:
                 raise ValueError(f"mesh section has no planning edges: {section.section_id}")
@@ -1377,6 +1408,14 @@ def _mesh_materialized_sections(
             or section.candidate_id is not None
             or not section.routing_edge_ids
         ):
+            return False
+        section_node_ids: set[str] = set()
+        for edge_id in section.routing_edge_ids:
+            edge = edge_by_id.get(edge_id)
+            if edge is None:
+                continue
+            section_node_ids.update((edge.from_node_id, edge.to_node_id))
+        if support_attachment_nodes.intersection(section_node_ids):
             return False
         first_edge = edge_by_id.get(section.routing_edge_ids[0])
         last_edge = edge_by_id.get(section.routing_edge_ids[-1])
@@ -1580,6 +1619,330 @@ def _resolved_backbone_component_gap_ids(
             if obligation_id:
                 resolved.add(str(obligation_id))
     return resolved
+
+
+def _governed_parent_sections_for_access(
+    request: StrategicNetworkPlanningRequest,
+    sections: tuple[EffectiveStrategicSection, ...],
+) -> tuple[EffectiveStrategicSection, ...]:
+    """Retain exact prepared parent corridors needed by governed access links.
+
+    Access rows carry the graph attachment node and, where available, the
+    source parent obligation.  If a backbone Candidate Set selects a cycle or
+    other substitute, retain its admitted A-road parent only when one of those
+    supplied identities binds the parent.  The route is reconstructed from its
+    prepared directed edge IDs; no connector or geometric snap is introduced.
+    """
+
+    support_sections = tuple(
+        section
+        for section in sections
+        if section.network_role.casefold()
+        in {
+            "community-access",
+            "school-access",
+            "strategic-destination-access",
+            "cross-spine-connector",
+        }
+    )
+    if not support_sections:
+        return ()
+    support_nodes = {
+        node_id for section in support_sections for node_id in section.attachment_node_ids
+    }
+    support_parent_ids = {
+        parent_id for section in support_sections for parent_id in section.parent_obligation_ids
+    }
+    if not support_nodes and not support_parent_ids:
+        return ()
+    backbone_units = tuple(
+        unit
+        for unit in getattr(request.corridor_obligations, "units", ())
+        if getattr(unit, "backbone_required", False)
+    )
+    if not backbone_units:
+        return ()
+    edge_by_id = {edge.directed_edge_id: edge for edge in request.graph.edge_records}
+    selected_candidate_ids = {
+        section.candidate_id for section in sections if section.candidate_id is not None
+    }
+    existing_edge_chains = {tuple(section.routing_edge_ids) for section in sections}
+    parent_sections: list[EffectiveStrategicSection] = []
+    for unit in sorted(backbone_units, key=lambda item: str(getattr(item, "unit_id", ""))):
+        unit_id = str(getattr(unit, "unit_id", ""))
+        if not unit_id:
+            continue
+        records = tuple(
+            record
+            for record in request.discovery.candidate_records
+            if record.obligation_id == unit_id
+        )
+        for record in records:
+            candidate = record.candidate_input
+            bases = tuple(getattr(candidate, "alignment_bases", ()))
+            source_class = str(getattr(getattr(candidate, "source_class", None), "value", ""))
+            if "a-road" not in bases and source_class != "a-road-corridor":
+                continue
+            edge_ids = tuple(record.edge_ids)
+            if not edge_ids or record.candidate_id in selected_candidate_ids:
+                continue
+            route_nodes = {
+                node_id
+                for edge_id in edge_ids
+                if (edge := edge_by_id.get(edge_id)) is not None
+                for node_id in (edge.from_node_id, edge.to_node_id)
+            }
+            if unit_id not in support_parent_ids and not support_nodes.intersection(route_nodes):
+                continue
+            if edge_ids in existing_edge_chains:
+                continue
+            try:
+                geometry = _edge_geometry(
+                    request.graph,
+                    edge_ids,
+                    endpoints=(record.endpoints[0], record.endpoints[1]),
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+            role = getattr(getattr(unit, "unit_role", None), "network_role", None)
+            if role is None:
+                role = getattr(getattr(unit, "unit_role", None), "value", "interurban-spine")
+            intervention = getattr(
+                getattr(candidate, "intervention_state", None), "value", None
+            ) or getattr(candidate, "intervention_state", None)
+            parent_sections.append(
+                EffectiveStrategicSection(
+                    section_id=_stable_id(
+                        "strategic-parent-corridor", (unit_id, record.candidate_id)
+                    ),
+                    obligation_id=unit_id,
+                    candidate_id=None,
+                    network_role=str(role),
+                    routing_edge_ids=edge_ids,
+                    reverse_routing_edge_ids=tuple(record.reverse_edge_ids),
+                    geometry_wkt=geometry,
+                    authority=PlanningAuthority.COMPILER,
+                    alignment_bases=bases,
+                    primary_alignment_basis=getattr(candidate, "primary_alignment_basis", None),
+                    intervention_state=intervention,
+                    display_state=_display_state(intervention),
+                    network_scope=getattr(unit, "network_scope", None),
+                )
+            )
+            existing_edge_chains.add(edge_ids)
+    return tuple(sorted(parent_sections, key=lambda item: item.section_id))
+
+
+def _extend_access_support_to_main(
+    request: StrategicNetworkPlanningRequest,
+    sections: tuple[EffectiveStrategicSection, ...],
+) -> tuple[tuple[EffectiveStrategicSection, ...], tuple[ReviewableNetworkGap, ...]]:
+    """Join governed access lines to selected Main through exact graph edges.
+
+    Access preparation binds its target to an exact Planning Graph node. When a
+    candidate substitution leaves that node outside selected Main, preserve the
+    support line and append the directed, allowed graph path to a selected Main
+    node. No geometry is interpolated and no distance rule is introduced.
+    """
+
+    support_roles = {
+        "community-access",
+        "school-access",
+        "strategic-destination-access",
+        "cross-spine-connector",
+    }
+    edge_by_id = {edge.directed_edge_id: edge for edge in request.graph.edge_records}
+    main_node_ids = {
+        node_id
+        for section in sections
+        if section.network_role.casefold() not in support_roles
+        for edge_id in section.routing_edge_ids
+        if (edge := edge_by_id.get(edge_id)) is not None
+        for node_id in (edge.from_node_id, edge.to_node_id)
+    }
+    if not main_node_ids:
+        return sections, tuple(
+            ReviewableNetworkGap(
+                section.obligation_id,
+                section.network_role,
+                (section.attachment_node_ids[-1],),
+                "access support has no selected Main graph node for an exact connection",
+            )
+            for section in sections
+            if section.network_role.casefold() in support_roles and section.attachment_node_ids
+        )
+
+    # Access can only be extended over the same two-way routable graph used by
+    # Main continuity.  Select one deterministic record per direction, retain
+    # only endpoint pairs with both directions, then search once from every
+    # final Main node on the reversed graph.  The path weight is the recorded
+    # physical length; hop count would choose a long one-edge detour.
+    chosen_by_pair: dict[tuple[str, str], PlanningEdgeRecord] = {}
+    for edge in sorted(
+        request.graph.edge_records,
+        key=lambda item: (
+            item.from_node_id,
+            item.to_node_id,
+            int(item.length_mm),
+            item.directed_edge_id,
+        ),
+    ):
+        if edge.reciprocal_state != "reciprocal" or edge.access in {
+            "no",
+            "private",
+            "customers",
+        }:
+            continue
+        pair = (edge.from_node_id, edge.to_node_id)
+        current = chosen_by_pair.get(pair)
+        if current is None or (edge.length_mm, edge.directed_edge_id) < (
+            current.length_mm,
+            current.directed_edge_id,
+        ):
+            chosen_by_pair[pair] = edge
+
+    reciprocal_pairs = {
+        pair: edge for pair, edge in chosen_by_pair.items() if (pair[1], pair[0]) in chosen_by_pair
+    }
+    reverse_graph = nx.DiGraph()
+    for (from_node_id, to_node_id), edge in sorted(reciprocal_pairs.items()):
+        reverse_edge = reciprocal_pairs[(to_node_id, from_node_id)]
+        reverse_graph.add_edge(
+            to_node_id,
+            from_node_id,
+            length_mm=int(edge.length_mm),
+            forward_edge_id=edge.directed_edge_id,
+            reverse_edge_id=reverse_edge.directed_edge_id,
+        )
+
+    available_main_sources = tuple(sorted(main_node_ids.intersection(reverse_graph.nodes)))
+    if available_main_sources:
+        try:
+            _distances, reverse_paths = nx.multi_source_dijkstra(
+                reverse_graph,
+                sources=available_main_sources,
+                weight="length_mm",
+            )
+        except (KeyError, nx.NodeNotFound):
+            reverse_paths = {}
+    else:
+        reverse_paths = {}
+
+    extensions_by_target: dict[str, tuple[tuple[str, ...], tuple[str, ...], str]] = {}
+    for target_node in sorted(
+        {
+            section.attachment_node_ids[-1]
+            for section in sections
+            if section.network_role.casefold() in support_roles
+            and section.attachment_node_ids
+            and section.attachment_node_ids[-1] not in main_node_ids
+        }
+    ):
+        path_nodes = tuple(reverse_paths.get(target_node, ()))
+        if len(path_nodes) < 2:
+            continue
+        reverse_path_edges = tuple(
+            reverse_graph.get_edge_data(left, right) for left, right in pairwise(path_nodes)
+        )
+        if any(edge is None for edge in reverse_path_edges):
+            continue
+        forward_edge_ids = tuple(edge["forward_edge_id"] for edge in reversed(reverse_path_edges))
+        reverse_edge_ids = tuple(edge["reverse_edge_id"] for edge in reverse_path_edges)
+        try:
+            extension_wkt = _edge_geometry(
+                request.graph,
+                forward_edge_ids,
+                endpoints=(target_node, path_nodes[0]),
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not reverse_edge_ids:
+            continue
+        extensions_by_target[target_node] = (
+            forward_edge_ids,
+            reverse_edge_ids,
+            extension_wkt,
+        )
+
+    updated: list[EffectiveStrategicSection] = []
+    gaps: list[ReviewableNetworkGap] = []
+    for section in sections:
+        if section.network_role.casefold() not in support_roles or not section.attachment_node_ids:
+            updated.append(section)
+            continue
+        target_node = section.attachment_node_ids[-1]
+        if target_node in main_node_ids:
+            updated.append(section)
+            continue
+        extension = extensions_by_target.get(target_node)
+        if extension is None:
+            updated.append(section)
+            gaps.append(
+                ReviewableNetworkGap(
+                    section.obligation_id,
+                    section.network_role,
+                    (target_node,),
+                    "access support attachment has no exact allowed Planning Graph path "
+                    "to selected Main",
+                )
+            )
+            continue
+        edge_ids, reverse_edge_ids, extension_wkt = extension
+        try:
+            support_geometry = load_wkt(section.geometry_wkt)
+            extension_geometry = load_wkt(extension_wkt)
+        except (TypeError, ValueError):
+            support_geometry = extension_geometry = None
+        if not isinstance(support_geometry, LineString) or not isinstance(
+            extension_geometry, LineString
+        ):
+            updated.append(section)
+            gaps.append(
+                ReviewableNetworkGap(
+                    section.obligation_id,
+                    section.network_role,
+                    (target_node,),
+                    "access support geometry cannot bind its exact attachment node",
+                )
+            )
+            continue
+        extension_coordinates = list(extension_geometry.coords)
+        support_coordinates = list(support_geometry.coords)
+        target_coordinate = tuple(extension_coordinates[0])
+        if (
+            tuple(support_coordinates[-1]) == target_coordinate
+            and tuple(extension_coordinates[0]) == target_coordinate
+        ):
+            combined_coordinates = support_coordinates + extension_coordinates[1:]
+            combined_edge_ids = (*section.routing_edge_ids, *edge_ids)
+            combined_reverse_edge_ids = (*reverse_edge_ids, *section.reverse_routing_edge_ids)
+        elif (
+            tuple(support_coordinates[0]) == target_coordinate
+            and tuple(extension_coordinates[0]) == target_coordinate
+        ):
+            combined_coordinates = list(reversed(extension_coordinates)) + support_coordinates[1:]
+            combined_edge_ids = (*reverse_edge_ids, *section.routing_edge_ids)
+            combined_reverse_edge_ids = (*section.reverse_routing_edge_ids, *edge_ids)
+        else:
+            updated.append(section)
+            gaps.append(
+                ReviewableNetworkGap(
+                    section.obligation_id,
+                    section.network_role,
+                    (target_node,),
+                    "access support geometry endpoint does not bind its exact attachment node",
+                )
+            )
+            continue
+        updated.append(
+            replace(
+                section,
+                geometry_wkt=LineString(combined_coordinates).wkt,
+                routing_edge_ids=tuple(combined_edge_ids),
+                reverse_routing_edge_ids=tuple(combined_reverse_edge_ids),
+            )
+        )
+    return tuple(updated), tuple(gaps)
 
 
 def compile_strategic_network(
@@ -2296,14 +2659,18 @@ def compile_strategic_network(
                     )
                 )
 
+    sections.extend(_governed_parent_sections_for_access(request, tuple(sections)))
+    pre_mesh_sections = tuple(sections)
     mesh_sections, mesh_diagnostics, mesh_gaps, mesh_coverage_points = _mesh_materialized_sections(
-        request, tuple(sections)
+        request, pre_mesh_sections
     )
-    mesh_omitted_ids = {section.section_id for section in sections} - {
+    mesh_omitted_ids = {section.section_id for section in pre_mesh_sections} - {
         section.section_id for section in mesh_sections
     }
     mesh_omitted_obligation_ids = {
-        section.obligation_id for section in sections if section.section_id in mesh_omitted_ids
+        section.obligation_id
+        for section in pre_mesh_sections
+        if section.section_id in mesh_omitted_ids
     }
     diagnostics.extend(mesh_diagnostics)
     coverage_points_by_id = {point.point_id: point for point in mesh_coverage_points}
@@ -2325,6 +2692,11 @@ def compile_strategic_network(
                 mesh_proof_points=proof_points,
             )
         )
+    mesh_sections, support_connection_gaps = _extend_access_support_to_main(
+        request,
+        tuple(mesh_sections),
+    )
+    gaps.extend(support_connection_gaps)
     if mesh_omitted_ids:
         selected_ids.difference_update(mesh_omitted_ids)
         selections = [

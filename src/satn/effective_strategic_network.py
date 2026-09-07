@@ -1209,6 +1209,24 @@ def _access_support_sections(
                 if str(row.get("obligation_kind", "")).casefold() == "school"
                 else "community-access"
             )
+            attachment_node_ids: list[str] = []
+            for field_name in (
+                "community_attachment_node",
+                "target_attachment_node",
+                "spine_attachment_node",
+            ):
+                if field_name not in row or not _present(row[field_name]):
+                    continue
+                node_id = str(row[field_name])
+                if node_id not in attachment_node_ids:
+                    attachment_node_ids.append(node_id)
+            parent_obligation_ids: list[str] = []
+            for field_name in ("root_spine_id", "parent_target_id"):
+                if field_name not in row or not _present(row[field_name]):
+                    continue
+                parent_id = str(row[field_name])
+                if parent_id not in parent_obligation_ids:
+                    parent_obligation_ids.append(parent_id)
             sections.append(
                 EffectiveStrategicSection(
                     section_id=section_id,
@@ -1224,6 +1242,8 @@ def _access_support_sections(
                     intervention_state="upgrade-required",
                     display_state="upgrade-required",
                     network_scope="rural",
+                    attachment_node_ids=tuple(attachment_node_ids),
+                    parent_obligation_ids=tuple(parent_obligation_ids),
                 )
             )
     return tuple(sorted(sections, key=lambda section: section.section_id))

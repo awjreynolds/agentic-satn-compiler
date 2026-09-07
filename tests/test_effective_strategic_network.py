@@ -427,6 +427,7 @@ def test_governed_access_connections_are_retained_as_access_support() -> None:
                 "access_connection_id": "access-bathford",
                 "obligation_id": "access-obligation-bathford",
                 "obligation_kind": "community",
+                "target_attachment_node": "D",
                 "geometry": LineString([(20, 20), (40, 20)]),
             }
         ],
@@ -452,12 +453,375 @@ def test_governed_access_connections_are_retained_as_access_support() -> None:
     assert support.network_role == "community-access"
     assert support.obligation_id == "access-obligation-bathford"
     assert support.routing_edge_ids == ()
+    assert support.attachment_node_ids == ("D",)
     assert support.geometry_wkt == "LINESTRING (20 20, 40 20)"
     projection = project_strategic_network(state.result)
     assert [
         feature["properties"]["section_id"]
         for feature in projection.layers["Access Support"]["features"]
     ] == ["access-bathford"]
+
+
+def test_legacy_backbone_support_retains_prepared_parent_when_substitute_is_selected() -> None:
+    network = gpd.GeoDataFrame(
+        [
+            {
+                "source_id": "a-road-am",
+                "u": "A",
+                "v": "M",
+                "highway": "primary",
+                "ref": "A1",
+                "geometry": LineString([(0, 0), (50, 0)]),
+            },
+            {
+                "source_id": "a-road-md",
+                "u": "M",
+                "v": "D",
+                "highway": "primary",
+                "ref": "A1",
+                "geometry": LineString([(50, 0), (100, 0)]),
+            },
+            {
+                "source_id": "cycle-ab",
+                "u": "A",
+                "v": "B",
+                "highway": "cycleway",
+                "bicycle": "designated",
+                "geometry": LineString([(0, 0), (0, 60)]),
+            },
+            {
+                "source_id": "cycle-bd",
+                "u": "B",
+                "v": "D",
+                "highway": "cycleway",
+                "bicycle": "designated",
+                "geometry": LineString([(0, 60), (100, 0)]),
+            },
+            {
+                "source_id": "feeder",
+                "u": "F",
+                "v": "M",
+                "highway": "residential",
+                "geometry": LineString([(50, -20), (50, 0)]),
+            },
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    graph = planning_graph_from_compiler_edges(
+        network,
+        source_export_fingerprint="3" * 64,
+    )
+    base_preparation = _legacy_fixture_preparation(graph)
+    base_unit = base_preparation.units[0]
+    backbone_unit = type(
+        "LegacyBackboneUnit",
+        (),
+        {
+            "unit_id": base_unit.unit_id,
+            "unit_role": base_unit.unit_role,
+            "candidate_set": base_unit.candidate_set,
+            "candidate_records": base_unit.candidate_records,
+            "routing_start_node_id": base_unit.routing_start_node_id,
+            "routing_end_node_id": base_unit.routing_end_node_id,
+            "backbone_required": True,
+        },
+    )()
+    preparation = type(
+        "LegacyBackbonePreparation",
+        (),
+        {
+            "units": (backbone_unit,),
+            "issues": (),
+            "preparation_fingerprint": base_preparation.preparation_fingerprint,
+            "profile_fingerprint": base_preparation.profile_fingerprint,
+        },
+    )()
+    feeder = gpd.GeoDataFrame(
+        [
+            {
+                "access_connection_id": "feeder-access",
+                "obligation_id": "feeder-obligation",
+                "obligation_kind": "community",
+                "root_spine_id": "corridor-a-d",
+                "target_attachment_node": "M",
+                "geometry": LineString([(50, -20), (50, 0)]),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+
+    state = compile_effective_strategic_network(
+        EffectiveStrategicNetworkRequest(
+            routable_network=network,
+            preparation=preparation,
+            area_fingerprint="b" * 64,
+            snapshot_fingerprint=graph.source_export_fingerprint,
+            access_support=(feeder,),
+        )
+    )
+
+    assert state.status is EffectiveStrategicNetworkStatus.EVALUATED
+    assert state.selections[0].effective_candidate_id is not None
+    selected_main_edges = {
+        edge_id
+        for section in state.effective_network.sections
+        if section.network_role != "community-access"
+        for edge_id in section.routing_edge_ids
+    }
+    assert {"a-road-am", "a-road-md", "cycle-ab", "cycle-bd"} <= selected_main_edges
+
+
+def test_offset_access_support_is_extended_over_exact_graph_edges_to_selected_main() -> None:
+    base = _fixture_routable_network()
+    network = gpd.GeoDataFrame(
+        [
+            *base.to_dict("records"),
+            {
+                "source_id": "support-mx",
+                "u": "M",
+                "v": "X",
+                "oneway": False,
+                "highway": "residential",
+                "geometry": LineString([(40, 0), (20, 0)]),
+            },
+            {
+                "source_id": "support-xm",
+                "u": "X",
+                "v": "M",
+                "oneway": False,
+                "highway": "residential",
+                "geometry": LineString([(20, 0), (40, 0)]),
+            },
+            {
+                "source_id": "support-xa",
+                "u": "X",
+                "v": "A",
+                "oneway": False,
+                "highway": "residential",
+                "geometry": LineString([(20, 0), (0, 0)]),
+            },
+            {
+                "source_id": "support-ax",
+                "u": "A",
+                "v": "X",
+                "oneway": False,
+                "highway": "residential",
+                "geometry": LineString([(0, 0), (20, 0)]),
+            },
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    graph = planning_graph_from_compiler_edges(
+        network,
+        source_export_fingerprint="3" * 64,
+    )
+    preparation = _legacy_fixture_preparation(graph)
+    feeder = gpd.GeoDataFrame(
+        [
+            {
+                "access_connection_id": "offset-feeder-access",
+                "obligation_id": "offset-feeder-obligation",
+                "obligation_kind": "community",
+                "root_spine_id": "strategic-spine-a1",
+                "parent_target_id": "strategic-spine-a1",
+                "parent_target_name": "A1",
+                "target_attachment_node": "M",
+                "geometry": LineString([(40, -20), (40, 0)]),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+
+    state = compile_effective_strategic_network(
+        EffectiveStrategicNetworkRequest(
+            routable_network=network,
+            preparation=preparation,
+            area_fingerprint="b" * 64,
+            snapshot_fingerprint=graph.source_export_fingerprint,
+            access_support=(feeder,),
+        )
+    )
+
+    assert state.status is EffectiveStrategicNetworkStatus.EVALUATED
+    support = next(
+        section
+        for section in state.effective_network.sections
+        if section.section_id == "offset-feeder-access"
+    )
+    assert support.routing_edge_ids == ("support-mx", "support-xa")
+    assert support.geometry_wkt == "LINESTRING (40 -20, 40 0, 20 0, 0 0)"
+    main_edges = {
+        edge_id
+        for section in state.effective_network.sections
+        if section.network_role != "community-access"
+        for edge_id in section.routing_edge_ids
+    }
+    assert "a-road" not in main_edges
+    assert {"cycle-ab", "cycle-bd"} <= main_edges
+
+
+def test_offset_access_support_without_exact_graph_route_is_an_explicit_gap() -> None:
+    base = _fixture_routable_network()
+    network = gpd.GeoDataFrame(
+        [
+            *base.to_dict("records"),
+            {
+                "source_id": "isolated-mn",
+                "u": "M",
+                "v": "N",
+                "highway": "residential",
+                "geometry": LineString([(40, 0), (60, 0)]),
+            },
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    graph = planning_graph_from_compiler_edges(
+        network,
+        source_export_fingerprint="3" * 64,
+    )
+    feeder = gpd.GeoDataFrame(
+        [
+            {
+                "access_connection_id": "unreachable-feeder-access",
+                "obligation_id": "unreachable-feeder-obligation",
+                "obligation_kind": "community",
+                "target_attachment_node": "M",
+                "geometry": LineString([(40, -20), (40, 0)]),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+
+    state = compile_effective_strategic_network(
+        EffectiveStrategicNetworkRequest(
+            routable_network=network,
+            preparation=_legacy_fixture_preparation(graph),
+            area_fingerprint="b" * 64,
+            snapshot_fingerprint=graph.source_export_fingerprint,
+            access_support=(feeder,),
+        )
+    )
+
+    assert state.status is EffectiveStrategicNetworkStatus.EVALUATED
+    assert any(
+        gap.obligation_id == "unreachable-feeder-obligation"
+        and gap.network_role == "community-access"
+        and gap.endpoints == ("M",)
+        and "no exact allowed Planning Graph path" in gap.reason
+        for gap in state.gaps
+    )
+
+
+def test_access_extension_uses_reciprocal_length_and_reverse_provenance() -> None:
+    base = _fixture_routable_network()
+    network = gpd.GeoDataFrame(
+        [
+            *base.to_dict("records"),
+            {
+                "source_id": "support-mx",
+                "u": "M",
+                "v": "X",
+                "oneway": False,
+                "highway": "residential",
+                "geometry": LineString([(40, 0), (39, 0)]),
+            },
+            {
+                "source_id": "support-xm",
+                "u": "X",
+                "v": "M",
+                "oneway": False,
+                "highway": "residential",
+                "geometry": LineString([(39, 0), (40, 0)]),
+            },
+            {
+                "source_id": "support-xa",
+                "u": "X",
+                "v": "A",
+                "oneway": False,
+                "highway": "residential",
+                "geometry": LineString([(39, 0), (0, 0)]),
+            },
+            {
+                "source_id": "support-ax",
+                "u": "A",
+                "v": "X",
+                "oneway": False,
+                "highway": "residential",
+                "geometry": LineString([(0, 0), (39, 0)]),
+            },
+            {
+                "source_id": "support-md",
+                "u": "M",
+                "v": "D",
+                "oneway": False,
+                "highway": "residential",
+                "geometry": LineString([(40, 0), (40, 1000), (100, 0)]),
+            },
+            {
+                "source_id": "support-dm",
+                "u": "D",
+                "v": "M",
+                "oneway": False,
+                "highway": "residential",
+                "geometry": LineString([(100, 0), (40, 1000), (40, 0)]),
+            },
+            {
+                "source_id": "support-mb-oneway",
+                "u": "M",
+                "v": "B",
+                "oneway": True,
+                "highway": "residential",
+                "geometry": LineString([(40, 0), (0, 60)]),
+            },
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    graph = planning_graph_from_compiler_edges(
+        network,
+        source_export_fingerprint="3" * 64,
+    )
+    feeder = gpd.GeoDataFrame(
+        [
+            {
+                "access_connection_id": "prepend-feeder-access",
+                "obligation_id": "prepend-feeder-obligation",
+                "obligation_kind": "community",
+                "target_attachment_node": "M",
+                "geometry": LineString([(40, 0), (40, -20)]),
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+
+    state = compile_effective_strategic_network(
+        EffectiveStrategicNetworkRequest(
+            routable_network=network,
+            preparation=_legacy_fixture_preparation(graph),
+            area_fingerprint="b" * 64,
+            snapshot_fingerprint=graph.source_export_fingerprint,
+            access_support=(feeder,),
+        )
+    )
+
+    assert state.status is EffectiveStrategicNetworkStatus.EVALUATED
+    support = next(
+        section
+        for section in state.effective_network.sections
+        if section.section_id == "prepend-feeder-access"
+    )
+    assert support.routing_edge_ids == ("support-ax", "support-xm")
+    assert support.reverse_routing_edge_ids == ("support-mx", "support-xa")
+    assert support.geometry_wkt == "LINESTRING (0 0, 39 0, 40 0, 40 -20)"
+    assert "support-md" not in support.routing_edge_ids
+    assert "support-mb-oneway" not in support.routing_edge_ids
 
 
 def test_urban_a_road_defaults_are_protected_by_authoritative_mesh_selection() -> None:
