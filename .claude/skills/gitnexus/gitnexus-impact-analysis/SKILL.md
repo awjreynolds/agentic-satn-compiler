@@ -1,6 +1,6 @@
 ---
 name: gitnexus-impact-analysis
-description: "Use when the user wants to know what will break if they change something, or needs safety analysis before editing code. Examples: \"Is it safe to change X?\", \"What depends on this?\", \"What will break?\""
+description: "Use when the user requests GitNexus change-impact or dependency analysis. Not a default pre-edit or pre-commit gate."
 ---
 
 # Impact Analysis with GitNexus
@@ -11,8 +11,8 @@ description: "Use when the user wants to know what will break if they change som
 - "What will break if I modify X?"
 - "Show me the blast radius"
 - "Who uses this code?"
-- Before making non-trivial code changes
-- Before committing — to understand what your changes affect
+- When requested to assess the impact of a proposed code change
+- When requested to assess the affected scope of an existing diff
 
 ## Workflow
 
