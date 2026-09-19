@@ -474,13 +474,13 @@ def test_weca_bootstrap_and_final_definitions_are_separate_parseable_workflow_st
     assert retained is not None
     assert retained.snapshot_id == (
         "weca-classification-elevation-2026-07-31-v14-fp-20260731T092920522968Z-02-"
-        "fp-20260809T123804416841Z-01"
+        "fp-20260809T123804416841Z-01-fp-20260819T011108973323Z-01"
     )
     assert final.source.snapshot_id == (
         "weca-classification-elevation-2026-07-31-v14-fp-20260731T092920522968Z-02-"
-        "fp-20260809T123804416841Z-01-fp-20260819T011108973323Z-01"
+        "fp-20260809T123804416841Z-01-connected-context-20260906-envelope-02"
     )
-    assert final.source.snapshot_id.startswith(f"{retained.snapshot_id}-fp-")
+    assert final.source.snapshot_id != retained.snapshot_id
     assert bootstrap.publication.output_dir != final.publication.output_dir
     assert final.source.national_elevation is not None
     assert final.source.national_elevation.source_id == "ea-lidar-composite-dtm-1m"

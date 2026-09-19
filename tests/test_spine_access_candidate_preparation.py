@@ -14,6 +14,7 @@ import pytest
 from shapely.geometry import LineString, MultiLineString
 
 import satn.spine_access_candidate_preparation as preparation
+from satn.compilation_dependencies import compilation_dependency_manifest
 from satn.evidence import derive_osm_active_travel_assets
 from satn.models import CouncilConfig, SourceConfig
 from satn.network_selection import NetworkSelectionProfile
@@ -1062,7 +1063,7 @@ def council_with_population_files(
 
 
 def compiler_manifest() -> dict[str, object]:
-    return {"sha256": "d" * 64, "components": []}
+    return compilation_dependency_manifest()
 
 
 def test_psa_file_bytes_enter_reuse_identity_before_publication_reuse(tmp_path: Path) -> None:

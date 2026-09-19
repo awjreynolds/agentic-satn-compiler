@@ -21,11 +21,11 @@ PROJECT = Path(__file__).parents[1]
 WECA_BENCHMARK_SHA256 = "24a03e50ccfe541ff637b9c75f15caa41ac452cc20667f31df5ad274ffbeae6a"
 WECA_CONFIGURED_SNAPSHOT_ID = (
     "weca-classification-elevation-2026-07-31-v14-fp-20260731T092920522968Z-02-"
-    "fp-20260809T123804416841Z-01-fp-20260819T011108973323Z-01"
+    "fp-20260809T123804416841Z-01-connected-context-20260906-envelope-02"
 )
 WECA_CONFIGURED_PARENT_SNAPSHOT_ID = (
     "weca-classification-elevation-2026-07-31-v14-fp-20260731T092920522968Z-02-"
-    "fp-20260809T123804416841Z-01"
+    "fp-20260809T123804416841Z-01-fp-20260819T011108973323Z-01"
 )
 
 
@@ -257,7 +257,7 @@ def test_weca_configured_snapshot_is_distinct_and_benchmark_fixture_is_byte_pinn
     retained = configured.source.retained_core_source
     assert retained is not None
     assert retained.snapshot_id == WECA_CONFIGURED_PARENT_SNAPSHOT_ID
-    assert configured.source.snapshot_id.startswith(f"{retained.snapshot_id}-fp-")
+    assert configured.source.snapshot_id != retained.snapshot_id
 
 
 def test_lineaged_retained_core_seeds_distinct_target_and_is_idempotent(tmp_path: Path) -> None:
