@@ -126,7 +126,14 @@
 
   function syncLensState(next) {
     lensState = next;
+    syncConnectionPressedState();
     return next;
+  }
+
+  function syncConnectionPressedState() {
+    document.querySelectorAll(".connection").forEach((item) => {
+      item.setAttribute("aria-pressed", String(lensState.pinned === item.dataset.featureId));
+    });
   }
   const gradientPathTypes = new Set([
     "strategic-spine",
@@ -1455,7 +1462,9 @@
       : includeChoiceDetails && featureType === "reviewable-unselected-candidate"
         ? artifactComparisonReason(properties)
         : null;
-    const recordedReason = includeChoiceDetails ? artifactRecordedReason(properties) : null;
+    const recordedReason = !choice || includeChoiceDetails
+      ? artifactRecordedReason(properties)
+      : null;
     if (hasDataValue(choiceReason)) {
       whyText.textContent = `${featureType === "reviewable-unselected-candidate" ? "Comparison reason" : "Selection reason"}: ${contextualText(choiceReason)}`;
     } else if (choice === "Considered alternative") {
@@ -2337,11 +2346,17 @@
     const properties = artifact.feature.properties || {};
     const panel = document.querySelector("#feature-details");
     panel.replaceChildren();
-    const list = appendArtifactSemanticSummary(panel, artifact, { includeChoiceDetails });
+    const choiceMembers = reviewableChoiceMembers(artifact);
+    const showChoiceDetails = includeChoiceDetails || !choiceMembers?.alternatives?.length;
+    const list = appendArtifactSemanticSummary(panel, artifact, {
+      includeChoiceDetails: showChoiceDetails
+    });
     const addData = (label, raw) => {
       if (hasDataValue(raw)) addDefinition(list, label, contextualText(raw));
     };
-    appendArtifactReviewEvidence(list, properties, { includeChoiceDetails });
+    appendArtifactReviewEvidence(list, properties, {
+      includeChoiceDetails: showChoiceDetails
+    });
     const allBases = parseList(properties.alignment_bases).filter(hasDataValue);
     if (allBases.length) addData("Alignment bases", allBases.map(humanBasis).join(", "));
     if (isMeshGapMarker(properties)) {
@@ -2408,8 +2423,8 @@
     state.active = id;
     document.querySelectorAll(".connection").forEach((item) => {
       item.classList.toggle("active", item.dataset.featureId === id);
-      item.setAttribute("aria-pressed", String(lensState.pinned === item.dataset.featureId));
     });
+    syncConnectionPressedState();
     if (map.getLayer("connections-highlight")) {
       map.setFilter("connections-highlight", id ? ["==", ["id"], id] : ["==", ["id"], ""]);
     }
