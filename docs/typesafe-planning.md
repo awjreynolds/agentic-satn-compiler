@@ -80,3 +80,47 @@ satn plan compare HISTORY --base-branch main --branch alternative
 The implementation review traced the actual boundaries: `planning_engine` admits the snapshot and owns the planning IR and verified transformations; `planning_runtime` schedules and records judgments; `planning_publication` projects validated output and protects publication identity. Compiler stage and decision class are independent. The core has no provider, runtime or publication imports, and the publisher does not choose routes or call providers.
 
 Independent review reproduced and verified fixes for geometry identity, expansion receipts, parent binding, semantic no-progress, obligation completeness, scoped specialist proposals, expanded-checkpoint replay, current-state feedback and multiple connection scheduling. Publication reproductions verify stale-output rejection and preservation of the last valid pointer when a historical bundle is damaged. Browser evidence verifies default full/partial departure geometry and matching legend styles. Focused tests are recorded in the stacked PRs; this was a bounded architectural and contract review, not a claim that every legacy compiler path was audited.
+
+## Metadata retention contract
+
+This is a proof of concept. Keep retention within the existing JSON history
+store and verify the behaviors needed for the experiment: typed decisions,
+resolvable references, replay and branching.
+
+Retain the exact redacted model request and response alongside references to the
+immutable evidence and derivation that produced them. Shared evidence, problem
+data and exchanges belong in content-addressed records; histories, operations
+and summary reports should refer to those records instead of embedding repeated
+full copies. Verification may reuse an immutable record already checked within
+that operation, while later operations must still detect tampering. Existing
+recorded histories remain readable.
+
+Origins, destinations and edges (roads or routes) are stable domain inputs;
+callers do not supply versions for those shapes. Changed input data changes its
+content fingerprint, not a schema version. Model-facing projection is
+deterministic: identical complete semantic inputs—including evidence, policy
+and relevant prior decisions—produce the same canonical packet and choice
+mapping. Compiler revision and transformation identity are internal audit
+provenance, separate from domain inputs. Request identity, model identity and
+derivation provenance remain auditable. Fresh inference is still distinct from
+replaying a recorded judgment.
+
+Normalized responses retain the typed outcome and its uncertainty: a Choice
+selection and probability/confidence data, a Noul `pYes`, or a Score value and
+probability/confidence data. Bind each result to its question, input fingerprint
+and actual model. Confidence alone cannot reconstruct a decision. Store the
+exact exchange once; derive compact operational views from it.
+
+The initial approved live case retained 955,043,513 bytes across 30 files for two
+Jev responses using 4,333 input and 134 output tokens. This observed baseline
+motivates the retention work in [issue #465](https://github.com/awjreynolds/agentic-satn-compiler/issues/465);
+it is not a storage quota or performance target. Report before/after storage and
+replay measurements alongside preservation of the audit and branching contract.
+
+A like-for-like deterministic Bath/Saltford fixture with one requested connection
+used 3,320,374 bytes before this change and 1,979,114 bytes after (40.39% less).
+History fell from 1,664,983 to 586,894 bytes; `run.json` fell from 293,550 to
+29,325 bytes. Verification reads fell from 72 to 26 and replay reads from 109 to
+26, with 26 unique records in each case. Problem/state retrieval and replay
+remained exactly equal. These are fixture measurements, not projections of live
+B&NES performance.

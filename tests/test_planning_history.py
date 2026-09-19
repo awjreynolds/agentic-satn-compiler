@@ -262,3 +262,116 @@ def test_valid_byte_artifact_is_part_of_record_closure(tmp_path: Path) -> None:
     manifest = store.put({"output_artifact_refs": [artifact]}, kind="manifest")
 
     assert store.verify(manifest)["valid"] is True
+
+
+def test_new_events_store_materialized_state_and_operation_by_reference(
+    tmp_path: Path,
+) -> None:
+    store = HistoryStore(tmp_path / "history")
+    store.create_branch("main")
+    input_state = {"value": 0, "evidence": "x" * 1024}
+    output_state = {"value": 1, "evidence": "y" * 1024}
+    operation = {"kind": "choose", "payload": {"amount": 1, "evidence": "z" * 1024}}
+    request = {"prompt": "choose", "redacted": True}
+    receipt = {"status": "answered", "response": {"choice": "candidate-1"}}
+
+    event_id = store.commit(
+        "main",
+        None,
+        {
+            "event_kind": "decision",
+            "input_state": input_state,
+            "output_state": output_state,
+            "operation": operation,
+            "request": request,
+            "receipt": receipt,
+        },
+    )
+
+    event = store.get(event_id)
+    assert "input_state" not in event
+    assert "output_state" not in event
+    assert "operation" not in event
+    assert "request" not in event
+    assert "receipt" not in event
+    assert store.get(event["input_state_ref"]) == input_state
+    assert store.get(event["output_state_ref"]) == output_state
+    assert store.get(event["operation_ref"]) == operation
+    assert store.get(event["request_ref"]) == request
+    assert store.get(event["receipt_ref"]) == receipt
+
+
+def test_shared_record_is_loaded_once_per_verification(tmp_path: Path, monkeypatch) -> None:
+    store = HistoryStore(tmp_path / "history")
+    store.create_branch("main")
+    shared = store.put({"source": "shared"}, kind="evidence")
+    first = store.commit(
+        "main",
+        None,
+        {
+            "event_kind": "attempt",
+            "state_transition": False,
+            "dependency_refs": [shared],
+        },
+    )
+    store.commit(
+        "main",
+        first,
+        {
+            "event_kind": "attempt",
+            "state_transition": False,
+            "dependency_refs": [shared],
+        },
+    )
+
+    calls: list[Path] = []
+    original = Path.read_bytes
+    shared_path = store.record_path(shared)
+
+    def counted(path: Path):
+        if path == shared_path:
+            calls.append(path)
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", counted)
+    assert store.verify("main")["valid"] is True
+    assert calls.count(shared_path) == 1
+
+    calls.clear()
+    assert store.replay("main", _reducer)["state"] is None
+    assert calls.count(shared_path) == 1
+
+
+def test_replay_cache_does_not_share_mutable_operation_payloads(tmp_path: Path) -> None:
+    store = HistoryStore(tmp_path / "history")
+    store.create_branch("main")
+    operation = {"amount": 1}
+    first = store.commit(
+        "main",
+        None,
+        {
+            "event_kind": "decision",
+            "input_state": {"value": 0},
+            "output_state": {"value": 1},
+            "operation": operation,
+        },
+    )
+    store.commit(
+        "main",
+        first,
+        {
+            "event_kind": "decision",
+            "input_state": {"value": 1},
+            "output_state": {"value": 2},
+            "operation": operation,
+        },
+    )
+
+    def mutating_reducer(state: object, current: object) -> object:
+        assert isinstance(state, dict)
+        assert isinstance(current, dict)
+        amount = current["amount"]
+        current["amount"] = 99
+        return {"value": state["value"] + amount}
+
+    assert store.replay("main", mutating_reducer)["state"] == {"value": 2}

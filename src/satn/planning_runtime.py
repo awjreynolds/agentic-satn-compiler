@@ -467,6 +467,11 @@ class PlanningRuntime:
     def replay(self, branch: str = "main") -> dict[str, object]:
         """Replay a branch with recorded operations and expansion receipts only."""
 
+        with self.store._read_cache_scope():
+            return self._replay_uncached(branch)
+
+    def _replay_uncached(self, branch: str) -> dict[str, object]:
+
         _current_problem, _envelope = self._context(branch)
         problem = self._root_problem(branch)
         current_problem = problem
@@ -476,13 +481,23 @@ class PlanningRuntime:
             if not isinstance(operation, Mapping):
                 raise HistoryReplayError("recorded operation is not an object")
             if operation.get("kind") == "initialize":
-                initial = operation.get("state")
+                initial_ref = operation.get("state_ref")
+                initial = (
+                    self.store.get(initial_ref)
+                    if isinstance(initial_ref, str)
+                    else operation.get("state")
+                )
                 if not isinstance(initial, Mapping):
                     raise HistoryReplayError("initial state is missing")
                 return _safe_json(initial)
             if operation.get("kind") == "expand-connection":
                 receipt = operation.get("receipt")
-                child_problem = operation.get("problem")
+                problem_ref = operation.get("problem_ref")
+                child_problem = (
+                    self.store.get(problem_ref)
+                    if isinstance(problem_ref, str)
+                    else operation.get("problem")
+                )
                 if not isinstance(state, Mapping) or not isinstance(receipt, Mapping):
                     raise HistoryReplayError("expansion replay input is incomplete")
                 expanded = replay_expansion(current_problem, state, receipt)
@@ -605,6 +620,7 @@ class PlanningRuntime:
         problem = self._bind_problem_context(problem)
         state = dict(initial_proposal(problem))
         problem_ref = self.store.put(problem, kind="planning-problem")
+        state_ref = self.store.put(state, kind="state")
         self.brief_ref = self.store.put(self.brief, kind="planning-brief") if self.brief else None
         self.policy_ref = (
             self.store.put(self.policy, kind="planning-policy") if self.policy else None
@@ -630,7 +646,7 @@ class PlanningRuntime:
                 "outcome": "accepted",
                 "state_transition": True,
                 "output_state": state,
-                "operation": {"kind": "initialize", "state": state},
+                "operation": {"kind": "initialize", "state_ref": state_ref},
                 "problem_ref": problem_ref,
                 "run_envelope_ref": envelope_ref,
                 "dependency_refs": [problem_ref, envelope_ref],
@@ -791,11 +807,12 @@ class PlanningRuntime:
                 child_problem = expanded.get("problem")
                 child_state = expanded.get("state")
                 if isinstance(child_problem, Mapping) and isinstance(child_state, Mapping):
+                    child_problem_ref = self.store.put(child_problem, kind="planning-problem")
                     operation = {
                         "kind": "expand-connection",
                         "operation": _safe_json(operation),
                         "receipt": _safe_json(expanded.get("receipt", {})),
-                        "problem": _safe_json(child_problem),
+                        "problem_ref": child_problem_ref,
                     }
                     current_problem = dict(child_problem)
                     child = dict(child_state)
@@ -887,7 +904,7 @@ class PlanningRuntime:
                 "state_fingerprint": state.get("state_fingerprint")
                 if isinstance(state, Mapping)
                 else None,
-                "decision_trace": [dict(item) for item in result.decision_trace],
+                "decision_trace": self._compact_decision_trace(result.decision_trace),
             }
             try:
                 publication = publish_planning_output(
@@ -903,7 +920,24 @@ class PlanningRuntime:
             publication=publication,
             run_path=destination / "run.json",
         )
-        self._atomic_json(destination / "run.json", result.as_dict())
+        # Keep the public result materialized for callers while making the
+        # durable report a small index into immutable history records.  Large
+        # planning problems and proposal states are already content-addressed
+        # by the initialization/decision events; copying them into run.json
+        # multiplies storage for every report.
+        report = result.as_dict()
+        report.pop("problem", None)
+        report.pop("state", None)
+        problem_ref = self.store.put(problem, kind="planning-problem")
+        state_ref = self.store.put(state, kind="state") if state is not None else None
+        report["problem_ref"] = problem_ref
+        report["state_ref"] = state_ref
+        report["problem_fingerprint"] = problem.get("input_fingerprint")
+        report["state_fingerprint"] = (
+            state.get("state_fingerprint") if isinstance(state, Mapping) else None
+        )
+        report["decision_trace"] = self._compact_decision_trace(result.decision_trace)
+        self._atomic_json(destination / "run.json", report)
         return result
 
     def _decision_trace(self, branch: str, event_id: object) -> tuple[dict[str, object], ...]:
@@ -929,6 +963,11 @@ class PlanningRuntime:
                     "outcome": event.get("outcome"),
                 }
                 operation = event.get("operation")
+                if not isinstance(operation, Mapping) and isinstance(
+                    event.get("operation_ref"), str
+                ):
+                    operation_value = self.store.get(event["operation_ref"])
+                    operation = operation_value if isinstance(operation_value, Mapping) else None
                 if isinstance(operation, Mapping):
                     item["operation_kind"] = operation.get("kind")
                 receipt = event.get("receipt")
@@ -952,6 +991,25 @@ class PlanningRuntime:
             current = parent if isinstance(parent, str) else None
         trace.reverse()
         return tuple(trace)
+
+    def _compact_decision_trace(
+        self,
+        trace: Sequence[Mapping[str, object]],
+    ) -> list[dict[str, object]]:
+        """Keep report attribution while referring to the exact receipt once."""
+
+        compact: list[dict[str, object]] = []
+        for item in trace:
+            projected = dict(item)
+            event_id = projected.get("event_id")
+            if isinstance(event_id, str):
+                event = self.store.get(event_id)
+                if isinstance(event, Mapping) and isinstance(event.get("receipt_ref"), str):
+                    projected["receipt_ref"] = event["receipt_ref"]
+            for key in ("request_receipt", "response_receipt", "receipt"):
+                projected.pop(key, None)
+            compact.append(projected)
+        return compact
 
     @staticmethod
     def _atomic_json(path: Path, value: object) -> None:

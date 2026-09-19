@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,34 @@ def _choice_keys(question: object) -> tuple[str, ...]:
     if isinstance(criteria, dict):
         return tuple(str(key) for key in criteria)
     return ()
+
+
+def test_run_report_references_problem_and_state_without_inlining_them(tmp_path: Path) -> None:
+    runtime = PlanningRuntime(tmp_path / "history")
+    runtime.store.create_branch("main")
+    problem = {"problem_id": "problem-1", "input_fingerprint": "input-1"}
+    state = {"state_id": "state-1", "state_fingerprint": "state-fingerprint-1"}
+
+    result = runtime._result(
+        "main",
+        "deterministic",
+        problem,
+        state,
+        None,
+        {"status": "incomplete"},
+        tmp_path / "run",
+    )
+
+    payload = json.loads((tmp_path / "run" / "run.json").read_text(encoding="utf-8"))
+    assert "problem" not in payload
+    assert "state" not in payload
+    assert isinstance(payload["problem_ref"], str)
+    assert isinstance(payload["state_ref"], str)
+    assert runtime.store.get(payload["problem_ref"]) == problem
+    assert runtime.store.get(payload["state_ref"]) == state
+    # The Python result remains the materialized logical API for callers.
+    assert result.as_dict()["problem"] == problem
+    assert result.as_dict()["state"] == state
 
 
 def test_typed_choice_changes_state_and_replays_without_provider(tmp_path: Path) -> None:
@@ -68,6 +97,13 @@ def test_typed_choice_changes_state_and_replays_without_provider(tmp_path: Path)
     assert result.history_event_id
     assert result.decision_trace
     assert {item["decision_class"] for item in result.decision_trace} == {"classifier"}
+    assert any(item.get("operation_kind") for item in result.decision_trace)
+    persisted = json.loads((tmp_path / "run" / "run.json").read_text(encoding="utf-8"))
+    assert all(
+        "response_receipt" not in item and "request_receipt" not in item
+        for item in persisted["decision_trace"]
+    )
+    assert all(isinstance(item.get("receipt_ref"), str) for item in persisted["decision_trace"])
     history_event = HistoryStore(tmp_path / "history").get(result.history_event_id)
     assert history_event["decision_class"] == "classifier"
     assert (tmp_path / "run" / "run.json").is_file()
@@ -232,6 +268,24 @@ def test_requested_connection_expands_once_and_replays_recorded_receipt(tmp_path
     assert replay["state"] == result.state
     assert replay["problem"] == result.problem
 
+    store = HistoryStore(root)
+    event_id = result.history_event_id
+    operation_records: list[dict[str, object]] = []
+    while isinstance(event_id, str):
+        event = store.get(event_id)
+        if isinstance(event, dict) and isinstance(event.get("operation_ref"), str):
+            operation = store.get(event["operation_ref"])
+            if isinstance(operation, dict):
+                operation_records.append(operation)
+        event_id = event.get("timeline_parent_id") if isinstance(event, dict) else None
+    assert operation_records
+    assert any(operation.get("kind") == "initialize" for operation in operation_records)
+    assert all("state" not in operation for operation in operation_records)
+    expansion = [item for item in operation_records if item.get("kind") == "expand-connection"]
+    assert expansion
+    assert all("problem" not in operation for operation in expansion)
+    assert all(isinstance(operation.get("problem_ref"), str) for operation in expansion)
+
 
 def test_fork_after_connection_expansion_replays_bound_child_problem(tmp_path: Path) -> None:
     config = configured_bath_saltford(tmp_path)
@@ -392,8 +446,9 @@ def test_unresolved_jev_judgment_escalates_to_configured_specialist(tmp_path: Pa
     assert result.decision_trace[-1]["provider"] == "configured-specialist"
     assert result.decision_trace[-1]["model"] == "specialist-model"
     assert result.decision_trace[-1]["response_receipt"] == {"body_sha256": "specialist-response"}
-    history_event = HistoryStore(tmp_path / "history").get(result.history_event_id)
-    receipt = history_event.get("receipt")
+    history_store = HistoryStore(tmp_path / "history")
+    history_event = history_store.get(result.history_event_id)
+    receipt = history_store.get(history_event["receipt_ref"])
     assert isinstance(receipt, dict)
     assert receipt["provider"] == "configured-specialist"
 
@@ -642,7 +697,7 @@ def test_live_connection_choice_expands_then_scopes_alignment_choice(tmp_path: P
     while event_id is not None:
         event = store.get(event_id)
         if isinstance(event, dict) and event.get("event_kind") == "attempt":
-            request = event.get("request")
+            request = store.get(event["request_ref"])
             if isinstance(request, dict):
                 request_packets.append(request)
         event_id = event.get("timeline_parent_id") if isinstance(event, dict) else None
