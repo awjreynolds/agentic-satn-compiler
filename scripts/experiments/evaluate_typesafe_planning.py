@@ -542,10 +542,25 @@ def _runtime_fork_fixture(
         or not isinstance(history_event_id, str)
     ):
         return {"status": "unavailable", "reason": "runtime result has no replayable state"}
+    case_connection_id = case.get("connection_id")
+    case_candidates = {
+        str(item.get("candidate_id")): item
+        for item in problem.get("candidates", [])
+        if isinstance(item, Mapping)
+        and item.get("candidate_id")
+        and item.get("connection_id") == case_connection_id
+    }
     selected = [
         item
         for item in state.get("selected_alignments", [])
-        if isinstance(item, Mapping) and item.get("candidate_id")
+        if isinstance(item, Mapping)
+        and item.get("candidate_id") in case_candidates
+        and (
+            item.get("obligation_id") is None
+            or item.get("obligation_id") == case_connection_id
+            or item.get("obligation_id")
+            == case_candidates[item["candidate_id"]].get("obligation_id")
+        )
     ]
     if not selected:
         return {"status": "unavailable", "reason": "runtime did not select an alignment"}
@@ -554,7 +569,7 @@ def _runtime_fork_fixture(
         item
         for item in problem.get("candidates", [])
         if isinstance(item, Mapping)
-        and item.get("connection_id") == case.get("connection_id")
+        and item.get("connection_id") == case_connection_id
         and item.get("candidate_id") != selected_candidate.get("candidate_id")
     ]
     if not candidates:
@@ -569,10 +584,18 @@ def _runtime_fork_fixture(
         event = store.get(event_id)
         if isinstance(event, Mapping):
             operation = event.get("operation")
+            payload = operation.get("payload") if isinstance(operation, Mapping) else None
             if (
                 event.get("event_kind") == "decision"
                 and isinstance(operation, Mapping)
                 and operation.get("kind") == "select-alignment"
+                and isinstance(payload, Mapping)
+                and payload.get("candidate_id") == selected_candidate.get("candidate_id")
+                and (
+                    payload.get("obligation_id") is None
+                    or payload.get("obligation_id") == selected_candidate.get("obligation_id")
+                    or payload.get("obligation_id") == case_connection_id
+                )
             ):
                 checkpoint = store.checkpoint(event_id)
                 break
@@ -599,14 +622,26 @@ def _runtime_fork_fixture(
     )
     replay = runtime.replay(branch_id)  # type: ignore[union-attr]
     comparison = runtime.compare("main", branch_id)  # type: ignore[union-attr]
+    fork_state = advanced.state  # type: ignore[union-attr]
+    replacement_verified = isinstance(fork_state, Mapping) and any(
+        isinstance(item, Mapping)
+        and item.get("candidate_id") == alternate.get("candidate_id")
+        and (
+            item.get("obligation_id") is None
+            or item.get("obligation_id") == case_connection_id
+            or item.get("obligation_id") == alternate.get("obligation_id")
+        )
+        for item in fork_state.get("selected_alignments", [])
+    )
     return {
-        "status": "prepared",
+        "status": "prepared" if replacement_verified else "invalid",
         "parent_branch": "main",
         "parent_history_event_id": history_event_id,
         "checkpoint": checkpoint,
         "fork_branch": branch_id,
         "parent_preserved": store.head("main").head_event_id == history_event_id,
         "alternate_candidate_id": alternate.get("candidate_id"),
+        "replacement_verified": replacement_verified,
         "fork_result": advanced.as_dict(),  # type: ignore[union-attr]
         "replay": replay,
         "compare": comparison,
