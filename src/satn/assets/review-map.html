@@ -64,6 +64,20 @@
         <p id="deployment-status" class="rail-status" role="status" aria-live="polite">Preparing the review map…</p>
       </section>
 
+      <section id="planning-summary" class="planning-only" aria-labelledby="planning-heading" hidden>
+        <h2 id="planning-heading">Planning publication</h2>
+        <p id="planning-status" class="rail-status" role="status" aria-live="polite"></p>
+        <p id="planning-binding" class="rail-status"></p>
+        <details open>
+          <summary>Departure decisions</summary>
+          <ul id="planning-departures" class="planning-details-list"></ul>
+        </details>
+        <details open>
+          <summary>Unknown facts and planning gaps</summary>
+          <ul id="planning-unknowns" class="planning-details-list"></ul>
+        </details>
+      </section>
+
       <section id="complete-region-controls" aria-labelledby="complete-region-heading">
         <h2 id="complete-region-heading">Complete-region evidence</h2>
         <p>Optional evidence normally loads only for the current map view. Select optional layers above, then deliberately load their complete regional coverage. This can transfer a large amount of data.</p>
@@ -114,6 +128,10 @@
         <a href="divergence-records.json" download>ATM divergence records</a>
         <button id="criteria-download" type="button">Criteria evidence</button>
       </nav>
+      <nav id="planning-downloads" class="planning-only" aria-label="Planning downloads" hidden>
+        <a href="planning-output.json" download>Planning JSON</a>
+        <a href="planning-network.geojson" download>Planning GeoJSON</a>
+      </nav>
       <p class="project-link"><a href="https://github.com/awjreynolds/agentic-satn-compiler">Source, methodology and issues</a></p>
     </aside>
 
@@ -128,6 +146,12 @@
           <summary>Map legend</summary>
           <ul>
             <li><span class="map-key line strategic-network" aria-hidden="true"></span>Strategic spine</li>
+            <li class="legend-heading planning-only" hidden>Planning publication layers</li>
+            <li id="planning-legend-departure" class="planning-only" hidden><span class="map-key line planning-departure" aria-hidden="true"></span>A-road corridor departure — affected source section</li>
+            <li id="planning-legend-current" class="planning-only" hidden><span class="map-key line planning-current" aria-hidden="true"></span>Selected current alignment</li>
+            <li id="planning-legend-future" class="planning-only" hidden><span class="map-key line planning-future" aria-hidden="true"></span>Selected future alignment</li>
+            <li id="planning-legend-unknown" class="planning-only" hidden><span class="map-key line planning-unknown" aria-hidden="true"></span>Selected alignment — current/future status unknown</li>
+            <li id="planning-legend-source" class="planning-only" hidden><span class="map-key line planning-source" aria-hidden="true"></span>Source corridor inventory</li>
             <li class="legend-heading">Optional alignment review — intervention state</li>
             <li><span class="map-key line core-existing" aria-hidden="true"></span>Existing provision — solid green</li>
             <li><span class="map-key line core-upgrade" aria-hidden="true"></span>Upgrade required — short-dashed orange</li>

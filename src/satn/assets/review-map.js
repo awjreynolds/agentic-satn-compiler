@@ -1,5 +1,230 @@
 (async () => {
   "use strict";
+  function renderPlanningReviewMap(output) {
+    document.body.classList.add("planning-mode");
+    const notice = document.querySelector(".notice");
+    if (notice) {
+      notice.textContent =
+        "This proposed network shows validated decisions, affected source sections, and unresolved unknowns for review.";
+    }
+    const summary = document.querySelector("#planning-summary");
+    const status = document.querySelector("#planning-status");
+    const binding = document.querySelector("#planning-binding");
+    if (summary) summary.hidden = false;
+    if (status) {
+      status.textContent = `${output.status || "published"} · source inventory and validated decisions`;
+    }
+    const safeReference = (value, fallback) =>
+      typeof value === "string" || typeof value === "number" ? String(value) : fallback;
+    const history = output.history && typeof output.history === "object" ? output.history : {};
+    const historyRef = safeReference(
+      history.history_ref || history.history_root || history.history_id,
+      "history unavailable"
+    );
+    const branchRef = safeReference(
+      history.branch_ref || history.branch_id,
+      "branch unavailable"
+    );
+    if (binding) {
+      const state = output.state_fingerprint || "state fingerprint unavailable";
+      const proposal = output.proposal_state_ref || "proposal state unavailable";
+      binding.textContent =
+        `Proposal state: ${proposal} · state fingerprint: ${state} · branch: ${branchRef} · history: ${historyRef}`;
+    }
+    [
+      "planning-legend-departure",
+      "planning-legend-current",
+      "planning-legend-future",
+      "planning-legend-unknown",
+      "planning-legend-source",
+    ].forEach((id) => {
+      const element = document.getElementById(id);
+      if (element) element.hidden = false;
+    });
+    const legend = document.querySelector("#map-legend");
+    if (legend) {
+      legend.hidden = false;
+      legend.open = true;
+    }
+    const planningDownloads = document.querySelector("#planning-downloads");
+    if (planningDownloads) planningDownloads.hidden = false;
+
+    const departuresList = document.querySelector("#planning-departures");
+    const departures = Array.isArray(output.departures) ? output.departures : [];
+    if (departuresList) {
+      departures.forEach((departure) => {
+        const outcome = departure.outcome && typeof departure.outcome === "object"
+          ? departure.outcome
+          : {};
+        const outcomeText = outcome.kind === "alternate"
+          ? `selected alternative ${outcome.candidate_id || "unidentified"}`
+          : outcome.kind === "unresolved"
+            ? `unresolved loss ${outcome.gap_id || "unidentified"}`
+            : outcome.kind === "no-loss"
+              ? "evidence-backed no loss"
+              : "outcome unavailable";
+        const decisionRef = safeReference(
+          departure.decision_ref,
+          safeReference(departure.departure_id, "unidentified")
+        );
+        const decisionMetadata = [
+          ["decision class", departure.decision_class],
+          ["decision origin", departure.decision_origin],
+          ["history origin", departure.history_origin],
+          ["provider", departure.provider],
+          ["model", departure.model],
+        ].flatMap(([label, value]) => {
+          const rendered = safeReference(value, "");
+          return rendered ? [`${label} ${rendered}`] : [];
+        }).join(" · ");
+        const isARoad = (output.source_inventory || []).some((source) =>
+          (departure.source_corridor_refs || []).includes(source.corridor_id) &&
+          source.classification === "a-road"
+        );
+        const item = document.createElement("li");
+        item.textContent = `${isARoad ? "A-road corridor departure" : "Source corridor departure"} · ` +
+          `${String(departure.extent || "unknown").toUpperCase()} · ${departure.reason || "reason unavailable"} · ` +
+          `decision ${decisionRef} · branch ${branchRef} · history ${historyRef} · ` +
+          `evidence ${(departure.evidence_refs || []).join(", ") || "unidentified"} · ${outcomeText}` +
+          (decisionMetadata ? ` · ${decisionMetadata}` : "");
+        departuresList.appendChild(item);
+      });
+      if (!departures.length) {
+        const item = document.createElement("li");
+        item.textContent = "No explicit departure decisions were supplied.";
+        departuresList.appendChild(item);
+      }
+    }
+    const unknownsList = document.querySelector("#planning-unknowns");
+    const unknowns = [
+      ...(Array.isArray(output.unknown_facts) ? output.unknown_facts : []),
+      ...(Array.isArray(output.planning_gaps) ? output.planning_gaps : []),
+      ...(Array.isArray(output.unresolved_obligation_refs)
+        ? output.unresolved_obligation_refs.map((obligationId) => ({
+          claim: "Unresolved planning obligation",
+          obligation_id: obligationId,
+          status: "unresolved"
+        }))
+        : [])
+    ];
+    if (unknownsList) {
+      unknowns.forEach((unknown) => {
+        const item = document.createElement("li");
+        item.textContent = `${unknown.claim || unknown.reason || "Unresolved planning fact"} · ` +
+          `${unknown.unknown_id || unknown.gap_id || unknown.subject_id || "unidentified"}`;
+        unknownsList.appendChild(item);
+      });
+      if (!unknowns.length) {
+        const item = document.createElement("li");
+        item.textContent = "No unknown facts or planning gaps were supplied.";
+        unknownsList.appendChild(item);
+      }
+    }
+
+    const geojson = output.geojson && output.geojson.type === "FeatureCollection"
+      ? output.geojson
+      : { type: "FeatureCollection", features: [] };
+    const map = new maplibregl.Map({
+      container: "map",
+      style: {
+        version: 8,
+        sources: {
+          osm: {
+            type: "raster",
+            tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+            tileSize: 256,
+            attribution: "© OpenStreetMap contributors"
+          }
+        },
+        layers: [{
+          id: "osm",
+          type: "raster",
+          source: "osm",
+          paint: { "raster-opacity": .72, "raster-saturation": -.65 }
+        }]
+      },
+      center: [-2.5, 51.4],
+      zoom: 10
+    });
+    window.SATN_REVIEW_MAP = map;
+    map.addControl(new maplibregl.NavigationControl());
+    const lineFilter = (kind) => ["all", ["==", ["get", "feature_type"], kind], ["match", ["geometry-type"], ["LineString", "MultiLineString"], true, false]];
+    const pointFilter = ["match", ["get", "feature_type"], ["planning-place", "planning-unknown", "planning-gap"], true, false];
+    map.on("load", () => {
+      map.addSource("planning-output", { type: "geojson", data: geojson });
+      map.addLayer({
+        id: "planning-source",
+        type: "line",
+        source: "planning-output",
+        filter: lineFilter("planning-source"),
+        layout: { visibility: "visible" },
+        paint: { "line-color": "#455a64", "line-width": 2.5, "line-opacity": .58 }
+      });
+      map.addLayer({
+        id: "planning-selected-current",
+        type: "line",
+        source: "planning-output",
+        filter: lineFilter("planning-selected-current"),
+        layout: { visibility: "visible" },
+        paint: { "line-color": "#1b5e20", "line-width": 5, "line-opacity": .9 }
+      });
+      map.addLayer({
+        id: "planning-selected-future",
+        type: "line",
+        source: "planning-output",
+        filter: lineFilter("planning-selected-future"),
+        layout: { visibility: "visible", "line-cap": "round" },
+        paint: { "line-color": "#1565c0", "line-width": 5, "line-dasharray": [1.2, 1.2], "line-opacity": .92 }
+      });
+      map.addLayer({
+        id: "planning-selected-unknown",
+        type: "line",
+        source: "planning-output",
+        filter: lineFilter("planning-selected-unknown"),
+        layout: { visibility: "visible", "line-cap": "round" },
+        paint: { "line-color": "#6a1b9a", "line-width": 5, "line-dasharray": [0.5, 1.5], "line-opacity": .92 }
+      });
+      map.addLayer({
+        id: "planning-departures",
+        type: "line",
+        source: "planning-output",
+        filter: lineFilter("planning-departure"),
+        layout: { visibility: "visible", "line-cap": "round" },
+        paint: { "line-color": "#b71c1c", "line-width": 7, "line-dasharray": [1, 1], "line-opacity": .98 }
+      });
+      map.addLayer({
+        id: "planning-points",
+        type: "circle",
+        source: "planning-output",
+        filter: pointFilter,
+        layout: { visibility: "visible" },
+        paint: {
+          "circle-radius": 5,
+          "circle-color": ["match", ["get", "feature_type"], "planning-unknown", "#f39c12", "planning-gap", "#c0392b", "#17202a"],
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-width": 1.5
+        }
+      });
+      const bounds = new maplibregl.LngLatBounds();
+      const addCoordinates = (coordinates) => {
+        if (!Array.isArray(coordinates)) return;
+        if (coordinates.length >= 2 && typeof coordinates[0] === "number" && typeof coordinates[1] === "number") {
+          bounds.extend(coordinates);
+          return;
+        }
+        coordinates.forEach(addCoordinates);
+      };
+      geojson.features.forEach((feature) => addCoordinates(feature.geometry?.coordinates));
+      if (!bounds.isEmpty()) map.fitBounds(bounds, { padding: 70, maxZoom: 13, duration: 0 });
+      document.documentElement.dataset.defaultEvidenceReady = "true";
+      document.documentElement.dataset.mapReady = "true";
+    });
+  }
+  const planningOutput = window.SATN_PLANNING_OUTPUT;
+  if (planningOutput) {
+    renderPlanningReviewMap(planningOutput);
+    return;
+  }
   const data = window.SATN_DATA;
 
   function formatCompilerDuration(value) {
