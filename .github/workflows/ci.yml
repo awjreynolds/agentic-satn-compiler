@@ -48,12 +48,23 @@ jobs:
           tests/test_osm_network_adapter.py
           tests/test_osm_sources.py
           tests/test_pages_packaging.py
+          tests/test_planning_engine.py
+          tests/test_planning_history.py
+          tests/test_planning_publication.py
+          tests/test_planning_routing.py
+          tests/test_planning_runtime.py
+          tests/test_planning_cli.py
           tests/test_published_site.py
           tests/test_publisher.py
           tests/test_snapshot_lineage.py
           tests/test_spine_access_candidate_preparation.py
+          tests/test_typesafe_planning.py
+          tests/test_planning_vertical_slice.py
       - run: uv run playwright install chromium
-      - run: uv run pytest --browser -m browser tests/test_review_map_browser.py
+      - run: >-
+          uv run pytest --browser -m browser
+          tests/test_review_map_browser.py
+          tests/test_planning_map_browser.py
       - run: uv build --no-sources
 
   portable-network-identifiers:

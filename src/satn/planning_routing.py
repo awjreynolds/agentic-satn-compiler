@@ -593,6 +593,7 @@ class StaticCapabilityRouter:
             return RoutingOutcome(
                 status=RoutingStatus.UNKNOWN,
                 capability_id=capability.capability_id,
+                result=response,
                 cause=str(response.get("cause", "provider-unknown")),
                 missing_refs=tuple(str(item) for item in response.get("missing_refs", ())),
             )
