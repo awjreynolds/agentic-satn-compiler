@@ -1481,6 +1481,12 @@
     if (includeChoiceDetails && choice && hasDataValue(properties.decision_maker)) {
       addDefinition(list, "Decision maker", properties.decision_maker);
     }
+    if (includeChoiceDetails && hasDataValue(properties.agent_decision_request_id)) {
+      addDefinition(list, "Decision request", properties.agent_decision_request_id);
+    }
+    if (includeChoiceDetails && hasDataValue(properties.agent_decision_choice_id)) {
+      addDefinition(list, "Selected choice", properties.agent_decision_choice_id);
+    }
     if (artifact.sourceId === "places") {
       const accessStatus = firstDataValue(
         properties.access_status,
