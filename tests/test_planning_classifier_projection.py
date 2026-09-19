@@ -94,6 +94,14 @@ def _classifier_inputs() -> tuple[
         "road_class": "A-road",
         "access_status": "unknown",
         "infrastructure_refs": ["infrastructure-1"],
+        "road_facts": {
+            "highway": "primary",
+            "name": "A4",
+            "lanes": 2,
+            "maxspeed": "30 mph",
+            "access": None,
+            "surface": "asphalt",
+        },
         "geometry_ref": _geometry_ref(
             "edge-geometry",
             "source-edge-2",
@@ -193,6 +201,14 @@ def test_classifier_packet_omits_geometry_but_keeps_route_facts_and_identities(
     assert source_edge["road_class"] == "A-road"
     assert source_edge["access_status"] == "unknown"
     assert source_edge["infrastructure_refs"] == ["infrastructure-1"]
+    assert source_edge["road_facts"] == {
+        "highway": "primary",
+        "name": "A4",
+        "lanes": 2,
+        "maxspeed": "30 mph",
+        "access": None,
+        "surface": "asphalt",
+    }
     assert "geometry_ref" not in source_edge
 
     packet_text = json.dumps(packet, sort_keys=True)
