@@ -642,6 +642,103 @@ def test_connection_feedback_packet_retains_unscoped_request_and_stops_no_progre
     )
 
 
+def test_unknown_provision_choice_requests_named_evidence_and_replays_without_provider(
+    tmp_path: Path,
+) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    packets: list[dict[str, object]] = []
+
+    def provider(packet: object, questions: object) -> dict[str, object]:
+        assert isinstance(packet, dict)
+        assert isinstance(questions, dict)
+        packets.append(packet)
+        options = _choice_keys(questions["decision"])
+        if len(packets) > 1:
+            assert "current-future-provision" in options
+            assert any(option.startswith("planning-candidate-") for option in options)
+        choice = (
+            "current-future-provision"
+            if "current-future-provision" in options
+            else "bath-edge-to-saltford"
+        )
+        return {
+            "status": "answered",
+            "provider": "test-provider",
+            "model": "test-model",
+            "answers": {
+                "decision": {
+                    "type": "choice",
+                    "choice": choice,
+                    "probabilities": {key: 1.0 if key == choice else 0.0 for key in options},
+                    "confidence": 1.0,
+                }
+            },
+            "response_receipt": {"body_sha256": f"response-{len(packets)}"},
+        }
+
+    root = tmp_path / "history"
+    result = PlanningRuntime(root, provider=provider).run(
+        config,
+        output_root=tmp_path / "run",
+        mode="live",
+        connection_options=[
+            {
+                "connection_id": "bath-edge-to-saltford",
+                "origin_place_id": "bath-edge",
+                "destination_place_id": "saltford",
+                "current_or_future": "unknown",
+            }
+        ],
+    )
+
+    assert result.termination_reason == "semantic-no-progress"
+    assert len(packets) == 3
+    claim = "whether each proposed alignment is current provision or future intervention"
+    investigation = (
+        "Bind route-section current provision, cycling access and continuity, "
+        "or explicit future-intervention evidence; proposal intent does not establish "
+        "provision or intervention state."
+    )
+    feedback = [
+        item
+        for item in packets[2]["feedback_unknowns"]
+        if isinstance(item, dict) and item.get("claim") == claim
+    ]
+    assert len(feedback) == 1
+    assert feedback[0]["reason"] == investigation
+    assert feedback[0]["request_kind"] == "request-evidence"
+    assert feedback[0]["subject_refs"]
+
+    event_id = result.history_event_id
+    store = HistoryStore(root)
+    named_request = None
+    while event_id is not None:
+        event = store.get(event_id)
+        if isinstance(event, dict) and event.get("event_kind") == "decision":
+            operation = event.get("operation")
+            if not isinstance(operation, dict) and isinstance(event.get("operation_ref"), str):
+                operation = store.get(event["operation_ref"])
+            payload = operation.get("payload") if isinstance(operation, dict) else None
+            if isinstance(payload, dict) and payload.get("claim") == claim:
+                named_request = payload
+                request_ref = event.get("request_ref")
+                assert isinstance(request_ref, str)
+                request = store.get(request_ref)
+                assert "current-future-provision" in request["offered_consideration_refs"]
+                break
+        event_id = event.get("timeline_parent_id") if isinstance(event, dict) else None
+    assert named_request is not None
+    assert named_request["reason"] == investigation
+
+    replay = PlanningRuntime(
+        root,
+        provider=lambda *_: (_ for _ in ()).throw(AssertionError("replay dispatched provider")),
+    ).replay()
+    assert replay["state"] == result.state
+    assert HistoryStore(root).verify("main")["valid"] is True
+
+
 def test_advance_rejects_stale_expected_head_without_mutating_branch(tmp_path: Path) -> None:
     config = configured_bath_saltford(tmp_path)
     snapshot(config)
@@ -716,6 +813,7 @@ def test_live_connection_choice_expands_then_scopes_alignment_choice(tmp_path: P
     second_options = seen_questions[1]["options"]
     assert second_options
     assert len(second_options) < len(result.problem["candidates"])
+    assert "current-future-provision" not in second_options
     assert all(
         option.startswith("planning-candidate-") or option.startswith("__")
         for option in second_options
