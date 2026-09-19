@@ -20,7 +20,10 @@ from pyproj import CRS
 from shapely.geometry import LineString, MultiLineString, Point, mapping, shape
 from shapely.ops import linemerge, unary_union
 
-from satn.content_identity import canonical_network_geometry_fingerprint
+from satn.content_identity import (
+    canonical_network_geometry,
+    canonical_network_geometry_fingerprint,
+)
 from satn.models import AreaConfig
 from satn.planning_contracts import _source_ref, _stable_id, _topology_fact
 from satn.routing import RoadGraph, RouteOption, choose_alignment
@@ -280,6 +283,156 @@ def _corridor_from_row(
     }
 
 
+def _corridor_identity_key(corridor: Mapping[str, object]) -> tuple[object, ...]:
+    """Identify one semantic source corridor independent of edge direction."""
+
+    provenance = corridor.get("provenance")
+    provenance_map = provenance if isinstance(provenance, Mapping) else {}
+    source_refs = corridor.get("source_refs", provenance_map.get("source_refs", []))
+    reference_keys = tuple(
+        sorted(
+            (
+                str(reference.get("evidence_id")),
+                str(reference.get("source_id")),
+            )
+            for reference in source_refs
+            if isinstance(reference, Mapping)
+        )
+    )
+    geometry_ref = corridor.get("geometry_ref")
+    geometry_map = geometry_ref if isinstance(geometry_ref, Mapping) else {}
+    return (
+        str(provenance_map.get("source_kind")),
+        reference_keys,
+        str(corridor.get("classification")),
+        str(geometry_map.get("geometry_kind")),
+        str(geometry_map.get("crs")),
+        str(geometry_map.get("content_fingerprint")),
+    )
+
+
+def _merge_equivalent_corridors(
+    corridors: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    """Collapse reverse directed records while retaining their admitted facts."""
+
+    merged: dict[tuple[object, ...], dict[str, object]] = {}
+    for corridor in corridors:
+        key = _corridor_identity_key(corridor)
+        candidate = _json_copy(corridor)
+        current = merged.get(key)
+        if current is None:
+            merged[key] = candidate
+            continue
+
+        current_provenance = dict(current.get("provenance", {}))
+        candidate_provenance = candidate.get("provenance", {})
+        if not isinstance(candidate_provenance, Mapping):
+            candidate_provenance = {}
+        source_refs = sorted(
+            {
+                json.dumps(_canonical(reference), sort_keys=True, separators=(",", ":"))
+                for reference in list(current.get("source_refs", []))
+                + list(candidate.get("source_refs", []))
+                if isinstance(reference, Mapping)
+            }
+        )
+        current["source_refs"] = [_json_copy(json.loads(reference)) for reference in source_refs]
+        evidence_refs = sorted(
+            {
+                str(reference)
+                for reference in list(current.get("evidence_refs", []))
+                + list(candidate.get("evidence_refs", []))
+                if _present_identifier(reference)
+            }
+        )
+        current["evidence_refs"] = evidence_refs
+        geometry_ref = current["geometry_ref"]
+        if isinstance(geometry_ref, Mapping):
+            normalized_geometry = canonical_network_geometry(
+                shape(geometry_ref["geometry"]), geometry_ref["crs"]
+            )
+            geometry_ref = dict(geometry_ref)
+            geometry_ref["geometry"] = normalized_geometry["geometry"]
+            current["geometry_ref"] = geometry_ref
+        current_provenance["source_refs"] = _json_copy(current["source_refs"])
+        current_provenance["evidence_refs"] = evidence_refs
+
+        names = {
+            str(name)
+            for corridor_map, provenance_map in (
+                (current, current_provenance),
+                (candidate, candidate_provenance),
+            )
+            for name in [
+                corridor_map.get("name"),
+                *provenance_map.get("name_variants", []),
+            ]
+            if _present_identifier(name)
+        }
+        if names:
+            ordered_names = sorted(names)
+            current["name"] = ordered_names[0]
+            if len(ordered_names) > 1:
+                current_provenance["name_variants"] = ordered_names
+
+        source_hashes = {
+            str(source_hash)
+            for provenance_map in (current_provenance, candidate_provenance)
+            for source_hash in [
+                *provenance_map.get("source_hashes", []),
+                provenance_map.get("source_hash"),
+            ]
+            if _present_identifier(source_hash)
+        }
+        current_provenance["source_hash"] = _source_hash(
+            source_kind=str(current_provenance["source_kind"]),
+            source_refs=current["source_refs"],
+            feature_type=str(current["classification"]),
+            name=current.get("name"),
+            geometry_ref=current["geometry_ref"],
+        )
+        if len(source_hashes) > 1:
+            current_provenance["source_hashes"] = sorted(source_hashes)
+        current["provenance"] = current_provenance
+
+        current["in_scope"] = bool(current.get("in_scope")) or bool(candidate.get("in_scope"))
+        current["mandatory_planning_corridor"] = bool(
+            current.get("mandatory_planning_corridor")
+        ) or bool(candidate.get("mandatory_planning_corridor"))
+        topology = current.get("topology_fact")
+        candidate_topology = candidate.get("topology_fact")
+        if isinstance(topology, Mapping) and isinstance(candidate_topology, Mapping):
+            topology = dict(topology)
+            for field in ("node_ids", "directed_edge_ids", "source_edge_ids"):
+                topology[field] = sorted(
+                    {
+                        str(value)
+                        for value in list(topology.get(field, []))
+                        + list(candidate_topology.get(field, []))
+                    }
+                )
+            topology["graph_attachment"] = (
+                "attached"
+                if "attached"
+                in {
+                    topology.get("graph_attachment"),
+                    candidate_topology.get("graph_attachment"),
+                }
+                else topology.get("graph_attachment")
+            )
+            topology["status"] = (
+                "resolved"
+                if "resolved" in {topology.get("status"), candidate_topology.get("status")}
+                else topology.get("status")
+            )
+            current["topology_fact"] = topology
+        if current.get("status") != "admitted" and candidate.get("status") == "admitted":
+            current["status"] = "admitted"
+
+    return list(merged.values())
+
+
 def _source_corridors(
     source: Mapping[str, object], graph: RoadGraph | None
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
@@ -329,6 +482,7 @@ def _source_corridors(
                 in_scope=is_in_scope(row.geometry, official.crs),
             )
             corridors.append(corridor)
+    corridors = _merge_equivalent_corridors(corridors)
     for corridor in sorted(corridors, key=lambda item: str(item["corridor_id"])):
         if not corridor["in_scope"] or corridor["topology_fact"]["status"] != "unresolved":
             continue
