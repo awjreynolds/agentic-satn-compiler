@@ -47,6 +47,7 @@ ProviderFunction = Callable[[Mapping[str, object], Mapping[str, object]], object
 _UNKNOWN = "__unknown__"
 _EVIDENCE = "__needs_evidence__"
 _NONE = "__none__"
+_CLASSIFIER_TRANSFORMATION = "satn-planning-classifier/v1"
 
 
 def _copy_json(value: object) -> object:
@@ -76,6 +77,72 @@ def _safe_json(value: object) -> object:
         return _copy_json(_wire_json(value))
     except (TypeError, ValueError):
         return {"type": type(value).__name__, "repr": repr(value)}
+
+
+def _canonical_sort_key(value: object) -> str:
+    return json.dumps(
+        _safe_json(value),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+
+
+def _sorted_refs(value: object) -> list[str]:
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        return []
+    return sorted(str(item) for item in value)
+
+
+def _sorted_records(
+    values: object,
+    *identity_keys: str,
+) -> list[dict[str, object]]:
+    if not isinstance(values, (list, tuple)):
+        return []
+    records = [dict(item) for item in values if isinstance(item, Mapping)]
+    return sorted(
+        records,
+        key=lambda item: (
+            *(str(item.get(key, "")) for key in identity_keys),
+            _canonical_sort_key(item),
+        ),
+    )
+
+
+_UNORDERED_REFERENCE_FIELDS = frozenset(
+    {
+        "candidate_refs",
+        "connection_refs",
+        "corridor_refs",
+        "evidence_refs",
+        "endpoint_refs",
+        "place_refs",
+        "scope_refs",
+        "source_corridor_refs",
+        "source_refs",
+        "subject_refs",
+        "target_refs",
+    }
+)
+
+
+def _canonical_semantic(value: object) -> object:
+    """Normalize known reference collections without changing route sequences."""
+
+    if isinstance(value, Mapping):
+        normalized: dict[str, object] = {}
+        for key, item in value.items():
+            normalized_item = _canonical_semantic(item)
+            if key in _UNORDERED_REFERENCE_FIELDS and isinstance(normalized_item, list):
+                normalized_item = sorted(normalized_item, key=_canonical_sort_key)
+            normalized[str(key)] = normalized_item
+        return normalized
+    if isinstance(value, (list, tuple)):
+        return [_canonical_semantic(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        return sorted((_canonical_semantic(item) for item in value), key=_canonical_sort_key)
+    return value
 
 
 def _status(value: object) -> str:
@@ -1056,7 +1123,10 @@ class PlanningRuntime:
         }
         configured_connections = {
             str(item.get("connection_id") or item.get("operation_id")): dict(item)
-            for item in self.connection_options
+            for item in sorted(
+                self.connection_options,
+                key=lambda item: str(item.get("connection_id") or item.get("operation_id")),
+            )
             if item.get("connection_id") or item.get("operation_id")
         }
         intents = [
@@ -1142,6 +1212,7 @@ class PlanningRuntime:
             for item in problem.get("candidates", [])
             if isinstance(item, Mapping) and isinstance(item.get("candidate_id"), str)
         ]
+        all_candidates.sort(key=lambda item: str(item.get("candidate_id", "")))
         if active_connection_ids:
             candidates = [
                 item
@@ -1150,6 +1221,7 @@ class PlanningRuntime:
             ]
         else:
             candidates = self._task_candidates(problem, state, all_candidates)
+        candidates = sorted(candidates, key=lambda item: str(item.get("candidate_id", "")))
         scope_refs = sorted(
             {str(item.get("obligation_id")) for item in candidates if item.get("obligation_id")}
         )
@@ -1243,11 +1315,15 @@ class PlanningRuntime:
         pending = state.get("pending_task") or problem.get("pending_task")
         if isinstance(pending, Mapping) and isinstance(pending.get("candidate_refs"), list):
             refs = {str(item) for item in pending["candidate_refs"]}
-            return [item for item in candidates if str(item.get("candidate_id")) in refs]
+            return sorted(
+                [item for item in candidates if str(item.get("candidate_id")) in refs],
+                key=lambda item: str(item.get("candidate_id", "")),
+            )
         if not candidates:
             return []
-        obligation_id = str(candidates[0].get("obligation_id"))
-        return [item for item in candidates if str(item.get("obligation_id")) == obligation_id]
+        ordered = sorted(candidates, key=lambda item: str(item.get("candidate_id", "")))
+        obligation_id = str(ordered[0].get("obligation_id"))
+        return [item for item in ordered if str(item.get("obligation_id")) == obligation_id]
 
     @staticmethod
     def _candidate_label(candidate: Mapping[str, object]) -> str:
@@ -1257,15 +1333,15 @@ class PlanningRuntime:
             if isinstance(provenance, Mapping)
             else candidate.get("evidence_refs", [])
         )
-        source_refs = candidate.get("source_corridor_refs", [])
+        source_refs = _sorted_refs(candidate.get("source_corridor_refs", []))
         return json.dumps(
             {
                 "role": candidate.get("role"),
                 "connection_id": candidate.get("connection_id"),
                 "current_or_future": candidate.get("current_or_future"),
                 "source_corridor_refs": source_refs,
-                "evidence_refs": evidence_refs,
-                "place_refs": candidate.get("place_refs", []),
+                "evidence_refs": _sorted_refs(evidence_refs),
+                "place_refs": _sorted_refs(candidate.get("place_refs", [])),
             },
             sort_keys=True,
             ensure_ascii=True,
@@ -1277,9 +1353,9 @@ class PlanningRuntime:
             {
                 "origin_place_id": connection.get("origin_place_id"),
                 "destination_place_id": connection.get("destination_place_id"),
-                "corridor_refs": connection.get("corridor_refs", []),
+                "corridor_refs": _sorted_refs(connection.get("corridor_refs", [])),
                 "current_or_future": connection.get("current_or_future"),
-                "evidence_refs": connection.get("evidence_refs", []),
+                "evidence_refs": _sorted_refs(connection.get("evidence_refs", [])),
             },
             sort_keys=True,
             ensure_ascii=True,
@@ -1515,17 +1591,27 @@ class PlanningRuntime:
         branch: str,
     ) -> dict[str, object]:
         task_packet = self._task_packet(problem, state, questions, mode, context, branch)
-        request_key = (
-            problem.get("problem_id"),
-            state.get("state_id"),
-            context.get("question_kind"),
-            context.get("scope_refs", []),
-            context.get("candidate_refs", []),
-        )
+        semantic_request = {
+            "transformation": _CLASSIFIER_TRANSFORMATION,
+            "task_packet": task_packet,
+            "questions": _safe_json(questions),
+        }
+        request_id = f"planning-request-{_digest(semantic_request)[:24]}"
         packet_ref = self.store.put(task_packet, kind="planning-task-packet")
+        audit_binding = {
+            "transformation": _CLASSIFIER_TRANSFORMATION,
+            "request_id": request_id,
+            "history_ref": str(self.history_root),
+            "branch_id": branch,
+            "head_event_id": self.store.head(branch).head_event_id,
+            "problem_id": problem.get("problem_id"),
+            "problem_fingerprint": problem.get("input_fingerprint"),
+            "state_id": state.get("state_id"),
+            "state_fingerprint": state.get("state_fingerprint"),
+        }
         return {
             "schema_version": "planning-request/v1",
-            "request_id": f"planning-request-{_digest(request_key)[:24]}",
+            "request_id": request_id,
             "mode": mode,
             "problem_id": problem.get("problem_id"),
             "problem_fingerprint": problem.get("input_fingerprint"),
@@ -1550,6 +1636,7 @@ class PlanningRuntime:
             "output_contract": "typed-choice-operation/v1",
             "history_ref": str(self.history_root),
             "branch_id": branch,
+            "audit_binding": _safe_json(audit_binding),
             "questions": _safe_json(questions),
         }
 
@@ -1589,6 +1676,12 @@ class PlanningRuntime:
         intents = state.get("connection_intents")
         if isinstance(intents, list):
             connections.extend(item for item in intents if isinstance(item, Mapping))
+        connections.sort(
+            key=lambda item: (
+                str(item.get("connection_id", "")),
+                _canonical_sort_key(item),
+            )
+        )
 
         place_by_id = {
             str(item.get("place_id")): item
@@ -1646,11 +1739,17 @@ class PlanningRuntime:
             for item in problem.get("source_corridors", [])
             if isinstance(item, Mapping) and str(item.get("corridor_id")) in corridor_ids
         ]
+        source_corridors.sort(
+            key=lambda item: (str(item.get("corridor_id", "")), _canonical_sort_key(item))
+        )
         obligations = [
             dict(item)
             for item in problem.get("obligations", [])
             if isinstance(item, Mapping) and str(item.get("obligation_id")) in obligation_ids
         ]
+        obligations.sort(
+            key=lambda item: (str(item.get("obligation_id", "")), _canonical_sort_key(item))
+        )
         source_edges: list[dict[str, object]] = []
         graph_evidence = problem.get("graph_evidence")
         directed_edge_ids: set[str] = set()
@@ -1669,6 +1768,12 @@ class PlanningRuntime:
                 if isinstance(item, Mapping)
                 and str(item.get("directed_edge_id")) in directed_edge_ids
             ]
+        source_edges.sort(
+            key=lambda item: (
+                str(item.get("directed_edge_id", "")),
+                _canonical_sort_key(item),
+            )
+        )
         evidence_ids.update(
             str(item) for corridor in source_corridors for item in corridor.get("evidence_refs", [])
         )
@@ -1708,61 +1813,57 @@ class PlanningRuntime:
                     if source_name == "state" and collection_name == "unknown_facts":
                         feedback_unknowns.append(entry)
 
+        unresolved = [cast(dict[str, object], _canonical_semantic(item)) for item in unresolved]
+        feedback_unknowns = [
+            cast(dict[str, object], _canonical_semantic(item)) for item in feedback_unknowns
+        ]
+        unresolved.sort(key=lambda item: (_canonical_sort_key(item),))
+        feedback_unknowns.sort(key=lambda item: (_canonical_sort_key(item),))
+
         prior_decisions = {
             "connection_intents": [
                 _safe_json(item)
-                for item in state.get("connection_intents", [])
-                if isinstance(item, Mapping)
+                for item in _sorted_records(state.get("connection_intents", []), "connection_id")
             ],
             "selected_alignments": [
                 _safe_json(item)
-                for item in state.get("selected_alignments", [])
-                if isinstance(item, Mapping)
+                for item in _sorted_records(
+                    state.get("selected_alignments", []), "obligation_id", "candidate_id"
+                )
             ],
             "departures": [
                 _safe_json(item)
-                for item in state.get("departures", [])
-                if isinstance(item, Mapping)
+                for item in _sorted_records(
+                    state.get("departures", []), "obligation_id", "departure_id"
+                )
             ],
             "future_interventions": [
                 _safe_json(item)
-                for item in state.get("future_interventions", [])
-                if isinstance(item, Mapping)
+                for item in _sorted_records(
+                    state.get("future_interventions", []), "obligation_id", "intervention_id"
+                )
             ],
         }
 
-        packet_basis = {
-            "problem_id": problem.get("problem_id"),
-            "state_id": state.get("state_id"),
-            "question_kind": context.get("question_kind"),
-            "candidate_refs": sorted(candidate_ids),
-            "scope_refs": sorted(str(item) for item in context.get("scope_refs", [])),
-        }
-        packet: dict[str, object] = {
+        del branch
+        packet_semantic: dict[str, object] = {
             "schema_version": "planning-task-packet/v1",
-            "task_id": f"planning-task-{_digest(packet_basis)[:24]}",
             "mode": mode,
             "question_kind": context.get("question_kind", "obligation-disposition"),
             "brief": _safe_json(problem.get("brief", self.brief)),
             "policy": _safe_json(self.policy),
             "input_binding": _safe_json(problem.get("binding", {})),
-            "history": {
-                "root": str(self.history_root),
-                "branch_id": branch,
-                "head_event_id": self.store.head(branch).head_event_id,
-                "problem_id": problem.get("problem_id"),
-                "problem_fingerprint": problem.get("input_fingerprint"),
-                "state_id": state.get("state_id"),
-                "state_fingerprint": state.get("state_fingerprint"),
-            },
             "scope": {
-                "scope_refs": _safe_json(context.get("scope_refs", [])),
+                "scope_refs": _sorted_refs(context.get("scope_refs", [])),
                 "candidate_refs": sorted(candidate_ids),
                 "evidence_refs": sorted(evidence_ids),
-                "permitted_action_kinds": _safe_json(context.get("permitted_action_kinds", [])),
+                "permitted_action_kinds": _sorted_refs(context.get("permitted_action_kinds", [])),
             },
             "named_endpoints": named_endpoints,
-            "connection_options": named_connections,
+            "connection_options": sorted(
+                named_connections,
+                key=lambda item: (str(item.get("connection_id", "")), _canonical_sort_key(item)),
+            ),
             "candidates": [_safe_json(item) for item in candidates],
             "facts": {
                 "obligations": [_safe_json(item) for item in obligations],
@@ -1777,7 +1878,15 @@ class PlanningRuntime:
             "unknowns": [_safe_json(item) for item in unresolved],
             "questions": _safe_json(questions),
         }
-        return packet
+        packet_semantic = cast(dict[str, object], _canonical_semantic(packet_semantic))
+        packet_basis = {
+            "transformation": _CLASSIFIER_TRANSFORMATION,
+            "semantic": packet_semantic,
+        }
+        return {
+            "task_id": f"planning-task-{_digest(packet_basis)[:24]}",
+            **packet_semantic,
+        }
 
     @staticmethod
     def _connection_packet(
@@ -1800,9 +1909,9 @@ class PlanningRuntime:
             "connection_id": connection.get("connection_id"),
             "origin": endpoint(connection.get("origin_place_id")),
             "destination": endpoint(connection.get("destination_place_id")),
-            "corridor_refs": _safe_json(connection.get("corridor_refs", [])),
+            "corridor_refs": _sorted_refs(connection.get("corridor_refs", [])),
             "current_or_future": connection.get("current_or_future"),
-            "evidence_refs": _safe_json(connection.get("evidence_refs", [])),
+            "evidence_refs": _sorted_refs(connection.get("evidence_refs", [])),
         }
 
     def _dispatch(
