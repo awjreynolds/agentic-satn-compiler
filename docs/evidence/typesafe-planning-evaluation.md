@@ -107,8 +107,42 @@ exists. The original output was not rewritten to claim the later code revision.
 
 A separate credential check returned HTTP 200 from TypeSafe's authenticated
 models endpoint; without credentials, the same endpoint returned HTTP 403. The
-token is valid. No planning packet was sent in that check. Explicit consent for
-sending the three cases' place, route-candidate, evidence/policy and decision
-metadata to `https://api.typesafe.ai/v1/systemone` has been requested because
-automatic approval review requires it. Until that approval, there is no completed
-live planning-quality result to report.
+token is valid. No planning packet was sent in that check. The later approved
+run below is the first run that sent the explicitly authorized B&NES planning
+cases and metadata to TypeSafe.
+
+## Approved live attempt
+
+The approved run used the final evaluation checkout at commit `d519650` and
+wrote to the create-once directory
+`/Users/awjre/Work/banes-satn/build/typesafe-experiments/2026-09-19-live-authorized`.
+The process was stopped cleanly after the first case when local publication
+reported a duplicate mandatory source inventory entry:
+
+`source_inventory repeats planning-corridor-00ee4748d47514f18d96d760361442ea4f40af70e62a4bb777dd476859c0f9`
+
+The persisted Bath–Keynsham runtime result is therefore an honest incomplete
+result. It records `reviewable-incomplete` with termination reason
+`semantic-no-progress`, no selected alignment, and no departure. Jev answered
+two provider attempts using `jev-1.13.0`; both produced the same typed
+`request-evidence` operation with an empty target-reference list. The first
+left the proposal unresolved. The second left the semantic state fingerprint
+unchanged and was recorded as no progress. Durable receipts total 4,333 input
+tokens and 134 output tokens (2,163 + 2,170 input; 67 + 67 output). The
+provider requests and responses remain in the redacted immutable history
+records; this report does not reproduce their bodies.
+
+At interruption, the first-case directory contained 30 files totalling
+955,043,513 bytes, including 25 history record JSON files and a
+254,283,649-byte runtime result. That is local state and history volume; it is
+separate from the provider token totals above.
+
+The run did not reach the second or third case, so it has no live alignment,
+counterfactual fork, map publication, or cross-case quality result. The
+first-case history and runtime files remain available under the output path
+above. At interruption, total elapsed time was about 17 minutes and the stack was in
+post-run history verification. The process was interrupted with SIGINT; no later
+provider call was made. The earlier prepare packets and fake-provider fork
+check remain the available offline evidence for candidate expansion, replay,
+and decision-only fork binding. This live attempt does not claim that any
+connection or route alignment was selected.
