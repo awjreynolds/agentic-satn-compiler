@@ -183,3 +183,74 @@ output fingerprints after adding provider-failure diagnostics. The latter
 mutation had prevented the two failed-provider cases from publishing incomplete
 maps. Original outputs remain unchanged; subsequent evidence must identify the
 fixed code and its separate output location.
+
+## Selective rerun after POC repairs
+
+A fresh Radstock–Midsomer Norton run used frozen code `8d42013` and output
+`/Users/awjre/Work/banes-satn/build/typesafe-experiments/2026-09-19-live-poc-alignment`.
+It completed normally in about 344 seconds. Two `jev-1.13.0` answers requested
+more evidence (3,784 input / 137 output tokens), so the runtime stopped at
+`semantic-no-progress` without admitting candidates or choosing an alignment.
+The compact alignment request was therefore not reached by this fresh run.
+
+The incomplete map published successfully and all five history events replayed
+validly. Fork fixtures were explicitly unavailable because no alignment or
+alternatives had been admitted. The manifest is 27,429 bytes, with SHA-256
+`255a72fb06b982fa5090d6c2f260d1dec586368123f1c17c863c67d7438e7c78`;
+the full local output, including retained source/history and map assets, occupies
+approximately 430 MiB. This is a new inference path, not a like-for-like storage
+comparison or evidence of alignment quality.
+
+## Recorded-checkpoint alignment experiment
+
+The compact alignment packet was tested directly by cloning the retained
+Radstock–Midsomer Norton history and resuming its four-candidate state with
+frozen production code `8d42013`. The original source history was preserved.
+The completed child experiment is at
+`/Users/awjre/Work/banes-satn/build/typesafe-experiments/2026-09-19-live-poc-alignment-resume-v2`.
+Its `experiment.py` records the standalone harness (SHA-256
+`c30e59b9181abd5de71215b64783fe28fb312c42a4551fce147730576351cd9a`),
+and `alignment-report.json` contains compact results and artifact paths.
+
+The harness materialized checkpoint
+`52bd65d4376f858ee72d752bbbf3a9200ef0be1fea8a6026f19273c657381bc9`
+using `store.checkpoint(event_id)`, then forked `compact-alignment` and resumed
+through the existing runtime with the retained case's connection options.
+An earlier helper attempt passed the event ID directly to `fork` and failed
+before any provider call; it is not counted as a live alignment test.
+
+| New child call | Request bytes | Result | Input/output tokens |
+| --- | ---: | --- | ---: |
+| Initial alignment judgment | 27,590 | Answered: request evidence | 19,291 / 332 |
+| Judgment with recorded feedback | 28,194 | Answered: request evidence | 19,576 / 332 |
+
+Both calls resolved to `jev-1.13.0` and were accepted by the service. The
+79,943-byte original request's context-limit failure was therefore resolved
+for this case. New child usage totals 38,867 input and 664 output tokens;
+the inherited connection judgment is excluded from those totals.
+
+The child ended `reviewable-incomplete` at `semantic-no-progress`, with no
+selected alignment. Its map and machine-readable network published. Recorded
+replay produced the same output fingerprint; the replay report retains two
+diagnostics, and history verification returned `valid: true` over eight
+records. The cloned parent remained at revision 5 while the child advanced
+independently to revision 8. This demonstrates a live judgment from a retained
+checkpoint and preservation of the parent, not a successful route selection.
+
+The output occupies approximately 300 MiB. Local history processing took
+several minutes; a process sample observed a 2.7 GB peak memory footprint and
+heavy data traversal/garbage collection. These remain POC performance limits,
+not claims of efficient interactive latency. No new storage or validation
+framework was added to address them.
+
+## Delivered POC boundary
+
+The stack demonstrates front-end evidence admission, a Jev-driven mid-end,
+recorded decisions and branching, and back-end map publication. Mechanical,
+classifier and agent decision classes remain separate from compiler stages.
+Full/partial A-road departure rendering and alternate-selection replay are
+established by focused fixtures; the real cases establish live connection
+expansion and alignment evidence requests. No real alignment was selected.
+Specialist escalation is a configured capability with explicit unavailable
+outcomes; no live specialist was used here. Network feasibility, optimality,
+production adoption and interactive performance remain unproven.
