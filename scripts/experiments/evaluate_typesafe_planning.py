@@ -744,6 +744,7 @@ def _compact_runtime_payload(
     report = dict(value)
     problem = report.pop("problem", None)
     state = report.pop("state", None)
+    output = report.pop("output", None)
     if isinstance(problem, Mapping) and hasattr(store, "put"):
         report["problem_ref"] = store.put(  # type: ignore[union-attr]
             problem,
@@ -756,6 +757,14 @@ def _compact_runtime_payload(
             store.put(state, kind="state"),  # type: ignore[union-attr]
         )
         report["state_fingerprint"] = state.get("state_fingerprint")
+    if isinstance(output, Mapping) and hasattr(store, "put"):
+        report["output_ref"] = store.put(  # type: ignore[union-attr]
+            output,
+            kind="planning-output",
+        )
+        report["output_fingerprint"] = output.get("output_fingerprint")
+    elif output is not None:
+        report["output"] = output
     return report
 
 
@@ -1106,12 +1115,63 @@ def _artifact_hashes(root: Path) -> dict[str, str]:
     }
 
 
+def _artifact_ref(root: Path, relative_path: Path) -> dict[str, object] | None:
+    path = root / relative_path
+    digest = _sha256(path)
+    if digest is None:
+        return None
+    return {"path": relative_path.as_posix(), "sha256": digest}
+
+
+def _manifest_history_summary(
+    output_root: Path,
+    case: Mapping[str, object],
+) -> dict[str, object]:
+    history = case.get("history_report", case.get("history"))
+    summary: dict[str, object] = {}
+    if isinstance(history, Mapping):
+        for key in ("branch", "event_id", "verify"):
+            if key in history:
+                summary[key] = _json_copy(history[key])
+    case_id = str(case.get("case_id", ""))
+    for filename in ("history.json", "replay.json"):
+        artifact = _artifact_ref(output_root, Path("cases") / case_id / filename)
+        if artifact is not None:
+            summary["artifact"] = artifact
+            break
+    return summary
+
+
+def _manifest_decision_fixture_summary(
+    output_root: Path,
+    case: Mapping[str, object],
+) -> dict[str, object]:
+    fixture = case.get("decision_fixture")
+    summary: dict[str, object] = {}
+    if isinstance(fixture, Mapping):
+        for key in ("status", "parent_preserved", "human_assessment_performed"):
+            if key in fixture:
+                summary[key] = _json_copy(fixture[key])
+        invalidation = fixture.get("evidence_change_invalidation")
+        if isinstance(invalidation, Mapping) and "status" in invalidation:
+            summary["evidence_change_invalidation"] = {"status": invalidation["status"]}
+    case_id = str(case.get("case_id", ""))
+    artifact = _artifact_ref(
+        output_root,
+        Path("cases") / case_id / "decision-fork-fixture.json",
+    )
+    if artifact is not None:
+        summary["artifact"] = artifact
+    return summary
+
+
 def _report(manifest: Mapping[str, object]) -> str:
     lines = [
         "# B&NES TypeSafe planning evaluation",
         "",
         f"Status: `{manifest.get('status')}`",
         f"Mode: `{manifest.get('mode')}`",
+        f"Case selection: `{manifest.get('case_selection', 'all')}`",
         "",
         "This run binds fresh named-place connection intents to the local planning "
         "engine's admitted candidates. Recovery artifact identifiers are not used as "
@@ -1155,6 +1215,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--mode", choices=("prepare", "live"), default="prepare")
+    parser.add_argument("--case", choices=tuple(item["case_id"] for item in CASE_SPECS))
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--endpoint", default=DEFAULT_ENDPOINT)
     return parser
@@ -1168,14 +1229,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     started = perf_counter()
     cases: list[dict[str, object]] = []
     problem: Mapping[str, object] = {}
+    selected_specs = tuple(
+        spec for spec in CASE_SPECS if args.case is None or spec["case_id"] == args.case
+    )
     if args.mode == "prepare":
         problem = build_planning_problem(config)
-        for spec in CASE_SPECS:
+        for spec in selected_specs:
             case = _prepare_case(spec, config=config, problem=problem)
             cases.append(case)
             _write_case(output_root, case)
     else:
-        for spec in CASE_SPECS:
+        for spec in selected_specs:
             cases.append(
                 {
                     "case_id": spec["case_id"],
@@ -1189,7 +1253,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 }
             )
         for case in cases:
-            spec = next(item for item in CASE_SPECS if item["case_id"] == case["case_id"])
+            spec = next(item for item in selected_specs if item["case_id"] == case["case_id"])
             _run_live_case(
                 output_root,
                 case,
@@ -1224,6 +1288,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "schema_version": SCHEMA_VERSION,
         "status": "prepared" if args.mode == "prepare" else "executed",
         "mode": args.mode,
+        "case_selection": args.case or "all",
         "started_at": started_at,
         "finished_at": _utc_now(),
         "elapsed_seconds": perf_counter() - started,
@@ -1256,10 +1321,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 else None,
                 "usage": case.get("usage"),
                 "latency_seconds": case.get("latency_seconds"),
-                "replay": case.get("replay"),
-                "history": case.get("history_report", case.get("history")),
+                "history": _manifest_history_summary(output_root, case),
                 "fork_fixture": case.get("fork_fixture"),
-                "decision_fixture": case.get("decision_fixture"),
+                "decision_fixture": _manifest_decision_fixture_summary(output_root, case),
                 "publication": case.get("publication"),
             }
             for case in cases

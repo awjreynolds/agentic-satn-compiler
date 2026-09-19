@@ -99,6 +99,49 @@ def test_judge_sends_documented_payload_and_returns_redacted_receipts(monkeypatc
     assert result["response_receipt"]["request_id"] is None
 
 
+def test_observed_rounded_choice_distribution_remains_a_typed_answer() -> None:
+    response = {
+        "model": "jev-1.13.0",
+        "answers": {
+            "decision": {
+                "type": "choice",
+                "choice": "__needs_evidence__",
+                "confidence": 0.39,
+                "probabilities": {
+                    "__needs_evidence__": 0.54,
+                    "__none__": 0.04,
+                    "__unknown__": 0.14,
+                    "evaluation-bath-radstock": 0.27,
+                },
+            }
+        },
+        "usage": {"input_tokens": 1753, "output_tokens": 66},
+    }
+    questions = {
+        "decision": ChoiceQuestion(
+            instructions="Choose one admitted outcome.",
+            criteria={
+                "__needs_evidence__": "request evidence",
+                "__none__": "select no supplied option",
+                "__unknown__": "record an unknown",
+                "evaluation-bath-radstock": "the named-place connection",
+            },
+        )
+    }
+
+    result = TypeSafeClient(
+        provider="typesafe-recorded",
+        model="jev-latest",
+        endpoint="https://provider.invalid/v1/systemone",
+        transport=lambda _request: (200, json.dumps(response)),
+    ).judge({"task": "bath-radstock"}, questions)
+
+    assert result["status"] == "answered"
+    assert result["model"] == "jev-1.13.0"
+    assert result["usage"] == {"input_tokens": 1753, "output_tokens": 66}
+    assert result["answers"]["decision"] == response["answers"]["decision"]
+
+
 def test_choice_answer_must_use_an_offered_key_and_valid_probabilities() -> None:
     def transport(request):
         del request

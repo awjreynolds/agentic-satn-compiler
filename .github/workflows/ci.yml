@@ -60,6 +60,7 @@ jobs:
           tests/test_spine_access_candidate_preparation.py
           tests/test_typesafe_planning.py
           tests/test_typesafe_canonical_packets.py
+          tests/test_planning_classifier_projection.py
           tests/test_planning_vertical_slice.py
       - run: uv run playwright install chromium
       - run: >-

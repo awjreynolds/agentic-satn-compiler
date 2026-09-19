@@ -434,6 +434,8 @@ def _probability_map(
     value: object,
     expected: set[str],
     violations: list[str],
+    *,
+    require_total: bool = True,
 ) -> None:
     if not isinstance(value, Mapping):
         violations.append(f"{answer_path}:object")
@@ -448,7 +450,11 @@ def _probability_map(
             violations.append(item_path)
         elif isinstance(probability, (int, float)):
             total += float(probability)
-    if actual == expected and not math.isclose(total, 1.0, rel_tol=1e-9, abs_tol=1e-9):
+    if (
+        require_total
+        and actual == expected
+        and not math.isclose(total, 1.0, rel_tol=1e-9, abs_tol=1e-9)
+    ):
         violations.append(answer_path)
 
 
@@ -473,7 +479,13 @@ def _validate_answer(
         if not isinstance(choice, str) or choice not in offered:
             violations.append(f"{path}.choice")
         probabilities = answer.get("probabilities")
-        _probability_map(f"{path}.probabilities", probabilities, offered, violations)
+        _probability_map(
+            f"{path}.probabilities",
+            probabilities,
+            offered,
+            violations,
+            require_total=False,
+        )
         if (
             isinstance(choice, str)
             and isinstance(probabilities, Mapping)

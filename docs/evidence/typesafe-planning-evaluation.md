@@ -146,3 +146,40 @@ provider call was made. The earlier prepare packets and fake-provider fork
 check remain the available offline evidence for candidate expansion, replay,
 and decision-only fork binding. This live attempt does not claim that any
 connection or route alignment was selected.
+
+
+## Completed three-case POC run
+
+The next approved run completed at code revision `01b5c9e`, retaining its original
+outputs under
+`/Users/awjre/Work/banes-satn/build/typesafe-experiments/2026-09-19-live-poc`.
+Its manifest binds the actual source/module/asset bytes; the Git revision here
+identifies the frozen checkout used to execute it. The manifest SHA-256 is
+`091d956fc066dba425c92f45be28a59f366ca46182b5ac072fb650aa85da6d92`.
+
+| Case | Observed result | Reported input/output tokens |
+| --- | --- | --- |
+| Bath Spa–Keynsham | Two evidence requests; incomplete map published | 3,766 / 131 |
+| Bath Spa–Radstock | Evidence request returned, rejected locally because probabilities totaled 0.99 | 1,753 / 66 |
+| Radstock–Midsomer Norton | Connection chosen and four candidates admitted; alignment request rejected with HTTP 400 `max_tokens_exceeded` | 1,760 / 75; HTTP 400 usage unavailable |
+
+All successful HTTP responses reported `jev-1.13.0`. The requested alias was
+`jev-latest`; the failed HTTP request supplied no resolved model. Known receipt
+usage totals 7,279 input and 272 output tokens. The original manifest's aggregate
+is null because not every call reported usage; the invalid-response wrapper also
+omitted usage that remains present in its exact response receipt.
+
+All three recorded histories replayed successfully. No live alignment was
+selected, so no live selected-alignment fork is claimed. The third case's
+separate deterministic counterfactual fixture preserved its parent and replayed
+its recorded branch; it is a fixture, not another model decision.
+
+The run took about 1,017 seconds and occupied 1,252,096 KiB including histories,
+source data, proposals and publication assets. Its 45,194,454-byte manifest still
+embedded repeated replay data. These observations prompted focused POC repairs:
+accept the observed complete Choice distribution without renormalizing it,
+compact the classifier's route view, reference large report payloads, and refresh
+output fingerprints after adding provider-failure diagnostics. The latter
+mutation had prevented the two failed-provider cases from publishing incomplete
+maps. Original outputs remain unchanged; subsequent evidence must identify the
+fixed code and its separate output location.

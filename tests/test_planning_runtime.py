@@ -217,6 +217,35 @@ def test_unavailable_provider_is_recorded_as_incomplete(tmp_path: Path) -> None:
     assert HistoryStore(root).verify("main")["valid"] is True
 
 
+@pytest.mark.parametrize("provider_status", ["invalid", "servicefailed"])
+def test_provider_failure_output_refreshes_fingerprint_before_publication(
+    tmp_path: Path, provider_status: str
+) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+
+    def failed_provider(_packet: object, _questions: object) -> dict[str, object]:
+        return {
+            "status": provider_status,
+            "provider": "test-provider",
+            "model": "test-model",
+            "failure_class": "test-provider-failure",
+            "response_receipt": {"body_sha256": "response"},
+        }
+
+    result = PlanningRuntime(tmp_path / "history", provider=failed_provider).run(
+        config,
+        output_root=tmp_path / "run",
+        mode="live",
+    )
+
+    assert result.status == "reviewable-incomplete"
+    assert result.provider_result["status"] == provider_status
+    assert result.output["provider_status"] == provider_status
+    assert result.publication is not None
+    assert "error" not in result.publication
+
+
 def test_deterministic_mode_marks_unknown_without_selecting_candidate(tmp_path: Path) -> None:
     config = configured_bath_saltford(tmp_path)
     snapshot(config)
