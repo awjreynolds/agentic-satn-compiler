@@ -582,6 +582,61 @@ def _probe_state(experiment: Mapping[str, object]) -> dict[str, object]:
     return dict(_copy_json(dict(faithful_packet)))
 
 
+def _dependency_model_catalog(
+    experiment: Mapping[str, object],
+    catalog: Mapping[str, object],
+    state: Mapping[str, object],
+) -> dict[str, object]:
+    candidates = [
+        item
+        for item in state.get("candidates", [])
+        if isinstance(item, Mapping) and item.get("candidate_id")
+    ]
+    candidate_refs = [str(item["candidate_id"]) for item in candidates]
+    connection_refs = sorted(
+        {str(item["connection_id"]) for item in candidates if item.get("connection_id")}
+    )
+    claims = catalog.get("claims", [])
+    if not isinstance(claims, list):
+        raise ValueError("unknown catalog has no claims")
+    scope_values = [
+        _copy_json(item.get("scope_refs", []))
+        for item in claims
+        if isinstance(item, Mapping) and "scope_refs" in item
+    ]
+    shared_scope = bool(scope_values) and all(value == scope_values[0] for value in scope_values)
+    projected_claims: list[dict[str, object]] = []
+    for item in claims:
+        if not isinstance(item, Mapping):
+            raise ValueError("unknown catalog contains a malformed claim")
+        projected = dict(_copy_json(dict(item)))
+        source_refs = projected.pop("source_edge_refs", None)
+        if shared_scope and "scope_refs" in projected:
+            projected.pop("scope_refs")
+            projected["scope_ref"] = "alignment-scope"
+        projected["source_path_ref"] = "alignment-candidate-paths" if source_refs else None
+        projected_claims.append(projected)
+    return {
+        "schema_version": catalog.get("schema_version"),
+        "catalog_ref": {
+            "field": "catalog",
+            "fingerprint": experiment["fingerprints"]["unknown_catalog"],
+        },
+        "scope_bindings": {
+            "alignment-scope": scope_values[0] if shared_scope else [],
+        },
+        "source_path_refs": {
+            "alignment-candidate-paths": {
+                "candidate_refs": candidate_refs,
+                "connection_refs": connection_refs,
+                "edge_refs_field": "candidates[*].graph_path.directed_edge_ids",
+            }
+        },
+        "claims": projected_claims,
+        "outcomes": _copy_json(catalog.get("outcomes", {})),
+    }
+
+
 def build_probe_request(
     experiment: Mapping[str, object],
     probe: str,
@@ -633,7 +688,7 @@ def build_probe_request(
                     if isinstance(item, Mapping)
                 },
             }
-        state["unknown_catalog"] = _copy_json(dict(catalog))
+        state["unknown_catalog"] = _dependency_model_catalog(experiment, catalog, state)
         question = {
             "type": "choice",
             "instructions": (

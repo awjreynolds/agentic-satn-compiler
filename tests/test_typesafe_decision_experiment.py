@@ -131,6 +131,8 @@ def test_public_packet_and_dependency_probe_preserve_source_identity_and_map_cho
     assert model_edges["edge-1"]["from_node_id"] == "node-a"
     assert model_edges["edge-1"]["to_node_id"] == "node-b"
 
+    faithful_before = build_probe_request(experiment, "faithful-facts")
+    framing_before = build_probe_request(experiment, "framing")
     dependency = build_probe_request(experiment, "dependency")
     criteria = dependency["questions"]["decision"]["criteria"]
     assert "current-provision-access" in criteria
@@ -138,6 +140,42 @@ def test_public_packet_and_dependency_probe_preserve_source_identity_and_map_cho
     assert "candidate-coverage-inadequate" in criteria
     assert "no-identified-factual-blocker" in criteria
     assert "cannot-determine" in criteria
+
+    model_catalog = dependency["state"]["unknown_catalog"]
+    assert model_catalog["catalog_ref"]["field"] == "catalog"
+    assert (
+        model_catalog["catalog_ref"]["fingerprint"] == experiment["fingerprints"]["unknown_catalog"]
+    )
+    assert model_catalog["source_path_refs"]["alignment-candidate-paths"] == {
+        "candidate_refs": ["candidate-1"],
+        "connection_refs": ["connection-1"],
+        "edge_refs_field": "candidates[*].graph_path.directed_edge_ids",
+    }
+    assert all("source_edge_refs" not in claim for claim in model_catalog["claims"])
+    assert model_catalog["claims"][0]["scope_ref"] == "alignment-scope"
+    assert (
+        model_catalog["claims"][0]["coverage"]
+        == experiment["unknown_catalog"]["claims"][0]["coverage"]
+    )
+    assert dependency["catalog"] == experiment["unknown_catalog"]
+    assert dependency["catalog"]["claims"][0]["source_edge_refs"] == ["edge-1"]
+    full_mapping = map_choice_to_catalog(
+        {"type": "choice", "choice": "current-provision-access"},
+        dependency["catalog"],
+    )
+    assert full_mapping["status"] == "mapped"
+    assert full_mapping["coverage"]["selected_edge_status_counts"] == {
+        "value": 0,
+        "null": 1,
+        "absent": 0,
+    }
+    assert (
+        faithful_before["body_sha256"]
+        == build_probe_request(experiment, "faithful-facts")["body_sha256"]
+    )
+    assert (
+        framing_before["body_sha256"] == build_probe_request(experiment, "framing")["body_sha256"]
+    )
 
     for probe in ("faithful-facts", "framing", "dependency"):
         probe_request = build_probe_request(experiment, probe)
