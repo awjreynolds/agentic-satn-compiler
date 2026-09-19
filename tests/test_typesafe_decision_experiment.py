@@ -1,17 +1,28 @@
 from __future__ import annotations
 
+import importlib.util
 import json
+import sys
+from pathlib import Path
 
 import geopandas as gpd
-from scripts.experiments.diagnose_typesafe_planning import (
-    build_probe_request,
-    build_scoped_packet,
-    map_choice_to_catalog,
-    prepare_experiment,
-)
 from shapely.geometry import LineString
 
 from satn.routing import RoadGraph
+
+PROJECT = Path(__file__).parents[1]
+SPEC = importlib.util.spec_from_file_location(
+    "diagnose_typesafe_planning",
+    PROJECT / "scripts" / "experiments" / "diagnose_typesafe_planning.py",
+)
+assert SPEC and SPEC.loader
+MODULE = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = MODULE
+SPEC.loader.exec_module(MODULE)
+build_probe_request = MODULE.build_probe_request
+build_scoped_packet = MODULE.build_scoped_packet
+map_choice_to_catalog = MODULE.map_choice_to_catalog
+prepare_experiment = MODULE.prepare_experiment
 
 
 def _records() -> tuple[dict[str, object], dict[str, object]]:
