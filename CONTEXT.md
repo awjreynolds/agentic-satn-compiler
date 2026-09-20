@@ -5,8 +5,8 @@ This context defines the language for a council-portable agentic compiler that d
 ## Language
 
 **Agentic Network Compiler**:
-A deterministic geospatial compiler that can stop at bounded decision points and issue structured investigation requests through an optional provider-neutral AI Agent Runtime. An approved agent may analyse governed evidence and use explicitly configured external evidence systems, then return a cited finding or select from compiler-authored actions. The deterministic compiler validates the response and alone creates a new versioned run; the agent cannot invent evidence, submit executable geometry, set policy or adopt a network. The published POC uses Deterministic Test Mode (`provider: fake`), which calls neither a live AI model nor an external system.
-_Avoid_: autonomous planner, AI route author, chatbot map, production AI claim
+A geospatial compiler that combines governed evidence and deterministic validity rules with model judgments over admitted connection intents, alignments and investigation choices. Its proposed network retains attributable decisions and explicit unknowns; a model judgment does not establish evidence, geometry validity, policy or network adoption.
+_Avoid_: chatbot map, invented evidence, automatic adoption
 
 **Network Compiler Pattern**:
 The reusable separation of governed domain evidence, explicit rules, deterministic network compilation, bounded agent investigation, attributable human scenarios, provenance and publication. The SATN POC demonstrates this pattern for strategic active travel. A Mass Transit Network compiler may reuse the pattern only after defining specialist contracts for corridors, modes, stops, services, capacity, demand, operations, constraints, costs and multimodal integration.
@@ -1210,7 +1210,19 @@ evidence snapshot, the current Guidance Profile and the Review Triggers that cau
 it to be prepared.
 _Avoid_: mutated adopted release, automatic supersession, adopted monitoring update
 
-## Planned agentic rebuild
+## Experimental network planning
+
+**Planning Problem**:
+The admitted evidence, places, source corridors and obligations governed by one explicit planning brief. An expansion creates a newly bound problem without rewriting the evidence of an earlier proposal.
+_Avoid_: model prompt, selected network, mutable evidence pool
+
+**Proposal State**:
+A versioned proposed network containing connection intents, selected alignments, corridor departures and unresolved planning facts under one Planning Problem. It is the authority for what the proposal selects, distinct from the complete source inventory.
+_Avoid_: rendered map, source inventory, adopted network
+
+**Planning Decision History**:
+The retained evidence, requests, responses and validated transitions that explain a Proposal State and permit its recorded decisions to be replayed without new judgments. A branch starts before a chosen decision and preserves the original continuation; shared ancestry alone does not establish causation.
+_Avoid_: model transcript, causal proof, mutable undo log
 
 **Planning Corridor**:
 A source-identified corridor whose identity and geometry remain in the planning problem independently of the proposed alignment choice. Every in-scope A-road is a Planning Corridor.
