@@ -1,16 +1,16 @@
-# TypeSafe follow-up comparison preparation
+# TypeSafe follow-up comparison protocol and execution record
 
-This is the offline preparation artifact for issue 487. It is an
-experiment-level contrast of two otherwise identical planning packets. It is
-not an integrated planner comparison and it makes no route-quality or causal
-claim.
+This is the frozen preparation and live execution record for issue 487. It is
+an experiment-level contrast of two otherwise identical planning packets. It
+is not an integrated planner comparison and it makes no route-quality or
+causal claim.
 
 ## Prepared arms
 
 Both arms are derived from the retained four-candidate Radstock–Midsomer
 Norton alignment packet. They keep the same candidate paths and edge facts,
 connection options, policy, brief, alignment question, input binding, task
-identity and resolved model (`jev-1.13.0`). Both also carry the same raw
+identity and requested model (`jev-1.13.0`). Both also carry the same raw
 source excerpt, claim-02 text, and mechanically admitted local scope. The
 fixture's expected label, rationale and binding proof are excluded.
 
@@ -130,16 +130,39 @@ typed answer, actual model, usage record and latency for each arm, including
 service failures, and performs no automatic repeat. The requested model is
 `jev-1.13.0`; actual model identity is recorded per response.
 
-The frozen launch was submitted after independent review and rejected by
-automatic approval review before process execution. Neither request ran.
-The reviewer requires explicit user approval for these project-derived
-candidate/path and policy packets and the TypeSafe destination; general
-experiment authorization was not accepted for this payload. The exact
-rejection state is retained in `dispatch-approval-block.json`. There is no
-new provider receipt, token usage or downstream outcome to report.
+The frozen launch was initially submitted after independent review and
+rejected by automatic approval review before process execution. That rejection
+is retained as historical state in `dispatch-approval-block.json`; it is no
+longer a pending execution state. The reviewer required explicit user approval
+for the project-derived candidate/path and policy packets and the TypeSafe
+destination; general experiment authorization was not accepted for that
+payload.
 
-The packets remain unchanged and reviewable. Live dispatch is pending explicit
-approval; the local fake-transport checks are the completed execution evidence.
+On 2026-09-20, after explicit user approval, the operator at commit `c5df6f1`
+ran once with no automatic repeat. Both requests completed with HTTP 200 and
+actual model `jev-1.13.0`. The receipts are retained under
+`/Users/awjre/Work/banes-satn/build/typesafe-experiments/2026-09-20-jev-followup-comparison/dispatch-live-2026-09-20/`.
+
+| arm | typed choice | selected probability | confidence | input tokens | output tokens | latency (s) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| control | `__needs_evidence__` | 0.42 | 0.33 | 20,518 | 345 | 0.963987292 |
+| treatment | `__needs_evidence__` | 0.39 | 0.30 | 21,814 | 345 | 0.962433959 |
+
+The live run totals were 42,332 input tokens and 690 output tokens. Combined
+model-call latency was 1.926421251 seconds; this excludes preparation and
+process startup. Treatment added 1,296 input tokens. Both exact request hashes
+matched the frozen envelopes. The response body SHA-256 values were
+`593bde2718929452e8163b7384773c298d1b16b2e3c1ab8fcd7dd1d3ab94c6f8` for
+control and `b619bdacfb39599e410b7d1c0ba9840799134f57678e10bedf29e93f6369608a`
+for treatment; the corresponding exchange files retain the request hashes,
+status codes and typed answers without duplicating full payloads.
+
+The generic action was unchanged in both arms. This run does not demonstrate
+downstream benefit from retaining the judgment: the small probability shift is
+not evidence of quality or causality. It made no route selection and makes no
+integrated-runtime or replay claim. The unknown current-provision state was
+unchanged by this experiment. No repeat inference is planned under this
+protocol.
 
 The frozen dispatch helper SHA-256 is
 `078893cdb90e199122ad1457b30f4c6550f12ae0e3eac04db77226c76e106852`;
