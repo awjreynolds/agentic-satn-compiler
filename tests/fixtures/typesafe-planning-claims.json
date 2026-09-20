@@ -1,0 +1,104 @@
+{
+  "question": {
+    "instructions": "Classify how the supplied source excerpt, with its title and stated date context, relates to the referenced claim. Use only that supplied evidence, not outside knowledge or assumptions about current conditions. Preserve place, time, extent and conditions. Lack of support is not itself a contradiction.",
+    "criteria": {
+      "supports": "The supplied evidence states or directly entails the whole claim, including its place, time, extent and conditions.",
+      "contradicts": "The supplied evidence states or directly entails something incompatible with the claim about the same subject and circumstances; mere omission is not a contradiction.",
+      "does_not_establish": "The supplied evidence does not establish either the whole claim or its contradiction, including when necessary details, scope, timing or conditions are absent or ambiguous."
+    }
+  },
+  "sources": [
+    {
+      "id": "source-01",
+      "title": "Keynsham cycling-network description",
+      "url": "https://www.bathnes.gov.uk/creating-sustainable-communities-keynsham-and-saltford",
+      "published_at": null,
+      "retrieved_at": "2026-09-20",
+      "locator": "Active Travel Network — issues and challenges",
+      "excerpt": "the cycle network in Keynsham is not well joined up and gaps in cycle infrastructure make it difficult to travel by bike"
+    },
+    {
+      "id": "source-02",
+      "title": "Requirements for PRoW improvements",
+      "url": "https://www.bathnes.gov.uk/sites/default/files/Active%20Travel%20Masterplan_3.pdf",
+      "published_at": null,
+      "retrieved_at": "2026-09-20",
+      "locator": "Table 8.1, routes 4 and 6, Keynsham / Bath City to Keynsham",
+      "excerpt": "Improvements to PRoW would require TRO and negotiation with third party landowners."
+    },
+    {
+      "id": "source-03",
+      "title": "Permitted uses of the described quiet route",
+      "url": "https://www.bathnes.gov.uk/summary-improvements-location",
+      "published_at": null,
+      "retrieved_at": "2026-09-20",
+      "locator": "Paulton — Walking, wheeling and cycling improvements, Old Mills Lane description",
+      "excerpt": "a quiet route open to walking, wheeling, cycling and horse riding only"
+    }
+  ],
+  "cases": [
+    {
+      "id": "claim-01",
+      "source_id": "source-01",
+      "claim": "The description identifies breaks in Keynsham’s cycling network that hinder travel by bicycle.",
+      "expected": "supports",
+      "rationale": "The excerpt explicitly connects poor joining and infrastructure gaps with difficulty cycling."
+    },
+    {
+      "id": "claim-02",
+      "source_id": "source-01",
+      "claim": "The description says Keynsham’s cycling network is fully connected with no infrastructure gaps.",
+      "expected": "contradicts",
+      "rationale": "The excerpt explicitly says the network is not well joined up and has gaps."
+    },
+    {
+      "id": "claim-03",
+      "source_id": "source-01",
+      "claim": "Every individual cycle route in Keynsham is inaccessible to cyclists.",
+      "expected": "does_not_establish",
+      "rationale": "A network-level gap does not establish that every individual route is inaccessible."
+    },
+    {
+      "id": "claim-04",
+      "source_id": "source-02",
+      "claim": "The described PRoW improvements depend on both a TRO and negotiation with third-party landowners.",
+      "expected": "supports",
+      "rationale": "Both prerequisites are explicitly required by the conditional statement."
+    },
+    {
+      "id": "claim-05",
+      "source_id": "source-02",
+      "claim": "The described PRoW improvements can proceed without negotiating with third-party landowners.",
+      "expected": "contradicts",
+      "rationale": "The source explicitly requires landowner negotiation for these improvements."
+    },
+    {
+      "id": "claim-06",
+      "source_id": "source-02",
+      "claim": "The required TRO has already been obtained and the third-party landowners have already agreed.",
+      "expected": "does_not_establish",
+      "rationale": "A statement of prerequisites supplies no evidence that either prerequisite has been satisfied."
+    },
+    {
+      "id": "claim-07",
+      "source_id": "source-03",
+      "claim": "The described quiet route permits cycling as well as horse riding.",
+      "expected": "supports",
+      "rationale": "Both cycling and horse riding are explicitly included among the permitted uses."
+    },
+    {
+      "id": "claim-08",
+      "source_id": "source-03",
+      "claim": "The described quiet route is open to private cars as well as the listed activities.",
+      "expected": "contradicts",
+      "rationale": "The word only restricts permitted uses to the four listed activities, excluding private cars."
+    },
+    {
+      "id": "claim-09",
+      "source_id": "source-03",
+      "claim": "The described route provides a safe, continuous cycling connection all the way between Radstock and Midsomer Norton.",
+      "expected": "does_not_establish",
+      "rationale": "The permitted-use statement does not establish safety, whole-route continuity, or those endpoints."
+    }
+  ]
+}
