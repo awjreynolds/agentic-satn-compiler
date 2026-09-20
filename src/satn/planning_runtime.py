@@ -47,6 +47,15 @@ ProviderFunction = Callable[[Mapping[str, object], Mapping[str, object]], object
 _UNKNOWN = "__unknown__"
 _EVIDENCE = "__needs_evidence__"
 _NONE = "__none__"
+_CURRENT_FUTURE_PROVISION = "current-future-provision"
+_CURRENT_FUTURE_PROVISION_CLAIM = (
+    "whether each proposed alignment is current provision or future intervention"
+)
+_CURRENT_FUTURE_PROVISION_REASON = (
+    "Bind route-section current provision, cycling access and continuity, or explicit "
+    "future-intervention evidence; proposal intent does not establish provision or "
+    "intervention state."
+)
 _CLASSIFIER_TRANSFORMATION = "satn-planning-classifier/v1"
 
 
@@ -1286,13 +1295,25 @@ class PlanningRuntime:
         scope_refs = sorted(
             {str(item.get("obligation_id")) for item in candidates if item.get("obligation_id")}
         )
-        dispatchable = len(candidates) + len(reserved) <= 255
+        has_unknown_provision = any(
+            item.get("current_or_future") == "unknown" for item in candidates
+        )
+        dispatchable = len(candidates) + len(reserved) + (1 if has_unknown_provision else 0) <= 255
         offered_candidates = candidates if dispatchable else []
         criteria = {
             str(item["candidate_id"]): self._candidate_label(item)
             for item in sorted(offered_candidates, key=lambda value: str(value["candidate_id"]))
         }
         criteria.update(reserved)
+        current_future_provision_request = self._current_future_provision_request(
+            offered_candidates, scope_refs
+        )
+        if current_future_provision_request is not None:
+            criteria[_CURRENT_FUTURE_PROVISION] = (
+                "Request evidence for route-section current provision, cycling access and "
+                "continuity, or explicit future intervention; proposal intent does not "
+                "establish provision or intervention state."
+            )
         evidence_refs = sorted(
             {
                 str(reference)
@@ -1353,6 +1374,7 @@ class PlanningRuntime:
                 "place_refs": place_refs,
                 "unknown_refs": unknown_refs,
                 "gap_refs": gap_refs,
+                "current_future_provision_request": current_future_provision_request,
                 "dispatchable": dispatchable,
                 "permitted_action_kinds": [
                     "select-alignment",
@@ -1366,6 +1388,26 @@ class PlanningRuntime:
                 ],
             },
         )
+
+    @staticmethod
+    def _current_future_provision_request(
+        candidates: Sequence[Mapping[str, object]], scope_refs: Sequence[object]
+    ) -> dict[str, object] | None:
+        if not any(item.get("current_or_future") == "unknown" for item in candidates):
+            return None
+        target_refs = {
+            str(reference) for reference in scope_refs if reference is not None and str(reference)
+        }
+        for candidate in candidates:
+            for key in ("candidate_id", "connection_id", "obligation_id"):
+                reference = candidate.get(key)
+                if reference is not None and str(reference):
+                    target_refs.add(str(reference))
+        return {
+            "target_refs": sorted(target_refs),
+            "claim": _CURRENT_FUTURE_PROVISION_CLAIM,
+            "reason": _CURRENT_FUTURE_PROVISION_REASON,
+        }
 
     @staticmethod
     def _task_candidates(
@@ -1488,6 +1530,11 @@ class PlanningRuntime:
                     "reason": "provider marked the planning choice unresolved",
                 },
             }
+        if choice == _CURRENT_FUTURE_PROVISION:
+            request = context.get("current_future_provision_request")
+            if not isinstance(request, Mapping):
+                raise ValueError("current-future-provision is outside the offered task scope")
+            return {"kind": "request-evidence", "payload": dict(request)}
         if choice == _NONE:
             target_refs = (
                 [str(item) for item in context.get("scope_refs", [])]
@@ -1691,7 +1738,17 @@ class PlanningRuntime:
             "evidence_refs": _safe_json(context.get("evidence_refs", [])),
             "policy_ref": self.policy_ref or problem.get("policy_fingerprint"),
             "offered_consideration_refs": _safe_json(
-                [*context.get("candidate_refs", []), _UNKNOWN, _EVIDENCE, _NONE]
+                [
+                    *context.get("candidate_refs", []),
+                    _UNKNOWN,
+                    _EVIDENCE,
+                    _NONE,
+                    *(
+                        [_CURRENT_FUTURE_PROVISION]
+                        if isinstance(context.get("current_future_provision_request"), Mapping)
+                        else []
+                    ),
+                ]
             ),
             "permitted_action_kinds": _safe_json(context.get("permitted_action_kinds", [])),
             "output_contract": "typed-choice-operation/v1",
