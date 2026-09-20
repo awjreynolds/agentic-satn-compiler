@@ -1209,3 +1209,13 @@ A non-adopted release proposal bound to one historical release fingerprint, a ne
 evidence snapshot, the current Guidance Profile and the Review Triggers that caused
 it to be prepared.
 _Avoid_: mutated adopted release, automatic supersession, adopted monitoring update
+
+## Planned agentic rebuild
+
+**Planning Corridor**:
+A source-identified corridor whose identity and geometry remain in the planning problem independently of the proposed alignment choice. Every in-scope A-road is a Planning Corridor.
+_Avoid_: silently excluded route, deleted evidence, network gap
+
+**Corridor Departure**:
+A justified decision for the proposed network to omit or move away from all or part of a Planning Corridor, retaining affected source section(s), attribution, reason, evidence, any alternative, and the lost or unresolved connection. It is distinct from a gap or an unassessed corridor.
+_Avoid_: silently excluded route, deleted evidence, network gap

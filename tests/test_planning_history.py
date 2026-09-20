@@ -1,0 +1,264 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from satn.planning_history import (
+    HistoryCorruptError,
+    HistoryMissingError,
+    HistoryStaleHeadError,
+    HistoryStore,
+)
+
+
+def _reducer(state: object, operation: object) -> object:
+    assert isinstance(state, dict)
+    assert isinstance(operation, dict)
+    return {"value": state["value"] + operation["amount"]}
+
+
+def test_fork_and_replay_preserve_parent_and_allow_divergent_choice(tmp_path: Path) -> None:
+    store = HistoryStore(tmp_path / "history")
+    store.create_branch("main")
+
+    chosen = store.commit(
+        "main",
+        None,
+        {
+            "event_kind": "decision",
+            "input_state": {"value": 0},
+            "output_state": {"value": 1},
+            "operation": {"amount": 1},
+            "outcome": "accepted",
+        },
+    )
+    checkpoint = store.checkpoint(chosen)
+    store.fork(checkpoint, "alternative")
+
+    replacement = store.advance(
+        "alternative",
+        {
+            "event_kind": "decision",
+            "input_state": {"value": 0},
+            "output_state": {"value": 2},
+            "operation": {"amount": 2},
+            "outcome": "accepted",
+        },
+    )
+
+    assert store.replay("main", _reducer)["state"] == {"value": 1}
+    assert store.replay("alternative", _reducer)["state"] == {"value": 2}
+    assert store.head("main").head_event_id == chosen
+    assert store.head("alternative").head_event_id == replacement
+
+
+def test_corrupt_record_is_rejected_and_missing_record_is_distinct(tmp_path: Path) -> None:
+    store = HistoryStore(tmp_path / "history")
+    record_id = store.put({"value": 3}, kind="state")
+    path = store.record_path(record_id)
+    corrupted = path.read_text(encoding="utf-8").replace('"value":3', '"value":4')
+    path.write_text(corrupted, encoding="utf-8")
+
+    with pytest.raises(HistoryCorruptError):
+        store.get(record_id)
+
+    path.unlink()
+    with pytest.raises(HistoryMissingError):
+        store.get(record_id)
+
+
+def test_stale_expected_head_does_not_mutate_branch(tmp_path: Path) -> None:
+    store = HistoryStore(tmp_path / "history")
+    store.create_branch("main")
+    first = store.commit("main", None, {"event_kind": "attempt", "outcome": "started"})
+
+    with pytest.raises(HistoryStaleHeadError) as error:
+        store.commit("main", None, {"event_kind": "attempt", "outcome": "interrupted"})
+
+    assert error.value.code == "concurrent_head_conflict"
+    assert error.value.actual_head == first
+    assert store.head("main").head_event_id == first
+
+
+def test_compare_marks_old_dependent_outputs_stale_after_replacement(tmp_path: Path) -> None:
+    store = HistoryStore(tmp_path / "history")
+    store.create_branch("main")
+    original = store.commit(
+        "main",
+        None,
+        {
+            "event_kind": "decision",
+            "input_state": {"value": 0},
+            "output_state": {"value": 1},
+            "operation": {"amount": 1},
+        },
+    )
+    dependent = store.commit(
+        "main",
+        original,
+        {
+            "event_kind": "projection",
+            "input_state": {"value": 1},
+            "output_state": {"value": 10},
+            "operation": {"amount": 9},
+            "dependency_refs": [original],
+        },
+    )
+    checkpoint = store.checkpoint(original)
+    store.fork(checkpoint, "alternative")
+    replacement = store.advance(
+        "alternative",
+        {
+            "event_kind": "decision",
+            "input_state": {"value": 0},
+            "output_state": {"value": 2},
+            "operation": {"amount": 2},
+        },
+    )
+    store.commit(
+        "alternative",
+        replacement,
+        {
+            "event_kind": "projection",
+            "input_state": {"value": 2},
+            "output_state": {"value": 20},
+            "operation": {"amount": 18},
+            "dependency_refs": [replacement],
+        },
+    )
+
+    comparison = store.compare("main", "alternative")
+
+    assert comparison["replaced_events"][0] == {
+        "old_event_id": original,
+        "new_event_id": replacement,
+    }
+    assert dependent in comparison["invalidated_descendants"]
+    assert store.verify("main")["valid"] is True
+
+
+def test_attempts_are_recorded_and_replay_skips_interrupted_dispatch(tmp_path: Path) -> None:
+    store = HistoryStore(tmp_path / "history")
+    store.create_branch("main")
+    started = store.commit(
+        "main",
+        None,
+        {
+            "event_kind": "attempt",
+            "request": {"prompt": "choose"},
+            "outcome": "started",
+            "state_transition": False,
+        },
+    )
+    interrupted = store.commit(
+        "main",
+        started,
+        {
+            "event_kind": "attempt",
+            "outcome": "interrupted",
+            "state_transition": False,
+        },
+    )
+
+    replay = store.replay("main", _reducer)
+
+    assert replay["state"] is None
+    assert replay["advanced"] is False
+    assert [item["outcome"] for item in replay["diagnostics"]] == ["started", "interrupted"]
+    assert store.head("main").head_event_id == interrupted
+
+
+def test_accepted_model_event_requires_response_receipt(tmp_path: Path) -> None:
+    store = HistoryStore(tmp_path / "history")
+    store.create_branch("main")
+
+    with pytest.raises(ValueError, match="response receipt"):
+        store.commit(
+            "main",
+            None,
+            {"event_kind": "provider", "actor_kind": "model", "outcome": "accepted"},
+        )
+
+    event_id = store.commit(
+        "main",
+        None,
+        {
+            "event_kind": "provider",
+            "actor_kind": "model",
+            "input_state": {"value": 0},
+            "output_state": {"value": 3},
+            "operation": {"amount": 3},
+            "receipt": {"provider": "local-test", "response": "ok"},
+            "outcome": "accepted",
+        },
+    )
+    assert store.verify(event_id)["valid"] is True
+    assert store.replay("main", _reducer)["state"] == {"value": 3}
+
+
+def test_commit_verify_and_replay_reject_missing_transitive_dependency(tmp_path: Path) -> None:
+    store = HistoryStore(tmp_path / "history")
+    store.create_branch("main")
+    leaf = store.put({"source": "evidence"}, kind="evidence")
+    manifest = store.put({"dependency_refs": [leaf]}, kind="manifest")
+    event_id = store.commit(
+        "main",
+        None,
+        {
+            "event_kind": "projection",
+            "dependency_refs": [manifest],
+            "state_transition": False,
+        },
+    )
+
+    store.record_path(leaf).unlink()
+
+    with pytest.raises(HistoryMissingError):
+        store.verify("main")
+    with pytest.raises(HistoryMissingError):
+        store.replay("main", _reducer)
+    with pytest.raises(HistoryMissingError):
+        store.commit(
+            "main",
+            event_id,
+            {"event_kind": "projection", "dependency_refs": [manifest], "state_transition": False},
+        )
+
+
+def test_commit_binds_input_state_and_history_root_to_current_head(tmp_path: Path) -> None:
+    store = HistoryStore(tmp_path / "history")
+    store.create_branch("main")
+    first = store.commit(
+        "main",
+        None,
+        {
+            "event_kind": "decision",
+            "input_state": {"value": 0},
+            "output_state": {"value": 1},
+            "operation": {"amount": 1},
+        },
+    )
+
+    with pytest.raises(ValueError, match=r"input state|history root"):
+        store.commit(
+            "main",
+            first,
+            {
+                "event_kind": "decision",
+                "input_state": {"value": 100},
+                "output_state": {"value": 101},
+                "operation": {"amount": 1},
+                "input_history_root": None,
+            },
+        )
+
+    assert store.head("main").head_event_id == first
+
+
+def test_valid_byte_artifact_is_part_of_record_closure(tmp_path: Path) -> None:
+    store = HistoryStore(tmp_path / "history")
+    artifact = store.put_artifact(b"payload")
+    manifest = store.put({"output_artifact_refs": [artifact]}, kind="manifest")
+
+    assert store.verify(manifest)["valid"] is True
