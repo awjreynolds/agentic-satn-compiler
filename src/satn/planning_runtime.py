@@ -765,6 +765,9 @@ class PlanningRuntime:
         state = replay.get("state")
         if not isinstance(state, Mapping):
             raise HistoryReplayError("branch has no replayable state")
+        state_ref = replay.get("state_ref")
+        if not isinstance(state_ref, str):
+            state_ref = None
         request = next(
             (
                 item
@@ -833,16 +836,23 @@ class PlanningRuntime:
             "live",
             context,
             branch,
+            state_ref=state_ref,
+        )
+        request_state_ref = request_record.get("state_ref")
+        if isinstance(request_state_ref, str):
+            state_ref = request_state_ref
+        input_state = (
+            {"input_state_ref": state_ref} if isinstance(state_ref, str) else {"input_state": state}
         )
         self._commit(
             branch,
             {
-                **self._event_context(problem, envelope_ref, state),
+                **self._event_context(problem, envelope_ref, state, state_ref=state_ref),
                 "event_kind": "attempt",
                 "actor_kind": "provider",
                 "outcome": "started",
                 "state_transition": False,
-                "input_state": state,
+                **input_state,
                 "request": request_record,
             },
             expected_head=expected_head,
@@ -853,12 +863,12 @@ class PlanningRuntime:
             event_id = self._commit(
                 branch,
                 {
-                    **self._event_context(problem, envelope_ref, state),
+                    **self._event_context(problem, envelope_ref, state, state_ref=state_ref),
                     "event_kind": "receipt",
                     "actor_kind": "provider",
                     "outcome": status or "failed",
                     "state_transition": False,
-                    "input_state": state,
+                    **input_state,
                     "request": request_record,
                     "receipt": provider_result,
                     "decision_class": _decision_class(provider_result),
@@ -919,12 +929,12 @@ class PlanningRuntime:
             event_id = self._commit(
                 branch,
                 {
-                    **self._event_context(problem, envelope_ref, state),
+                    **self._event_context(problem, envelope_ref, state, state_ref=state_ref),
                     "event_kind": "receipt",
                     "actor_kind": "provider",
                     "outcome": "invalid",
                     "state_transition": False,
-                    "input_state": state,
+                    **input_state,
                     "request": request_record,
                     "receipt": provider_result,
                     "decision_class": _decision_class(provider_result),
@@ -956,6 +966,7 @@ class PlanningRuntime:
             actor_kind="model",
             decision_class=_decision_class(provider_result),
             mode="live",
+            input_state_ref=state_ref,
             request=request_record,
             receipt=provider_result,
         )
@@ -1288,10 +1299,16 @@ class PlanningRuntime:
         return dict(problem)
 
     def _event_context(
-        self, problem: Mapping[str, object], envelope_ref: str, state: Mapping[str, object]
+        self,
+        problem: Mapping[str, object],
+        envelope_ref: str,
+        state: Mapping[str, object],
+        *,
+        state_ref: str | None = None,
     ) -> dict[str, object]:
         problem_ref = self.store.put(problem, kind="planning-problem")
-        state_ref = self.store.put(state, kind="state")
+        if state_ref is None:
+            state_ref = self.store.put(state, kind="state")
         return {
             "problem_ref": problem_ref,
             "run_envelope_ref": envelope_ref,
@@ -1321,6 +1338,7 @@ class PlanningRuntime:
         actor_kind: str,
         mode: RunMode,
         decision_class: DecisionClass | None = None,
+        input_state_ref: str | None = None,
         request: Mapping[str, object] | None = None,
         receipt: Mapping[str, object] | None = None,
         expected_head: str | None = None,
@@ -1375,15 +1393,20 @@ class PlanningRuntime:
                 child = dict(expanded)
         else:
             child = apply_operation(current_problem, state, operation)
+        input_state = (
+            {"input_state_ref": input_state_ref}
+            if input_state_ref is not None
+            else {"input_state": state}
+        )
         if child.get("status") == "invalid":
             diagnostic = child.get("diagnostics", [{"code": "operation", "message": "rejected"}])
             event = {
-                **self._event_context(problem, envelope_ref, state),
+                **self._event_context(problem, envelope_ref, state, state_ref=input_state_ref),
                 "event_kind": "diagnostic",
                 "actor_kind": actor_kind,
                 "outcome": "invalid",
                 "state_transition": False,
-                "input_state": state,
+                **input_state,
                 "operation": operation,
                 "request": request,
                 "receipt": receipt,
@@ -1393,12 +1416,12 @@ class PlanningRuntime:
             event_id = self._commit(branch, event, expected_head)
             return event_id, dict(state), dict(child), current_problem
         event = {
-            **self._event_context(problem, envelope_ref, state),
+            **self._event_context(problem, envelope_ref, state, state_ref=input_state_ref),
             "event_kind": "decision",
             "actor_kind": actor_kind,
             "outcome": "accepted",
             "state_transition": True,
-            "input_state": state,
+            **input_state,
             "output_state": child,
             "operation": operation,
             "request": request,
@@ -2126,6 +2149,7 @@ class PlanningRuntime:
         mode: RunMode,
         context: Mapping[str, object],
         branch: str,
+        state_ref: str | None = None,
     ) -> dict[str, object]:
         task_packet = self._task_packet(problem, state, questions, mode, context, branch)
         semantic_request = {
@@ -2157,7 +2181,9 @@ class PlanningRuntime:
             "policy": _safe_json(self.policy),
             "state_id": state.get("state_id"),
             "state_fingerprint": state.get("state_fingerprint"),
-            "state_ref": self.store.put(state, kind="state"),
+            "state_ref": (
+                state_ref if state_ref is not None else self.store.put(state, kind="state")
+            ),
             "task_packet": task_packet,
             "task_packet_ref": packet_ref,
             "task_packet_fingerprint": _digest(task_packet),
