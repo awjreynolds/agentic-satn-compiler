@@ -1,0 +1,693 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+from bath_saltford_fixture import configured_bath_saltford
+
+from satn.planning_engine import build_planning_problem
+from satn.planning_history import HistoryStaleHeadError, HistoryStore
+from satn.planning_routing import (
+    CapabilityKind,
+    CapabilityRecord,
+    DecisionTask,
+    StaticCapabilityRouter,
+)
+from satn.planning_runtime import PlanningRuntime
+from satn.sources import snapshot
+
+
+def _choice_keys(question: object) -> tuple[str, ...]:
+    criteria = getattr(question, "criteria", None)
+    if isinstance(criteria, dict):
+        return tuple(str(key) for key in criteria)
+    return ()
+
+
+def test_typed_choice_changes_state_and_replays_without_provider(tmp_path: Path) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    calls: list[object] = []
+
+    def provider(state: object, questions: object) -> dict[str, object]:
+        calls.append(state)
+        assert isinstance(questions, dict)
+        options = _choice_keys(questions["decision"])
+        candidate_id = next(key for key in options if not key.startswith("__"))
+        return {
+            "status": "answered",
+            "provider": "test-provider",
+            "model": "test-model",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+            "decision_class": "agent",
+            "answers": {
+                "decision": {
+                    "type": "choice",
+                    "choice": candidate_id,
+                    "probabilities": {key: 1.0 if key == candidate_id else 0.0 for key in options},
+                    "confidence": 1.0,
+                }
+            },
+            "request": {"state": state, "questions": {"decision": "fixture"}},
+            "response": {"selected": candidate_id},
+            "request_receipt": {"body_sha256": "request"},
+            "response_receipt": {"body_sha256": "response"},
+        }
+
+    runtime = PlanningRuntime(tmp_path / "history", provider=provider)
+    result = runtime.run(
+        config,
+        output_root=tmp_path / "run",
+        mode="live",
+        branch="main",
+    )
+
+    assert result.status in {"reviewable-incomplete", "validated"}
+    assert calls
+    assert result.state["selected_alignments"]
+    assert result.history_event_id
+    assert result.decision_trace
+    assert {item["decision_class"] for item in result.decision_trace} == {"classifier"}
+    history_event = HistoryStore(tmp_path / "history").get(result.history_event_id)
+    assert history_event["decision_class"] == "classifier"
+    assert (tmp_path / "run" / "run.json").is_file()
+
+    replay_calls: list[object] = []
+
+    def should_not_call(*_args: object, **_kwargs: object) -> object:
+        replay_calls.append(True)
+        raise AssertionError("offline replay dispatched the provider")
+
+    replay_runtime = PlanningRuntime(tmp_path / "history", provider=should_not_call)
+    replay = replay_runtime.replay("main")
+
+    assert replay["state"] == result.state
+    assert replay["decision_trace"] == list(result.decision_trace)
+    assert replay_calls == []
+    assert HistoryStore(tmp_path / "history").verify("main")["valid"] is True
+
+
+def test_fork_replacement_replays_prefix_and_preserves_parent(tmp_path: Path) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+
+    def provider(_state: object, questions: object) -> dict[str, object]:
+        assert isinstance(questions, dict)
+        options = _choice_keys(questions["decision"])
+        candidate_id = next(key for key in options if not key.startswith("__"))
+        return {
+            "status": "answered",
+            "provider": "test-provider",
+            "model": "test-model",
+            "answers": {"decision": {"type": "choice", "choice": candidate_id}},
+            "response_receipt": {"body_sha256": "response"},
+        }
+
+    root = tmp_path / "history"
+    runtime = PlanningRuntime(root, provider=provider)
+    result = runtime.run(config, output_root=tmp_path / "run", mode="live")
+    store = HistoryStore(root)
+    event_id = result.history_event_id
+    decision_ids: list[str] = []
+    while event_id is not None:
+        event = store.get(event_id)
+        if isinstance(event, dict) and event.get("event_kind") == "decision":
+            decision_ids.append(event_id)
+        event_id = event.get("timeline_parent_id") if isinstance(event, dict) else None
+    assert decision_ids
+    decision_id = decision_ids[-1]
+    checkpoint = store.checkpoint(decision_id)
+    runtime.fork(checkpoint, "alternative")
+
+    prefix = store.restore(checkpoint)
+    prefix_state = prefix["state"]
+    assert isinstance(prefix_state, dict)
+    candidates = [item for item in result.problem["candidates"] if isinstance(item, dict)]
+    original = result.state["selected_alignments"][0]["candidate_id"]
+    replacement = next(item for item in candidates if item["candidate_id"] != original)
+    alternative = runtime.advance(
+        "alternative",
+        {
+            "kind": "select-alignment",
+            "payload": {
+                "candidate_id": replacement["candidate_id"],
+                "obligation_id": replacement.get("obligation_id"),
+            },
+        },
+    )
+
+    assert (
+        alternative.state["selected_alignments"][0]["candidate_id"] == replacement["candidate_id"]
+    )
+    assert runtime.replay("alternative")["state"] == alternative.state
+    assert store.head("main").head_event_id == result.history_event_id
+    comparison = runtime.compare("main", "alternative")
+    assert comparison["replaced_events"]
+
+
+def test_unavailable_provider_is_recorded_as_incomplete(tmp_path: Path) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    calls = 0
+
+    def unavailable(_state: object, _questions: object) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return {
+            "status": "unavailable",
+            "provider": "test-provider",
+            "model": "test-model",
+            "failure_class": "missing-credential",
+            "request": {"redacted": True},
+        }
+
+    root = tmp_path / "history"
+    result = PlanningRuntime(root, provider=unavailable).run(
+        config,
+        output_root=tmp_path / "run",
+        mode="live",
+    )
+
+    assert result.status == "reviewable-incomplete"
+    assert result.provider_result["status"] == "unavailable"
+    assert result.provider_result["model"] == "test-model"
+    assert calls == 1
+    assert (tmp_path / "run" / "proposal.json").is_file()
+    replay = PlanningRuntime(
+        root,
+        provider=lambda *_: (_ for _ in ()).throw(AssertionError()),
+    ).replay()
+    assert replay["state"] == result.state
+    assert HistoryStore(root).verify("main")["valid"] is True
+
+
+def test_deterministic_mode_marks_unknown_without_selecting_candidate(tmp_path: Path) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    root = tmp_path / "history"
+
+    result = PlanningRuntime(root).run(
+        config,
+        output_root=tmp_path / "run",
+        mode="deterministic",
+    )
+
+    assert result.mode == "deterministic"
+    assert result.status == "reviewable-incomplete"
+    assert not result.state["selected_alignments"]
+    assert result.state["unknown_facts"]
+    assert result.decision_trace
+    assert {item["decision_class"] for item in result.decision_trace} == {"mechanical"}
+    assert (tmp_path / "run" / "run.json").read_text(encoding="utf-8").find(
+        '"mode": "deterministic"'
+    ) >= 0
+
+
+def test_requested_connection_expands_once_and_replays_recorded_receipt(tmp_path: Path) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    problem = build_planning_problem(config)
+    root = tmp_path / "history"
+    result = PlanningRuntime(root).run(
+        config,
+        output_root=tmp_path / "run",
+        mode="deterministic",
+        requested_connections=[
+            {
+                "connection_id": "bath-edge-to-saltford",
+                "origin_place_id": "bath-edge",
+                "destination_place_id": "saltford",
+                "corridor_refs": [problem["source_corridors"][0]["corridor_id"]],
+                "current_or_future": "future",
+            }
+        ],
+    )
+
+    assert result.problem["problem_id"] != problem["problem_id"]
+    assert any(
+        item.get("connection_id") == "bath-edge-to-saltford"
+        for item in result.problem["candidates"]
+    )
+    replay = PlanningRuntime(root).replay("main")
+    assert replay["state"] == result.state
+    assert replay["problem"] == result.problem
+
+
+def test_fork_after_connection_expansion_replays_bound_child_problem(tmp_path: Path) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    problem = build_planning_problem(config)
+    root = tmp_path / "history"
+    result = PlanningRuntime(root).run(
+        config,
+        output_root=tmp_path / "run",
+        mode="deterministic",
+        requested_connections=[
+            {
+                "connection_id": "bath-edge-to-saltford",
+                "origin_place_id": "bath-edge",
+                "destination_place_id": "saltford",
+                "corridor_refs": [problem["source_corridors"][0]["corridor_id"]],
+                "current_or_future": "future",
+            }
+        ],
+    )
+    runtime = PlanningRuntime(root)
+    checkpoint = runtime.store.checkpoint(result.history_event_id)
+    runtime.fork(checkpoint, "alternative")
+
+    replay = runtime.replay("alternative")
+
+    assert replay["output"]["status"] != "invalid"
+    assert replay["state"]["parent_problem_id"] == replay["problem"]["problem_id"]
+
+
+def test_supplied_brief_and_policy_are_bound_before_problem_identity(tmp_path: Path) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    default_problem = build_planning_problem(config)
+    supplied_brief = {
+        "brief_ref": "custom-owner-brief",
+        "corridor_policy": default_problem["brief"]["corridor_policy"],
+    }
+    supplied_policy = {"policy_ref": "owner-policy"}
+
+    result = PlanningRuntime(
+        tmp_path / "history",
+        brief=supplied_brief,
+        policy=supplied_policy,
+    ).run(config, output_root=tmp_path / "run")
+
+    assert result.problem["brief"] == supplied_brief
+    assert result.problem["policy"] == supplied_policy
+    assert result.output["status"] != "invalid"
+
+
+def test_specialist_proposal_must_select_an_offered_candidate(tmp_path: Path) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    problem = build_planning_problem(config)
+    offered = {str(item["candidate_id"]) for item in problem["candidates"][:1]}
+    outside = next(
+        item for item in problem["candidates"] if str(item["candidate_id"]) not in offered
+    )
+
+    def specialist(_task: DecisionTask) -> dict[str, object]:
+        return {
+            "provider": "configured-specialist",
+            "proposal": {
+                "operation": {
+                    "kind": "select-alignment",
+                    "payload": {
+                        "candidate_id": outside["candidate_id"],
+                        "obligation_id": outside["obligation_id"],
+                    },
+                }
+            },
+            "response_receipt": {"body_sha256": "specialist-response"},
+        }
+
+    router = StaticCapabilityRouter(
+        (
+            CapabilityRecord(
+                capability_id="configured-specialist",
+                kind=CapabilityKind.SPECIALIST,
+                operations=("select-alignment",),
+                judgment_forms=("structured-proposal",),
+                operation_scopes=("select-alignment",),
+                provider="test-specialist",
+                adapter=specialist,
+            ),
+        )
+    )
+    result = PlanningRuntime(tmp_path / "history", router=router).run(
+        config,
+        output_root=tmp_path / "run",
+        mode="live",
+    )
+
+    assert result.termination_reason == "invalid-provider-choice"
+    assert not result.state["selected_alignments"]
+    assert result.provider_result["status"] == "answered"
+
+
+def test_unresolved_jev_judgment_escalates_to_configured_specialist(tmp_path: Path) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    calls = {"jev": 0, "specialist": 0}
+
+    def jev(_task: DecisionTask) -> dict[str, object]:
+        calls["jev"] += 1
+        return {
+            "status": "answered",
+            "answers": {
+                "decision": {
+                    "type": "choice",
+                    "choice": "__unknown__",
+                }
+            },
+            "response_receipt": {"body_sha256": "jev-response"},
+        }
+
+    def specialist(_task: DecisionTask) -> dict[str, object]:
+        calls["specialist"] += 1
+        return {
+            "status": "unknown",
+            "provider": "configured-specialist",
+            "model": "specialist-model",
+            "cause": "specialist-evidence-unavailable",
+            "response_receipt": {"body_sha256": "specialist-response"},
+        }
+
+    router = StaticCapabilityRouter(
+        (
+            CapabilityRecord(
+                capability_id="jev",
+                kind=CapabilityKind.JEV,
+                judgment_forms=("choice",),
+                provider="configured-jev",
+                adapter=jev,
+            ),
+            CapabilityRecord(
+                capability_id="specialist",
+                kind=CapabilityKind.SPECIALIST,
+                judgment_forms=("structured-proposal",),
+                provider="configured-specialist",
+                adapter=specialist,
+            ),
+        )
+    )
+    result = PlanningRuntime(tmp_path / "history", router=router).run(
+        config,
+        output_root=tmp_path / "run",
+        mode="live",
+    )
+
+    assert calls == {"jev": 1, "specialist": 1}
+    assert result.provider_result["status"] == "unknown"
+    assert result.provider_result["provider"] == "configured-specialist"
+    assert result.provider_result["model"] == "specialist-model"
+    assert result.provider_result["response_receipt"] == {"body_sha256": "specialist-response"}
+    assert result.decision_trace[-1]["decision_class"] == "agent"
+    assert result.decision_trace[-1]["provider"] == "configured-specialist"
+    assert result.decision_trace[-1]["model"] == "specialist-model"
+    assert result.decision_trace[-1]["response_receipt"] == {"body_sha256": "specialist-response"}
+    history_event = HistoryStore(tmp_path / "history").get(result.history_event_id)
+    receipt = history_event.get("receipt")
+    assert isinstance(receipt, dict)
+    assert receipt["provider"] == "configured-specialist"
+
+
+def test_requested_connection_options_schedule_each_intent_before_remaining_work(
+    tmp_path: Path,
+) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    seen: list[str] = []
+    connection_choices = iter(("one", "two"))
+
+    def provider(packet: object, questions: object) -> dict[str, object]:
+        assert isinstance(packet, dict)
+        assert isinstance(questions, dict)
+        question = questions["decision"]
+        options = _choice_keys(question)
+        question_kind = str(packet["question_kind"])
+        seen.append(question_kind)
+        if question_kind == "connection":
+            choice = next(connection_choices)
+        else:
+            choice = next(key for key in options if not key.startswith("__"))
+        return {
+            "status": "answered",
+            "provider": "test-provider",
+            "model": "test-model",
+            "answers": {"decision": {"type": "choice", "choice": choice}},
+            "response_receipt": {"body_sha256": f"response-{len(seen)}"},
+        }
+
+    result = PlanningRuntime(tmp_path / "history", provider=provider).run(
+        config,
+        output_root=tmp_path / "run",
+        mode="live",
+        connection_options=[
+            {
+                "connection_id": connection_id,
+                "origin_place_id": "bath-edge",
+                "destination_place_id": "saltford",
+                "current_or_future": "future",
+            }
+            for connection_id in ("one", "two")
+        ],
+    )
+
+    assert seen[:4] == ["connection", "alignment", "connection", "alignment"]
+    assert [item["connection_id"] for item in result.state["connection_intents"]] == [
+        "one",
+        "two",
+    ]
+
+
+def test_feedback_unknown_is_visible_in_the_next_task_packet(tmp_path: Path) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    seen_unknowns: list[int] = []
+
+    def provider(packet: object, _questions: object) -> dict[str, object]:
+        assert isinstance(packet, dict)
+        seen_unknowns.append(len(packet["unknowns"]))
+        return {
+            "status": "answered",
+            "provider": "test-provider",
+            "model": "test-model",
+            "answers": {
+                "decision": {
+                    "type": "choice",
+                    "choice": "__needs_evidence__",
+                }
+            },
+            "response_receipt": {"body_sha256": f"response-{len(seen_unknowns)}"},
+        }
+
+    result = PlanningRuntime(tmp_path / "history", provider=provider).run(
+        config,
+        output_root=tmp_path / "run",
+        mode="live",
+    )
+
+    assert seen_unknowns[:2] == [0, 1]
+    assert result.state["unknown_facts"]
+
+
+def test_advance_rejects_stale_expected_head_without_mutating_branch(tmp_path: Path) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    root = tmp_path / "history"
+    result = PlanningRuntime(root).run(
+        config,
+        output_root=tmp_path / "run",
+        mode="deterministic",
+    )
+    candidate = next(item for item in result.problem["candidates"] if isinstance(item, dict))
+    store = HistoryStore(root)
+    head = store.head("main").head_event_id
+
+    with pytest.raises(HistoryStaleHeadError):
+        PlanningRuntime(root).advance(
+            "main",
+            {
+                "kind": "select-alignment",
+                "payload": {
+                    "candidate_id": candidate["candidate_id"],
+                    "obligation_id": candidate.get("obligation_id"),
+                },
+            },
+            expected_head="0" * 64,
+        )
+
+    assert store.head("main").head_event_id == head
+
+
+def test_live_connection_choice_expands_then_scopes_alignment_choice(tmp_path: Path) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    seen_questions: list[dict[str, object]] = []
+    seen_packets: list[dict[str, object]] = []
+    choices = iter(("bath-edge-to-saltford", None))
+
+    def provider(packet: object, questions: object) -> dict[str, object]:
+        assert isinstance(packet, dict)
+        seen_packets.append(packet)
+        assert isinstance(questions, dict)
+        question = questions["decision"]
+        options = _choice_keys(question)
+        seen_questions.append({"options": options, "question": question})
+        requested = next(choices)
+        choice = requested or next(key for key in options if not key.startswith("__"))
+        return {
+            "status": "answered",
+            "provider": "test-provider",
+            "model": "test-model",
+            "answers": {"decision": {"type": "choice", "choice": choice}},
+            "response_receipt": {"body_sha256": f"response-{len(seen_questions)}"},
+        }
+
+    result = PlanningRuntime(tmp_path / "history", provider=provider).run(
+        config,
+        output_root=tmp_path / "run",
+        mode="live",
+        connection_options=[
+            {
+                "connection_id": "bath-edge-to-saltford",
+                "origin_place_id": "bath-edge",
+                "destination_place_id": "saltford",
+                "current_or_future": "future",
+            }
+        ],
+    )
+
+    assert result.state["connection_intents"][0]["connection_id"] == "bath-edge-to-saltford"
+    assert result.state["selected_alignments"]
+    assert len(seen_questions) >= 2
+    assert "bath-edge-to-saltford" in seen_questions[0]["options"]
+    second_options = seen_questions[1]["options"]
+    assert second_options
+    assert len(second_options) < len(result.problem["candidates"])
+    assert all(
+        option.startswith("planning-candidate-") or option.startswith("__")
+        for option in second_options
+    )
+    store = HistoryStore(tmp_path / "history")
+    request_packets: list[dict[str, object]] = []
+    event_id = result.history_event_id
+    while event_id is not None:
+        event = store.get(event_id)
+        if isinstance(event, dict) and event.get("event_kind") == "attempt":
+            request = event.get("request")
+            if isinstance(request, dict):
+                request_packets.append(request)
+        event_id = event.get("timeline_parent_id") if isinstance(event, dict) else None
+    request_packets.reverse()
+    assert request_packets[0]["question_kind"] == "connection"
+    assert request_packets[1]["question_kind"] == "alignment"
+    assert len(request_packets[1]["candidate_refs"]) < len(result.problem["candidates"])
+
+    assert len(seen_packets) == len(request_packets)
+    alignment_packet = seen_packets[1]
+    assert alignment_packet["schema_version"] == "planning-task-packet/v1"
+    assert "selected_alignments" not in alignment_packet
+    assert alignment_packet["input_binding"] == result.problem["binding"]
+    assert alignment_packet["named_endpoints"]
+    assert alignment_packet["brief"] == result.problem["brief"]
+    packet_candidate_ids = {
+        str(item["candidate_id"])
+        for item in alignment_packet["candidates"]
+        if isinstance(item, dict) and item.get("candidate_id")
+    }
+    offered_candidate_ids = {option for option in second_options if not option.startswith("__")}
+    unrelated_candidate_ids = {
+        str(item["candidate_id"])
+        for item in result.problem["candidates"]
+        if isinstance(item, dict)
+        and item.get("candidate_id")
+        and item.get("connection_id") != "bath-edge-to-saltford"
+    }
+    assert packet_candidate_ids == offered_candidate_ids
+    assert packet_candidate_ids.isdisjoint(unrelated_candidate_ids)
+    assert all(
+        "graph_path" not in str(value) for value in seen_questions[1]["question"].criteria.values()
+    )
+
+    store = HistoryStore(tmp_path / "history")
+    for packet, request in zip(seen_packets, request_packets, strict=True):
+        assert request["task_packet"] == packet
+        packet_ref = request["task_packet_ref"]
+        assert isinstance(packet_ref, str)
+        assert store.get(packet_ref) == packet
+
+
+def test_configured_specialist_proposal_is_engine_validated_and_replayed(tmp_path: Path) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    calls: list[object] = []
+
+    def specialist(task: DecisionTask) -> dict[str, object]:
+        calls.append(task)
+        candidates = task.candidates
+        candidate = next(item for item in candidates if isinstance(item, dict))
+        return {
+            "provider": "configured-specialist",
+            "model": "specialist-model",
+            "usage": {"input_tokens": 2, "output_tokens": 1},
+            "proposal": {
+                "operation": {
+                    "kind": "select-alignment",
+                    "payload": {
+                        "candidate_id": candidate["candidate_id"],
+                        "obligation_id": candidate.get("obligation_id"),
+                    },
+                }
+            },
+            "response_receipt": {"body_sha256": "specialist-response"},
+        }
+
+    router = StaticCapabilityRouter(
+        (
+            CapabilityRecord(
+                capability_id="configured-specialist",
+                kind=CapabilityKind.SPECIALIST,
+                operations=("select-alignment",),
+                judgment_forms=("structured-proposal",),
+                operation_scopes=("select-alignment",),
+                provider="test-specialist",
+                adapter=specialist,
+            ),
+        )
+    )
+    root = tmp_path / "history"
+    result = PlanningRuntime(root, router=router).run(
+        config,
+        output_root=tmp_path / "run",
+        mode="live",
+    )
+
+    assert calls
+    assert result.provider_result["status"] == "answered"
+    assert result.provider_result["model"] == "specialist-model"
+    assert result.state["selected_alignments"]
+    assert result.decision_trace
+    assert {item["decision_class"] for item in result.decision_trace} == {"agent"}
+    history_event = HistoryStore(root).get(result.history_event_id)
+    assert history_event["decision_class"] == "agent"
+    assert HistoryStore(root).verify("main")["valid"] is True
+    replay = PlanningRuntime(
+        root,
+        provider=lambda *_: (_ for _ in ()).throw(AssertionError()),
+    ).replay()
+    assert replay["state"] == result.state
+    assert {item["decision_class"] for item in replay["decision_trace"]} == {"agent"}
+
+
+def test_unconfigured_specialist_is_explicitly_unavailable(tmp_path: Path) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    router = StaticCapabilityRouter(
+        (
+            CapabilityRecord(
+                capability_id="missing-specialist",
+                kind=CapabilityKind.SPECIALIST,
+                judgment_forms=("structured-proposal",),
+                provider="missing-provider",
+                adapter=None,
+            ),
+        )
+    )
+
+    result = PlanningRuntime(tmp_path / "history", router=router).run(
+        config,
+        output_root=tmp_path / "run",
+        mode="live",
+    )
+
+    assert result.status == "reviewable-incomplete"
+    assert result.provider_result["status"] == "unavailable"
+    assert result.provider_result["failure_class"] == "no-capable-provider"

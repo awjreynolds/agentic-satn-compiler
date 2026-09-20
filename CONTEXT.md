@@ -1212,6 +1212,10 @@ _Avoid_: mutated adopted release, automatic supersession, adopted monitoring upd
 
 ## Experimental network planning
 
+**Decision Class**:
+The origin of a planning decision: mechanical for deterministic rules and computation, classifier for a Jev typed judgment, or agent for a configured reasoning or specialist proposal. It is independent of compiler stage; mechanical validation does not change the origin of the proposal it checks.
+_Avoid_: compiler phase, confidence level, authority rank
+
 **Planning Problem**:
 The admitted evidence, places, source corridors and obligations governed by one explicit planning brief. An expansion creates a newly bound problem without rewriting the evidence of an earlier proposal.
 _Avoid_: model prompt, selected network, mutable evidence pool

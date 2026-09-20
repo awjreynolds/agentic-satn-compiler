@@ -18,6 +18,7 @@ from satn.models import AreaDefinition
 from satn.parallel_reduction_corpus_cli import corpus_app
 from satn.pipeline import compile as compile_satn
 from satn.pipeline import compile_ea_recovery_candidate
+from satn.planning_cli import plan_app
 from satn.proving_cli import proving_app
 from satn.sources import snapshot as create_snapshot
 
@@ -26,6 +27,7 @@ app.add_typer(evidence_app, name="evidence")
 app.add_typer(scenario_app, name="scenario")
 app.add_typer(corpus_app, name="corpus")
 app.add_typer(proving_app, name="proving")
+app.add_typer(plan_app, name="plan")
 LOGGER = logging.getLogger(__name__)
 
 
@@ -52,9 +54,7 @@ def _worker_count(value: str) -> str | int:
             "expected auto or a positive integer", param_hint="--workers"
         ) from error
     if workers < 1:
-        raise typer.BadParameter(
-            "expected auto or a positive integer", param_hint="--workers"
-        )
+        raise typer.BadParameter("expected auto or a positive integer", param_hint="--workers")
     return workers
 
 
@@ -85,8 +85,7 @@ def compile_command(
         typer.Option(
             "--decision-ledger",
             help=(
-                "JSON ledger containing only request, fingerprint and offered-choice "
-                "identifiers."
+                "JSON ledger containing only request, fingerprint and offered-choice identifiers."
             ),
         ),
     ] = None,
@@ -131,8 +130,7 @@ def compile_command(
         typer.Option(
             "--approved-external-publication-destination",
             help=(
-                "Explicitly permit this exact publication destination outside the "
-                "workspace root."
+                "Explicitly permit this exact publication destination outside the workspace root."
             ),
         ),
     ] = None,
@@ -141,8 +139,7 @@ def compile_command(
         typer.Option(
             "--expected-prior-run-fingerprint",
             help=(
-                "Authorize replacement of a pre-marker output with this exact prior "
-                "fingerprint."
+                "Authorize replacement of a pre-marker output with this exact prior fingerprint."
             ),
         ),
     ] = None,
