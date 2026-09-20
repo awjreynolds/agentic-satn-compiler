@@ -416,6 +416,9 @@ def test_area_deployment_progressive_loading_recovers_without_losing_data(
             timeout=BROWSER_TIMEOUT_MS,
         )
 
+        page.locator("#layer-controls details").nth(1).locator("summary").click(
+            timeout=BROWSER_TIMEOUT_MS
+        )
         page.locator("#layer-urban-spines").click(timeout=BROWSER_TIMEOUT_MS)
         page.wait_for_function(
             "!document.querySelector('#deployment-status').textContent."
@@ -423,6 +426,9 @@ def test_area_deployment_progressive_loading_recovers_without_losing_data(
             timeout=BROWSER_TIMEOUT_MS,
         )
         assert "Layer sizes loaded" in page.locator("#deployment-status").inner_text(
+            timeout=BROWSER_TIMEOUT_MS
+        )
+        page.locator("#layer-controls details").nth(2).locator("summary").click(
             timeout=BROWSER_TIMEOUT_MS
         )
         school_label = page.locator("#layer-schools").locator("xpath=..").inner_text()
@@ -514,6 +520,9 @@ def test_area_deployment_progressive_loading_recovers_without_losing_data(
         assert all(server.request_counts[f"/{path}"] == 0 for path in healthcare_paths)
 
         page.evaluate("window.SATN_REVIEW_MAP.jumpTo({zoom: 11})")
+        page.locator("#layer-controls details").nth(3).locator("summary").click(
+            timeout=BROWSER_TIMEOUT_MS
+        )
         page.locator("#layer-gradient-sections").click(timeout=BROWSER_TIMEOUT_MS)
         page.wait_for_function(
             "window.SATN_REVIEW_MAP.getSource('topography')._data.features.some("
@@ -601,7 +610,7 @@ def test_area_deployment_progressive_loading_recovers_without_losing_data(
             "navigator.serviceWorker.controller !== null", timeout=BROWSER_TIMEOUT_MS
         )
         page.wait_for_function(
-            "async () => Boolean(await caches.match('network.geojson'))",
+            "async () => Boolean(await caches.match('network.geojson.gz'))",
             timeout=BROWSER_TIMEOUT_MS,
         )
         context.set_offline(True)

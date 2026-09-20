@@ -15,10 +15,10 @@ source:
   snapshot_dir: ../../data/snapshots
   # Recovery starts from the immutable v10 benchmark and promotes a new
   # bounded fixed-point chain without mutating that historical core.
-  snapshot_id: "weca-classification-elevation-2026-07-31-v14-fp-20260731T092920522968Z-02-fp-20260809T123804416841Z-01-fp-20260819T011108973323Z-01"
+  snapshot_id: "weca-classification-elevation-2026-07-31-v14-fp-20260731T092920522968Z-02-fp-20260809T123804416841Z-01-connected-context-20260906-envelope-02"
   retained_core_source:
-    snapshot_id: "weca-classification-elevation-2026-07-31-v14-fp-20260731T092920522968Z-02-fp-20260809T123804416841Z-01"
-    manifest_sha256: "372632648c7afede1b9274547fb03f635cbb2d7d85862256edd8ca3f92a9aa96"
+    snapshot_id: "weca-classification-elevation-2026-07-31-v14-fp-20260731T092920522968Z-02-fp-20260809T123804416841Z-01-fp-20260819T011108973323Z-01"
+    manifest_sha256: "8c06135baa56a5dcb7d1ed7acf6ac309cbeeae8d09840b6a4ad85740cc123024"
   network_type: bike
   overpass_url: https://overpass-api.de/api
   osm_timeout_seconds: 600
@@ -28,7 +28,7 @@ source:
   urban_place_types: [city, town, suburb, quarter, neighbourhood]
   urban_scope_buffer_km: 2
   official_road_classification:
-    path: ../../data/governed/weca-os-open-roads-2026-04-07.geojson
+    path: ../../data/governed/weca-os-open-roads-2026-04-07-connected-context-2026-09-06.geojson
     source_id: os-open-roads-2026-04-07
     effective_date: 2026-04-07
     licence: Open Government Licence v3.0

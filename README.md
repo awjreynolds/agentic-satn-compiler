@@ -3,11 +3,27 @@
 Build an inspectable Strategic Active Travel Network from governed evidence, explicit
 planning rules and bounded human or AI choices.
 
-The compiler's product is an **effective strategic network**: one reviewable,
-versioned Backbone-and-Access result with Strategic Spines, bounded access,
-Cross-Spine Connectors, named Places and explicit gaps. The default public map opens
-on Strategic Network + Places; evidence inventories and diagnostics are available when
-the reviewer needs them.
+The current publication step is a **source baseline**: A roads, mapped cycleways
+and cycle routes, current/former National Cycle Network routes, bridleways and
+former railway corridors, with their source classifications. It supplies evidence
+for a separately drawn strategic network. Village connections, route selection and delivery
+prioritisation are deferred. The fuller compiler workflow described below is
+retained for later stages.
+
+Build the WECA, Wiltshire and West Midlands source maps from the existing local
+snapshots, then check that all three render:
+
+```sh
+.venv/bin/python scripts/build_source_baseline_maps.py
+.venv/bin/python scripts/validate_pages_rendering.py build/source-baseline-pages
+```
+
+This publication path reads the source linework directly and does not run the
+network compiler. Outputs are written to `build/source-baseline-pages`.
+
+Supplemental former-railway extracts are kept beside each Area Definition in
+`source-corridors.geojson`, including the OpenStreetMap query and retrieval date.
+The builder clips this evidence to the area boundary.
 
 > Experimental proof of concept — not an adopted plan, scheme design, safety audit,
 > legal-access finding or investment case.

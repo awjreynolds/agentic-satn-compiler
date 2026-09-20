@@ -80,6 +80,7 @@ from satn.osm_active_travel import OSM_ACTIVE_TRAVEL_WAY_TAGS
 from satn.remote_endpoints import open_configured_https
 from satn.settlement import assess_community_urban_eligibility
 from satn.streaming_geojson import iter_geojson_features
+from satn.tags import canonical_tag_values
 
 if TYPE_CHECKING:
     from satn.ea_snapshot_recovery import ValidatedEARecoveryParent
@@ -474,7 +475,9 @@ def _validate_existing_lineaged_target(
             raise ValueError("retained-core lineage target changed retained manifest identity")
 
     files = manifest.get("files")
-    if not isinstance(files, list) or ELEVATION_EVIDENCE_FILENAME not in files:
+    if national_elevation is not None and (
+        not isinstance(files, list) or ELEVATION_EVIDENCE_FILENAME not in files
+    ):
         raise ValueError("retained-core lineage target has no completed elevation evidence")
 
 
@@ -745,9 +748,6 @@ def _materialise_snapshot(
         lineaged_source = config.source.retained_core_source
         if lineaged_source is not None and not retain_core:
             raise ValueError("retained-core source lineage requires --retain-core")
-        if retain_core and config.source.national_elevation is None:
-            raise ValueError("retained-core snapshot augmentation requires national elevation")
-
         if ea_recovery_parent is not None:
             if not retain_core or not stage_only:
                 raise ValueError("EA recovery parent capability requires staged retained-core mode")
@@ -839,8 +839,9 @@ def _materialise_snapshot(
                     regenerated_governed_files.add(OBSERVED_THROUGH_TRAFFIC_FILENAME)
                     if OBSERVED_THROUGH_TRAFFIC_FILENAME not in files:
                         files.append(OBSERVED_THROUGH_TRAFFIC_FILENAME)
-                _snapshot_national_elevation(config, temporary)
-                files.append(ELEVATION_EVIDENCE_FILENAME)
+                if config.source.national_elevation is not None:
+                    _snapshot_national_elevation(config, temporary)
+                    files.append(ELEVATION_EVIDENCE_FILENAME)
                 source_identifier = str(retained_manifest["source_identifier"])
                 attribution = str(retained_manifest["attribution"])
             elif config.source.kind == "fixture":
@@ -1220,7 +1221,15 @@ def _snapshot_official_road_classification(
     boundary = gpd.read_file(temporary / "boundary.geojson")
     if boundary.crs is None or boundary.empty:
         raise ValueError("snapshot boundary is required to select official road classification")
-    governed_area = boundary.to_crs(source.crs).geometry.union_all()
+    boundary_metric = boundary.to_crs(27700).geometry.union_all()
+    governed_area = (
+        gpd.GeoSeries(
+            [boundary_metric.buffer(config.source.external_buffer_km * 1000)],
+            crs=27700,
+        )
+        .to_crs(source.crs)
+        .iloc[0]
+    )
     if governed_area.is_empty or not governed_area.is_valid:
         raise ValueError("snapshot boundary is invalid for official road classification")
     source = source[source.geometry.intersects(governed_area)]
@@ -2593,6 +2602,8 @@ def _road_classification_manifest(
         "contract": "satn-official-road-boundary-selection/v1",
         "predicate": "intersects",
         "geometry_treatment": "retain-whole-source-feature",
+        "selection_envelope": "boundary-plus-external-buffer",
+        "external_buffer_km": config.source.external_buffer_km,
         "selected_feature_count": len(gpd.read_file(path)),
         "source_export_sha256": sha256_file(governed.path),
         "boundary_file": "boundary.geojson",
@@ -3162,6 +3173,7 @@ def _validate_snapshot(
     legacy_nan_property_key: str | None = None,
     expected_legacy_nan_count: int | None = None,
     normalization_report: dict[str, int] | None = None,
+    verify_files: bool = True,
 ) -> None:
     manifest_candidate = path / "snapshot.json"
     if not manifest_candidate.exists():
@@ -3226,9 +3238,10 @@ def _validate_snapshot(
         ):
             raise ValueError("invalid snapshot: elevation evidence provenance mismatch")
     # All sibling paths have now passed containment, regular-file and duplicate
-    # checks.  Only after that first pass is a retained byte read or hashed.
+    # checks.  GeoJSON members are structurally validated on every load;
+    # retained-byte hashes are checked only by explicit validation callers.
     for filename, file_path in files.items():
-        if sha256_file(file_path) != file_hashes[filename]:
+        if verify_files and sha256_file(file_path) != file_hashes[filename]:
             raise ValueError(f"invalid snapshot: {filename} content hash mismatch")
         if file_path.suffix == ".geojson":
             _validate_geojson_file(
@@ -3250,14 +3263,15 @@ def _validate_snapshot(
         and legacy_nan_property_key not in normalization_report
     ):
         raise ValueError("invalid snapshot: legacy GeoJSON NaN normalization proof is missing")
-    for filename, file_path in provenance.items():
-        if sha256_file(file_path) != provenance_hashes[filename]:
-            raise ValueError(f"invalid snapshot: {filename} provenance hash mismatch")
+    if verify_files:
+        for filename, file_path in provenance.items():
+            if sha256_file(file_path) != provenance_hashes[filename]:
+                raise ValueError(f"invalid snapshot: {filename} provenance hash mismatch")
 
 
 def load_snapshot(config: AreaConfig) -> dict[str, gpd.GeoDataFrame]:
     path = config.source.snapshot_dir / config.source.snapshot_id
-    _validate_snapshot(path)
+    _validate_snapshot(path, verify_files=False)
     return _read_snapshot_frames(path)
 
 
@@ -3357,11 +3371,22 @@ def _merge_snapshot_active_travel_context(
 
 
 def _osm_elevation_corroboration(network: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    def json_safe_tag(value: object) -> str | list[str] | None:
+        values = canonical_tag_values(value)
+        if not values:
+            return None
+        return values[0] if len(values) == 1 else list(values)
+
     rows: list[dict[str, object]] = []
     for index, feature in network.iterrows():
         elevation = feature.get("ele")
         incline = feature.get("incline")
-        if not str(elevation or "").strip() and not str(incline or "").strip():
+        safe_elevation = json_safe_tag(elevation)
+        safe_incline = json_safe_tag(incline)
+        # OSM tags can round-trip from GeoJSON as scalars, lists, or ndarrays.
+        # Canonical scalar/list values keep the corroborating row JSON-safe while
+        # retaining contradictory or otherwise meaningful multivalues.
+        if safe_elevation is None and safe_incline is None:
             continue
         source_id = _source_identifier(feature, index)
         discriminator = hashlib.sha256(
@@ -3379,8 +3404,8 @@ def _osm_elevation_corroboration(network: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
             {
                 "corroboration_id": f"osm-elevation-{discriminator}",
                 "source_id": source_id,
-                "osm_elevation": elevation,
-                "osm_incline": incline,
+                "osm_elevation": safe_elevation,
+                "osm_incline": safe_incline,
                 "evidence_role": "corroborating-only",
                 "geometry": feature.geometry,
             }

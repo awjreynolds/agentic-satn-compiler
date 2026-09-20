@@ -72,12 +72,7 @@ def test_compiler_dependency_change_invalidates_fixture_publication_reuse(
 ) -> None:
     config = prepared_config(tmp_path)
     first = compile(config)
-    root = copied_compiler_tree(tmp_path)
-    compiler_path = root / "compiler.py"
-    compiler_path.write_bytes(
-        compiler_path.read_bytes() + b"\n# dependency-manifest regression probe\n"
-    )
-    monkeypatch.setattr(dependencies, "_package_root", lambda: root)
+    monkeypatch.setattr(dependencies, "COMPILER_CACHE_REVISION", "poc-test-change")
 
     changed = compile(config)
 
@@ -102,9 +97,7 @@ def test_review_map_change_refreshes_publication_without_changing_semantic_run_i
     root = copied_compiler_tree(tmp_path)
     review_map = root / "assets" / "review-map.js"
     probe = b"\n/* dependency-manifest regression probe */\n"
-    review_map.write_bytes(
-        review_map.read_bytes() + probe
-    )
+    review_map.write_bytes(review_map.read_bytes() + probe)
     review_template = root / "assets" / "review-map.html"
     template_probe = '<meta name="presentation-probe" content="template-refreshed">'
     review_template.write_text(
@@ -127,8 +120,7 @@ def test_review_map_change_refreshes_publication_without_changing_semantic_run_i
     assert refreshed.metadata["presentation_republished"] is True
     assert refreshed.metadata["presentation_elapsed_seconds"] < 60
     assert {
-        name: refreshed.artifacts[name].read_bytes()
-        for name in semantic_bytes
+        name: refreshed.artifacts[name].read_bytes() for name in semantic_bytes
     } == semantic_bytes
     assert published_script.endswith(probe)
     assert template_probe in refreshed.artifacts["review_map"].read_text(encoding="utf-8")
@@ -156,8 +148,7 @@ def test_targeted_presentation_rebuild_does_not_recompile_semantic_network(
     assert refreshed.metadata["semantic_compilation_reused"] is True
     assert refreshed.metadata["presentation_republished"] is True
     assert {
-        name: refreshed.artifacts[name].read_bytes()
-        for name in semantic_bytes
+        name: refreshed.artifacts[name].read_bytes() for name in semantic_bytes
     } == semantic_bytes
 
 
@@ -178,12 +169,9 @@ def test_targeted_publication_rebuild_reuses_validated_semantic_network_without_
     assert republished.metadata["semantic_compilation_reused"] is True
     assert republished.metadata["presentation_republished"] is True
     assert {
-        name: republished.artifacts[name].read_bytes()
-        for name in semantic_bytes
+        name: republished.artifacts[name].read_bytes() for name in semantic_bytes
     } == semantic_bytes
-    report = json.loads(
-        Path(republished.metadata["compilation_run_report"]).read_text()
-    )
+    report = json.loads(Path(republished.metadata["compilation_run_report"]).read_text())
     assert [event["kind"] for event in report["artifacts"]] == [
         "edge-enrichments",
         "routing-assembly",
@@ -191,12 +179,8 @@ def test_targeted_publication_rebuild_reuses_validated_semantic_network_without_
         "presentation",
         "publication",
     ]
-    assert report["artifacts"][0]["reason"] == (
-        "presentation-republish-edge-enrichment-skipped"
-    )
-    assert report["artifacts"][1]["reason"] == (
-        "presentation-republish-routing-skipped"
-    )
+    assert report["artifacts"][0]["reason"] == ("presentation-republish-edge-enrichment-skipped")
+    assert report["artifacts"][1]["reason"] == ("presentation-republish-routing-skipped")
     assert report["artifacts"][3]["reason"] == "forced-stage"
 
 
@@ -217,9 +201,10 @@ def test_targeted_scenario_rebuild_reuses_edge_and_route_but_rebuilds_semantic(
     assert rebuilt.metadata["edge_enrichment_disposition"] == "hit"
     assert rebuilt.metadata["routing_bundle_disposition"] == "hit"
     assert rebuilt.metadata["semantic_bundle_disposition"] == "build"
-    assert rebuilt.metadata["routing_bundle_artifact_id"] == first.metadata[
-        "routing_bundle_artifact_id"
-    ]
+    assert (
+        rebuilt.metadata["routing_bundle_artifact_id"]
+        == first.metadata["routing_bundle_artifact_id"]
+    )
 
 
 def test_targeted_edge_report_records_forced_descendants_in_stable_order(
@@ -235,9 +220,7 @@ def test_targeted_edge_report_records_forced_descendants_in_stable_order(
         artifact_root=artifact_root,
         rebuild_stages=("edge-enrichments",),
     )
-    report = json.loads(
-        Path(rebuilt.metadata["compilation_run_report"]).read_text()
-    )
+    report = json.loads(Path(rebuilt.metadata["compilation_run_report"]).read_text())
     events = report["artifacts"]
 
     assert [event["kind"] for event in events] == [
@@ -385,11 +368,10 @@ def test_spine_access_preparation_fingerprint_directly_changes_final_run_id(
     config.compilation.full = True
     changed = compile(config)
 
-    assert first.metadata["spine_access_candidate_preparation"][
-        "preparation_fingerprint"
-    ] != changed.metadata["spine_access_candidate_preparation"][
-        "preparation_fingerprint"
-    ]
+    assert (
+        first.metadata["spine_access_candidate_preparation"]["preparation_fingerprint"]
+        != changed.metadata["spine_access_candidate_preparation"]["preparation_fingerprint"]
+    )
     assert changed.run_id != first.run_id
 
 

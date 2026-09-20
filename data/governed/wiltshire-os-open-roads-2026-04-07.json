@@ -1,0 +1,26 @@
+{
+  "schema_version": "satn-governed-open-roads-extract/v1",
+  "product": "OS Open Roads",
+  "source_id": "os-open-roads-2026-04-07",
+  "effective_date": "2026-04-07",
+  "licence": "Open Government Licence v3.0",
+  "attribution": "Contains OS data © Crown copyright and database rights 2026.",
+  "download_url": "https://api.os.uk/downloads/v1/products/OpenRoads/downloads?area=GB&format=GeoPackage&redirect",
+  "source_archive": "oproad_gpkg_gb.zip",
+  "source_archive_size_bytes": 1016021285,
+  "source_archive_md5": "2ee5d30899c4a44df321e5e1a66989ac",
+  "source_layer": "road_link",
+  "source_crs": "EPSG:27700",
+  "target_crs": "EPSG:4326",
+  "boundary_snapshot_id": "wiltshire-osm-2026-07-24-ons-2025",
+  "boundary_file": "boundary.geojson",
+  "boundary_sha256": "29099b70d127c2c6c94cfe010c0271e453d4e29611c08890d718e61032a81e7f",
+  "selection": {
+    "predicate": "intersects",
+    "geometry_treatment": "retain-whole-source-feature",
+    "selected_feature_count": 42398
+  },
+  "extract_file": "wiltshire-os-open-roads-2026-04-07.geojson",
+  "extract_size_bytes": 22743504,
+  "extract_sha256": "2a7a2c71b5e438ab8b6ab914504fd55e95a46f842efdbc36632cdad2b9f88136"
+}

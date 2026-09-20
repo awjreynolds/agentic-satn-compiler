@@ -62,7 +62,12 @@ def test_public_compile_carries_one_effective_strategic_fingerprint(tmp_path) ->
         for feature in reviewable["features"]
     )
     pdf = PdfReader(str(result.artifacts["pdf"]))
-    assert fingerprint in "".join(page.extract_text() or "" for page in pdf.pages)
+    text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+    assert fingerprint in text
+    assert "Strategic Main Network" in text
+    assert "Authoritative edge register" not in text
+    assert "Sources:" in text
+    validate_publication(result.output_dir, config)
 
 
 def test_publication_validation_rejects_missing_strategic_sidecar(tmp_path) -> None:

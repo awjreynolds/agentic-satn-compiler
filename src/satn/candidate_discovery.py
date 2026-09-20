@@ -499,7 +499,7 @@ class CorridorObligationDisposition:
 @dataclass(frozen=True)
 class CandidateSetGapEvidence:
     obligation_id: str
-    endpoints: tuple[str, str]
+    endpoints: tuple[str, ...]
     reason: str
     search_diagnostic_ids: tuple[str, ...]
 

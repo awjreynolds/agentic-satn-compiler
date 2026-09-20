@@ -1,0 +1,65 @@
+# Seven full-voting constituent authorities of the West Midlands Combined
+# Authority. The reduced-voting member authorities are intentionally outside
+# this deployment boundary; see deployments/wmca/README.md.
+area_id: west-midlands-combined-authority
+area_name: West Midlands Combined Authority constituent area
+deployment_id: wmca
+source:
+  kind: osm
+  source_identifier: wmca-full-voting-constituents-2026-09-06
+  source_attribution: "OpenStreetMap contributors (ODbL); Walk Wheel Cycle Trust National Cycle Network public data"
+  # OSM administrative-area names are used so the acquisition adapter fetches
+  # the authority polygons rather than council-office points.
+  osm_place_queries:
+    - Birmingham, England, United Kingdom
+    - Coventry, England, United Kingdom
+    - Metropolitan Borough of Dudley, England, United Kingdom
+    - Sandwell, England, United Kingdom
+    - Metropolitan Borough of Solihull, England, United Kingdom
+    - Walsall, England, United Kingdom
+    - Wolverhampton, England, United Kingdom
+  ncn_feature_service_url: https://services5.arcgis.com/1ZHcUS1lwPTg4ms0/arcgis/rest/services/National_Cycle_Network_Public/FeatureServer
+  reclassified_ncn_feature_service_url: https://services5.arcgis.com/1ZHcUS1lwPTg4ms0/arcgis/rest/services/Reclassified_Routes_Public/FeatureServer
+  snapshot_dir: ../../data/snapshots
+  # Target name for the first acquisition; the snapshot is not claimed to
+  # exist until `satn snapshot` completes and validates it.
+  snapshot_id: "wmca-osm-2026-09-06-constituent-authorities-open-roads-2026-04-07-connected-context-20260906"
+  retained_core_source:
+    snapshot_id: "wmca-osm-2026-09-06-constituent-authorities-open-roads-2026-04-07"
+    manifest_sha256: e76cf5fe6dbf508207493a032ab9915aab9ec3c44b2a5514fc72f2dd39392b83
+  network_type: bike
+  overpass_url: https://overpass-api.de/api
+  external_buffer_km: 15
+  internal_portal_threshold_km: 1
+  community_place_types: [town, village, suburb, quarter, neighbourhood]
+  urban_place_types: [city, town, suburb, quarter, neighbourhood]
+  urban_scope_buffer_km: 2
+  official_road_classification:
+    path: ../../data/governed/wmca-os-open-roads-2026-04-07-connected-context-2026-09-06.geojson
+    source_id: os-open-roads-2026-04-07
+    effective_date: 2026-04-07
+    licence: Open Government Licence v3.0
+    attribution: "Contains OS data © Crown copyright and database rights 2026."
+compilation:
+  max_connection_km: 15
+  criteria_version: "1"
+  agent:
+    provider: fake
+    response_mode: direct-runtime
+    review_statuses: [amber, red]
+  network_selection:
+    profile_id: wmca-network-selection-v1
+    candidate_source_precedence:
+      - verified-existing-asset
+      - a-road-corridor
+      - b-road-corridor
+      - other-routable
+atm:
+  enabled: false
+  mode: blind
+  redistribution_permitted: false
+publication:
+  output_dir: ../../build/compiled/wmca
+  title: West Midlands Strategic Active Travel Network Review
+  pdf_page_size: A2
+  audience: public

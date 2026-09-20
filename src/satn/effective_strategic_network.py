@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field, fields, is_dataclass
 from enum import StrEnum
 from itertools import pairwise
@@ -24,7 +24,7 @@ from shapely.errors import ShapelyError
 from shapely.geometry import LineString, Point
 from shapely.ops import substring
 
-from satn.alignment_selection import admit_candidate_set
+from satn.alignment_selection import AlignmentCandidateInput, admit_candidate_set
 from satn.candidate_discovery import (
     AssessedCandidateRecord,
     CandidateDiscoveryResult,
@@ -35,7 +35,11 @@ from satn.candidate_discovery import (
     EvidenceRequest,
 )
 from satn.content_identity import canonical_network_geometry_fingerprint
-from satn.network_selection import InterventionState, ReuseFirstCandidateClass
+from satn.network_selection import (
+    CandidateSourceClass,
+    InterventionState,
+    ReuseFirstCandidateClass,
+)
 from satn.planning_graph import (
     GraphComponentRecord,
     GraphDiagnostic,
@@ -44,11 +48,17 @@ from satn.planning_graph import (
     PlanningGraphSnapshot,
     PlanningNodeRecord,
 )
+from satn.route_source_facts import (
+    RouteSourceFactIndexes,
+    build_route_source_fact_indexes,
+    derive_route_source_facts,
+)
 from satn.routing import (
     RoadGraph,
     _coordinate_id,
     _directed_edge_identity,
     _present,
+    _source_edge_id,
     _truthy,
 )
 from satn.strategic_corridors import StrategicCorridorPreparationResult
@@ -151,16 +161,6 @@ def _canonical(value: object) -> object:
     return value
 
 
-def _source_edge_id(row: object, index: object) -> str:
-    if "osmid" in row and _present(row.get("osmid")):
-        return str(row.get("osmid"))
-    if "source_id" in row and _present(row.get("source_id")):
-        return str(row.get("source_id"))
-    if "edge_id" in row and _present(row.get("edge_id")):
-        return str(row.get("edge_id"))
-    return str(index)
-
-
 def _component_id(kind: str, nodes: Iterable[str]) -> str:
     return f"{kind}-{_fingerprint((kind, tuple(sorted(nodes))))[:20]}"
 
@@ -245,6 +245,34 @@ def planning_graph_from_compiler_edges(
                 else None,
             }
         )
+        if not _present(source_row.get("u")) and drafts[-1]["oneway"] is not True:
+            reverse_geometry = LineString(list(geometry.coords)[::-1])
+            reverse_edge_id = _directed_edge_identity(
+                source_edge_id,
+                end,
+                start,
+                reverse_geometry,
+                duplicate_source_id=True,
+                crs="EPSG:27700",
+            )
+            if reverse_edge_id not in seen:
+                seen.add(reverse_edge_id)
+                directed.add_edge(end, start, edge_id=reverse_edge_id)
+                drafts.append(
+                    {
+                        "edge_id": reverse_edge_id,
+                        "source_edge_id": source_edge_id,
+                        "start": end,
+                        "end": start,
+                        "geometry": reverse_geometry,
+                        "highway": _scalar(source_row.get("highway")),
+                        "ref": _scalar(source_row.get("ref")),
+                        "access": _scalar(source_row.get("access")),
+                        "bicycle": _scalar(source_row.get("bicycle")),
+                        "foot": _scalar(source_row.get("foot")),
+                        "oneway": drafts[-1]["oneway"],
+                    }
+                )
     weak_by_node: dict[str, str] = {}
     weak_components: list[GraphComponentRecord] = []
     for nodes in sorted(
@@ -369,58 +397,93 @@ def _wkt_coords(value: str) -> tuple[tuple[float, float], ...]:
     return tuple((float(x), float(y)) for x, y in geometry.coords)
 
 
-def _facts(candidate: object, graph: PlanningGraphSnapshot, edge_ids: tuple[str, ...]):
-    by_id = {item.directed_edge_id: item for item in graph.edge_records}
-    edges = tuple(by_id[item] for item in edge_ids)
-    highways = {str(item.highway or "").lower() for item in edges}
-    refs = {str(item.ref or "").upper() for item in edges}
-    ncn = any("ncn" in basis for basis in getattr(candidate, "alignment_bases", ()))
+def _facts(
+    candidate: object,
+    graph: PlanningGraphSnapshot,
+    edge_ids: tuple[str, ...],
+    source_precedence: Sequence[CandidateSourceClass | str] = (),
+    *,
+    source_fact_indexes: RouteSourceFactIndexes | None = None,
+):
+    """Return legacy edge-derived facts while leaving vNext facts immutable."""
+
     explicit_reuse = getattr(candidate, "reuse_class", None)
     explicit_intervention = getattr(candidate, "intervention_state", None)
     explicit_bases = tuple(getattr(candidate, "alignment_bases", ()))
-    source_class = str(getattr(getattr(candidate, "source_class", None), "value", ""))
-    if explicit_bases:
-        bases = explicit_bases
-    elif ncn or source_class == "verified-existing-asset":
-        bases = ("current-ncn",)
-    elif "cycleway" in highways:
-        bases = ("mapped-cycleway",)
-    elif highways & {"path", "footway", "track"}:
-        bases = ("prow-class-unknown",)
-    elif any(value.startswith("A") for value in refs) or source_class == "a-road-corridor":
-        bases = ("a-road",)
-    elif any(value.startswith("B") for value in refs) or source_class == "b-road-corridor":
-        bases = ("b-road",)
-    elif highways & {"residential", "unclassified", "service", "living_street"}:
-        bases = ("local-connector",)
-    else:
-        bases = ("proposed-new-corridor",)
-    if explicit_reuse is not None:
-        reuse = explicit_reuse
-    elif source_class == "verified-existing-asset" or "cycleway" in highways:
+    explicit_primary = getattr(candidate, "primary_alignment_basis", None)
+    candidate_source = getattr(candidate, "source_class", None)
+
+    # vNext candidate sets carry complete, governed facts.  In particular, do
+    # not replace their explicit primary basis with tuple ordering here.
+    if not source_precedence:
+        return (
+            explicit_reuse,
+            explicit_intervention,
+            explicit_bases,
+            explicit_primary,
+            candidate_source,
+        )
+
+    facts = derive_route_source_facts(
+        edge_ids,
+        graph,
+        source_precedence,
+        source_fact_indexes=source_fact_indexes,
+    )
+    bases = tuple(sorted(set((*facts.alignment_bases, *explicit_bases))))
+    if not facts.complete:
+        # The legacy record still has to materialise for the review model, but
+        # the helper's unresolved result must not be turned into a guessed
+        # source class or a synthetic primary basis.  Preserve any facts the
+        # record already carried and leave source attribution unchanged.
+        return (
+            explicit_reuse or ReuseFirstCandidateClass.UNKNOWN_OR_CONFLICTING,
+            explicit_intervention or InterventionState.UNDETERMINED,
+            bases or ("proposed-new-corridor",),
+            explicit_primary or (explicit_bases[0] if explicit_bases else bases[0])
+            if (explicit_bases or bases)
+            else "proposed-new-corridor",
+            None,
+        )
+
+    # Legacy candidate records may already carry typed edge evidence while
+    # the planning snapshot intentionally stores only routable edge facts.
+    # Preserve that candidate-level attribution and use the routed facts to
+    # add any observable minority bases and delivery burden.
+    source_class = candidate_source if explicit_bases else facts.generation_source_class
+    if source_class is CandidateSourceClass.VERIFIED_EXISTING_ASSET:
         reuse = ReuseFirstCandidateClass.EXISTING_CYCLE_PROVISION
-    elif highways & {"path", "footway", "track"}:
-        reuse = ReuseFirstCandidateClass.UPGRADEABLE_OFF_CARRIAGEWAY
-    elif "a-road" in bases or "b-road" in bases:
+    elif source_class in {
+        CandidateSourceClass.A_ROAD_CORRIDOR,
+        CandidateSourceClass.B_ROAD_CORRIDOR,
+    }:
         reuse = ReuseFirstCandidateClass.A_ROAD_MAJOR_PROTECTED_INFRASTRUCTURE
+    elif "public-bridleway" in bases or "prow-class-unknown" in bases:
+        reuse = ReuseFirstCandidateClass.UPGRADEABLE_OFF_CARRIAGEWAY
     elif "local-connector" in bases:
         reuse = ReuseFirstCandidateClass.LOW_TRAFFIC_NON_A_ROAD
     else:
         reuse = ReuseFirstCandidateClass.UNKNOWN_OR_CONFLICTING
-    if explicit_intervention is not None:
-        intervention = explicit_intervention
+
+    major_bases = {"a-road", "b-road", "classified-unnumbered-road"}
+    upgrade_bases = {
+        "public-bridleway",
+        "restricted-byway",
+        "public-footpath",
+        "byway-open-to-all-traffic",
+        "prow-class-unknown",
+        "local-connector",
+    }
+    if major_bases.intersection(bases):
+        intervention = InterventionState.PROPOSED_NEW_LINK
+    elif upgrade_bases.intersection(bases):
+        intervention = InterventionState.UPGRADE_REQUIRED
     elif reuse is ReuseFirstCandidateClass.EXISTING_CYCLE_PROVISION:
         intervention = InterventionState.EXISTING_PROVISION
-    elif reuse in {
-        ReuseFirstCandidateClass.UPGRADEABLE_OFF_CARRIAGEWAY,
-        ReuseFirstCandidateClass.LOW_TRAFFIC_NON_A_ROAD,
-    }:
-        intervention = InterventionState.UPGRADE_REQUIRED
-    elif reuse is ReuseFirstCandidateClass.A_ROAD_MAJOR_PROTECTED_INFRASTRUCTURE:
-        intervention = InterventionState.PROPOSED_NEW_LINK
     else:
         intervention = InterventionState.UNDETERMINED
-    return reuse, intervention, tuple(sorted(bases)), bases[0]
+    primary = explicit_primary or facts.primary_alignment_basis
+    return reuse, intervention, bases, primary, source_class
 
 
 def _fingerprint(value: object) -> str:
@@ -433,6 +496,15 @@ def _fingerprint(value: object) -> str:
             allow_nan=False,
         ).encode("utf-8")
     ).hexdigest()
+
+
+@dataclass(frozen=True)
+class _UrbanAttachmentDiagnostics:
+    """Planning diagnostics produced while materialising urban road spines."""
+
+    gaps: tuple[object, ...] = ()
+    diagnostics: tuple[object, ...] = ()
+    fingerprint: str = ""
 
 
 def _scalar(value: object) -> str | None:
@@ -470,6 +542,7 @@ def discovery_from_preparation(
     gaps: list[CandidateSetGapEvidence] = []
     requests: list[EvidenceRequest] = []
     candidate_sets = []
+    source_fact_indexes: RouteSourceFactIndexes | None = None
     for unit in preparation.units:
         valid_candidates = []
         for prepared in unit.candidate_records:
@@ -515,9 +588,25 @@ def discovery_from_preparation(
                     )
                 )
                 continue
-            reuse, intervention, bases, primary = _facts(
-                candidate, graph, prepared.routing_edge_ids
+            if source_fact_indexes is None and unit.candidate_set.candidate_source_precedence:
+                source_fact_indexes = build_route_source_fact_indexes(graph)
+            reuse, intervention, bases, primary, source_class = _facts(
+                candidate,
+                graph,
+                prepared.routing_edge_ids,
+                unit.candidate_set.candidate_source_precedence,
+                source_fact_indexes=source_fact_indexes,
             )
+            candidate_payload = {
+                **candidate.model_dump(mode="python", exclude={"candidate_id"}),
+                "reuse_class": reuse,
+                "intervention_state": intervention,
+                "alignment_bases": bases,
+                "primary_alignment_basis": primary,
+            }
+            if source_class is not None:
+                candidate_payload["source_class"] = source_class
+            candidate = AlignmentCandidateInput.model_validate(candidate_payload)
             evidence_ids = tuple(sorted(set((*prepared.evidence_ids, *prepared.source_ids))))
             section = CandidateReviewSection(
                 section_id=f"section-{candidate.candidate_id}",
@@ -531,6 +620,7 @@ def discovery_from_preparation(
                 primary_alignment_basis=primary,
                 evidence_ids=evidence_ids,
                 evidence_snapshot_fingerprint=graph.source_export_fingerprint,
+                network_scope=getattr(unit, "network_scope", None),
                 total_absolute_elevation_change_m=getattr(
                     candidate, "total_absolute_elevation_change_m", None
                 ),
@@ -557,7 +647,9 @@ def discovery_from_preparation(
                     transition_count=getattr(candidate, "transition_count", None) or 0,
                     fragmentation_count=getattr(candidate, "fragmentation_count", None) or 0,
                     evidence_ids=evidence_ids,
-                    network_role=unit.unit_role.value,
+                    network_role=unit.unit_role.network_role.value
+                    if hasattr(unit.unit_role, "network_role")
+                    else unit.unit_role.value,
                     evidence_snapshot_fingerprint=graph.source_export_fingerprint,
                     edge_evidence_fingerprint=preparation.preparation_fingerprint,
                     candidate_input=candidate,
@@ -577,7 +669,18 @@ def discovery_from_preparation(
             )
         )
     for index, issue in enumerate(preparation.issues):
-        obligation_id = issue.strategic_destination_id or issue.site_id or f"issue-{index + 1}"
+        obligation_id = (
+            getattr(issue, "obligation_id", None)
+            or issue.strategic_destination_id
+            or issue.site_id
+            or f"issue-{index + 1}"
+        )
+        issue_endpoints = tuple(getattr(issue, "endpoints", ("", "")))
+        endpoints = (
+            issue_endpoints
+            if issue_endpoints and all(issue_endpoints)
+            else ("unresolved", obligation_id)
+        )
         diagnostic_id = f"strategic-preparation-{_fingerprint(issue.canonical())[:20]}"
         diagnostics.append(
             CandidateSearchDiagnostic(
@@ -589,7 +692,7 @@ def discovery_from_preparation(
         gaps.append(
             CandidateSetGapEvidence(
                 obligation_id=obligation_id,
-                endpoints=("unresolved", obligation_id),
+                endpoints=endpoints,
                 reason=issue.detail,
                 search_diagnostic_ids=(diagnostic_id,),
             )
@@ -666,13 +769,16 @@ def _officer_choices(
             }
             if target_id not in aliases:
                 continue
+            candidates_by_geometry = {
+                item.geometry_fingerprint: item.candidate_id for item in candidate_set.candidates
+            }
             matches = [
-                record.candidate.candidate_id
+                candidates_by_geometry.get(record.candidate.geometry_fingerprint)
                 for record in unit.candidate_records
-                if record.candidate.candidate_id
-                in {item.candidate_id for item in candidate_set.candidates}
-                and route_id in {record.candidate.candidate_id, record.physical_alignment_id}
+                if route_id in {record.candidate.candidate_id, record.physical_alignment_id}
+                and record.candidate.geometry_fingerprint in candidates_by_geometry
             ]
+            matches = [item for item in matches if item is not None]
             if len(matches) == 1:
                 choices.append((matches[0], f"preloaded-officer:{target_id}:{route_id}"))
     return tuple(sorted(choices))
@@ -981,6 +1087,11 @@ def _planning_graph_with_urban_spines(
         "b-road": "b-road",
         "classified-unnumbered": "classified-unnumbered-road",
     }
+    # B-road and classified-unnumbered rows remain in ``combined`` above so
+    # they are available as routable graph context.  They are not authoritative
+    # Main sections just because the source inventory supplied them as urban
+    # spines; a later continuity choice must establish an interurban connection
+    # first.
     required_sections = tuple(
         EffectiveStrategicSection(
             section_id=section_id,
@@ -998,38 +1109,102 @@ def _planning_graph_with_urban_spines(
             network_scope="urban",
         )
         for section_id in sorted(classification_by_id)
+        if classification_by_id[section_id] == "a-road"
     )
-    original_source_ids = {
+    return graph, required_sections
+
+
+def _urban_attachment_diagnostics(
+    routable_network: gpd.GeoDataFrame | None,
+    urban_spines: gpd.GeoDataFrame | None,
+    graph: PlanningGraphSnapshot,
+    required_sections: tuple[object, ...],
+) -> _UrbanAttachmentDiagnostics:
+    """Describe detached governed urban sections without changing their geometry."""
+
+    if routable_network is None or urban_spines is None or urban_spines.empty:
+        return _UrbanAttachmentDiagnostics(fingerprint=_fingerprint(()))
+    from satn.strategic_network_planning import PlanningDiagnostic, ReviewableNetworkGap
+
+    urban_projected = urban_spines.to_crs(27700)
+    source_ids = {
         _source_edge_id(row, index)
         for index, row in routable_network.iterrows()
         if isinstance(row.geometry, LineString) and len(row.geometry.coords) >= 2
     }
-    original_edge_ids = {
-        edge.directed_edge_id
-        for edge in graph.edge_records
-        if edge.source_edge_id in original_source_ids
+    rows_by_id = {
+        str(row.structure_id): row
+        for row in urban_projected.itertuples()
+        if isinstance(row.geometry, LineString) and not row.geometry.is_empty
     }
-    weak_component_by_edge = {
+    urban_edge_by_source = {
+        edge.source_edge_id: edge
+        for edge in graph.edge_records
+        if edge.source_edge_id in rows_by_id
+    }
+    original_edge_ids = {
+        edge.directed_edge_id for edge in graph.edge_records if edge.source_edge_id in source_ids
+    }
+    component_by_edge = {
         edge_id: component
         for component in graph.component_records
         if component.kind == "weak"
         for edge_id in component.directed_edge_ids
     }
-    for section in required_sections:
-        component = next(
-            (
-                weak_component_by_edge[edge_id]
-                for edge_id in section.routing_edge_ids
-                if edge_id in weak_component_by_edge
-            ),
-            None,
+    diagnostics: list[PlanningDiagnostic] = []
+    gaps: list[ReviewableNetworkGap] = []
+    required_by_id = {section.section_id: section for section in required_sections}
+    for section_id, row in sorted(rows_by_id.items()):
+        urban_edge = urban_edge_by_source.get(section_id)
+        component = (
+            component_by_edge.get(urban_edge.directed_edge_id) if urban_edge is not None else None
         )
-        if component is None or not original_edge_ids.intersection(component.directed_edge_ids):
-            raise ValueError(
-                "unattachable urban strategic section: "
-                f"{section.section_id} has no routable-network attachment"
+        if component is None or original_edge_ids.intersection(component.directed_edge_ids):
+            continue
+        classification = str(getattr(row, "official_classification", ""))
+        if classification == "classified-unnumbered":
+            if section_id in required_by_id:
+                continue
+            reason = (
+                "Detached classified-unnumbered urban section is excluded from required "
+                "Strategic Main coverage because it has no current routable-network attachment."
             )
-    return graph, required_sections
+            diagnostics.append(
+                PlanningDiagnostic("strategic-main-section-excluded", section_id, reason)
+            )
+            continue
+        if classification not in {"a-road", "b-road"}:
+            continue
+        section = required_by_id.get(section_id)
+        if section is None:
+            continue
+        geometry = row.geometry
+        coordinates = tuple(
+            (float(coordinate[0]), float(coordinate[1]))
+            for coordinate in (geometry.coords[0], geometry.coords[-1])
+        )
+        reason = (
+            "Required urban A-road or B-road geometry has no current routable-network "
+            "attachment; the exact proposed line is retained and its attachment remains unresolved."
+        )
+        diagnostics.append(
+            PlanningDiagnostic("strategic-main-attachment-gap", section.section_id, reason)
+        )
+        gaps.append(
+            ReviewableNetworkGap(
+                obligation_id=section.obligation_id,
+                network_role="strategic-main-network",
+                endpoints=("", ""),
+                reason=reason,
+                endpoint_coordinates=coordinates,
+            )
+        )
+    fingerprint = _fingerprint({"diagnostics": tuple(diagnostics), "gaps": tuple(gaps)})
+    return _UrbanAttachmentDiagnostics(
+        gaps=tuple(gaps),
+        diagnostics=tuple(diagnostics),
+        fingerprint=fingerprint,
+    )
 
 
 def _access_support_sections(
@@ -1077,6 +1252,24 @@ def _access_support_sections(
                 if str(row.get("obligation_kind", "")).casefold() == "school"
                 else "community-access"
             )
+            attachment_node_ids: list[str] = []
+            for field_name in (
+                "community_attachment_node",
+                "target_attachment_node",
+                "spine_attachment_node",
+            ):
+                if field_name not in row or not _present(row[field_name]):
+                    continue
+                node_id = str(row[field_name])
+                if node_id not in attachment_node_ids:
+                    attachment_node_ids.append(node_id)
+            parent_obligation_ids: list[str] = []
+            for field_name in ("root_spine_id", "parent_target_id"):
+                if field_name not in row or not _present(row[field_name]):
+                    continue
+                parent_id = str(row[field_name])
+                if parent_id not in parent_obligation_ids:
+                    parent_obligation_ids.append(parent_id)
             sections.append(
                 EffectiveStrategicSection(
                     section_id=section_id,
@@ -1092,6 +1285,8 @@ def _access_support_sections(
                     intervention_state="upgrade-required",
                     display_state="upgrade-required",
                     network_scope="rural",
+                    attachment_node_ids=tuple(attachment_node_ids),
+                    parent_obligation_ids=tuple(parent_obligation_ids),
                 )
             )
     return tuple(sorted(sections, key=lambda section: section.section_id))
@@ -1136,6 +1331,14 @@ def compile_effective_strategic_network(
         *required_sections,
         *_access_support_sections(request.access_support),
     )
+    attachment_diagnostics = _urban_attachment_diagnostics(
+        request.routable_network
+        if isinstance(request.routable_network, gpd.GeoDataFrame)
+        else None,
+        request.urban_spines,
+        graph,
+        tuple(required_sections),
+    )
     discovery = discovery_from_preparation(request.preparation, graph)
     prepared_candidate_sets = discovery.candidate_sets
     from satn.strategic_network_planning import StrategicNetworkPlanningRequest
@@ -1145,13 +1348,15 @@ def compile_effective_strategic_network(
         discovery=discovery,
         area_fingerprint=request.area_fingerprint,
         corridor_obligations=request.preparation,
+        network_diagnostics=(
+            attachment_diagnostics
+            if attachment_diagnostics.diagnostics or attachment_diagnostics.gaps
+            else None
+        ),
         selection_profile=(
             request.preparation.units[0].candidate_set.profile
             if getattr(request.preparation, "units", ())
             else None
-        ),
-        compiler_preferred_candidate_ids=_compiler_preferences(
-            request.preparation, prepared_candidate_sets
         ),
         routing_endpoint_bindings=tuple(
             (
@@ -1169,6 +1374,11 @@ def compile_effective_strategic_network(
         ),
         officer_decisions=None,
         required_sections=required_sections,
+        backbone_obligation_ids=tuple(
+            unit.unit_id
+            for unit in request.preparation.units
+            if getattr(unit, "backbone_required", False)
+        ),
         mesh_profile=request.mesh_profile,
         mesh_profile_fingerprint=request.mesh_profile.fingerprint,
     )

@@ -313,17 +313,20 @@ def test_strategic_validation_rejects_incomplete_fallback_endpoint_roster(tmp_pa
         build_strategic_reference_application_plan(reference, preparation),
         publication_authority=publication_destination_authority(workspace_root=tmp_path),
     )
-    nested_path = result.output_dir / "review-map" / "reviewable-network.geojson"
-    nested = json.loads(nested_path.read_text())
-    gap_features = [
-        feature
-        for feature in nested["features"]
-        if feature["properties"].get("feature_type") == "reviewable-gap-endpoint"
-    ]
-    assert len(gap_features) >= 2
-    nested["features"].remove(gap_features[0])
-    nested_path.write_text(json.dumps(nested))
-    (result.output_dir / "reviewable-network.geojson").write_text(json.dumps(nested))
+    sidecar_path = result.output_dir / "review-map" / "strategic-network.json"
+    sidecar = json.loads(sidecar_path.read_text())
+    sidecar["gaps"].append(
+        {
+            "gap_id": "synthetic-current-gap",
+            "obligation_id": "synthetic-current-obligation",
+            "network_role": "strategic-main-connector",
+            "endpoints": ["synthetic-a", "synthetic-b"],
+            "reason": "focused validator regression",
+            "candidate_set_id": None,
+            "mesh_proof_points": [],
+        }
+    )
+    sidecar_path.write_text(json.dumps(sidecar))
 
     with pytest.raises(ValueError, match="gap endpoint roster is incomplete"):
         _validate_artifacts(result.output_dir, config)

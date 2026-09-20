@@ -1,0 +1,110 @@
+# A-road backbone precedes main-network reduction
+
+- Status: accepted
+- Date: 2026-09-05
+- Selection policy amended 2026-09-06 by [the SATN method reset](https://github.com/awjreynolds/agentic-satn-compiler/issues/421) and [case-by-case route selection](https://github.com/awjreynolds/agentic-satn-compiler/issues/424): A-road consideration is required, universal segment retention is not; B-roads require a missing interurban connection. This is a planning amendment, not evidence that the compiler has been changed. The historical rationale below remains for context; its universal-retention requirements do not govern the planned POC method.
+- Supersedes: ADR 0024's smallest coverage-preserving mesh as the primary selection objective
+
+## Source baseline clarification, 7 September 2026
+
+### Immediate release scope
+
+The owner subsequently asked to stop at a simple source baseline and publish
+that first. The immediate release therefore draws the A-road network, existing
+cycleways and cycle routes, and current/former NCN routes directly from the
+source data. It does not run route selection, infer missing connections, add
+village access, or prioritise delivery. The other compiler code is retained for
+later work. This release is a source map, not evidence that the wider compiler
+or its connected-network planning has been completed.
+
+The owner's subsequent clarification supersedes the selection-based membership
+described above: the baseline is all in-scope A roads, NCN routes and existing
+cycleways. Assemble their actual source geometry and topology first. Selecting
+town-to-town routes, assigning delivery priority or assessing upgrade needs must
+not determine whether those sources belong to the strategic network.
+
+Preferred alignments and dashed alternatives remain inspectable decisions within
+that baseline. Genuine missing connections are explicit additions; village access
+is separate. Neither arbitrary grid generation nor blanket B-road promotion is
+implied. This changes the assembly premise, rather than adding another exception
+to route selection. Implementation and all three regional outputs still require
+verification against the baseline before release can be called complete.
+
+## Earlier corridor hierarchy clarification, 7 September 2026
+
+The owner confirmed that A roads and NCN routes are top-tier strategic corridors.
+The case-by-case amendment permits a credible alternative alignment; it does not
+permit dropping a corridor simply because it is absent from an in-area town-pair
+list. Through corridors and their evidenced boundary continuations retain their
+strategic purpose. A local access journey using NCN4 does not demote that route
+to Access Support, and an upgrade requirement does not change its hierarchy.
+
+The A38 around Churchill and Lower Langford and the NCN4 towpath east of Bath
+are the concrete counterexamples. The A38 was omitted before route comparison
+while access connections still targeted it. Selected-town connectivity alone
+therefore cannot prove a useful strategic network. A preferred substitute must
+preserve the corridor's connection and access; otherwise retain the corridor or
+show an explicit unresolved gap. Access Support must reach the final selected
+Main network, not merely an earlier spine inventory.
+
+The owner recalled the urban/rural spacing guidance as diagnostic context and
+explicitly did not require a new grid-generation rule. No new spacing threshold,
+coverage percentage or route-count target follows from this clarification.
+
+The clarification states the required behaviour; implementation and regional
+release evidence must be recorded separately.
+
+## Historical rationale
+
+The owner clarified that A roads establish the strategic network's backbone.
+Cycle routes and Greenways are often preferable delivery options, but choosing
+them must preserve the strategic connections that the A-road network provides.
+The compiler must therefore begin with the urban and rural A-road connections,
+retain those obligations through selection, and publish either a selected
+alignment for each connection or an explicit unresolved gap. Alternative
+alignments may replace A-road sections; a nearby route alone does not establish
+that a connection has been replaced. The backbone's loops must not disappear
+merely because a connected tree passes a proximity calculation.
+
+This corrects a loss of intent between earlier backbone assembly, candidate
+selection, and later mesh reduction. Tickets document that evolving exploration;
+their closure is not acceptance evidence. The existing proximity calculation
+measures coverage of its candidate line inventory, not the usefulness or
+interconnection of a regional travel network. It can inform optional coverage
+routes but cannot delete the backbone's required connections or establish a
+claim of globally smallest, Dutch-style mesh conformance. The Effective
+Strategic Network remains the sole selection authority, with separate Access
+Support and publication that projects the actual selected result. A-road
+alignments remain strategic infrastructure proposals, not assertions of present
+cycling suitability or detailed scheme design.
+
+An official A-road connection retains its exact proposal geometry even when an
+endpoint cannot attach to nearby OSM linework. OSM attachments enable route
+alternatives and access connections; they do not determine whether the supplied
+A-road backbone exists. Disconnected official components remain a separate
+continuity question and must not be joined by invented geometry.
+
+Administrative boundaries can cut a continuous source road into disconnected
+pieces. Retain evidenced cross-boundary continuations within the configured
+source context, and show their selected geometry in the map and PDF. An exact
+official junction link between A-road components is structural context even
+when its road classification differs; preserve that classification and the
+proposal's intervention status. Wiltshire's source demonstrates why this
+matters: treating two junction links as absent suggested an unnecessary
+17.5 km A-road detour.
+
+Connections that require choosing another regional corridor remain explicit
+review questions. Do not add an arbitrary tree of out-of-area roads solely to
+make the component count one. Candidate search failures remain diagnostics;
+published Network Gaps describe unresolved obligations after effective
+selection, so a failed alternative cannot turn a satisfied connection into a
+gap.
+
+An isolated component made solely of unattached classified unnumbered urban
+roads is context, not a mandatory strategic connection. Classification alone
+does not establish that such a fragment serves the main network. Retain its
+source geometry and explain its exclusion without stopping the regional build
+or adding a strategic gap obligation for it. Connected classified unnumbered
+sections retain their existing role. Required A-road and B-road sections still
+retain exact proposal geometry with a located gap when attachment is unresolved;
+no synthetic connector is implied.

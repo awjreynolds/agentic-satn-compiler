@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import threading
@@ -42,8 +43,11 @@ def _wait_for_rendered_strategic_spines(page: Page) -> int:
         page.wait_for_function(
             """() => {
               const map = window.SATN_REVIEW_MAP;
-              const layerId = map?.getLayer("reviewable-strategic-main-network") &&
-                map.getLayoutProperty("reviewable-strategic-main-network", "visibility") !== "none"
+              const reviewable = map?.getSource("reviewable")?._data?.features || [];
+              const hasSemanticMain = reviewable.some(
+                (feature) => feature.properties?.layer === "Strategic Main Network"
+              );
+              const layerId = hasSemanticMain
                 ? "reviewable-strategic-main-network"
                 : "strategic-spines";
               return Boolean(map?.getLayer(layerId)) &&
@@ -53,8 +57,11 @@ def _wait_for_rendered_strategic_spines(page: Page) -> int:
     return page.evaluate(
         """() => {
           const map = window.SATN_REVIEW_MAP;
-          const layerId = map.getLayer("reviewable-strategic-main-network") &&
-            map.getLayoutProperty("reviewable-strategic-main-network", "visibility") !== "none"
+          const reviewable = map.getSource("reviewable")?._data?.features || [];
+          const hasSemanticMain = reviewable.some(
+            (feature) => feature.properties?.layer === "Strategic Main Network"
+          );
+          const layerId = hasSemanticMain
             ? "reviewable-strategic-main-network"
             : "strategic-spines";
           return map.getLayer(layerId)
@@ -99,6 +106,8 @@ def _inspect_deployment(
     origin: str,
     entry: dict[str, object],
 ) -> DeploymentRenderResult:
+    if entry.get("publication_kind") == "source-baseline":
+        return _inspect_source_baseline(context, origin, entry)
     deployment_id = entry.get("deployment_id")
     artifacts = entry.get("artifacts")
     if not isinstance(deployment_id, str) or not isinstance(artifacts, dict):
@@ -136,7 +145,6 @@ def _inspect_deployment(
             page.wait_for_function(
                 """() => {
                   const map = window.SATN_REVIEW_MAP;
-                  const network = map.getSource("network")?._data?.features || [];
                   const reviewable = map.getSource("reviewable")?._data?.features || [];
                   const hasSemanticMain = reviewable.some(
                     (feature) => feature.properties?.layer === "Strategic Main Network"
@@ -149,8 +157,6 @@ def _inspect_deployment(
                      (feature) => hasSemanticMain
                        ? feature.properties?.layer === "Strategic Main Network"
                        : feature.properties?.network_role === "urban-main-road-spine"],
-                    [reviewable, "asset-upgrade-required", "mapped-active-travel-assets",
-                     (feature) => feature.properties?.asset_kind === "mapped-cycleway"],
                   ];
                   return expected.every(([features, featureType, layerId, predicate]) => {
                     const count = features.filter((feature) =>
@@ -207,18 +213,6 @@ def _inspect_deployment(
               if (!document.querySelector("#layer-strategic-network")?.checked) {
                 failures.push("Strategic Active Travel Network control is not selected");
               }
-              for (const [controlId, layerId] of [
-                ["layer-mapped-active-travel-assets", "mapped-active-travel-assets"],
-              ]) {
-                if (!document.querySelector(`#${controlId}`)?.checked) {
-                  failures.push(`${controlId} default control is not selected`);
-                }
-                if (!map.getLayer(layerId)) {
-                  failures.push(`${layerId} default layer is missing`);
-                } else if (map.getLayoutProperty(layerId, "visibility") === "none") {
-                  failures.push(`${layerId} default layer is hidden`);
-                }
-              }
               const mainLayerId = counts["strategic-main-network"] > 0
                 ? "reviewable-strategic-main-network"
                 : "strategic-spines";
@@ -239,24 +233,11 @@ def _inspect_deployment(
                   failures.push("reviewable-urban-strategic-network default layer is hidden");
                 }
               }
-              const contextualDefaults = [
-                [map.getSource("reviewable")?._data?.features || [],
-                 "asset-upgrade-required", "mapped-active-travel-assets",
-                 (feature) => feature.properties?.asset_kind === "mapped-cycleway"],
-              ];
-              for (const [sourceFeatures, featureType, layerId, predicate] of contextualDefaults) {
-                const count = sourceFeatures.filter((feature) =>
-                  feature.properties?.feature_type === featureType &&
-                  (!predicate || predicate(feature))
-                ).length;
-                if (count > 0 && map.queryRenderedFeatures({layers: [layerId]}).length === 0) {
-                  failures.push(`${layerId} has data but no rendered features`);
-                }
-              }
-              if (counts["strategic-spine"] === 0) {
+              if (counts["strategic-main-network"] === 0 && counts["strategic-spine"] === 0) {
                 failures.push("published network contains no strategic-spine geometry");
               }
-              if (counts["urban-spine"] > 0 && counts["urban-main-road-spine"] === 0) {
+              if (counts["strategic-main-network"] === 0 &&
+                  counts["urban-spine"] > 0 && counts["urban-main-road-spine"] === 0) {
                 failures.push(
                   "governed urban spines are missing from the Effective Strategic Network"
                 );
@@ -330,6 +311,77 @@ def _inspect_deployment(
         page.close()
 
 
+def _inspect_source_baseline(
+    context: BrowserContext,
+    origin: str,
+    entry: dict[str, object],
+) -> DeploymentRenderResult:
+    """Check that the direct source map loads and paints each populated class."""
+    deployment_id = str(entry["deployment_id"])
+    artifacts = entry["artifacts"]
+    if not isinstance(artifacts, dict):
+        raise ValueError(f"invalid baseline artifacts: {deployment_id}")
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    try:
+        page.goto(f"{origin}/{artifacts['review_map']}", wait_until="domcontentloaded")
+        try:
+            page.wait_for_function(
+                "document.documentElement.dataset.mapReady === 'true' && "
+                "window.SATN_BASELINE_MAP?.isSourceLoaded('baseline') && "
+                "!window.SATN_BASELINE_MAP.isMoving()"
+            )
+        except PlaywrightTimeoutError as error:
+            details = page.evaluate(
+                """() => ({
+                  ready: document.documentElement.dataset.mapReady,
+                  message: document.getElementById('area')?.textContent,
+                  mapPresent: Boolean(window.SATN_BASELINE_MAP),
+                  sourceLoaded: window.SATN_BASELINE_MAP?.isSourceLoaded('baseline')
+                })"""
+            )
+            raise ValueError(
+                f"{deployment_id} source baseline did not render: {details}; {errors}"
+            ) from error
+        inspection = page.evaluate(
+            """() => {
+              const map = window.SATN_BASELINE_MAP;
+              const features = map.getSource('baseline')._data.features;
+              const categories = [
+                'a-road', 'cycleway', 'current-ncn', 'former-ncn',
+                'bridleway', 'abandoned-railway'
+              ];
+              return {
+                total: features.length,
+                unexpected: features.filter(
+                  f => !categories.includes(f.properties.category)
+                ).length,
+                classes: categories.map(category => ({
+                  category,
+                  count: features.filter(f => f.properties.category === category).length,
+                  rendered: map.getLayer('baseline-' + category)
+                    ? map.queryRenderedFeatures({layers: ['baseline-' + category]}).length : 0
+                }))
+              };
+            }"""
+        )
+        if errors or inspection["total"] == 0 or inspection["unexpected"]:
+            raise ValueError(f"{deployment_id} invalid source baseline: {inspection}; {errors}")
+        for item in inspection["classes"]:
+            if item["count"] and not item["rendered"]:
+                raise ValueError(f"{deployment_id} source class did not render: {item['category']}")
+        return DeploymentRenderResult(
+            deployment_id=deployment_id,
+            strategic_spines=inspection["total"],
+            access_connections=0,
+            cross_spine_connectors=0,
+            rendered_strategic_spines=sum(item["rendered"] for item in inspection["classes"]),
+        )
+    finally:
+        page.close()
+
+
 def validate_pages_rendering(pages_directory: str | Path) -> tuple[DeploymentRenderResult, ...]:
     pages = Path(pages_directory).resolve()
     if not pages.is_dir():
@@ -343,7 +395,14 @@ def validate_pages_rendering(pages_directory: str | Path) -> tuple[DeploymentRen
             browser = playwright.chromium.launch(headless=True)
         try:
             context = browser.new_context()
-            context.route("https://tile.openstreetmap.org/**", lambda route: route.abort())
+            # Complete raster loading without making the overlay check depend on OSM.
+            blank_tile = base64.b64decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII="
+            )
+            context.route(
+                "https://tile.openstreetmap.org/**",
+                lambda route: route.fulfill(content_type="image/png", body=blank_tile),
+            )
             return tuple(_inspect_deployment(context, origin, entry) for entry in entries)
         finally:
             browser.close()

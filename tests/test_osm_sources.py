@@ -767,6 +767,7 @@ def test_osm_snapshot_selects_intersecting_whole_official_roads(
     config = base_config()
     config.source.snapshot_dir = tmp_path / "snapshots"
     config.source.snapshot_id = "regional-classification-osm"
+    config.source.external_buffer_km = 0
     config.source.official_road_classification = OfficialRoadClassificationConfig(
         path=classification_path,
         source_id="os-open-roads-2026-04-07",
@@ -794,11 +795,68 @@ def test_osm_snapshot_selects_intersecting_whole_official_roads(
         "contract": "satn-official-road-boundary-selection/v1",
         "predicate": "intersects",
         "geometry_treatment": "retain-whole-source-feature",
+        "selection_envelope": "boundary-plus-external-buffer",
+        "external_buffer_km": 0.0,
         "selected_feature_count": 1,
         "source_export_sha256": hashlib.sha256(classification_path.read_bytes()).hexdigest(),
         "boundary_file": "boundary.geojson",
         "boundary_sha256": hashlib.sha256((path / "boundary.geojson").read_bytes()).hexdigest(),
     }
+
+
+def test_osm_snapshot_keeps_connected_official_road_inside_external_buffer(
+    tmp_path: Path,
+) -> None:
+    classification_path = tmp_path / "connected-context-classification.geojson"
+    gpd.GeoDataFrame(
+        [
+            {
+                "id": "inside-road",
+                "road_classification": "A Road",
+                "road_classification_number": "A4",
+                "road_function": "A Road",
+                "geometry": LineString([(-2.61, 51.4), (-2.59, 51.4)]),
+            },
+            {
+                "id": "connected-context-road",
+                "road_classification": "A Road",
+                "road_classification_number": "A36",
+                "road_function": "A Road",
+                "geometry": LineString([(-2.61, 51.42), (-2.605, 51.42)]),
+            },
+            {
+                "id": "outside-envelope-road",
+                "road_classification": "A Road",
+                "road_classification_number": "A1",
+                "road_function": "A Road",
+                "geometry": LineString([(-2.8, 51.42), (-2.795, 51.42)]),
+            },
+        ],
+        crs=4326,
+    ).to_file(classification_path, driver="GeoJSON")
+    config = base_config()
+    config.source.snapshot_dir = tmp_path / "snapshots"
+    config.source.snapshot_id = "connected-context-classification-osm"
+    config.source.external_buffer_km = 1
+    config.source.official_road_classification = OfficialRoadClassificationConfig(
+        path=classification_path,
+        source_id="os-open-roads-2026-04-07",
+        effective_date="2026-04-07",
+        licence="Open Government Licence v3.0",
+    )
+
+    path = snapshot(config, osm_adapter=FakeOSMAdapter())
+
+    snapshotted = gpd.read_file(path / "official-road-classification.geojson")
+    assert set(snapshotted["official_feature_id"]) == {
+        "inside-road",
+        "connected-context-road",
+    }
+    manifest = json.loads((path / "snapshot.json").read_text(encoding="utf-8"))
+    selection = manifest["evidence_sources"]["official_road_classification"]["selection"]
+    assert selection["selection_envelope"] == "boundary-plus-external-buffer"
+    assert selection["external_buffer_km"] == 1.0
+    assert selection["selected_feature_count"] == 2
 
 
 def test_osm_snapshot_governs_observed_through_traffic(tmp_path: Path) -> None:

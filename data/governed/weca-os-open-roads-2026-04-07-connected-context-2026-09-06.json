@@ -1,0 +1,64 @@
+{
+  "schema_version": "satn-governed-open-roads-extract/v1",
+  "product": "OS Open Roads",
+  "source_id": "os-open-roads-2026-04-07",
+  "effective_date": "2026-04-07",
+  "licence": "Open Government Licence v3.0",
+  "attribution": "Contains OS data © Crown copyright and database rights 2026.",
+  "download_url": "https://api.os.uk/downloads/v1/products/OpenRoads/downloads?area=GB&format=GeoPackage&redirect",
+  "source_archive": "oproad_gpkg_gb.zip",
+  "source_archive_md5": "2ee5d30899c4a44df321e5e1a66989ac",
+  "source_layer": "road_link",
+  "source_crs": "EPSG:27700",
+  "target_crs": "EPSG:4326",
+  "connected_context": "2026-09-06",
+  "boundary_snapshot_id": "weca-classification-elevation-2026-07-31-v14-fp-20260731T092920522968Z-02-fp-20260809T123804416841Z-01-fp-20260819T011108973323Z-01",
+  "selection": {
+    "predicate": "existing-weca-export-plus-exact-source-feature-ids",
+    "geometry_treatment": "retain-whole-source-feature",
+    "existing_export": "weca-os-open-roads-2026-04-07.geojson",
+    "existing_export_sha256": "87c944fb4c4f77c949f25913c58b3e7f49df80bbe0bf317606b32feb0653e89c",
+    "existing_feature_count": 59872,
+    "added_feature_ids": [
+      "A4EA2643-F74E-48A2-AB6D-73783211EF47",
+      "4056BC4B-4282-4633-96C3-7E84DD8BE0B9",
+      "64366CCE-9562-4CA5-9AD5-92726C1C3D18"
+    ],
+    "added_feature_count": 3,
+    "added_source_records": [
+      {
+        "id": "A4EA2643-F74E-48A2-AB6D-73783211EF47",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": "Warminster Road",
+        "start_node": "FB6BC418-B8FD-4C66-BE4A-C27FB67FC879",
+        "end_node": "52B94E4C-7AF8-4EB3-A984-690688138DBB",
+        "source_length_m": 25.0
+      },
+      {
+        "id": "4056BC4B-4282-4633-96C3-7E84DD8BE0B9",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": "Warminster Road",
+        "start_node": "52B94E4C-7AF8-4EB3-A984-690688138DBB",
+        "end_node": "78D990FA-E889-43A8-ACFD-9770F90B58F2",
+        "source_length_m": 727.0
+      },
+      {
+        "id": "64366CCE-9562-4CA5-9AD5-92726C1C3D18",
+        "road_classification": "A Road",
+        "road_classification_number": "A36",
+        "name_1": "Warminster Road",
+        "start_node": "78D990FA-E889-43A8-ACFD-9770F90B58F2",
+        "end_node": "3CFAC736-F049-462A-8458-AF73EE5C617A",
+        "source_length_m": 295.0
+      }
+    ],
+    "coordinate_handling": "source geometry reprojected EPSG:27700 to EPSG:4326 and serialized at existing export coordinate precision",
+    "final_feature_count": 59875,
+    "diff_semantics": "only the three listed RoadLink IDs and their whole source geometries are added"
+  },
+  "extract_file": "weca-os-open-roads-2026-04-07-connected-context-2026-09-06.geojson",
+  "extract_size_bytes": 27475226,
+  "extract_sha256": "3dffea4a7d2ce9d66f4af481d80c657636986539ada951568b2490d6cbb8a37b"
+}

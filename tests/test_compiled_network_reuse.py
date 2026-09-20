@@ -27,7 +27,7 @@ def _publication_digests(artifacts: dict[str, Path]) -> dict[str, str]:
     }
 
 
-def test_removed_publication_is_rehydrated_from_complete_semantic_bundle(
+def test_removed_publication_is_rehydrated_from_complete_semantic_bundle_without_boundary_rehash(
     tmp_path: Path, monkeypatch
 ) -> None:  # type: ignore[no-untyped-def]
     config = prepared_config(tmp_path)
@@ -52,6 +52,15 @@ def test_removed_publication_is_rehydrated_from_complete_semantic_bundle(
 
     monkeypatch.setattr(pipeline, "load_snapshot", forbidden)
     monkeypatch.setattr(pipeline, "compile_network", forbidden)
+    boundary_path = config.source.snapshot_dir / config.source.snapshot_id / "boundary.geojson"
+    original_read_bytes = Path.read_bytes
+
+    def forbid_boundary_rehash(path: Path) -> bytes:
+        if path == boundary_path:
+            raise AssertionError("active reuse must not hash the snapshot boundary")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", forbid_boundary_rehash)
 
     rehydrated = compile(config, artifact_root=artifact_root, explain_reuse=True)
 
@@ -83,9 +92,7 @@ def test_active_semantic_reuse_rejects_wrong_snapshot_area_identity(
     cold = compile(config, artifact_root=artifact_root)
     store = RetainedArtifactStore(artifact_root)
     ledger = pipeline._load_decision_ledger(None)
-    dependency_manifest = pipeline.compilation_dependency_manifest(
-        config, compiler_path="network"
-    )
+    dependency_manifest = pipeline.compilation_dependency_manifest(config, compiler_path="network")
     governed = pipeline.compilation_governed_input_fingerprint(
         config, dependency_manifest=dependency_manifest
     )
@@ -121,9 +128,7 @@ def test_active_semantic_reuse_rejects_opaque_route_input_identity(
     cold = compile(config, artifact_root=artifact_root)
     store = RetainedArtifactStore(artifact_root)
     ledger = pipeline._load_decision_ledger(None)
-    dependency_manifest = pipeline.compilation_dependency_manifest(
-        config, compiler_path="network"
-    )
+    dependency_manifest = pipeline.compilation_dependency_manifest(config, compiler_path="network")
     governed = pipeline.compilation_governed_input_fingerprint(
         config, dependency_manifest=dependency_manifest
     )
@@ -201,9 +206,7 @@ def test_ambiguous_semantic_retention_does_not_pin_or_block_publication(
     assert not (tmp_path / "retained" / "lineages" / "active-lineage").exists()
 
 
-def test_full_compile_bypasses_retained_semantic_hit(
-    tmp_path: Path, monkeypatch
-) -> None:  # type: ignore[no-untyped-def]
+def test_full_compile_bypasses_retained_semantic_hit(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     config = prepared_config(tmp_path)
     artifact_root = tmp_path / "retained"
     cold = compile(config, artifact_root=artifact_root)
@@ -223,9 +226,10 @@ def test_full_compile_bypasses_retained_semantic_hit(
     assert calls == 1
     assert rebuilt.metadata["semantic_compilation_reused"] is False
     assert rebuilt.metadata["semantic_bundle_disposition"] == "build"
-    assert rebuilt.metadata["semantic_bundle_artifact_id"] == cold.metadata[
-        "semantic_bundle_artifact_id"
-    ]
+    assert (
+        rebuilt.metadata["semantic_bundle_artifact_id"]
+        == cold.metadata["semantic_bundle_artifact_id"]
+    )
 
 
 def test_storage_valid_bundle_with_wrong_bound_identity_is_quarantined(

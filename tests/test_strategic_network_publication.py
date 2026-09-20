@@ -3,6 +3,9 @@
 import json
 from types import SimpleNamespace
 
+import geopandas as gpd
+from shapely.geometry import Point
+
 from satn.alignment_selection import CanonicalLineString
 from satn.publisher import _reviewable_map_collection
 from satn.strategic_network_planning import ReviewableNetworkGap
@@ -23,6 +26,7 @@ def _section(
     authority: str = "compiler",
     display: str = "existing-provision",
     network_role: str = "interurban-spine",
+    geometry_wkt: str = "LINESTRING (100000 200000, 100100 200100)",
 ):
     return SimpleNamespace(
         section_id=section_id,
@@ -31,7 +35,7 @@ def _section(
         network_role=network_role,
         routing_edge_ids=(f"edge-{section_id}",),
         reverse_routing_edge_ids=(f"reverse-{section_id}",),
-        geometry_wkt="LINESTRING (100000 200000, 100100 200100)",
+        geometry_wkt=geometry_wkt,
         authority=authority,
         alignment_bases=("cycleway",),
         primary_alignment_basis="cycleway",
@@ -40,18 +44,23 @@ def _section(
     )
 
 
-def _result(*sections, gaps=(), divergences=(), candidates=()):
-    candidate_set = SimpleNamespace(
-        candidate_set_id="candidate-set-1",
-        network_role="interurban-spine",
-        candidates=tuple(candidates),
-    )
+def _result(*sections, gaps=(), divergences=(), candidates=(), geometry_tolerance=None):
+    candidate_set_kwargs = {
+        "candidate_set_id": "candidate-set-1",
+        "network_role": "interurban-spine",
+        "candidates": tuple(candidates),
+    }
+    if geometry_tolerance is not None:
+        candidate_set_kwargs["geometry_equivalence_profile"] = SimpleNamespace(
+            tolerance_m=geometry_tolerance
+        )
+    candidate_set = SimpleNamespace(**candidate_set_kwargs)
     return SimpleNamespace(
         fingerprint="a" * 64,
         effective_network=SimpleNamespace(sections=tuple(sections)),
         gaps=tuple(gaps),
         divergences=tuple(divergences),
-        candidate_sets=(candidate_set,) if candidates else (),
+        candidate_sets=(candidate_set,) if candidates or geometry_tolerance is not None else (),
         unselected_candidates=tuple(
             SimpleNamespace(
                 candidate_id=item.candidate_id, disposition="unselected", reason="alternative"
@@ -90,6 +99,85 @@ def test_selected_network_and_places_are_the_only_default_layers() -> None:
         ]
         == "a" * 64
     )
+
+
+def test_projection_exports_choice_reasons_and_attribution_by_candidate_set() -> None:
+    preferred = SimpleNamespace(
+        candidate_id="candidate-selected",
+        geometry=CanonicalLineString(coordinates=((100000.0, 200000.0), (100100.0, 200100.0))),
+        evidence_fingerprints=(),
+        intervention_state="existing-provision",
+        alignment_bases=("cycleway",),
+        primary_alignment_basis="cycleway",
+    )
+    alternative = SimpleNamespace(
+        candidate_id="candidate-alternative",
+        geometry=CanonicalLineString(coordinates=((100000.0, 200000.0), (100100.0, 200000.0))),
+        evidence_fingerprints=(),
+        intervention_state="upgrade-required",
+        alignment_bases=("a-road",),
+        primary_alignment_basis="a-road",
+    )
+    result = SimpleNamespace(
+        fingerprint="a" * 64,
+        effective_network=SimpleNamespace(sections=(_section("selected"),)),
+        candidate_sets=(
+            SimpleNamespace(
+                candidate_set_id="candidate-set-1",
+                connection_id="connection-1",
+                network_role="interurban-spine",
+                candidates=(preferred, alternative),
+                admissions=(),
+            ),
+        ),
+        selections=(
+            SimpleNamespace(
+                effective_candidate_id="candidate-selected",
+                candidate_set_id="candidate-set-1",
+                selection_disposition="selected",
+                compiler_candidate_id="candidate-selected",
+                authority="compiler",
+                selection_reason="compiler selected the shorter governed route",
+                decision_id="compiler-decision-1",
+                decision_maker="compiler",
+            ),
+        ),
+        unselected_candidates=(
+            SimpleNamespace(
+                candidate_set_id="candidate-set-1",
+                candidate_id="candidate-alternative",
+                disposition="unselected",
+                reason="admitted alternative retained for review",
+                comparison_reason=(
+                    "route-length ranked candidate-selected ahead of candidate-alternative"
+                ),
+            ),
+        ),
+        gaps=(),
+        divergences=(),
+    )
+
+    projection = project_strategic_network(result, optional_layers=True)
+    selected = next(
+        feature
+        for feature in projection.layers["Strategic Main Network"]["features"]
+        if feature["properties"].get("candidate_id") == "candidate-selected"
+    )["properties"]
+    alternative_properties = projection.layers["Candidates discarded"]["features"][0]["properties"]
+
+    assert (
+        selected["candidate_set_id"]
+        == alternative_properties["candidate_set_id"]
+        == "candidate-set-1"
+    )
+    assert selected["authority"] == "compiler"
+    assert selected["selection_reason"] == "compiler selected the shorter governed route"
+    assert selected["decision_id"] == "compiler-decision-1"
+    assert selected["decision_maker"] == "compiler"
+    assert alternative_properties["comparison_reason"] == (
+        "route-length ranked candidate-selected ahead of candidate-alternative"
+    )
+    assert alternative_properties["reason"] == "admitted alternative retained for review"
 
 
 def test_stored_roles_are_published_as_main_or_access_support_without_roster_loss() -> None:
@@ -162,6 +250,29 @@ def test_required_urban_spine_is_published_as_selected_strategic_geometry() -> N
     assert feature["properties"]["display_state"] == "upgrade-required"
 
 
+def test_non_candidate_section_publishes_canonical_alignment_basis() -> None:
+    section = SimpleNamespace(
+        section_id="urban-spine-canonical-basis",
+        obligation_id="urban-structure:canonical-basis",
+        candidate_id=None,
+        network_role="urban-main-road-spine",
+        routing_edge_ids=("urban-edge-canonical-basis",),
+        reverse_routing_edge_ids=(),
+        geometry_wkt="LINESTRING (100000 200000, 100100 200100)",
+        authority="compiler",
+        alignment_bases=("current-ncn", "mapped-cycleway"),
+        primary_alignment_basis="current-ncn",
+        intervention_state="upgrade-required",
+        display_state="upgrade-required",
+    )
+
+    projection = project_strategic_network(_result(section))
+
+    properties = projection.layers["Strategic Main Network"]["features"][0]["properties"]
+    assert properties["alignment_bases"] == ["current-ncn", "mapped-cycleway"]
+    assert properties["primary_alignment_basis"] == "current-ncn"
+
+
 def test_reference_and_divergence_are_explicit_non_grey_variants() -> None:
     reference = _section(
         "reference", authority="governed-reference-provisional", display="reference-route"
@@ -208,6 +319,116 @@ def test_gaps_are_null_geometry_and_candidates_remain_optional() -> None:
     assert (
         projection.layers["Candidates discarded"]["features"][0]["geometry"]["type"] == "LineString"
     )
+
+
+def test_structural_gap_coordinates_publish_endpoint_markers_without_places() -> None:
+    gap = ReviewableNetworkGap(
+        obligation_id="a-road-obligation",
+        network_role="interurban-spine",
+        endpoints=("official-start", "official-end"),
+        reason="official A-road endpoint is not attached",
+        endpoint_coordinates=((100000.0, 200000.0), (100100.0, 200100.0)),
+    )
+
+    projection = project_strategic_network(_result(gaps=(gap,)))
+
+    features = projection.layers["Strategic Main Network"]["features"]
+    markers = [
+        feature
+        for feature in features
+        if feature["properties"].get("feature_type") == "reviewable-gap-endpoint"
+    ]
+    assert [feature["geometry"]["type"] for feature in markers] == ["Point", "Point"]
+    assert all(not feature["properties"]["missing_endpoint_geometry"] for feature in markers)
+
+
+def test_unrepresented_selected_main_component_gets_one_located_publication_finding() -> None:
+    result = _result(
+        _section("main-a", geometry_wkt="LINESTRING (100000 200000, 100100 200100)"),
+        _section("main-b", geometry_wkt="LINESTRING (100100 200100, 100200 200200)"),
+        _section("island", geometry_wkt="LINESTRING (101000 201000, 101100 201100)"),
+        geometry_tolerance=0.05,
+    )
+
+    projection = project_strategic_network(result)
+
+    markers = [
+        feature
+        for feature in projection.layers["Strategic Main Network"]["features"]
+        if feature["properties"].get("feature_type") == "reviewable-gap-endpoint"
+    ]
+    assert projection.reviewable_feature_collection["publication_finding_count"] == 1
+    assert len(projection.reviewable_feature_collection["publication_findings"]) == 1
+    assert len(markers) == 1
+    marker = markers[0]
+    assert marker["id"].endswith(":representative-point")
+    assert marker["geometry"]["type"] == "Point"
+    assert marker["properties"]["publication_finding_kind"] == (
+        "selected-main-physical-discontinuity"
+    )
+    assert marker["properties"]["reason"] == (
+        "Selected Main component is physically separate; representative location only; "
+        "no direct connection proposed"
+    )
+    assert marker["properties"]["geometry_semantics"] == (
+        "selected-main-component-representative-point-marker-only-no-route-geometry"
+    )
+    assert {
+        feature["properties"]["section_id"]
+        for feature in projection.layers["Strategic Main Network"]["features"]
+        if feature["properties"].get("feature_type") == "reviewable-selected-route"
+    } == {"main-a", "main-b", "island"}
+
+
+def test_connected_selected_main_components_add_no_publication_finding() -> None:
+    result = _result(
+        _section("main-a", geometry_wkt="LINESTRING (100000 200000, 100100 200100)"),
+        _section("main-b", geometry_wkt="LINESTRING (100100 200100, 100200 200200)"),
+        geometry_tolerance=0.05,
+    )
+
+    projection = project_strategic_network(result)
+
+    assert projection.reviewable_feature_collection["publication_finding_count"] == 0
+    assert not projection.reviewable_feature_collection["publication_findings"]
+    assert not [
+        feature
+        for feature in projection.layers["Strategic Main Network"]["features"]
+        if feature["properties"].get("feature_type") == "reviewable-gap-endpoint"
+    ]
+
+
+def test_existing_canonical_a_component_gap_suppresses_publication_duplicate() -> None:
+    canonical_gap = SimpleNamespace(
+        gap_id="a-road-component-gap",
+        obligation_id="a-road-backbone-component-gap-existing",
+        network_role="interurban-spine",
+        endpoints=(
+            "a-road-backbone-component-endpoint-island",
+            "a-road-backbone-component-endpoint-main",
+        ),
+        endpoint_coordinates=((101000.0, 201000.0), (100000.0, 200000.0)),
+        reason="official A-road backbone component remains disconnected",
+        candidate_set_id=None,
+        mesh_proof_points=(),
+    )
+    result = _result(
+        _section("main-a", geometry_wkt="LINESTRING (100000 200000, 100100 200100)"),
+        _section("main-b", geometry_wkt="LINESTRING (100100 200100, 100200 200200)"),
+        _section("island", geometry_wkt="LINESTRING (101000 201000, 101100 201100)"),
+        gaps=(canonical_gap,),
+        geometry_tolerance=0.05,
+    )
+
+    projection = project_strategic_network(result)
+
+    assert projection.reviewable_feature_collection["publication_finding_count"] == 0
+    markers = [
+        feature
+        for feature in projection.layers["Strategic Main Network"]["features"]
+        if feature["properties"].get("feature_type") == "reviewable-gap-endpoint"
+    ]
+    assert {marker["properties"]["gap_id"] for marker in markers} == {"a-road-component-gap"}
 
 
 def test_projection_is_json_serialisable_and_permutation_stable() -> None:
@@ -439,6 +660,41 @@ def test_projection_gaps_with_empty_duplicate_endpoints_have_stable_fallback_ids
         feature["properties"]["endpoint_identity_fallback"] is True and feature["geometry"] is None
         for feature in gap_features
     )
+
+
+def test_publisher_projection_resolves_geodataframe_place_endpoints() -> None:
+    gap = SimpleNamespace(
+        gap_id="place-gap",
+        obligation_id="place-gap-obligation",
+        network_role="strategic-destination-access",
+        endpoints=("place-a", "place-b"),
+        reason="missing access connection",
+    )
+    places = gpd.GeoDataFrame(
+        [
+            {"place_id": "place-a", "geometry": Point(-2.1, 51.3)},
+            {"place_id": "place-b", "geometry": Point(-2.0, 51.4)},
+        ],
+        geometry="geometry",
+        crs="EPSG:4326",
+    )
+    compiled = SimpleNamespace(
+        strategic_network_planning=_result(gaps=(gap,)),
+        places=places,
+        asset_accounting={"records": []},
+    )
+
+    payload = _reviewable_map_collection(compiled)
+    gap_features = [
+        feature
+        for feature in payload["features"]
+        if feature["properties"].get("feature_type") == "reviewable-gap-endpoint"
+    ]
+
+    assert [feature["geometry"] for feature in gap_features] == [
+        {"type": "Point", "coordinates": [-2.1, 51.3]},
+        {"type": "Point", "coordinates": [-2.0, 51.4]},
+    ]
 
 
 def test_projection_distinguishes_gap_findings_for_the_same_obligation() -> None:

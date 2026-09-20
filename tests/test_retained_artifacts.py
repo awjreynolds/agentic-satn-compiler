@@ -59,9 +59,7 @@ def test_retained_artifact_can_be_resolved_from_its_semantic_specification(
     specification = area_extraction_specification()
     written = store.put(specification, outputs={"features": b"features"})
 
-    resolution = RetainedArtifactStore.in_workspace(
-        tmp_path
-    ).resolve_specification(specification)
+    resolution = RetainedArtifactStore.in_workspace(tmp_path).resolve_specification(specification)
 
     assert resolution.disposition == "validated-hit"
     assert resolution.reason == "validated-dependency-closure"
@@ -120,11 +118,29 @@ def test_corrupt_retained_artifact_is_quarantined_and_becomes_a_miss(
     resolution = store.resolve(written.artifact_id)
 
     assert resolution.disposition == "miss"
-    assert resolution.reason == "output-digest-mismatch"
+    assert resolution.reason == "output-size-mismatch"
     assert resolution.artifact is None
     assert resolution.quarantined_path is not None
     assert resolution.quarantined_path.is_dir()
     assert not written.path.exists()
+
+
+def test_trusted_reuse_does_not_rehash_same_size_output(
+    tmp_path: Path,
+) -> None:
+    store = RetainedArtifactStore.in_workspace(tmp_path)
+    written = store.put(
+        area_extraction_specification(),
+        outputs={"features": b"features"},
+    )
+    (written.path / "outputs" / "features").write_bytes(b"changed!")
+
+    resolution = store.resolve(written.artifact_id)
+
+    assert resolution.disposition == "validated-hit"
+    assert resolution.reason == "validated-dependency-closure"
+    assert resolution.artifact is not None
+    assert resolution.artifact.read_output("features") == b"changed!"
 
 
 def test_artifact_identity_is_independent_of_workspace_and_input_order(
@@ -191,7 +207,7 @@ def test_resolve_validates_the_complete_upstream_dependency_closure(
     resolution = store.resolve(downstream.artifact_id)
 
     assert resolution.disposition == "miss"
-    assert resolution.reason == "upstream-output-digest-mismatch"
+    assert resolution.reason == "upstream-output-size-mismatch"
     assert downstream.path.is_dir()
     assert not upstream.path.exists()
 
@@ -269,9 +285,7 @@ def test_gc_plan_protects_every_artifact_reachable_from_a_publication(
     assert plan.reachable_artifact_ids == tuple(
         sorted((upstream.artifact_id, publication.artifact_id))
     )
-    assert tuple(candidate.artifact_id for candidate in plan.candidates) == (
-        orphan.artifact_id,
-    )
+    assert tuple(candidate.artifact_id for candidate in plan.candidates) == (orphan.artifact_id,)
     assert orphan.path.is_dir()
 
     with pytest.raises(ValueError, match="explicit confirmation"):
@@ -344,9 +358,7 @@ def test_gc_recovery_rejects_a_staged_artifact_symlink(tmp_path: Path) -> None:
         RetainedArtifactStore(store_root)
 
     assert (transaction_root / artifact_id).is_symlink()
-    assert not (
-        store_root / "artifacts" / "sha256" / artifact_id[:2] / artifact_id
-    ).exists()
+    assert not (store_root / "artifacts" / "sha256" / artifact_id[:2] / artifact_id).exists()
 
 
 def test_committed_gc_recovery_rejects_a_staged_symlink(tmp_path: Path) -> None:

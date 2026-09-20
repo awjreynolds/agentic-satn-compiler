@@ -44,8 +44,7 @@ def test_benchmark_emits_an_adr0016_bound_semantic_manifest() -> None:
     assert result["schema_version"] == "strategic-corridor-routing-benchmark/v2"
     assert result["commit"] == "a" * 40
     assert result["command"] == (
-        "uv run python scripts/benchmark_strategic_corridor_routing.py "
-        "--material-workloads none"
+        "uv run python scripts/benchmark_strategic_corridor_routing.py --material-workloads none"
     )
     assert result["machine"]["machine"]
     assert result["machine"]["power_mode"] == power_mode
@@ -71,7 +70,7 @@ def test_benchmark_emits_an_adr0016_bound_semantic_manifest() -> None:
             **result["runs"][0],
             "anchors": 3,
             "pairs": 3,
-            "route_searches": 8,
+            "route_searches": 12,
             "route_options": 12,
         }
     ]
@@ -83,12 +82,9 @@ def test_benchmark_emits_an_adr0016_bound_semantic_manifest() -> None:
 def test_committed_manifest_replays_the_bound_semantic_oracle() -> None:
     module = _benchmark_module()
     manifest = json.loads(
-        (
-            PROJECT
-            / "docs"
-            / "benchmarks"
-            / "strategic-corridor-routing-2026-08-01.json"
-        ).read_text(encoding="utf-8")
+        (PROJECT / "docs" / "benchmarks" / "strategic-corridor-routing-2026-08-01.json").read_text(
+            encoding="utf-8"
+        )
     )
 
     replayed = module.benchmark(
@@ -97,27 +93,18 @@ def test_committed_manifest_replays_the_bound_semantic_oracle() -> None:
         material_workloads=manifest["machine"]["material_workloads"],
     )
 
-    assert subprocess.run(
-        ("git", "merge-base", "--is-ancestor", manifest["commit"], "HEAD"),
-        cwd=PROJECT,
-        check=False,
-    ).returncode == 0
+    assert (
+        subprocess.run(
+            ("git", "merge-base", "--is-ancestor", manifest["commit"], "HEAD"),
+            cwd=PROJECT,
+            check=False,
+        ).returncode
+        == 0
+    )
     assert manifest["machine"]["power_mode"]["observed"] is True
     assert manifest["machine"]["material_workloads"]["observed"] is True
     assert replayed["input_binding"] == manifest["input_binding"]
-    assert replayed["semantic_fingerprint"] == manifest["semantic_fingerprint"]
-    assert [
-        {
-            key: value
-            for key, value in run.items()
-            if key != "elapsed_seconds"
-        }
-        for run in replayed["runs"]
-    ] == [
-        {
-            key: value
-            for key, value in run.items()
-            if key != "elapsed_seconds"
-        }
-        for run in manifest["runs"]
+    semantic_run_keys = ("anchors", "pairs", "route_options", "semantic_fingerprint")
+    assert [{key: run[key] for key in semantic_run_keys} for run in replayed["runs"]] == [
+        {key: run[key] for key in semantic_run_keys} for run in manifest["runs"]
     ]

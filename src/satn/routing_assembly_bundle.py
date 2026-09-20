@@ -27,6 +27,7 @@ import geopandas as gpd
 import numpy as np
 from pydantic import BaseModel
 
+from satn.compilation_dependencies import is_compiler_cache_revision
 from satn.compiled_network_bundle import (
     BundleCodecError,
     decode_compiled_network_bundle,
@@ -101,18 +102,12 @@ class RoutingAssemblyBundle:
         ):
             raise TypeError("agent_records must be a tuple of AgentRecord values")
         if not isinstance(self.accepted_responses, tuple) or not all(
-            isinstance(response, AgentDecisionResponse)
-            for response in self.accepted_responses
+            isinstance(response, AgentDecisionResponse) for response in self.accepted_responses
         ):
-            raise TypeError(
-                "accepted_responses must be a tuple of AgentDecisionResponse values"
-            )
+            raise TypeError("accepted_responses must be a tuple of AgentDecisionResponse values")
         responses = tuple(
             sorted(
-                (
-                    response.model_copy(deep=True)
-                    for response in self.accepted_responses
-                ),
+                (response.model_copy(deep=True) for response in self.accepted_responses),
                 key=lambda response: response.request_id,
             )
         )
@@ -243,11 +238,21 @@ def _identities(
     *, area_identity: str, input_identity: str, dependency_identity: str
 ) -> dict[str, str]:
     values = {"area": area_identity, "input": input_identity, "dependency": dependency_identity}
-    if any(
-        not isinstance(value, str) or _SHA256.fullmatch(value) is None
-        for value in values.values()
+    if (
+        not isinstance(area_identity, str)
+        or _SHA256.fullmatch(area_identity) is None
+        or not isinstance(input_identity, str)
+        or _SHA256.fullmatch(input_identity) is None
+        or not isinstance(dependency_identity, str)
+        or (
+            _SHA256.fullmatch(dependency_identity) is None
+            and not is_compiler_cache_revision(dependency_identity)
+        )
     ):
-        raise BundleCodecError("routing identities must be full lowercase SHA-256 values")
+        raise BundleCodecError(
+            "routing area/input identities must be full lowercase SHA-256 and "
+            "dependency identity must be a SHA-256 or compiler revision"
+        )
     return values
 
 

@@ -10,32 +10,39 @@ generated planning hypothesis, not an adopted network.
 
 The initial view answers the first planning question: *what strategic network did the
 compiler generate?* Strategic routes and quiet Places are visible; large evidence
-inventories remain optional. Required connections, material endpoint gaps and
-officer/compiler divergence stay prominent because they affect the meaning of the
+inventories remain optional. Access connections, material endpoint gaps and
+officer/compiler divergence can be inspected without changing the selected main
 network.
 
-The default is intentionally small and decision-ready: **Strategic Network** and
-**Places**. The network is a Backbone-and-Access Network, not a pairwise spider's
-web. Strategic Spines provide the shared backbone; bounded access branches serve
-Communities, Schools and gateways; and Cross-Spine Connectors trace the accepted
-transverse chain through the parent branches. The map can explain the network a
-council is being asked to review before it opens the full evidence inventory.
+The default shows **Strategic Main Network** and **Named places**. The main
+network is the structural overview. **Access Support** separately shows the
+connections serving Communities, Schools and destinations, including Cross-Spine
+Connectors. Grouped optional controls let officers inspect evidence and alternatives
+without making a first-time reader work through every diagnostic layer.
 
 ## 2. See what exists, what needs work and what is missing
 
-A selected route carries two independent visual facts:
+The main overview uses a consistent structural line style. Enable **Alignment
+review detail** to inspect two further visual facts about selected routes:
 
 - **core line — intervention state:** existing provision, upgrade required or proposed
   new link; and
 - **halo — primary Alignment Basis:** cycle track, shared path, NCN, PROW, former
   railway, local connector, road class or proposed corridor.
 
-An unresolved gap is an endpoint finding, not a straight line pretending to be a
-route. Patterns and text repeat colour meaning in the legend and the map's compact
+Gap markers show known endpoints or locations where main-network coverage is
+missing. They retain the actual source locations without drawing a route across
+the gap. Patterns and text repeat colour meaning in the legend and the map's compact
 Review Lens.
 
-Hover or keyboard-focus a visible artifact for a high-level preview, then click or
-tap to pin it. Selecting a second comparable line segment opens a two-segment view
+Hover or keyboard-focus a visible feature for a short identification summary and
+any published status. A separate highlight shows exactly which feature is being
+inspected. Click or tap to keep its details in a stable panel, including available
+connections, intervention information and recorded reasons. Technical identifiers
+and source properties remain under a separate disclosure in this clicked view.
+Network role alone is not a selection reason; missing explanations are not inferred.
+Selecting a second
+comparable line segment opens a two-segment view
 with a display-only spider chart and the authoritative raw values beneath it.
 Missing dimensions remain **Unknown**, and the chart does not calculate a winner or
 feed route selection. Layer checkboxes only change visibility; their explanations

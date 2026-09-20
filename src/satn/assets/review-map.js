@@ -32,6 +32,17 @@
   }
 
   renderCompilationStatus();
+  async function loadNetworkData(url, compression) {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Network evidence failed to load (${response.status}).`);
+    if (compression !== "gzip") return response.json();
+    if (typeof DecompressionStream !== "function" || !response.body) {
+      throw new Error("This browser cannot read the compressed network evidence.");
+    }
+    const decompressed = response.body.pipeThrough(new DecompressionStream("gzip"));
+    return JSON.parse(await new Response(decompressed).text());
+  }
+
   const isProgressiveDeployment = Boolean(
     data.area_id && data.network_url && data.layer_manifest_url && data.topography_manifest_url
   );
@@ -42,15 +53,20 @@
     ? navigator.serviceWorker.register("service-worker.js")
     : null;
   if (!data.network && data.network_url) {
-    const response = await fetch(data.network_url);
-    if (!response.ok) throw new Error(`Network evidence failed to load (${response.status}).`);
-    data.network = await response.json();
+    data.network = await loadNetworkData(data.network_url, data.network_compression);
   }
   const network = data.network;
   const reviewable = data.reviewable_network || data.reviewable || {
     type: "FeatureCollection",
     features: []
   };
+  const strategicMainDisplay = reviewable.strategic_main_display || {
+    type: "FeatureCollection",
+    features: []
+  };
+  const strategicMainDisplaySource = strategicMainDisplay.features?.length
+    ? "strategic-main-display"
+    : "reviewable";
   const hasEffectiveStrategicNetwork = Boolean(data.strategic_result_fingerprint);
   const hasReviewableRoutes = reviewable.features.some(
     (feature) => feature.properties?.feature_type === "reviewable-selected-route"
@@ -73,6 +89,28 @@
   const usesLegacyStrategicFallback =
     !hasBackboneAndAccessNetwork && !hasReviewableRoutes;
   const places = data.places;
+  const placeNamesById = new Map();
+  (places?.features || []).forEach((feature) => {
+    const properties = feature.properties || {};
+    const name = firstDataValue(
+      properties.name,
+      properties.place_name,
+      properties.community_name,
+      properties.school_name
+    );
+    if (!hasDataValue(name)) return;
+    [properties.place_id, feature.id]
+      .filter(hasDataValue)
+      .forEach((identifier) => placeNamesById.set(String(identifier), String(name)));
+  });
+  Object.entries(data.urban_journey_place_names || {}).forEach(([identifier, name]) => {
+    const key = String(identifier);
+    if (!hasDataValue(name) || placeNamesById.has(key)) return;
+    placeNamesById.set(key, String(name));
+  });
+  const urbanJourneyPlaceIds = new Set(
+    Object.keys(data.urban_journey_place_names || {}).map((identifier) => String(identifier))
+  );
   const referenceRecord = data.reference_satn || null;
   const referenceOptions = data.reference_satn_options || { type: "FeatureCollection", features: [] };
   const reviewLensState = window.SATN_REVIEW_LENS_STATE;
@@ -88,7 +126,14 @@
 
   function syncLensState(next) {
     lensState = next;
+    syncConnectionPressedState();
     return next;
+  }
+
+  function syncConnectionPressedState() {
+    document.querySelectorAll(".connection").forEach((item) => {
+      item.setAttribute("aria-pressed", String(lensState.pinned === item.dataset.featureId));
+    });
   }
   const gradientPathTypes = new Set([
     "strategic-spine",
@@ -102,7 +147,12 @@
   const presentationOnlyLayers = new Set([
     "connections-highlight",
     "gradient-section-highlight",
-    "population-section-selection"
+    "population-section-selection",
+    "review-lens-highlight-fill",
+    "review-lens-highlight-outline",
+    "review-lens-highlight-line",
+    "review-lens-highlight-point",
+    "review-lens-related-alternatives"
   ]);
 
   const map = new maplibregl.Map({
@@ -390,13 +440,7 @@
       topographyFeaturesByShard.get(entry.path) || []
     );
     map.getSource("topography")?.setData(topographyCollection(visibleFeatures));
-    ["gradient-overview", "gradient-sections", "topography-unavailable"].forEach((layer) => {
-      if (!map.getLayer(layer)) return;
-      const visible = document.querySelector("#layer-gradient-sections")?.checked &&
-        (layer === "gradient-overview" ? !detailed :
-          layer === "topography-unavailable" ? true : detailed);
-      map.setLayoutProperty(layer, "visibility", visible ? "visible" : "none");
-    });
+    syncControlledLayerVisibility();
   }
 
   async function ensureTopographyManifest() {
@@ -592,13 +636,13 @@
     const status = document.querySelector("#gradient-path-status");
     const inspectionVersion = state.inspectionVersion;
     try {
-      status.textContent = "Loading selected profile evidence…";
+      status.textContent = "Loading route elevation details…";
       await ensureProfilesLoaded(profileIds);
       if (inspectionVersion !== state.inspectionVersion) return;
-      status.textContent = `${state.inspectionPath.length} edge${state.inspectionPath.length === 1 ? "" : "s"} selected; profile evidence loaded.`;
+      status.textContent = `${state.inspectionPath.length} route section${state.inspectionPath.length === 1 ? "" : "s"} selected; elevation details loaded.`;
     } catch (error) {
       if (inspectionVersion !== state.inspectionVersion) return;
-      status.textContent = `Selected profile evidence could not load. ${error.message}`;
+      status.textContent = `Route elevation details could not load. ${error.message}`;
     }
   }
 
@@ -796,8 +840,8 @@
     const append = document.querySelector("#gradient-path-append");
     if (!eligibleForGradientPath(candidate)) {
       message.textContent = lensState.pinnedArtifact
-        ? "Pinned feature is not an eligible analytical edge."
-        : "Pin an eligible Published Feature, then start or append it.";
+        ? "Pinned feature cannot be used for slope inspection."
+        : "Pin a map route with elevation data, then start or append it.";
       start.disabled = true;
       append.disabled = true;
       return;
@@ -890,7 +934,7 @@
     const hasValue = item.status !== "unavailable" && Number.isFinite(Number(item.forward_gradient_pct));
     cell.title = hasValue
       ? `${(offset + item.start_distance_m).toFixed(0)}–${(offset + item.end_distance_m).toFixed(0)} m · ${item.forward_gradient_pct}%`
-      : "Micro-gradient evidence unavailable";
+      : "Detailed slope information unavailable";
     cell.textContent = hasValue ? `${item.forward_gradient_pct}%` : "—";
     cell.dataset.segmentIndex = String(segmentIndex);
     cell.dataset.featureId = segment?.feature.id || "";
@@ -984,7 +1028,7 @@
       detailsButton.hidden = true;
       detailsButton.setAttribute("aria-expanded", "false");
       chart.innerHTML = '<p class="empty-evidence">No Gradient Inspection Path selected.</p>';
-      summary.textContent = "Build a continuous Gradient Inspection Path to compare distance-aligned evidence.";
+      summary.textContent = "Select connected route sections to compare their elevation and slope along one distance line.";
       return;
     }
     detailsButton.hidden = !lensState.pinnedArtifact;
@@ -1141,6 +1185,331 @@
     return String(value(item));
   }
 
+  function hasDataValue(raw) {
+    return raw !== null && raw !== undefined && raw !== "";
+  }
+
+  function firstDataValue(...candidates) {
+    return candidates.find(hasDataValue);
+  }
+
+  function isMeshGapMarker(properties) {
+    return properties?.feature_type === "reviewable-gap-endpoint" &&
+      properties.geometry_semantics === "mesh-proof-point-marker-only-no-route-geometry";
+  }
+
+  function isAroadComponentGapMarker(properties) {
+    return properties?.feature_type === "reviewable-gap-endpoint" &&
+      properties.gap_marker_kind === "a-road-component-representative";
+  }
+
+  function isSelectedMainComponentGapMarker(properties) {
+    return properties?.feature_type === "reviewable-gap-endpoint" &&
+      properties.gap_marker_kind === "selected-main-component-representative";
+  }
+
+  function humanStatus(raw) {
+    const labels = {
+      "existing-provision": "Existing provision",
+      "upgrade-required": "Upgrade required",
+      "proposed-new-link": "Proposed new link",
+      "unresolved-gap": "Unresolved gap",
+      "officer-divergence": "Officer divergence",
+      "candidate-discarded": "Candidate discarded",
+      "undetermined": "Undetermined",
+      "served": "Served",
+      "served-provisional": "Served provisionally",
+      "network-gap": "Network gap",
+      "evidence-unavailable": "Evidence unavailable",
+      "unavailable": "Unavailable",
+      "available": "Available",
+      "inferred": "Inferred",
+      "unresolved": "Unresolved"
+    };
+    return labels[String(raw)] || humanLabel(String(raw));
+  }
+
+  function humanBasis(raw) {
+    return humanLabel(String(raw));
+  }
+
+  function placeNameForId(raw) {
+    if (!hasDataValue(raw)) return null;
+    return placeNamesById.get(String(raw)) || null;
+  }
+
+  function artifactName(artifact) {
+    const properties = artifact.feature.properties || {};
+    const featureType = String(properties.feature_type || "");
+    if (featureType === "reviewable-gap-endpoint") {
+      if (isMeshGapMarker(properties)) return "Network coverage gap";
+      if (isSelectedMainComponentGapMarker(properties)) {
+        return "Disconnected Main component (representative location)";
+      }
+      if (isAroadComponentGapMarker(properties)) {
+        return "Disconnected A-road component (representative location)";
+      }
+      return "Unresolved network endpoint";
+    }
+    const named = firstDataValue(
+        properties.name,
+        properties.place_name,
+        properties.community_name,
+        properties.school_name,
+        properties.route_name,
+        properties.title,
+        properties.label
+    );
+    if (hasDataValue(named)) return String(named);
+    const from = firstDataValue(
+      properties.from_place_name,
+      properties.school_name,
+      properties.place_name,
+      properties.community_name,
+      properties.from_root_spine_name,
+      placeNameForId(properties.from_place_id),
+      placeNameForId(properties.from_place)
+    );
+    const to = firstDataValue(
+      properties.to_place_name,
+      properties.parent_target_name,
+      properties.spine_name,
+      properties.to_root_spine_name,
+      placeNameForId(properties.to_place_id),
+      placeNameForId(properties.to_place)
+    );
+    if (hasDataValue(from) && hasDataValue(to)) return `${from} → ${to}`;
+    if (hasDataValue(from)) return String(from);
+    if (artifact.sourceId === "places") return "Unnamed place";
+    if (featureType === "reviewable-selected-route") {
+      return properties.network_role === "urban-main-road-spine"
+        ? "Urban main-road section"
+        : "Strategic route section";
+    }
+    return humanLabel(featureType || artifact.layerId);
+  }
+
+  function artifactRole(artifact) {
+    const properties = artifact.feature.properties || {};
+    const networkRole = String(properties.network_role || "");
+    const featureType = String(properties.feature_type || "");
+    if (featureType === "reviewable-gap-endpoint") {
+      if (isMeshGapMarker(properties)) return "Network coverage gap";
+      if (isSelectedMainComponentGapMarker(properties)) {
+        return "Disconnected Main component marker";
+      }
+      if (isAroadComponentGapMarker(properties)) {
+        return "Disconnected A-road component marker";
+      }
+      return "Material network gap endpoint";
+    }
+    if (artifact.sourceId === "places") {
+      return hasDataValue(properties.kind)
+        ? `Named ${String(properties.kind).replaceAll("-", " ")} reference`
+        : "Named place reference";
+    }
+    if (properties.layer === "Strategic Main Network") {
+      return networkRole === "urban-main-road-spine"
+        ? "Strategic Main Network urban main-road spine"
+        : "Strategic Main Network structural route";
+    }
+    if (properties.layer === "Access Support") {
+      return {
+        "community-access": "Access Support community connection",
+        "school-access": "Access Support school connection",
+        "strategic-destination-access": "Access Support strategic destination connection",
+        "cross-spine-connector": "Access Support cross-spine connector"
+      }[networkRole] || "Access Support route";
+    }
+    return {
+      "strategic-spine": "Strategic Main Network structural route",
+      "a-road-spine": "Strategic Main Network structural route",
+      "ncn-route": "Strategic Main Network structural route",
+      "ncn-link": "Strategic Main Network structural route",
+      "declassified-ncn-route": "Strategic Main Network structural route",
+      "greenway-cycleway": "Strategic Main Network structural route",
+      "urban-main-road-spine": "Strategic Main Network urban main-road spine",
+      "spine-access-connection": "Access Support community connection",
+      "school-access-connection": "Access Support school connection",
+      "school-access-gap": "Access Support school access gap",
+      "cross-spine-connector": "Access Support cross-spine connector",
+      "gap": "Network gap",
+      "gradient-section": "Gradient section evidence",
+      "topography-profile": "Topography profile evidence",
+      "reviewable-selected-route": "Selected network route",
+      "reviewable-gap-endpoint": "Material network gap endpoint",
+      "asset-existing-provision": "Existing active-travel asset evidence",
+      "asset-upgrade-required": "Upgradeable active-travel asset evidence",
+      "reviewable-unselected-candidate": "Unselected alignment candidate",
+      "officer-compiler-divergence": "Officer–compiler divergence evidence",
+      "place": "Named place reference",
+      "community": "Named community reference",
+      "school": "Education site reference",
+      "low-traffic-area": "Candidate low-traffic area",
+      "low-traffic-area-portal": "Candidate low-traffic area portal",
+      "crossing-warning": "Crossing warning evidence",
+      "dft-motor-traffic": "DfT motor-traffic evidence"
+    }[featureType] || (networkRole && humanLabel(networkRole)) || humanLabel(featureType || artifact.layerId);
+  }
+
+  function artifactChoiceLabel(properties) {
+    const featureType = String(properties?.feature_type || "");
+    if (featureType === "reviewable-selected-route") return "Preferred route";
+    if (featureType === "reviewable-unselected-candidate") return "Considered alternative";
+    return null;
+  }
+
+  function artifactSelectionReason(properties) {
+    return firstDataValue(
+      properties?.selection_reason,
+      properties?.decision_reason,
+      properties?.selection_rationale
+    );
+  }
+
+  function artifactComparisonReason(properties) {
+    return firstDataValue(properties?.comparison_reason);
+  }
+
+  function artifactChoiceAttribution(properties) {
+    const authority = String(
+      firstDataValue(
+        properties?.decision_attribution,
+        properties?.selection_authority,
+        properties?.authority
+      ) || ""
+    ).toLowerCase();
+    if (["compiler", "officer", "governed-reference", "governed-reference-provisional", "gap"].includes(authority)) {
+      return authority === "governed-reference" || authority === "governed-reference-provisional"
+        ? "Governed reference"
+        : humanLabel(authority);
+    }
+    const variant = String(properties?.divergence_variant || "").toLowerCase();
+    if (["compiler", "officer"].includes(variant)) return humanLabel(variant);
+    return null;
+  }
+
+  function artifactRecordedReason(properties) {
+    return firstDataValue(
+      properties.rationale,
+      properties.selection_reason,
+      properties.decision_reason,
+      properties.comparison_reason,
+      properties.admission_rationale,
+      properties.reason
+    );
+  }
+
+  function artifactWhyShown(artifact, role) {
+    const properties = artifact.feature.properties || {};
+    const featureType = String(properties.feature_type || "");
+    if (isMeshGapMarker(properties)) {
+      return "Shows where network coverage is missing.";
+    }
+    if (isAroadComponentGapMarker(properties)) {
+      return properties.gap_marker_disclaimer ||
+        "Representative location for a disconnected official A-road source component.";
+    }
+    if (isSelectedMainComponentGapMarker(properties)) {
+      return properties.gap_marker_disclaimer ||
+        "Representative location for a disconnected selected Main component.";
+    }
+    const rationale = artifactRecordedReason(properties);
+    if (hasDataValue(rationale)) return contextualText(rationale);
+    if (artifact.sourceId === "places") {
+      return "Named place shown for orientation.";
+    }
+    if (properties.layer === "Strategic Main Network") {
+      return "Part of the proposed main network.";
+    }
+    if (properties.layer === "Access Support") {
+      return "Connects places to the main network.";
+    }
+    if (properties.feature_type === "reviewable-selected-route") {
+      return "Part of the proposed network.";
+    }
+    if ([
+      "strategic-spine",
+      "a-road-spine",
+      "ncn-route",
+      "ncn-link",
+      "declassified-ncn-route",
+      "greenway-cycleway"
+    ].includes(properties.feature_type)) {
+      return "Part of the proposed main network.";
+    }
+    if (featureType === "reviewable-gap-endpoint") {
+      return "Shows where a connection is missing or unresolved.";
+    }
+    return `Shown as ${String(role).toLowerCase()}.`;
+  }
+
+  function appendArtifactSemanticSummary(panel, artifact, { includeChoiceDetails = true } = {}) {
+    const properties = artifact.feature.properties || {};
+    const featureType = String(properties.feature_type || "");
+    const heading = document.createElement("h3");
+    heading.id = "details-heading";
+    heading.textContent = artifactName(artifact);
+    const role = artifactRole(artifact);
+    const roleText = document.createElement("p");
+    roleText.className = "artifact-role";
+    roleText.textContent = `Role: ${role}`;
+    const whyText = document.createElement("p");
+    whyText.className = "artifact-why";
+    const choice = artifactChoiceLabel(properties);
+    const choiceReason = includeChoiceDetails && featureType === "reviewable-selected-route"
+      ? artifactSelectionReason(properties)
+      : includeChoiceDetails && featureType === "reviewable-unselected-candidate"
+        ? artifactComparisonReason(properties)
+        : null;
+    const recordedReason = !choice || includeChoiceDetails
+      ? artifactRecordedReason(properties)
+      : null;
+    if (hasDataValue(choiceReason)) {
+      whyText.textContent = `${featureType === "reviewable-unselected-candidate" ? "Comparison reason" : "Selection reason"}: ${contextualText(choiceReason)}`;
+    } else if (choice === "Considered alternative") {
+      whyText.textContent = "Purpose: Considered alongside the preferred route; comparison reason not recorded.";
+    } else if (!includeChoiceDetails && choice) {
+      whyText.textContent = `Purpose: ${choice} for this journey; see the comparison below.`;
+    } else {
+      whyText.textContent = hasDataValue(recordedReason)
+        ? `Recorded reason: ${contextualText(recordedReason)}`
+        : `Purpose: ${artifactWhyShown(artifact, role)}`;
+    }
+    const list = document.createElement("dl");
+    const status = firstDataValue(properties.disposition, properties.status, properties.display_state);
+    if (hasDataValue(status)) addDefinition(list, "Status", humanStatus(status));
+    if (choice) addDefinition(list, "Choice", choice);
+    const attribution = artifactChoiceAttribution(properties);
+    if (includeChoiceDetails && choice && hasDataValue(attribution)) {
+      addDefinition(list, "Choice attribution", attribution);
+    }
+    if (includeChoiceDetails && choice && hasDataValue(properties.decision_id)) {
+      addDefinition(list, "Decision record", properties.decision_id);
+    }
+    if (includeChoiceDetails && choice && hasDataValue(properties.decision_maker)) {
+      addDefinition(list, "Decision maker", properties.decision_maker);
+    }
+    if (includeChoiceDetails && hasDataValue(properties.agent_decision_request_id)) {
+      addDefinition(list, "Decision request", properties.agent_decision_request_id);
+    }
+    if (includeChoiceDetails && hasDataValue(properties.agent_decision_choice_id)) {
+      addDefinition(list, "Selected choice", properties.agent_decision_choice_id);
+    }
+    if (artifact.sourceId === "places") {
+      const accessStatus = firstDataValue(
+        properties.access_status,
+        properties.service_status,
+        properties.access_point_status
+      );
+      if (hasDataValue(accessStatus)) addDefinition(list, "Access status", humanStatus(accessStatus));
+    }
+    panel.append(heading);
+    if (heading.textContent !== role) panel.append(roleText);
+    panel.append(whyText, list);
+    return list;
+  }
+
   function artifactPresentation(artifact) {
     const properties = artifact.feature.properties || {};
     const featureType = properties.feature_type;
@@ -1154,7 +1523,7 @@
     if (layerId === "spine-access-connections" || featureType === "spine-access-connection") {
       return {
         colour: "Dashed teal",
-        meaning: "Selected network — an access connection from a served Place to a Strategic Spine."
+        meaning: "Selected network — an Access Support connection between a Place and a Strategic Spine."
       };
     }
     if (
@@ -1218,11 +1587,42 @@
   function resolveRenderedArtifact(rendered) {
     const sourceId = rendered.source;
     const layerId = rendered.layer?.id || "unknown";
+    if (sourceId === "strategic-main-display") {
+      const journeyArtifacts = parseList(rendered.properties?.participating_journey_ids)
+        .map((journeyId) => reviewable.features.find((feature) =>
+          String(feature.id) === String(journeyId) ||
+          String(feature.properties?.section_id || "") === String(journeyId)
+        ))
+        .filter(Boolean)
+        .map((feature) => reviewLensState.artifactRecord(feature, "reviewable", layerId))
+        .filter(Boolean);
+      if (journeyArtifacts.length === 1) return journeyArtifacts[0];
+      return {
+        key: `strategic-main-display:${String(rendered.id)}`,
+        id: String(rendered.id),
+        sourceId,
+        layerId,
+        feature: rendered,
+        journeyArtifacts,
+      };
+    }
     const renderedId = reviewLensState.stableArtifactId(rendered);
     const original = sourceFeatures(sourceId).find(
       (candidate) => reviewLensState.stableArtifactId(candidate) === renderedId
     );
     return reviewLensState.artifactRecord(original || rendered, sourceId, layerId);
+  }
+
+  function resolveRelatedAlternative(rendered) {
+    const renderedId = reviewLensState.stableArtifactId(rendered);
+    const candidateId = rendered.properties?.candidate_id;
+    const original = sourceFeatures("reviewable").find(
+      (candidate) => reviewLensState.stableArtifactId(candidate) === renderedId ||
+        candidate.properties?.candidate_id === candidateId
+    );
+    return original
+      ? reviewLensState.artifactRecord(original, "reviewable", "reviewable-unselected-candidates")
+      : null;
   }
 
   function networkArtifact(id, layerId = "feature-index") {
@@ -1242,6 +1642,15 @@
   }
 
   function artifactAt(point) {
+    if (map.getLayer("review-lens-related-alternatives")) {
+      const related = map.queryRenderedFeatures(point, {
+        layers: ["review-lens-related-alternatives"]
+      });
+      if (related.length) {
+        const relatedArtifact = resolveRelatedAlternative(related[0]);
+        if (relatedArtifact) return relatedArtifact;
+      }
+    }
     const layers = selectableArtifactLayers();
     if (!layers.length) return null;
     const rendered = map.queryRenderedFeatures(point, { layers });
@@ -1256,16 +1665,64 @@
     return selected ? resolveRenderedArtifact(selected) : null;
   }
 
+  function setLensArtifactHighlight(artifact) {
+    const source = map.getSource("review-lens-highlight");
+    if (!source || typeof source.setData !== "function") return;
+    const geometry = artifact?.feature?.geometry;
+    source.setData(geometry
+      ? {
+        type: "FeatureCollection",
+        features: [{
+          type: "Feature",
+          id: "review-lens-highlight",
+          geometry: JSON.parse(JSON.stringify(geometry)),
+          properties: {}
+        }]
+      }
+      : { type: "FeatureCollection", features: [] }
+    );
+  }
+
+  function setLensRelatedAlternatives(artifacts) {
+    const source = map.getSource("review-lens-related-alternatives");
+    if (!source || typeof source.setData !== "function") return;
+    const features = artifacts.map((artifact) => ({
+      type: "Feature",
+      id: artifact.id,
+      geometry: JSON.parse(JSON.stringify(artifact.feature.geometry)),
+      properties: {
+        candidate_set_id: artifact.feature.properties?.candidate_set_id,
+        feature_type: artifact.feature.properties?.feature_type,
+        candidate_id: artifact.feature.properties?.candidate_id,
+        rendered_feature_id: artifact.id
+      }
+    }));
+    source.setData({ type: "FeatureCollection", features });
+    if (map.getLayer("review-lens-related-alternatives")) {
+      map.setLayoutProperty(
+        "review-lens-related-alternatives",
+        "visibility",
+        features.length ? "visible" : "none"
+      );
+    }
+  }
+
   function renderEmptyArtifactPanel() {
     const lens = document.querySelector("#review-lens");
     const panel = document.querySelector("#feature-details");
     panel.replaceChildren();
     lens.hidden = true;
     lens.dataset.state = "preview";
+    lens.style.left = "";
+    lens.style.right = "";
+    lens.style.top = "";
+    lens.style.bottom = "";
+    setLensArtifactHighlight(null);
     const gradientDetails = document.querySelector("#review-gradient-details");
     gradientDetails.hidden = true;
     gradientDetails.setAttribute("aria-expanded", "false");
     document.querySelector("#linear-evidence-view").hidden = true;
+    setLensRelatedAlternatives([]);
   }
 
   function showReviewLens() {
@@ -1299,13 +1756,6 @@
   }
 
   function appendArtifactContext(panel, artifact) {
-    const origin = document.createElement("dl");
-    origin.className = "artifact-origin";
-    addDefinition(origin, "Data source", artifact.sourceId);
-    addDefinition(origin, "Rendered layer", artifact.layerId);
-    addDefinition(origin, "Geometry type", value(artifact.feature.geometry?.type));
-    panel.append(origin);
-
     const properties = artifact.feature.properties || {};
     const entries = Object.entries(properties)
       .filter(([, raw]) => raw !== null && raw !== undefined && raw !== "")
@@ -1313,8 +1763,17 @@
     const disclosure = document.createElement("details");
     disclosure.className = "artifact-context";
     const summary = document.createElement("summary");
-    summary.textContent = `All contextual properties (${entries.length})`;
+    summary.textContent = `Technical details · All contextual properties (${entries.length})`;
     const list = document.createElement("dl");
+    addDefinition(list, "Stable ID", artifact.id);
+    addDefinition(list, "Raw type", value(properties.feature_type, artifact.feature.type));
+    addDefinition(list, "Data source", artifact.sourceId);
+    addDefinition(list, "Rendered layer", artifact.layerId);
+    addDefinition(list, "Geometry type", value(artifact.feature.geometry?.type));
+    const fingerprints = Object.entries(properties)
+      .filter(([key, raw]) => hasDataValue(raw) && /fingerprint/i.test(key))
+      .map(([key, raw]) => `${humanLabel(key)}: ${contextualText(raw)}`);
+    if (fingerprints.length) addDefinition(list, "Fingerprints", fingerprints.join(" · "));
     entries.forEach(([key, raw]) => {
       addDefinition(list, humanLabel(key), contextualText(raw));
     });
@@ -1322,80 +1781,85 @@
     panel.append(disclosure);
   }
 
+  function appendArtifactAppearance(panel, artifact) {
+    const presentation = artifactPresentation(artifact);
+    if (!presentation) return;
+    const disclosure = document.createElement("details");
+    disclosure.className = "artifact-appearance";
+    const summary = document.createElement("summary");
+    summary.textContent = "Colour and line treatment";
+    const list = document.createElement("dl");
+    addDefinition(list, "Line colour", presentation.colour);
+    addDefinition(list, "Map meaning", presentation.meaning);
+    disclosure.append(summary, list);
+    panel.append(disclosure);
+  }
+
   function renderGenericArtifact(artifact) {
-    const properties = artifact.feature.properties || {};
     const panel = document.querySelector("#feature-details");
     panel.replaceChildren();
-    const heading = document.createElement("h3");
-    heading.id = "details-heading";
-    heading.textContent = value(
-      properties.name,
-      properties.label || properties.title || humanLabel(
-        properties.feature_type || artifact.layerId
-      )
-    );
-    const list = document.createElement("dl");
-    addDefinition(list, "Stable ID", artifact.id);
-    addDefinition(list, "Type", value(properties.kind, properties.feature_type || artifact.layerId));
-    if (properties.disposition || properties.status || properties.display_state) {
-      addDefinition(list, "Status", value(properties.disposition, properties.status || properties.display_state));
-    }
-    if (properties.rationale || properties.reason) {
-      addDefinition(list, "Rationale", value(properties.rationale, properties.reason));
-    }
-    panel.append(heading, list);
+    appendArtifactSemanticSummary(panel, artifact);
     return panel;
   }
 
-  function renderArtifactPreview(artifact) {
-    const properties = artifact.feature.properties || {};
-    const panel = document.querySelector("#feature-details");
-    panel.replaceChildren();
-    const heading = document.createElement("h3");
-    heading.id = "details-heading";
-    heading.textContent = value(
-      properties.name,
-      properties.route_id || properties.candidate_id || properties.section_id ||
-        properties.label || properties.title || humanLabel(
-          properties.feature_type || artifact.layerId
-        )
-    );
-    const list = document.createElement("dl");
+  function appendArtifactReviewEvidence(list, properties, { includeChoiceDetails = true } = {}) {
     const addAvailable = (label, ...candidates) => {
-      const raw = candidates.find((candidate) =>
-        candidate !== null && candidate !== undefined && candidate !== ""
-      );
+      const raw = candidates.find(hasDataValue);
       if (raw !== undefined) addDefinition(list, label, contextualText(raw));
     };
-    const presentation = artifactPresentation(artifact);
-    addAvailable("Line colour", presentation?.colour);
-    addAvailable("Map meaning", presentation?.meaning);
-    addDefinition(list, "Stable ID", artifact.id);
-    addAvailable("Type", properties.kind, properties.feature_type, artifact.layerId);
-    addAvailable("Status", properties.disposition, properties.status, properties.display_state);
     addAvailable("Category", properties.category);
-    addAvailable("Route role", properties.network_role, properties.classification);
-    addAvailable(
-      "Intervention",
+    const status = firstDataValue(
+      properties.disposition,
+      properties.status,
+      properties.display_state
+    );
+    const interventionCandidates = [
       properties.intervention_state,
       properties.intervention_assumption,
       properties.intervention_archetype
-    );
-    addAvailable(
-      "Alignment Basis",
-      properties.primary_alignment_basis,
-      properties.alignment_basis
-    );
-    addAvailable("Length", properties.distance_km == null ? null : `${properties.distance_km} km`);
-    addAvailable(
-      "Material finding",
-      properties.rationale,
-      properties.reason,
-      properties.selection_reason,
-      properties.admission_rationale
-    );
-    panel.append(heading, list);
-    setHighlight(artifact.sourceId === "network" ? artifact.id : null);
+    ].filter(hasDataValue);
+    const intervention = interventionCandidates.find((candidate) => candidate !== status);
+    if (hasDataValue(intervention)) addDefinition(list, "Intervention", humanLabel(intervention));
+    const alignmentBasis = firstDataValue(properties.primary_alignment_basis, properties.alignment_basis);
+    if (hasDataValue(alignmentBasis)) addDefinition(list, "Alignment basis", humanBasis(alignmentBasis));
+    const lengthKm = firstDataValue(properties.distance_km, properties.length_km);
+    if (hasDataValue(lengthKm)) addDefinition(list, "Length", `${lengthKm} km`);
+    const servedPlaceNames = [...new Set(
+      parseList(properties.served_network_place_ids)
+        .map(placeNameForId)
+        .filter(hasDataValue)
+    )];
+    if (servedPlaceNames.length) addDefinition(list, "Places served", servedPlaceNames.join(", "));
+    const endpointNames = [
+      ...parseList(properties.endpoints).map(placeNameForId),
+      firstDataValue(properties.from_place_name, placeNameForId(properties.from_place_id), placeNameForId(properties.from_place)),
+      firstDataValue(properties.to_place_name, placeNameForId(properties.to_place_id), placeNameForId(properties.to_place))
+    ].filter(hasDataValue);
+    if (endpointNames.length) addDefinition(list, "Endpoints", [...new Set(endpointNames)].join(", "));
+    const isSelectedRoute = properties.feature_type === "reviewable-selected-route" ||
+      properties.layer === "Strategic Main Network";
+    const isAlternative = properties.feature_type === "reviewable-unselected-candidate";
+    if (includeChoiceDetails && isSelectedRoute) {
+      addDefinition(
+        list,
+        "Selection reason",
+        contextualText(artifactSelectionReason(properties) || "Not recorded")
+      );
+    } else if (includeChoiceDetails && isAlternative) {
+      addDefinition(
+        list,
+        "Comparison reason",
+        contextualText(artifactComparisonReason(properties) || "Not recorded")
+      );
+    }
+  }
+
+  function renderArtifactPreview(artifact, { includeEvidence = false } = {}) {
+    const properties = artifact.feature.properties || {};
+    const panel = document.querySelector("#feature-details");
+    panel.replaceChildren();
+    const list = appendArtifactSemanticSummary(panel, artifact);
+    if (includeEvidence) appendArtifactReviewEvidence(list, properties);
   }
 
   function finiteMetric(raw, scale = 1) {
@@ -1525,7 +1989,175 @@
     return chart;
   }
 
+  function reviewableChoiceMembers(artifact) {
+    if (artifact.sourceId !== "reviewable") return null;
+    const candidateSetId = artifact.feature.properties?.candidate_set_id;
+    if (!hasDataValue(candidateSetId)) return null;
+    const features = sourceFeatures("reviewable").filter(
+      (feature) => feature.properties?.candidate_set_id === candidateSetId
+    );
+    const preferred = features.filter(
+      (feature) => feature.properties?.feature_type === "reviewable-selected-route"
+    );
+    const alternatives = features.filter(
+      (feature) => feature.properties?.feature_type === "reviewable-unselected-candidate" &&
+        feature.properties?.admission_disposition === "admitted"
+    );
+    return {
+      candidateSetId,
+      preferred: preferred.map((feature) =>
+        reviewLensState.artifactRecord(feature, "reviewable", "reviewable-route-comparison")
+      ),
+      alternatives: alternatives.map((feature) =>
+        reviewLensState.artifactRecord(feature, "reviewable", "reviewable-route-comparison")
+      )
+    };
+  }
+
+  function reviewableChoiceDisplayName(artifact) {
+    const properties = artifact.feature.properties || {};
+    const explicitName = firstDataValue(
+      properties.name,
+      properties.route_name,
+      properties.title,
+      properties.label
+    );
+    if (hasDataValue(explicitName)) return String(explicitName);
+    const basis = firstDataValue(properties.primary_alignment_basis, properties.alignment_basis);
+    if (hasDataValue(basis)) return humanBasis(basis);
+    const endpointNames = [
+      ...parseList(properties.endpoints),
+      properties.from_place_name,
+      properties.to_place_name,
+      properties.spine_name
+    ]
+      .filter(hasDataValue)
+      .map((item) => placeNameForId(item) || String(item))
+      .filter((item) => !/^(candidate|connection|obligation|section|endpoint)([-_]|$)/i.test(item));
+    const uniqueEndpointNames = [...new Set(endpointNames)];
+    if (uniqueEndpointNames.length >= 2) return uniqueEndpointNames.slice(0, 2).join(" → ");
+    const role = firstDataValue(properties.network_role);
+    if (hasDataValue(role)) return humanLabel(role);
+    return artifact.feature.properties?.feature_type === "reviewable-selected-route"
+      ? "Selected route"
+      : "Considered alternative";
+  }
+
+  function readableChoiceReason(raw, members) {
+    if (!hasDataValue(raw)) return "Not recorded";
+    let reason = contextualText(raw);
+    members
+      .map((member) => [member.feature.properties?.candidate_id, reviewableChoiceDisplayName(member)])
+      .filter(([candidateId, label]) => hasDataValue(candidateId) && hasDataValue(label))
+      .sort(([left], [right]) => String(right).length - String(left).length)
+      .forEach(([candidateId, label]) => {
+        reason = reason.split(String(candidateId)).join(String(label));
+      });
+    const dimensions = {
+      "candidate-source-precedence": "candidate source precedence",
+      "mandatory-obligation-service": "mandatory obligation service",
+      "reuse-class": "reuse class",
+      "intervention-state": "intervention state",
+      "route-length": "route length",
+      "route-detour": "route detour",
+      "stable-candidate-id": "stable candidate ID"
+    };
+    Object.entries(dimensions).forEach(([rawDimension, readableDimension]) => {
+      reason = reason.replaceAll(rawDimension, readableDimension);
+    });
+    return reason;
+  }
+
+  function renderReviewableChoiceComparison(panel, artifact) {
+    const choiceMembers = reviewableChoiceMembers(artifact);
+    if (!choiceMembers || !choiceMembers.preferred.length || !choiceMembers.alternatives.length) {
+      setLensRelatedAlternatives([]);
+      return;
+    }
+    setLensRelatedAlternatives(
+      choiceMembers.alternatives.filter((member) => member.id !== artifact.id)
+    );
+    const members = [...choiceMembers.preferred, ...choiceMembers.alternatives];
+    const section = document.createElement("section");
+    section.className = "alignment-comparison route-choice-comparison";
+    section.setAttribute("aria-label", "Journey comparison");
+    const heading = document.createElement("h4");
+    heading.textContent = `Journey comparison (${members.length})`;
+    const note = document.createElement("p");
+    note.className = "comparison-note";
+    note.textContent = "Preferred route and admitted considered alternatives for this journey.";
+    const list = document.createElement("div");
+    list.className = "route-choice-list";
+    members.forEach((member) => {
+      const properties = member.feature.properties || {};
+      const choice = artifactChoiceLabel(properties);
+      const card = document.createElement("article");
+      card.className = `route-choice-card ${choice === "Preferred route" ? "preferred" : "alternative"}`;
+      const title = document.createElement("h5");
+      title.textContent = `${choice || "Route option"}: ${reviewableChoiceDisplayName(member)}`;
+      const details = document.createElement("dl");
+      if (choice === "Preferred route") {
+        addDefinition(
+          details,
+          "Selection reason",
+          readableChoiceReason(artifactSelectionReason(properties), members)
+        );
+        const attribution = artifactChoiceAttribution(properties);
+        if (hasDataValue(attribution)) addDefinition(details, "Choice attribution", attribution);
+      } else {
+        addDefinition(
+          details,
+          "Comparison reason",
+          readableChoiceReason(artifactComparisonReason(properties), members)
+        );
+        addDefinition(details, "Admission", "Admitted alternative");
+      }
+      card.append(title, details);
+      list.append(card);
+    });
+    const technical = document.createElement("details");
+    technical.className = "route-choice-technical";
+    const technicalSummary = document.createElement("summary");
+    technicalSummary.textContent = "Technical comparison identifiers";
+    const technicalList = document.createElement("dl");
+    addDefinition(technicalList, "Candidate set ID", choiceMembers.candidateSetId);
+    addDefinition(
+      technicalList,
+      "Preferred candidate ID",
+      choiceMembers.preferred.map((member) => member.feature.properties?.candidate_id || member.id).join(", ")
+    );
+    addDefinition(
+      technicalList,
+      "Admitted alternative candidate IDs",
+      choiceMembers.alternatives.map((member) => member.feature.properties?.candidate_id || member.id).join(", ")
+    );
+    addDefinition(
+      technicalList,
+      "Recorded selection reason",
+      choiceMembers.preferred
+        .map((member) => artifactSelectionReason(member.feature.properties))
+        .filter(hasDataValue)
+        .join("; ") || "Not recorded"
+    );
+    addDefinition(
+      technicalList,
+      "Recorded comparison reasons",
+      choiceMembers.alternatives
+        .map((member) => artifactComparisonReason(member.feature.properties))
+        .filter(hasDataValue)
+        .join("; ") || "Not recorded"
+    );
+    technical.append(technicalSummary, technicalList);
+    section.append(heading, note, list, technical);
+    panel.append(section);
+  }
+
   function renderAlignmentComparison(panel, artifact) {
+    if (artifact.sourceId === "reviewable") {
+      renderReviewableChoiceComparison(panel, artifact);
+      return;
+    }
+    setLensRelatedAlternatives([]);
     if (artifact.sourceId !== "reference-satn-options") return;
     const properties = artifact.feature.properties || {};
     const candidateSetId = properties.candidate_set_id;
@@ -1628,6 +2260,8 @@
   }
 
   function renderSegmentComparison(artifacts) {
+    setLensArtifactHighlight(null);
+    setLensRelatedAlternatives([]);
     const panel = document.querySelector("#feature-details");
     panel.replaceChildren();
     const heading = document.createElement("h3");
@@ -1643,9 +2277,36 @@
     showReviewLens();
   }
 
+  function renderStrategicMainJourneyChooser(panel, artifact) {
+    const journeys = artifact.journeyArtifacts || [];
+    panel.replaceChildren();
+    const heading = document.createElement("h3");
+    heading.id = "details-heading";
+    heading.textContent = "Shared Main section";
+    const note = document.createElement("p");
+    note.className = "comparison-note";
+    note.textContent = "This section serves several selected journeys. Choose a journey to open its comparison.";
+    const list = document.createElement("div");
+    list.className = "route-choice-list shared-journey-list";
+    journeys.forEach((journey) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "route-choice-card shared-journey-choice";
+      const endpointNames = urbanJourneyEndpointNames(journey.feature);
+      const journeyName = endpointNames.length >= 2
+        ? endpointNames.slice(0, 2).join(" → ")
+        : reviewableChoiceDisplayName(journey);
+      button.textContent = `Open ${journeyName}`;
+      button.addEventListener("click", () => selectReviewableChoiceArtifact(journey));
+      list.append(button);
+    });
+    panel.append(heading, note, list);
+  }
+
   function showArtifactDetails(artifact) {
     if (!artifact) return;
-    if (!lensState.pinnedArtifact) {
+    const pinned = Boolean(lensState.pinnedArtifact);
+    if (!pinned) {
       syncLensState(reviewLensState.reduceLens(
         lensState,
         { type: reviewLensState.ActionType.PREVIEW_ARTIFACT, artifact }
@@ -1656,56 +2317,65 @@
         (candidate) => reviewLensState.stableArtifactId(candidate) === artifact.id
       )
       : null;
-    if (!lensState.pinnedArtifact) {
+    if (!pinned) {
       renderArtifactPreview(artifact);
     } else if (canonical) {
       showDetails(canonical.id);
     } else if (artifact.sourceId === "reviewable") {
-      renderReviewableDetails(artifact);
+      renderReviewableDetails(artifact, { includeChoiceDetails: false });
     } else {
-      renderGenericArtifact(artifact);
-      setHighlight(null);
+      renderArtifactPreview(artifact, { includeEvidence: true });
     }
-    appendArtifactContext(document.querySelector("#feature-details"), artifact);
-    renderAlignmentComparison(document.querySelector("#feature-details"), artifact);
-    renderPopulationSelectionSummary(document.querySelector("#feature-details"));
+    if (artifact.sourceId === "strategic-main-display") {
+      const panel = document.querySelector("#feature-details");
+      renderStrategicMainJourneyChooser(panel, artifact);
+    }
+    setLensArtifactHighlight(artifact);
+    if (pinned) {
+      const panel = document.querySelector("#feature-details");
+      if (artifact.sourceId === "reviewable") renderAlignmentComparison(panel, artifact);
+      appendArtifactContext(panel, artifact);
+      appendArtifactAppearance(panel, artifact);
+      if (artifact.sourceId !== "reviewable") renderAlignmentComparison(panel, artifact);
+      renderPopulationSelectionSummary(panel);
+    }
     showReviewLens();
   }
 
-  function renderReviewableDetails(artifact) {
+  function renderReviewableDetails(artifact, { includeChoiceDetails = true } = {}) {
     const properties = artifact.feature.properties || {};
     const panel = document.querySelector("#feature-details");
     panel.replaceChildren();
-    const heading = document.createElement("h3");
-    heading.id = "details-heading";
-    heading.textContent = value(
-      properties.route_id,
-      properties.endpoint_id || properties.asset_id || humanLabel(properties.feature_type || "Reviewable evidence")
-    );
-    const list = document.createElement("dl");
-    addDefinition(list, "Stable ID", artifact.id);
-    addDefinition(list, "Layer", humanLabel(properties.feature_type || "reviewable evidence"));
-    addDefinition(list, "Display state", value(properties.display_state));
-    addDefinition(list, "Primary Alignment Basis", value(properties.primary_alignment_basis));
-    addDefinition(list, "All Alignment Bases", parseList(properties.alignment_bases).join(", ") || "None");
-    addDefinition(list, "Evidence fingerprints", parseList(properties.evidence_fingerprints).join(", ") || "None");
-    addDefinition(list, "Geometry meaning", value(properties.geometry_semantics));
-    if (properties.divergence_variant) {
-      addDefinition(list, "Divergence variant", value(properties.divergence_variant));
-      addDefinition(list, "Officer candidate", value(properties.officer_candidate_id));
-      addDefinition(list, "Compiler candidate", value(properties.compiler_candidate_id));
-      addDefinition(list, "Officer decision", value(properties.officer_decision_id));
+    const choiceMembers = reviewableChoiceMembers(artifact);
+    const showChoiceDetails = includeChoiceDetails || !choiceMembers?.alternatives?.length;
+    const list = appendArtifactSemanticSummary(panel, artifact, {
+      includeChoiceDetails: showChoiceDetails
+    });
+    const addData = (label, raw) => {
+      if (hasDataValue(raw)) addDefinition(list, label, contextualText(raw));
+    };
+    appendArtifactReviewEvidence(list, properties, {
+      includeChoiceDetails: showChoiceDetails
+    });
+    const allBases = parseList(properties.alignment_bases).filter(hasDataValue);
+    if (allBases.length) addData("Alignment bases", allBases.map(humanBasis).join(", "));
+    if (isMeshGapMarker(properties)) {
+      addData("Coverage point", properties.proof_point_position);
     }
-    if (properties.feature_type === "reviewable-gap-endpoint") {
-      addDefinition(list, "Gap reason", value(properties.reason));
-      addDefinition(list, "Endpoint", value(properties.endpoint_id));
+    if (isAroadComponentGapMarker(properties)) {
+      addData("Location note", properties.gap_marker_disclaimer);
+    }
+    if (!isAroadComponentGapMarker(properties) && !isSelectedMainComponentGapMarker(properties)) {
+      addData("Geometry meaning", properties.geometry_semantics);
+    }
+    if (properties.divergence_variant) {
+      addData("Divergence variant", humanLabel(properties.divergence_variant));
     }
     if (properties.feature_type === "dft-motor-traffic") {
-      addDefinition(list, "Traffic count", value(properties.all_motor_vehicles));
-      addDefinition(list, "Observation year", value(properties.observation_year));
-      addDefinition(list, "Traffic geometry", value(properties.geometry_semantics));
+      addData("Traffic count", properties.all_motor_vehicles);
+      addData("Observation year", properties.observation_year);
+      addData("Traffic geometry", properties.geometry_semantics);
     }
-    panel.append(heading, list);
   }
 
   function renderReviewableFindings() {
@@ -1722,7 +2392,25 @@
       const button = document.createElement("button");
       button.type = "button";
       button.className = "finding-button";
-      button.textContent = `${value(properties.gap_id, "Gap")} · ${value(properties.endpoint_id, "unknown endpoint")} · ${feature.geometry ? "mapped endpoint" : "endpoint geometry unavailable"}`;
+      const location = isMeshGapMarker(properties)
+        ? hasDataValue(properties.proof_point_position)
+          ? `coverage point ${properties.proof_point_position}`
+          : "coverage point"
+        : isSelectedMainComponentGapMarker(properties)
+        ? "representative component location"
+        : isAroadComponentGapMarker(properties)
+        ? "representative component location"
+        : hasDataValue(properties.endpoint_id)
+        ? `endpoint ${properties.endpoint_id}`
+        : "endpoint location unavailable";
+      const geometryLabel = isMeshGapMarker(properties)
+        ? feature.geometry ? "coverage marker" : "coverage position unavailable"
+        : isSelectedMainComponentGapMarker(properties)
+        ? "component representative marker"
+        : isAroadComponentGapMarker(properties)
+        ? "component representative marker"
+        : feature.geometry ? "mapped endpoint" : "endpoint geometry unavailable";
+      button.textContent = `${value(properties.gap_id, "Gap")} · ${location} · ${geometryLabel}`;
       button.addEventListener("click", () => {
         const artifact = reviewLensState.artifactRecord(feature, "reviewable", "reviewable-findings");
         if (artifact) toggleArtifactPin(artifact);
@@ -1735,8 +2423,8 @@
     state.active = id;
     document.querySelectorAll(".connection").forEach((item) => {
       item.classList.toggle("active", item.dataset.featureId === id);
-      item.setAttribute("aria-pressed", String(lensState.pinned === item.dataset.featureId));
     });
+    syncConnectionPressedState();
     if (map.getLayer("connections-highlight")) {
       map.setFilter("connections-highlight", id ? ["==", ["id"], id] : ["==", ["id"], ""]);
     }
@@ -1773,156 +2461,148 @@
   function showDetails(id) {
     const feature = network.features.find((candidate) => candidate.id === id);
     if (!feature) return;
-    const properties = feature.properties;
+    const properties = feature.properties || {};
     const panel = document.querySelector("#feature-details");
+    const artifact = networkArtifact(id, properties.feature_type);
     panel.replaceChildren();
-    const heading = document.createElement("h3");
-    heading.id = "details-heading";
-    const isConnection = ["gap", "spine-access-connection", "school-access-connection", "school-access-gap", "branch-meeting-connection", "cross-spine-connector"].includes(properties.feature_type);
-    heading.textContent = isConnection
-      ? `${value(properties.from_place_name, properties.school_name || properties.place_name || properties.community_name || properties.from_root_spine_name || properties.from_place)} → ${value(properties.to_place_name, properties.parent_target_name || properties.spine_name || properties.to_root_spine_name || properties.to_place)}`
-      : value(properties.name, properties.school_name || properties.feature_type.replaceAll("-", " "));
-    const list = document.createElement("dl");
-    addDefinition(list, "Stable ID", id);
-    addDefinition(list, "Layer", properties.feature_type.replaceAll("-", " "));
+    const list = artifact
+      ? appendArtifactSemanticSummary(panel, artifact)
+      : document.createElement("dl");
+    const isSelectedRoute = properties.feature_type === "reviewable-selected-route" ||
+      properties.layer === "Strategic Main Network" ||
+      ["strategic-spine", "a-road-spine", "ncn-route", "ncn-link", "declassified-ncn-route", "greenway-cycleway"]
+        .includes(properties.feature_type);
+    if (isSelectedRoute && !hasDataValue(artifactSelectionReason(properties))) {
+      addDefinition(list, "Selection reason", "Not recorded");
+    }
+    if (!artifact) {
+      const heading = document.createElement("h3");
+      heading.id = "details-heading";
+      heading.textContent = value(properties.name, humanLabel(properties.feature_type || "Published feature"));
+      panel.prepend(heading, list);
+    }
+    const isConnection = [
+      "gap",
+      "spine-access-connection",
+      "school-access-connection",
+      "school-access-gap",
+      "branch-meeting-connection",
+      "cross-spine-connector"
+    ].includes(properties.feature_type);
+    const addData = (label, raw, formatter = contextualText) => {
+      if (hasDataValue(raw)) addDefinition(list, label, formatter(raw));
+    };
+    const humanData = (label, raw) => addData(label, raw, (valueToFormat) => humanLabel(valueToFormat));
+    const statusData = (label, raw) => addData(label, raw, (valueToFormat) => humanStatus(valueToFormat));
     if (!isConnection) {
       if (properties.feature_type === "population-display-section") {
-        addDefinition(list, "Network scope", value(properties.network_scope));
-        addDefinition(list, "Capture radius", `${value(properties.capture_radius_m)} m`);
-        addDefinition(list, "Total residents", value(properties.total_residents));
-        addDefinition(list, "Inside area residents", value(properties.inside_area_residents));
-        addDefinition(list, "Outside area residents", value(properties.outside_area_residents));
-        addDefinition(list, "Candidate group", value(properties.candidate_group_id));
-        addDefinition(list, "Alignment", value(properties.alignment_id));
-        addDefinition(list, "Section order", value(properties.section_order));
-        addDefinition(list, "Section distance", `${value(properties.start_distance_m)}–${value(properties.end_distance_m)} m`);
-        panel.append(heading, list);
-        setHighlight(id);
+        humanData("Network scope", properties.network_scope);
+        addData("Capture radius", properties.capture_radius_m, (raw) => `${raw} m`);
+        addData("Total residents", properties.total_residents);
+        addData("Inside area residents", properties.inside_area_residents);
+        addData("Outside area residents", properties.outside_area_residents);
+        addData("Section order", properties.section_order);
+        if (hasDataValue(properties.start_distance_m) && hasDataValue(properties.end_distance_m)) {
+          addData("Section distance", `${properties.start_distance_m}–${properties.end_distance_m} m`);
+        }
         return;
       }
       if (properties.feature_type === "gradient-section") {
-        addDefinition(list, "Gradient band", value(properties.gradient_band));
-        addDefinition(list, "Length", `${value(properties.length_m)} m`);
-        addDefinition(list, "Forward gradient", `${value(properties.forward_gradient_pct)}%`);
-        addDefinition(list, "Uphill direction", value(properties.uphill_direction));
-        addDefinition(list, "Sustained", value(properties.sustained));
-        addDefinition(list, "Sustained-window rationale", value(properties.sustained_rationale));
-        addDefinition(list, "Topography Profile", value(properties.profile_id));
-        addDefinition(list, "Generated edge", `${value(properties.edge_type)} · ${value(properties.edge_id)}`);
-        addDefinition(list, "Elevation Evidence", parseList(properties.elevation_evidence_ids).join(", ") || "None");
-        panel.append(heading, list);
-        setHighlight(id);
+        humanData("Gradient band", properties.gradient_band);
+        addData("Length", properties.length_m, (raw) => `${raw} m`);
+        addData("Forward gradient", properties.forward_gradient_pct, (raw) => `${raw}%`);
+        humanData("Uphill direction", properties.uphill_direction);
+        humanData("Sustained", properties.sustained);
+        addData("Sustained-window rationale", properties.sustained_rationale);
+        statusData("Elevation evidence", firstDataValue(properties.elevation_evidence_status, properties.evidence_status));
         return;
       }
-      addDefinition(list, "Category", value(properties.category));
-      addDefinition(list, "Network role", value(properties.network_role));
-      addDefinition(list, "Intervention assumption", value(properties.intervention_assumption));
-      addDefinition(list, "Design status", value(properties.design_status));
-      addDefinition(list, "Mapped features", value(properties.feature_count, 1));
-      addDefinition(list, "Source identifiers", value(properties.source_id));
+      addData("Category", properties.category);
+      humanData("Intervention assumption", properties.intervention_assumption);
+      statusData("Design status", properties.design_status);
+      addData("Mapped features", properties.feature_count);
       if (properties.feature_type === "low-traffic-area") {
-        addDefinition(list, "Candidate status", value(properties.status));
-        addDefinition(list, "Intervention need", value(properties.intervention_need));
-        addDefinition(list, "Boundary identifiers", parseList(properties.boundary_ids).join(", ") || "None");
-        addDefinition(list, "Named portals", value(properties.portal_count, 0));
-        addDefinition(list, "Geometry meaning", value(properties.permeability_representation));
+        statusData("Candidate status", properties.status);
+        humanData("Intervention need", properties.intervention_need);
+        addData("Named portals", properties.portal_count);
+        addData("Geometry meaning", properties.permeability_representation);
       }
       if (properties.feature_type === "low-traffic-area-portal") {
-        addDefinition(list, "Candidate area", value(properties.area_id));
-        addDefinition(list, "Circulation Boundary", value(properties.boundary_name));
-        addDefinition(list, "Boundary kind", value(properties.boundary_kind));
+        addData("Circulation boundary", properties.boundary_name);
+        humanData("Boundary kind", properties.boundary_kind);
       }
       if (["urban-spine", "urban-classification-unknown"].includes(properties.feature_type)) {
-        addDefinition(list, "Official classification", value(properties.official_classification));
-        addDefinition(list, "Classification status", value(properties.classification_status));
-        addDefinition(list, "Effective date", value(properties.effective_date));
-        addDefinition(list, "Licence", value(properties.licence));
-        addDefinition(list, "Content fingerprint", value(properties.content_fingerprint));
+        addData("Official classification", properties.official_classification);
+        statusData("Classification status", properties.classification_status);
+        addData("Effective date", properties.effective_date);
       }
       if (["school", "school-access-obligation"].includes(properties.feature_type)) {
-        addDefinition(list, "School kind", value(properties.school_kind, properties.category));
-        addDefinition(list, "School access point", value(properties.access_point_status));
-        addDefinition(list, "Access point source identifier", value(properties.access_point_source_id));
-        addDefinition(list, "Access rationale", value(properties.access_point_rationale));
-        addDefinition(list, "Service status", value(properties.service_status));
-        addDefinition(list, "Service rationale", value(properties.service_rationale));
+        humanData("School kind", firstDataValue(properties.school_kind, properties.category));
+        statusData("School access point", properties.access_point_status);
+        addData("Access rationale", properties.access_point_rationale);
+        statusData("Service status", properties.service_status);
+        addData("Service rationale", properties.service_rationale);
         if (properties.feature_type === "school-access-obligation") {
-          addDefinition(list, "Network scope", value(properties.network_scope));
-          addDefinition(list, "Continuity criterion", value(properties.criterion_continuity));
-          addDefinition(list, "Candidate area", value(properties.low_traffic_area_name, properties.low_traffic_area_id));
-          addDefinition(list, "Main-road portal", value(properties.portal_name, properties.portal_id));
-          addDefinition(list, "Fabric source identifiers", parseList(properties.fabric_source_ids).join(", ") || "None");
-          addDefinition(list, "Supporting evidence", value(properties.supporting_evidence));
-          addDefinition(list, "Finding", value(properties.finding, "None"));
-          addDefinition(list, "Geometry meaning", value(properties.geometry_semantics));
+          humanData("Network scope", properties.network_scope);
+          statusData("Continuity criterion", properties.criterion_continuity);
+          addData("Candidate area", properties.low_traffic_area_name);
+          addData("Main-road portal", properties.portal_name);
+          addData("Supporting evidence", properties.supporting_evidence);
+          addData("Finding", properties.finding);
+          addData("Geometry meaning", properties.geometry_semantics);
         }
       }
       if (properties.feature_type === "access-obligation") {
-        addDefinition(list, "Service status", value(properties.service_status));
-        addDefinition(list, "Service rationale", value(properties.service_rationale));
-        addDefinition(list, "Network scope", value(properties.network_scope));
-        addDefinition(list, "Continuity criterion", value(properties.criterion_continuity));
-        addDefinition(list, "Candidate area", value(properties.low_traffic_area_name, properties.low_traffic_area_id));
-        addDefinition(list, "Main-road portal", value(properties.portal_name, properties.portal_id));
-        addDefinition(list, "Urban spine", value(properties.urban_spine_id));
-        addDefinition(list, "Fabric source identifiers", parseList(properties.fabric_source_ids).join(", ") || "None");
-        addDefinition(list, "Supporting evidence", value(properties.supporting_evidence));
-        addDefinition(list, "Finding", value(properties.finding, "None"));
-        addDefinition(list, "Geometry meaning", value(properties.geometry_semantics));
+        statusData("Service status", properties.service_status);
+        addData("Service rationale", properties.service_rationale);
+        humanData("Network scope", properties.network_scope);
+        statusData("Continuity criterion", properties.criterion_continuity);
+        addData("Candidate area", properties.low_traffic_area_name);
+        addData("Main-road portal", properties.portal_name);
+        addData("Supporting evidence", properties.supporting_evidence);
+        addData("Finding", properties.finding);
+        addData("Geometry meaning", properties.geometry_semantics);
       }
       if (properties.feature_type === "school-street-assessment") {
-        addDefinition(list, "Assessment", `${value(properties.assessment_status)} — ${value(properties.assessment_label)}`);
-        addDefinition(list, "Rationale", value(properties.rationale));
-        addDefinition(list, "Qualification", value(properties.qualification));
-        addDefinition(list, "Entrance evidence", value(properties.access_point_status));
-        addDefinition(list, "Adjoining road", value(properties.adjoining_road_classification));
-        addDefinition(list, "Bus access", value(properties.bus_access));
-        addDefinition(list, "Essential access", value(properties.essential_access));
-        addDefinition(list, "Alternative through route", value(properties.alternative_through_route));
-        addDefinition(list, "Displacement risk", value(properties.displacement_risk));
-        addDefinition(list, "Missing evidence", parseList(properties.missing_evidence).join(", ") || "None");
-        addDefinition(list, "Source identifiers", parseList(properties.source_ids).join(", ") || "None");
+        const assessment = [properties.assessment_status, properties.assessment_label]
+          .filter(hasDataValue)
+          .map(humanLabel)
+          .join(" — ");
+        addData("Assessment", assessment);
+        addData("Qualification", properties.qualification);
+        statusData("Entrance evidence", properties.access_point_status);
+        addData("Adjoining road", properties.adjoining_road_classification);
+        humanData("Bus access", properties.bus_access);
+        humanData("Essential access", properties.essential_access);
+        humanData("Alternative through route", properties.alternative_through_route);
+        humanData("Displacement risk", properties.displacement_risk);
+        const missingEvidence = parseList(properties.missing_evidence).filter(hasDataValue);
+        if (missingEvidence.length) addData("Missing evidence", missingEvidence.map(humanLabel).join(", "));
       }
-      addTopographyDetails(list, properties);
-      panel.append(heading, list);
-      setHighlight(null);
       return;
     }
-    addDefinition(list, "Status", value(properties.status));
-    addDefinition(list, "Length", properties.distance_km == null ? "Unknown" : `${properties.distance_km} km`);
+    addData("Length", properties.distance_km, (raw) => `${raw} km`);
     if (properties.feature_type === "spine-access-connection") {
-      addDefinition(list, "Community road association", properties.community_attachment_distance_m == null ? "Unknown" : `${properties.community_attachment_distance_m} m`);
-      addDefinition(list, "Community road attachment", value(properties.community_attachment_point));
+      addData("Community road association", properties.community_attachment_distance_m, (raw) => `${raw} m`);
+      humanData("Community road attachment", properties.community_attachment_point);
     }
-    addDefinition(list, "Route role", value(properties.classification, properties.network_role));
-    addDefinition(list, "Indicative intervention", value(properties.intervention_archetype));
-    addDefinition(list, "Geometry meaning", value(properties.geometry_semantics));
-    addDefinition(list, "Endpoint criterion", value(properties.criterion_endpoints));
-    addDefinition(list, "Continuity criterion", value(properties.criterion_continuity));
-    addDefinition(list, "Two-way criterion", value(properties.criterion_bidirectional));
-    addDefinition(list, "Distance criterion", value(properties.criterion_distance));
-    addDefinition(list, "Rationale", value(properties.selection_reason));
-    addDefinition(list, "Agent gate", value(properties.agent_outcome));
-    addDefinition(list, "Decision request", value(properties.agent_decision_request_id));
-    addDefinition(list, "Selected choice", value(properties.agent_decision_choice_id));
-    addDefinition(list, "Mapped action", value(properties.agent_decision_action));
-    addDefinition(list, "Responder mode", value(properties.agent_decision_responder_mode));
-    addDefinition(list, "Topography comparison", value(properties.topography_comparison_status, "not evaluated"));
-    addDefinition(list, "Topography triggered", value(properties.topography_alternative_trigger, false));
-    addDefinition(list, "Topography original role", value(properties.topography_original_role));
-    addDefinition(list, "Topography selected role", value(properties.topography_selected_role));
-    addDefinition(list, "Topography comparison rationale", value(properties.topography_comparison_rationale));
-    addTopographyDetails(list, properties);
+    humanData("Indicative intervention", properties.intervention_archetype);
+    addData("Geometry meaning", properties.geometry_semantics);
+    statusData("Endpoint criterion", properties.criterion_endpoints);
+    statusData("Continuity criterion", properties.criterion_continuity);
+    statusData("Two-way criterion", properties.criterion_bidirectional);
+    statusData("Distance criterion", properties.criterion_distance);
+    statusData("Topography comparison", properties.topography_comparison_status);
+    humanData("Topography original role", properties.topography_original_role);
+    humanData("Topography selected role", properties.topography_selected_role);
+    addData("Topography comparison rationale", properties.topography_comparison_rationale);
     if (["school-access-connection", "school-access-gap"].includes(properties.feature_type)) {
-      addDefinition(list, "School kind", value(properties.school_kind));
-      addDefinition(list, "School access point", value(properties.access_point_status));
-      addDefinition(list, "Access rationale", value(properties.access_point_rationale));
+      humanData("School kind", properties.school_kind);
+      statusData("School access point", properties.access_point_status);
+      addData("Access rationale", properties.access_point_rationale);
     }
     const findings = parseList(properties.agent_findings);
-    addDefinition(list, "Findings", findings.length ? findings.map((finding) => finding.message).join("; ") : "None");
-    addDefinition(list, "Source identifiers", parseList(properties.source_ids).join(", ") || "None");
-    panel.append(heading, list);
-    setHighlight(id);
+    if (findings.length) addData("Findings", findings.map((finding) => finding.message).join("; "));
   }
 
   function clearTransient() {
@@ -1932,11 +2612,61 @@
     ));
     if (!lensState.pinnedArtifact) {
       renderEmptyArtifactPanel();
-      setHighlight(null);
+      if (state.active) setHighlight(null);
     }
   }
 
+  function isReviewableChoicePair(left, right) {
+    if (!left || !right || left.sourceId !== "reviewable" || right.sourceId !== "reviewable") {
+      return false;
+    }
+    const leftType = left.feature.properties?.feature_type;
+    const rightType = right.feature.properties?.feature_type;
+    if (![
+      "reviewable-selected-route",
+      "reviewable-unselected-candidate"
+    ].includes(leftType) || ![
+      "reviewable-selected-route",
+      "reviewable-unselected-candidate"
+    ].includes(rightType)) {
+      return false;
+    }
+    const leftSet = left.feature.properties?.candidate_set_id;
+    const rightSet = right.feature.properties?.candidate_set_id;
+    return hasDataValue(leftSet) && leftSet === rightSet && left.id !== right.id;
+  }
+
+  function selectReviewableChoiceArtifact(artifact) {
+    const next = reviewLensState.reduceLens(
+      reviewLensState.createInitialLensState(),
+      { type: reviewLensState.ActionType.TOGGLE_PIN_ARTIFACT, artifact }
+    );
+    syncLensState(next);
+    showArtifactDetails(artifact);
+    updateGradientCandidate();
+  }
+
   function toggleArtifactPin(artifact) {
+    if (artifact?.sourceId === "strategic-main-display") {
+      const journeys = artifact.journeyArtifacts || [];
+      if (journeys.length === 1) {
+        toggleArtifactPin(journeys[0]);
+        return;
+      }
+      syncLensState(reviewLensState.reduceLens(
+        reviewLensState.createInitialLensState(),
+        { type: reviewLensState.ActionType.TOGGLE_PIN_ARTIFACT, artifact }
+      ));
+      const panel = document.querySelector("#feature-details");
+      renderStrategicMainJourneyChooser(panel, artifact);
+      setLensArtifactHighlight(artifact);
+      showReviewLens();
+      return;
+    }
+    if (isReviewableChoicePair(lensState.pinnedArtifact, artifact)) {
+      selectReviewableChoiceArtifact(artifact);
+      return;
+    }
     const next = syncLensState(reviewLensState.reduceLens(
       lensState,
       { type: reviewLensState.ActionType.TOGGLE_PIN_ARTIFACT, artifact }
@@ -1955,7 +2685,6 @@
     } else {
       clearTransient();
     }
-    setHighlight(lensState.pinned || state.active);
     updateGradientCandidate();
   }
 
@@ -1965,7 +2694,7 @@
       { type: reviewLensState.ActionType.CLOSE }
     ));
     renderEmptyArtifactPanel();
-    setHighlight(null);
+    if (state.active) setHighlight(null);
     updateGradientCandidate();
   }
 
@@ -1982,9 +2711,58 @@
     if (artifact) toggleArtifactPin(artifact);
   }
 
+  function urbanJourneyEndpointNames(feature) {
+    const endpointIds = parseList(feature.properties?.endpoints)
+      .map((identifier) => String(identifier))
+      .filter((identifier) => urbanJourneyPlaceIds.has(identifier));
+    return [...new Set(endpointIds.map(placeNameForId).filter(hasDataValue))];
+  }
+
+  function renderUrbanJourneyCards(list) {
+    const seenJourneys = new Set();
+    reviewable.features
+      .filter((feature) => feature.properties?.feature_type === "reviewable-selected-route")
+      .forEach((feature) => {
+        const endpointNames = urbanJourneyEndpointNames(feature);
+        if (endpointNames.length < 2) return;
+        const endpointIds = parseList(feature.properties?.endpoints)
+          .map((identifier) => String(identifier))
+          .filter((identifier) => urbanJourneyPlaceIds.has(identifier));
+        const journeyKey = String(
+          feature.properties?.urban_journey_id || [...new Set(endpointIds)].sort().join("|")
+        );
+        if (!journeyKey || seenJourneys.has(journeyKey)) return;
+        seenJourneys.add(journeyKey);
+        const artifact = reviewLensState.artifactRecord(feature, "reviewable", "feature-index");
+        if (!artifact) return;
+        const button = document.createElement("button");
+        button.type = "button";
+        button.id = `item-${feature.id}`;
+        button.className = "connection urban-journey";
+        button.dataset.featureId = feature.id;
+        button.dataset.featureType = feature.properties.feature_type;
+        button.setAttribute("aria-pressed", "false");
+        const title = document.createElement("strong");
+        title.textContent = endpointNames.slice(0, 2).join(" → ");
+        const summary = document.createElement("span");
+        summary.textContent = "Preferred urban journey · comparison available";
+        button.append(title, summary);
+        const preview = () => {
+          if (!lensState.pinnedArtifact) showArtifactDetails(artifact);
+        };
+        button.addEventListener("mouseenter", preview);
+        button.addEventListener("focus", preview);
+        button.addEventListener("mouseleave", clearTransient);
+        button.addEventListener("blur", clearTransient);
+        button.addEventListener("click", () => toggleArtifactPin(artifact));
+        list.append(button);
+      });
+  }
+
   function renderCards() {
     const list = document.querySelector("#connection-list");
     list.replaceChildren();
+    renderUrbanJourneyCards(list);
     network.features
       .filter((feature) =>
         eligibleForGradientPath(feature) ||
@@ -2115,13 +2893,113 @@
     "layer-atm": ["atm-reference"]
   };
 
+  const topographyLayerIds = new Set([
+    "gradient-overview",
+    "gradient-sections",
+    "topography-unavailable"
+  ]);
+
+  function isControlChecked(controlId) {
+    return Boolean(document.getElementById(controlId)?.checked);
+  }
+
+  function topographyLayerIsVisible(layerId, requested) {
+    if (!requested) return false;
+    if (!topographyManifest) return true;
+    const detailed = map.getZoom() >= Number(topographyManifest.detail_min_zoom || 10);
+    if (layerId === "gradient-overview") return !detailed;
+    if (layerId === "gradient-sections") return detailed;
+    return true;
+  }
+
+  // A rendered layer can be intentionally shared by more than one semantic
+  // control.  Reconcile from all owners so turning off one checkbox never
+  // hides linework still requested by another checkbox.
+  function syncControlledLayerVisibility() {
+    const ownersByLayer = new Map();
+    Object.entries(controlLayerGroups).forEach(([controlId, layerIds]) => {
+      layerIds.forEach((layerId) => {
+        const owners = ownersByLayer.get(layerId) || [];
+        owners.push(controlId);
+        ownersByLayer.set(layerId, owners);
+      });
+    });
+    ownersByLayer.forEach((owners, layerId) => {
+      if (!map.getLayer(layerId)) return;
+      const requested = owners.some(isControlChecked);
+      const visible = topographyLayerIds.has(layerId)
+        ? topographyLayerIsVisible(layerId, requested)
+        : requested;
+      const next = visible ? "visible" : "none";
+      if (map.getLayoutProperty(layerId, "visibility") !== next) {
+        map.setLayoutProperty(layerId, "visibility", next);
+      }
+    });
+  }
+
+  function orderLayersForReadableMainNetwork() {
+    // Context and Places are added before these structural lines in the
+    // rendered stack.  Optional review/evidence layers then sit above the
+    // main line only when a reviewer deliberately enables them.
+    const mainLayers = [
+      "strategic-network",
+      "strategic-spines",
+      "reviewable-urban-strategic-network",
+      "reviewable-strategic-main-network",
+      "reviewable-strategic-network-halo",
+      "reviewable-strategic-network-core",
+      "reviewable-route-labels"
+    ];
+    mainLayers.forEach((layerId) => {
+      if (map.getLayer(layerId)) map.moveLayer(layerId);
+    });
+    [
+      "reviewable-access-support",
+      "reviewable-required-connections",
+      "reviewable-gaps",
+      "reviewable-gap-labels",
+      "reviewable-divergences-halo",
+      "reviewable-divergences",
+      "mapped-active-travel-assets",
+      "reviewable-existing-assets",
+      "reviewable-upgradeable-assets",
+      "reviewable-unselected-candidates",
+      "reviewable-dft-traffic",
+      "reviewable-dft-traffic-points",
+      "low-traffic-area-portals",
+      "school-access-obligations",
+      "school-access-connections",
+      "school-access-topography-warnings",
+      "school-access-gaps",
+      "school-street-assessments",
+      "gradient-overview",
+      "gradient-sections",
+      "topography-unavailable",
+      "population-display-sections",
+      "atm-reference",
+      "reference-satn-options",
+      "crossing-warnings",
+      "connections-highlight",
+      "gradient-section-highlight",
+      "inspection-path",
+      "inspection-path-direction",
+      "review-lens-related-alternatives",
+      "review-lens-highlight-fill",
+      "review-lens-highlight-outline",
+      "review-lens-highlight-line",
+      "review-lens-highlight-point"
+    ].forEach((layerId) => {
+      if (map.getLayer(layerId)) map.moveLayer(layerId);
+    });
+  }
+
   function bindControls() {
     document.querySelector("#review-lens-close").addEventListener("click", closeReviewLens);
     document.querySelector("#review-gradient-details").addEventListener("click", toggleGradientDetails);
     document.querySelectorAll('input[name="section"]').forEach((input) => {
       input.addEventListener("change", () => renderCriteria(input.value));
     });
-    Object.entries(controlLayerGroups).forEach(([controlId, layers]) => {
+    Object.entries(controlLayerGroups).forEach(([controlId]) => {
       const control = document.getElementById(controlId);
       if (!control) return;
       control.addEventListener("change", async () => {
@@ -2154,21 +3032,10 @@
           } catch (error) {
             control.checked = false;
             document.querySelector("#terrain-status").textContent =
-              `Topography layer unavailable. ${error.message}`;
+              `Elevation details unavailable for these route sections. The route remains visible. ${error.message}`;
           }
         }
-        layers.forEach((layer) => {
-          if (map.getLayer(layer)) {
-            const detailed = topographyManifest &&
-              map.getZoom() >= Number(topographyManifest.detail_min_zoom || 10);
-            const visible = control.checked && (!data.topography_manifest_url || (
-              layer === "gradient-overview" ? !detailed :
-                layer === "gradient-sections" ? detailed :
-                  layer === "topography-unavailable" ? true : true
-            ));
-            map.setLayoutProperty(layer, "visibility", visible ? "visible" : "none");
-          }
-        });
+        syncControlledLayerVisibility();
         if (controlId === "layer-population-display-sections") {
           const populationLegend = document.getElementById("population-display-legend");
           if (populationLegend) populationLegend.hidden = !control.checked;
@@ -2311,6 +3178,7 @@
   map.on("load", () => {
     map.addSource("network", { type: "geojson", data: network });
     map.addSource("reviewable", { type: "geojson", data: reviewable });
+    map.addSource("strategic-main-display", { type: "geojson", data: strategicMainDisplay });
     map.addSource("places", { type: "geojson", data: places });
     map.addSource("topography", {
       type: "geojson",
@@ -2330,6 +3198,15 @@
     });
     map.addSource("population-section-selection", {
       type: "geojson",
+      data: { type: "FeatureCollection", features: [] }
+    });
+    map.addSource("review-lens-highlight", {
+      type: "geojson",
+      data: { type: "FeatureCollection", features: [] }
+    });
+    map.addSource("review-lens-related-alternatives", {
+      type: "geojson",
+      promoteId: "rendered_feature_id",
       data: { type: "FeatureCollection", features: [] }
     });
     if (referenceRecord && referenceOptions.features.length) {
@@ -2503,11 +3380,18 @@
     map.addLayer({
       id: "reviewable-strategic-main-network",
       type: "line",
-      source: "reviewable",
+      source: strategicMainDisplaySource,
       filter: reviewableStrategicMainNetworkFilter,
-      layout: { visibility: hasSemanticStrategicMainNetwork ? "visible" : "none" },
+      layout: {
+        visibility: hasSemanticStrategicMainNetwork ? "visible" : "none",
+        "line-cap": "round",
+        "line-join": "round"
+      },
       paint: {
-        "line-color": reviewableCoreColour,
+        // Main structure has one stable structural treatment.  Intervention
+        // state and Alignment Basis remain available through the optional
+        // alignment review layers and the semantic details panel.
+        "line-color": "#c0392b",
         "line-width": ["interpolate", ["linear"], ["zoom"], 7, 3, 13, 6],
         "line-opacity": .96
       }
@@ -2525,7 +3409,6 @@
         "line-opacity": .9
       }
     });
-    map.moveLayer("reviewable-required-connections");
     map.addLayer({
       id: "reviewable-gaps",
       type: "circle",
@@ -2684,15 +3567,6 @@
     map.addLayer({ id: "schools", type: "circle", source: "network", filter: ["all", ["==", ["get", "feature_type"], "school"], ["!=", ["get", "school_obligation_eligible"], true]], layout: { visibility: "none" }, paint: { "circle-color": "#7d3c98", "circle-radius": 6, "circle-stroke-color": "white", "circle-stroke-width": 1 } });
     map.addLayer({ id: "retail-centres", type: "circle", source: "network", filter: ["==", ["get", "feature_type"], "retail-centre"], layout: { visibility: "none" }, paint: { "circle-color": "#d35400", "circle-radius": 7, "circle-stroke-color": "white", "circle-stroke-width": 1 } });
     map.addLayer({ id: "healthcare", type: "circle", source: "network", filter: ["==", ["get", "feature_type"], "healthcare"], layout: { visibility: "none" }, paint: { "circle-color": "#c0392b", "circle-radius": 6, "circle-stroke-color": "white", "circle-stroke-width": 1 } });
-    [
-      ["layer-urban-spines", "urban-spines"],
-      ["layer-low-traffic-areas", "low-traffic-areas"],
-      ["layer-low-traffic-areas", "low-traffic-area-outlines"]
-    ].forEach(([controlId, layerId]) => {
-      if (!document.getElementById(controlId)?.checked) {
-        map.setLayoutProperty(layerId, "visibility", "none");
-      }
-    });
     map.addLayer({ id: "gaps", type: "circle", source: "network", filter: ["==", ["get", "feature_type"], "gap"], layout: { visibility: hasBackboneAndAccessNetwork && !hasSemanticAccessSupport ? "visible" : "none" }, paint: { "circle-color": "#c0392b", "circle-radius": 6 } });
     map.addLayer({ id: "crossing-warnings", type: "circle", source: "network", filter: ["==", ["get", "feature_type"], "crossing-warning"], paint: { "circle-color": "#f39c12", "circle-radius": 6, "circle-stroke-color": "#17202a", "circle-stroke-width": 1.5 } });
     map.addLayer({ id: "connections-highlight", type: "line", source: "network", filter: ["==", ["id"], ""], paint: { "line-color": "#f4d03f", "line-width": 8 } });
@@ -2735,12 +3609,60 @@
         "line-opacity": .92
       }
     });
-    Object.entries(controlLayerGroups).forEach(([controlId, layerIds]) => {
-      if (document.getElementById(controlId)?.checked) return;
-      layerIds.forEach((layerId) => {
-        if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", "none");
-      });
+    map.addLayer({
+      id: "review-lens-related-alternatives",
+      type: "line",
+      source: "review-lens-related-alternatives",
+      filter: ["in", ["geometry-type"], ["literal", ["LineString", "MultiLineString"]]],
+      layout: { visibility: "none" },
+      paint: {
+        "line-color": "#7f8c8d",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 7, 4, 13, 7],
+        "line-dasharray": [2, 2],
+        "line-opacity": .88
+      }
     });
+    map.addLayer({
+      id: "review-lens-highlight-fill",
+      type: "fill",
+      source: "review-lens-highlight",
+      filter: ["in", ["geometry-type"], ["literal", ["Polygon", "MultiPolygon"]]],
+      paint: { "fill-color": "#f4d03f", "fill-opacity": .18 }
+    });
+    map.addLayer({
+      id: "review-lens-highlight-outline",
+      type: "line",
+      source: "review-lens-highlight",
+      filter: ["in", ["geometry-type"], ["literal", ["Polygon", "MultiPolygon"]]],
+      paint: { "line-color": "#b7950b", "line-width": 3, "line-opacity": .95 }
+    });
+    map.addLayer({
+      id: "review-lens-highlight-line",
+      type: "line",
+      source: "review-lens-highlight",
+      filter: ["in", ["geometry-type"], ["literal", ["LineString", "MultiLineString"]]],
+      paint: {
+        "line-color": "#f4d03f",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 7, 7, 13, 12],
+        "line-opacity": .95,
+        "line-blur": .35
+      }
+    });
+    map.addLayer({
+      id: "review-lens-highlight-point",
+      type: "circle",
+      source: "review-lens-highlight",
+      filter: ["==", ["geometry-type"], "Point"],
+      paint: {
+        "circle-color": "#f4d03f",
+        "circle-radius": ["interpolate", ["linear"], ["zoom"], 7, 8, 13, 12],
+        "circle-stroke-color": "#7d6608",
+        "circle-stroke-width": 3,
+        "circle-opacity": .98
+      }
+    });
+    orderLayersForReadableMainNetwork();
+    syncControlledLayerVisibility();
     const bounds = new maplibregl.LngLatBounds();
     [...network.features, ...reviewable.features, ...places.features].forEach((feature) => {
       if (feature.geometry) extendBounds(bounds, feature.geometry.coordinates);

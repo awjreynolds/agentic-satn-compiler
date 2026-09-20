@@ -178,6 +178,64 @@ def test_packaged_pages_gate_rejects_a_stale_network_projection(tmp_path: Path) 
 
 
 @pytest.mark.browser
+def test_packaged_pages_gate_accepts_semantic_main_without_legacy_or_urban_selection(
+    tmp_path: Path,
+) -> None:
+    pages, deployment = _package_fixture(tmp_path)
+    network_path = deployment / "network.geojson"
+    network = json.loads(network_path.read_text(encoding="utf-8"))
+    strategic = next(
+        feature
+        for feature in network["features"]
+        if feature.get("properties", {}).get("feature_type") == "strategic-spine"
+    )
+    urban = json.loads(json.dumps(strategic))
+    urban["id"] = "urban-spine-release-gate-fixture"
+    urban["properties"]["feature_type"] = "urban-spine"
+    network["features"] = [
+        feature
+        for feature in network["features"]
+        if feature.get("properties", {}).get("feature_type") != "strategic-spine"
+    ]
+    network["features"].append(urban)
+    network_path.write_text(json.dumps(network), encoding="utf-8")
+
+    data_path = deployment / "data.js"
+    data_prefix = "window.SATN_DATA = "
+    data_text = data_path.read_text(encoding="utf-8")
+    data = json.loads(data_text.removeprefix(data_prefix).rstrip(";\n"))
+    data["network"]["features"] = network["features"]
+    reviewable = data.get("reviewable_network") or data["reviewable"]
+    reviewable["features"].append(
+        {
+            "type": "Feature",
+            "id": "semantic-main-release-gate-fixture",
+            "geometry": strategic["geometry"],
+            "properties": {
+                "feature_type": "reviewable-selected-route",
+                "layer": "Strategic Main Network",
+                "selection_disposition": "selected",
+                "display_state": "upgrade-required",
+                "intervention_state": "upgrade-required",
+            },
+        }
+    )
+    data_path.write_text(data_prefix + json.dumps(data) + ";\n", encoding="utf-8")
+    catalogue = {
+        "schema_version": "satn-deployment-catalogue/v1",
+        "deployments": [
+            {
+                "deployment_id": "fixture",
+                "artifacts": {"review_map": "deployments/fixture/index.html"},
+            }
+        ],
+    }
+    (pages / "catalogue.json").write_text(json.dumps(catalogue), encoding="utf-8")
+
+    assert validate_pages_rendering(pages)[0].rendered_strategic_spines > 0
+
+
+@pytest.mark.browser
 def test_packaged_pages_gate_requires_urban_strategic_sections(
     tmp_path: Path,
 ) -> None:
@@ -261,6 +319,5 @@ def test_packaged_pages_gate_checks_default_road_and_cycleway_context() -> None:
     assert '"reviewable-urban-strategic-network"' in validator
     assert '"reviewable-strategic-main-network"' in validator
     assert 'feature.properties?.layer === "Access Support"' in validator
-    assert '["layer-mapped-active-travel-assets", "mapped-active-travel-assets"]' in validator
     assert "defaultEvidenceReady" in validator
-    assert "has data but no rendered features" in validator
+    assert '"mapped-active-travel-assets"' not in validator

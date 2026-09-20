@@ -17,7 +17,11 @@ from types import MappingProxyType
 from typing import Literal, Protocol
 
 from satn.alignment_selection import ScenarioCompilation
-from satn.compilation_dependencies import validate_compilation_dependency_manifest
+from satn.compilation_dependencies import (
+    compiler_cache_revision,
+    is_compiler_cache_revision,
+    validate_compilation_dependency_manifest,
+)
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _REUSED_STAGES = tuple(range(1, 7))
@@ -37,9 +41,7 @@ def _fingerprint(value: object) -> str:
 
 def _freeze(value: object) -> object:
     if isinstance(value, Mapping):
-        return MappingProxyType(
-            {str(key): _freeze(item) for key, item in sorted(value.items())}
-        )
+        return MappingProxyType({str(key): _freeze(item) for key, item in sorted(value.items())})
     if isinstance(value, (list, tuple)):
         return tuple(_freeze(item) for item in value)
     if isinstance(value, (set, frozenset)):
@@ -58,6 +60,12 @@ def _thaw(value: object) -> object:
 def _sha256(value: str, name: str) -> str:
     if _SHA256.fullmatch(value) is None:
         raise ValueError(f"{name} must be lowercase SHA-256")
+    return value
+
+
+def _dependency_identity(value: str, name: str) -> str:
+    if _SHA256.fullmatch(value) is None and not is_compiler_cache_revision(value):
+        raise ValueError(f"{name} must be lowercase SHA-256 or compiler cache revision")
     return value
 
 
@@ -81,7 +89,7 @@ class ScenarioStageRecord:
             raise ValueError("stage contract must be canonical")
         _sha256(self.input_fingerprint, "stage input_fingerprint")
         _sha256(self.output_fingerprint, "stage output_fingerprint")
-        _sha256(self.dependency_manifest_sha256, "stage dependency manifest")
+        _dependency_identity(self.dependency_manifest_sha256, "stage dependency manifest")
         upstream = tuple(
             sorted(
                 {
@@ -107,9 +115,7 @@ class ScenarioStageRecord:
             "input_fingerprint": self.input_fingerprint,
             "output_fingerprint": self.output_fingerprint,
             "dependency_manifest_sha256": self.dependency_manifest_sha256,
-            "upstream_output_fingerprints": list(
-                self.upstream_output_fingerprints
-            ),
+            "upstream_output_fingerprints": list(self.upstream_output_fingerprints),
             "diagnostics": _thaw(self.diagnostics),
             "validated": True,
         }
@@ -133,12 +139,8 @@ class ScenarioIterationState:
             raise ValueError("reused stages name inconsistent dependency manifests")
         prior_outputs: set[str] = set()
         for record in stages:
-            if record.stage > 1 and not (
-                set(record.upstream_output_fingerprints) & prior_outputs
-            ):
-                raise ValueError(
-                    f"stage {record.stage} has no lineage to an earlier stage output"
-                )
+            if record.stage > 1 and not (set(record.upstream_output_fingerprints) & prior_outputs):
+                raise ValueError(f"stage {record.stage} has no lineage to an earlier stage output")
             prior_outputs.add(record.output_fingerprint)
         object.__setattr__(self, "stages", stages)
         expected = _fingerprint(self.canonical_payload())
@@ -189,7 +191,10 @@ class ScenarioConfiguration:
             "dependency_manifest_sha256",
             "publication_configuration_fingerprint",
         ):
-            _sha256(getattr(self, name), name)
+            if name == "dependency_manifest_sha256":
+                _dependency_identity(getattr(self, name), name)
+            else:
+                _sha256(getattr(self, name), name)
         values = _freeze(self.values)
         if not isinstance(values, Mapping):
             raise ValueError("Scenario Configuration values must be a mapping")
@@ -204,14 +209,10 @@ class ScenarioConfiguration:
             "contract": self.contract,
             "area_definition_fingerprint": self.area_definition_fingerprint,
             "criteria_set_fingerprint": self.criteria_set_fingerprint,
-            "network_selection_profile_fingerprint": (
-                self.network_selection_profile_fingerprint
-            ),
+            "network_selection_profile_fingerprint": (self.network_selection_profile_fingerprint),
             "reusable_state_fingerprint": self.reusable_state_fingerprint,
             "dependency_manifest_sha256": self.dependency_manifest_sha256,
-            "publication_configuration_fingerprint": (
-                self.publication_configuration_fingerprint
-            ),
+            "publication_configuration_fingerprint": (self.publication_configuration_fingerprint),
             "values": _thaw(self.values),
         }
 
@@ -268,9 +269,7 @@ class AtomicPublicationReceipt:
             self.whole_publication_validated is not True
             or self.atomic_replace_completed is not True
         ):
-            raise ValueError(
-                "Scenario Iteration requires whole validation and atomic publication"
-            )
+            raise ValueError("Scenario Iteration requires whole validation and atomic publication")
         digests = {
             str(name): _sha256(digest, f"artifact digest {name}")
             for name, digest in sorted(self.artifact_digests.items())
@@ -350,11 +349,11 @@ def iterate_scenario(
     """Recompute stages 7-8 only after stages 1-6 validate as exact hits."""
 
     manifest = validate_compilation_dependency_manifest(dependency_manifest)
-    manifest_sha256 = str(manifest["sha256"])
+    manifest_identity = compiler_cache_revision(manifest)
     if (
         configuration.reusable_state_fingerprint != reusable_state.state_fingerprint
-        or configuration.dependency_manifest_sha256 != manifest_sha256
-        or reusable_state.dependency_manifest_sha256 != manifest_sha256
+        or configuration.dependency_manifest_sha256 != manifest_identity
+        or reusable_state.dependency_manifest_sha256 != manifest_identity
     ):
         raise ValueError("Scenario Iteration reusable state is stale")
     if (
@@ -392,7 +391,7 @@ def iterate_scenario(
             "configuration_fingerprint": configuration.configuration_fingerprint,
             "ledger_fingerprint": ledger.ledger_fingerprint,
             "assembly_fingerprint": reusable_state.assembly_fingerprint,
-            "dependency_manifest_sha256": manifest_sha256,
+            "dependency_manifest_sha256": manifest_identity,
         }
     )
     diagnostics.append(
@@ -420,7 +419,7 @@ def iterate_scenario(
             "publication_configuration_fingerprint": (
                 configuration.publication_configuration_fingerprint
             ),
-            "dependency_manifest_sha256": manifest_sha256,
+            "dependency_manifest_sha256": manifest_identity,
         }
     )
     diagnostics.append(
@@ -440,7 +439,7 @@ def iterate_scenario(
         {
             "contract": "satn-scenario-iteration/v1",
             "scenario_fingerprint": scenario.scenario_fingerprint,
-            "dependency_manifest_sha256": manifest_sha256,
+            "dependency_manifest_sha256": manifest_identity,
             "stage_outputs": [item.output_fingerprint for item in diagnostics],
             "publication_fingerprint": receipt.publication_fingerprint,
         }

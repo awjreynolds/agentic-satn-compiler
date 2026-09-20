@@ -22,7 +22,7 @@ from shapely.wkt import loads as load_wkt
 
 from satn.alignment_selection import AlignmentCandidateSet, _reuse_first_sort_key
 from satn.candidate_discovery import CandidateDiscoveryResult
-from satn.planning_graph import PlanningGraphSnapshot
+from satn.planning_graph import PlanningEdgeRecord, PlanningGraphSnapshot
 from satn.strategic_mesh import (
     CandidateRouteSection,
     MeshCoveragePoint,
@@ -139,6 +139,7 @@ class StrategicNetworkPlanningRequest:
     routing_endpoint_bindings: tuple[tuple[str, tuple[str, str]], ...] = ()
     officer_candidate_choices: tuple[tuple[str, str], ...] = ()
     required_sections: tuple[EffectiveStrategicSection, ...] = ()
+    backbone_obligation_ids: tuple[str, ...] = ()
     mesh_profile: StrategicMainNetworkProfile = field(default_factory=StrategicMainNetworkProfile)
     mesh_profile_fingerprint: str | None = None
 
@@ -214,6 +215,9 @@ class StrategicNetworkPlanningRequest:
             raise ValueError("required strategic sections must be effective section records")
         if len({item.section_id for item in required_sections}) != len(required_sections):
             raise ValueError("required strategic section IDs must be unique")
+        backbone_obligation_ids = tuple(
+            sorted(_text(item, "backbone obligation id") for item in self.backbone_obligation_ids)
+        )
         if self.mesh_profile_fingerprint is not None:
             try:
                 int(self.mesh_profile_fingerprint, 16)
@@ -233,6 +237,7 @@ class StrategicNetworkPlanningRequest:
         object.__setattr__(self, "routing_endpoint_bindings", endpoint_bindings)
         object.__setattr__(self, "officer_candidate_choices", officer_choices)
         object.__setattr__(self, "required_sections", required_sections)
+        object.__setattr__(self, "backbone_obligation_ids", backbone_obligation_ids)
 
     @property
     def fingerprint(self) -> str:
@@ -260,6 +265,7 @@ class StrategicNetworkPlanningRequest:
                 "routing_endpoint_bindings": self.routing_endpoint_bindings,
                 "officer_candidate_choices": self.officer_candidate_choices,
                 "required_sections": self.required_sections,
+                "backbone_obligation_ids": self.backbone_obligation_ids,
                 "mesh_profile": self.mesh_profile,
                 "mesh_profile_fingerprint": self.mesh_profile_fingerprint,
             }
@@ -280,7 +286,25 @@ class EffectiveStrategicSection:
     primary_alignment_basis: str | None = None
     intervention_state: str | None = None
     display_state: str | None = None
-    network_scope: str = "urban"
+    network_scope: str | None = None
+    attachment_node_ids: tuple[str, ...] = ()
+    parent_obligation_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        scope = self.network_scope
+        if scope is None:
+            scope = "rural" if self.network_role.casefold() == "interurban-spine" else "urban"
+        if scope not in {"urban", "rural"}:
+            raise ValueError("effective strategic section network_scope must be urban or rural")
+        object.__setattr__(self, "network_scope", scope)
+        attachment_nodes = tuple(str(item) for item in self.attachment_node_ids if str(item))
+        if len(set(attachment_nodes)) != len(attachment_nodes):
+            raise ValueError("effective strategic section attachment node IDs must be unique")
+        object.__setattr__(self, "attachment_node_ids", attachment_nodes)
+        parent_ids = tuple(str(item) for item in self.parent_obligation_ids if str(item))
+        if len(set(parent_ids)) != len(parent_ids):
+            raise ValueError("effective strategic section parent obligation IDs must be unique")
+        object.__setattr__(self, "parent_obligation_ids", parent_ids)
 
 
 @dataclass(frozen=True)
@@ -305,6 +329,9 @@ class EffectiveReviewableSelection:
     routing_edge_ids: tuple[str, ...]
     reverse_routing_edge_ids: tuple[str, ...]
     geometry_wkt: str
+    selection_reason: str = "selection reason unavailable"
+    decision_id: str | None = None
+    decision_maker: str | None = None
 
 
 @dataclass(frozen=True)
@@ -314,16 +341,19 @@ class CandidateDisposition:
     candidate_id: str
     disposition: str
     reason: str
+    comparison_reason: str | None = None
 
 
 @dataclass(frozen=True)
 class ReviewableNetworkGap:
     obligation_id: str
     network_role: str
-    endpoints: tuple[str, str]
+    endpoints: tuple[str, ...]
     reason: str
     candidate_set_id: str | None = None
     gap_id: str = ""
+    mesh_proof_points: tuple[tuple[float, float], ...] = ()
+    endpoint_coordinates: tuple[tuple[float, float], ...] = ()
 
     def __post_init__(self) -> None:
         expected = _stable_id(
@@ -343,16 +373,129 @@ class ReviewableNetworkGap:
             "gap_id",
             expected,
         )
+        raw_proof_points = tuple(self.mesh_proof_points)
+        if any(
+            not isinstance(point, (tuple, list)) or len(point) != 2 for point in raw_proof_points
+        ):
+            raise ValueError("mesh proof points must contain coordinate pairs")
+        proof_points = tuple((float(point[0]), float(point[1])) for point in raw_proof_points)
+        object.__setattr__(self, "mesh_proof_points", proof_points)
+        raw_endpoint_coordinates = tuple(self.endpoint_coordinates)
+        if any(
+            not isinstance(point, (tuple, list)) or len(point) != 2
+            for point in raw_endpoint_coordinates
+        ):
+            raise ValueError("endpoint coordinates must contain coordinate pairs")
+        endpoint_coordinates = tuple(
+            (float(point[0]), float(point[1])) for point in raw_endpoint_coordinates
+        )
+        object.__setattr__(self, "endpoint_coordinates", endpoint_coordinates)
 
 
 def _canonical_gaps(gaps: list[ReviewableNetworkGap]) -> tuple[ReviewableNetworkGap, ...]:
-    by_id: dict[str, ReviewableNetworkGap] = {}
-    for gap in gaps:
-        existing = by_id.get(gap.gap_id)
-        if existing is not None and existing != gap:
-            raise ValueError("strategic network gap identity collision")
-        by_id[gap.gap_id] = gap
-    return tuple(by_id[gap_id] for gap_id in sorted(by_id))
+    by_obligation: dict[str, ReviewableNetworkGap] = {}
+    for gap in sorted(
+        gaps,
+        key=lambda item: (
+            item.obligation_id,
+            item.gap_id,
+            item.candidate_set_id or "",
+            item.reason,
+        ),
+    ):
+        existing = by_obligation.get(gap.obligation_id)
+        if existing is not None:
+            if existing.gap_id == gap.gap_id and existing != gap:
+                raise ValueError("strategic network gap identity collision")
+            continue
+        by_obligation[gap.obligation_id] = gap
+    return tuple(by_obligation[obligation_id] for obligation_id in sorted(by_obligation))
+
+
+_ACCESS_SUPPORT_GAP_ROLES = frozenset(
+    {
+        "community-access",
+        "community-access-obligation",
+        "cross-spine-connector",
+        "school-access",
+        "school-access-obligation",
+        "strategic-destination-access",
+    }
+)
+
+
+def _canonical_gap_scope(
+    request: StrategicNetworkPlanningRequest,
+) -> tuple[set[str] | None, set[str], set[str]]:
+    """Return the required and access gap identities for semantic publication.
+
+    Direct planning requests have no preparation roster, so every unresolved
+    obligation remains explicit.  A prepared regional run distinguishes the
+    required A-road and urban-journey units from optional candidate attempts while
+    retaining destination/access preparation issues for the support layer.
+    """
+
+    preparation = request.corridor_obligations
+    if preparation is None:
+        return None, set(), set()
+    required_obligation_ids = {str(item) for item in request.backbone_obligation_ids}
+    required_candidate_set_ids: set[str] = set()
+    access_issue_ids: set[str] = set()
+    for unit in tuple(getattr(preparation, "units", ())):
+        if getattr(unit, "backbone_required", False) or getattr(unit, "urban_journey_id", None):
+            required_obligation_ids.add(str(getattr(unit, "unit_id", "")))
+            candidate_set = getattr(unit, "candidate_set", None)
+            candidate_set_id = getattr(candidate_set, "candidate_set_id", None)
+            if candidate_set_id:
+                required_candidate_set_ids.add(str(candidate_set_id))
+    for issue in tuple(getattr(preparation, "issues", ())):
+        issue_id = getattr(issue, "obligation_id", None)
+        role = getattr(getattr(issue, "unit_role", None), "value", None)
+        if role == "a-road-backbone" and issue_id:
+            required_obligation_ids.add(str(issue_id))
+        elif role == "interurban-spine" and issue_id:
+            if getattr(issue, "reason", None) in {
+                "urban-place-no-cross-region-adjacency",
+                "strategic-cycle-corridor-no-current-route",
+            }:
+                required_obligation_ids.add(str(issue_id))
+        elif role == "strategic-destination-access" and issue_id:
+            access_issue_ids.add(str(issue_id))
+    return required_obligation_ids, required_candidate_set_ids, access_issue_ids
+
+
+def _published_gaps(
+    request: StrategicNetworkPlanningRequest,
+    gaps: list[ReviewableNetworkGap],
+    selected_obligation_ids: set[str],
+) -> list[ReviewableNetworkGap]:
+    required_ids, required_candidate_set_ids, access_issue_ids = _canonical_gap_scope(request)
+
+    def selected_discovery_failure(gap: ReviewableNetworkGap) -> bool:
+        if gap.obligation_id not in selected_obligation_ids:
+            return False
+        reason = gap.reason.casefold()
+        return (
+            reason == "no-path"
+            or reason.startswith("all generated")
+            or reason.startswith("all prepared")
+            or reason.startswith("prepared candidate route")
+            or reason.startswith("no admitted candidate set")
+        )
+
+    return [
+        gap
+        for gap in gaps
+        if not selected_discovery_failure(gap)
+        and (
+            required_ids is None
+            or gap.network_role.casefold() in _ACCESS_SUPPORT_GAP_ROLES
+            or gap.network_role.casefold() == "strategic-main-network"
+            or gap.obligation_id in required_ids
+            or (gap.candidate_set_id or "") in required_candidate_set_ids
+            or gap.obligation_id in access_issue_ids
+        )
+    ]
 
 
 @dataclass(frozen=True)
@@ -555,7 +698,160 @@ def _preferred_candidate(
             (item for item in candidates if item.candidate_id == governed_candidate_id),
             None,
         )
-    return min(candidates, key=lambda item: _reuse_first_sort_key(candidate_set.profile, item))
+    return min(candidates, key=lambda item: _compiler_candidate_sort_key(candidate_set, item))
+
+
+def _compiler_candidate_sort_key(
+    candidate_set: AlignmentCandidateSet,
+    candidate: object,
+) -> tuple[object, ...]:
+    """Return the configured compiler ordering for one Candidate Set.
+
+    Legacy profiles retain their existing source-precedence/directness/id
+    comparator.  vNext keeps its governed reuse-first comparator unchanged.
+    """
+
+    profile = candidate_set.profile
+    if profile.contract == "satn-network-selection-profile/vNext":
+        return _reuse_first_sort_key(profile, candidate)
+    precedence = {
+        source: index for index, source in enumerate(candidate_set.candidate_source_precedence)
+    }
+    return (
+        precedence.get(candidate.source_class, len(precedence)),
+        candidate.directness_m,
+        candidate.candidate_id,
+    )
+
+
+def _compiler_comparison_dimensions(candidate_set: AlignmentCandidateSet) -> tuple[object, ...]:
+    profile = candidate_set.profile
+    if profile.contract == "satn-network-selection-profile/vNext":
+        return tuple(getattr(profile, "comparator_order", ()) or ())
+    return ("candidate-source-precedence", "route-length", "stable-candidate-id")
+
+
+def _candidate_comparison_label(candidate: object, dimension: object) -> str:
+    """Render the governed fact used by one comparator dimension.
+
+    This is deliberately a view of the existing lexicographic comparator.  It
+    does not add a score or infer an admission rationale for the selected
+    candidate.
+    """
+
+    name = str(getattr(dimension, "value", dimension))
+    if name == "reuse-class":
+        value = getattr(candidate, "reuse_class", None)
+        return str(getattr(value, "value", value))
+    if name == "candidate-source-precedence":
+        value = getattr(candidate, "source_class", None)
+        return str(getattr(value, "value", value))
+    if name == "intervention-state":
+        value = getattr(candidate, "intervention_state", None)
+        return str(getattr(value, "value", value))
+    if name in {"route-length", "route-detour"}:
+        return f"{float(candidate.directness_m):g}m"
+    if name == "route-effort":
+        value = getattr(candidate, "total_absolute_elevation_change_m", None)
+        return "unknown" if value is None else f"{float(value):g}m elevation"
+    if name == "transition-fragmentation-burden":
+        transitions = getattr(candidate, "transition_count", None)
+        fragments = getattr(candidate, "fragmentation_count", None)
+        if transitions is None or fragments is None:
+            return "unknown"
+        return f"{transitions + fragments} transitions/fragments"
+    if name == "stable-candidate-id":
+        return str(getattr(candidate, "candidate_id", "unknown candidate"))
+    value = getattr(candidate, name.replace("-", "_"), None)
+    return "unknown" if value is None else str(value)
+
+
+def _compiler_pairwise_comparison_reason(
+    candidate_set: AlignmentCandidateSet,
+    selected: object,
+    alternative: object,
+) -> str:
+    comparator_order = _compiler_comparison_dimensions(candidate_set)
+    selected_key = _compiler_candidate_sort_key(candidate_set, selected)
+    alternative_key = _compiler_candidate_sort_key(candidate_set, alternative)
+    for dimension, selected_value, alternative_value in zip(
+        comparator_order, selected_key, alternative_key, strict=True
+    ):
+        if selected_value == alternative_value:
+            continue
+        dimension_name = str(getattr(dimension, "value", dimension))
+        if selected_value < alternative_value:
+            return (
+                f"{dimension_name} ranked candidate {selected.candidate_id} "
+                f"({_candidate_comparison_label(selected, dimension)}) ahead of candidate "
+                f"{alternative.candidate_id} "
+                f"({_candidate_comparison_label(alternative, dimension)})"
+            )
+        return (
+            f"{dimension_name} ranked candidate {alternative.candidate_id} "
+            f"({_candidate_comparison_label(alternative, dimension)}) ahead of candidate "
+            f"{selected.candidate_id} ({_candidate_comparison_label(selected, dimension)})"
+        )
+    return (
+        f"governed comparator tied candidate {selected.candidate_id} and "
+        f"candidate {alternative.candidate_id}"
+    )
+
+
+def _compiler_selection_reason(
+    candidate_set: AlignmentCandidateSet,
+    selected: object | None,
+    supplied_preference: str | None,
+) -> str:
+    """Explain the actual compiler choice from the configured comparator."""
+
+    if supplied_preference is not None:
+        return "compiler selection: supplied preference; selection rationale unavailable"
+    if selected is None:
+        return "compiler selection: no admitted candidate"
+    candidates = tuple(candidate_set.admitted_candidates)
+    comparator_order = _compiler_comparison_dimensions(candidate_set)
+    if not comparator_order:
+        return "compiler selection: governed comparator unavailable"
+    try:
+        _compiler_candidate_sort_key(candidate_set, selected)
+    except (AssertionError, KeyError, TypeError, ValueError):
+        return "compiler selection: governed comparator unavailable"
+    for alternative in sorted(
+        (item for item in candidates if item.candidate_id != selected.candidate_id),
+        key=lambda item: _compiler_candidate_sort_key(candidate_set, item),
+    ):
+        return "compiler selection: " + _compiler_pairwise_comparison_reason(
+            candidate_set, selected, alternative
+        )
+    return "compiler selection: governed comparator selected the candidate"
+
+
+def _compiler_alternative_comparison_reason(
+    candidate_set: AlignmentCandidateSet,
+    compiler: object | None,
+    alternative: object,
+    supplied_preference: str | None,
+) -> str:
+    alternative_id = str(alternative.candidate_id)
+    if compiler is None:
+        return (
+            f"compiler comparison unavailable for candidate {alternative_id}: no compiler candidate"
+        )
+    compiler_id = str(compiler.candidate_id)
+    if supplied_preference is not None:
+        return (
+            f"compiler comparison unavailable between candidate {compiler_id} and candidate "
+            f"{alternative_id}: supplied preference rationale unavailable"
+        )
+    if compiler_id == alternative_id:
+        return (
+            f"compiler comparison: candidate {compiler_id} was compiler-preferred; "
+            "another authority supplied the effective choice"
+        )
+    return "compiler comparison: " + _compiler_pairwise_comparison_reason(
+        candidate_set, compiler, alternative
+    )
 
 
 def _active_officer_choices(ledger: object | None) -> tuple[tuple[str, str], ...]:
@@ -575,6 +871,60 @@ def _active_officer_choices(ledger: object | None) -> tuple[tuple[str, str], ...
         if isinstance(target_id, str):
             choices.append((target_id, decision_id))
     return tuple(sorted(choices))
+
+
+def _active_officer_choice_metadata(
+    ledger: object | None,
+) -> dict[str, tuple[str, str | None, str | None]]:
+    """Return rationale and attribution only for active ledger choices."""
+
+    if ledger is None:
+        return {}
+    metadata: dict[str, tuple[str, str | None, str | None]] = {}
+    for decision in getattr(ledger, "decisions", ()):
+        status = getattr(decision, "status", "active")
+        if getattr(status, "value", status) != "active":
+            continue
+        action = getattr(decision, "action", None)
+        if getattr(action, "kind", None) != "select-alignment":
+            continue
+        target = getattr(decision, "target", None)
+        target_id = getattr(target, "target_id", None)
+        decision_id = getattr(decision, "decision_id", "officer-decision")
+        if not isinstance(target_id, str) or not isinstance(decision_id, str):
+            continue
+        rationale = getattr(decision, "rationale", None)
+        decision_maker = getattr(decision, "decision_maker", None)
+        metadata[target_id] = (
+            decision_id,
+            rationale.strip() if isinstance(rationale, str) and rationale.strip() else None,
+            decision_maker.strip()
+            if isinstance(decision_maker, str) and decision_maker.strip()
+            else None,
+        )
+    return metadata
+
+
+def _officer_selection_details(
+    candidate_id: str,
+    decision_id: str,
+    active_metadata: Mapping[str, tuple[str, str | None, str | None]],
+) -> tuple[str, str, str | None]:
+    ledger_choice = active_metadata.get(candidate_id)
+    if ledger_choice is not None and ledger_choice[0] == decision_id:
+        rationale = ledger_choice[1]
+        return (
+            f"officer decision: {rationale}"
+            if rationale is not None
+            else "officer decision: rationale unavailable",
+            decision_id,
+            ledger_choice[2],
+        )
+    return (
+        "officer selection: supplied candidate choice; decision rationale unavailable",
+        decision_id,
+        None,
+    )
 
 
 def _display_state(intervention_state: object | None) -> str:
@@ -676,6 +1026,14 @@ def _main_continuity_sections(
         for index, component in enumerate(components)
         if any(item.section_id == root_id for item in component)
     )
+    component_index_by_section_id = {
+        item.section_id: index for index, component in enumerate(components) for item in component
+    }
+    selected_component_order = {
+        component_index_by_section_id[section_id]: order
+        for order, section_id in enumerate(root_selection.selected_section_ids)
+        if section_id in component_index_by_section_id
+    }
 
     records_by_endpoints: dict[tuple[str, str], list[object]] = {}
     for edge in graph.edge_records:
@@ -788,7 +1146,14 @@ def _main_continuity_sections(
     while remaining:
         sources = sorted(connected_nodes.intersection(route_graph))
         if not sources:
-            break
+            next_root = min(
+                remaining,
+                key=lambda index: (selected_component_order.get(index, len(components)), index),
+            )
+            remaining.remove(next_root)
+            connected_nodes = set(component_nodes[next_root])
+            connected_components = {next_root}
+            continue
         distances, paths = nx.multi_source_dijkstra(
             route_graph,
             sources,
@@ -801,7 +1166,14 @@ def _main_continuity_sections(
             if node_id in distances
         ]
         if not reachable:
-            break
+            next_root = min(
+                remaining,
+                key=lambda index: (selected_component_order.get(index, len(components)), index),
+            )
+            remaining.remove(next_root)
+            connected_nodes = set(component_nodes[next_root])
+            connected_components = {next_root}
+            continue
         _distance, target_node, component_index = min(reachable)
         path_nodes = paths[target_node]
         if len(path_nodes) < 2:
@@ -916,6 +1288,7 @@ def _mesh_materialized_sections(
     tuple[EffectiveStrategicSection, ...],
     tuple[PlanningDiagnostic, ...],
     tuple[MeshGap, ...],
+    tuple[MeshCoveragePoint, ...],
 ]:
     """Reduce all materialized main routes at the sole planning boundary.
 
@@ -925,10 +1298,22 @@ def _mesh_materialized_sections(
     """
 
     if not sections:
-        return (), (), ()
+        return (), (), (), ()
     edge_by_id = {edge.directed_edge_id: edge for edge in request.graph.edge_records}
     candidates: list[CandidateRouteSection] = []
     normalized_sections: list[EffectiveStrategicSection] = []
+    support_attachment_nodes = {
+        node_id
+        for section in sections
+        if section.network_role.casefold()
+        in {
+            "community-access",
+            "school-access",
+            "strategic-destination-access",
+            "cross-spine-connector",
+        }
+        for node_id in section.attachment_node_ids
+    }
     for section in sections:
         geometry = load_wkt(section.geometry_wkt)
         if not isinstance(geometry, LineString) or geometry.is_empty:
@@ -940,8 +1325,14 @@ def _mesh_materialized_sections(
             "cross-spine-connector",
         }
         if is_access_support:
-            first_node_id = f"access-support:{section.section_id}:start"
-            last_node_id = f"access-support:{section.section_id}:end"
+            if len(section.attachment_node_ids) >= 2:
+                first_node_id, last_node_id = section.attachment_node_ids[0:2]
+            elif section.attachment_node_ids:
+                first_node_id = f"access-support:{section.section_id}:start"
+                last_node_id = section.attachment_node_ids[0]
+            else:
+                first_node_id = f"access-support:{section.section_id}:start"
+                last_node_id = f"access-support:{section.section_id}:end"
         else:
             if not section.routing_edge_ids:
                 raise ValueError(f"mesh section has no planning edges: {section.section_id}")
@@ -954,14 +1345,11 @@ def _mesh_materialized_sections(
                 raise ValueError(f"mesh section edge is absent: {missing}")
             first_node_id = first_edge.from_node_id
             last_node_id = last_edge.to_node_id
-        # Interurban candidate routes are governed by the rural scope. The
-        # Effective section field defaults to urban for compatibility, so bind
-        # this scope where the route role is authoritative.
-        scope = (
-            "rural"
-            if section.network_role.casefold() == "interurban-spine"
-            else section.network_scope
-        )
+        # A-road backbone units use the interurban role for publication, while
+        # their governed unit scope may still be urban. Preserve that explicit
+        # scope; only the legacy default for ordinary interurban sections is
+        # normalized to rural at construction.
+        scope = section.network_scope
         normalized = replace(section, network_scope=scope)
         normalized_sections.append(normalized)
         candidates.append(
@@ -988,11 +1376,108 @@ def _mesh_materialized_sections(
     )
     candidates.extend(continuity_candidates)
     normalized_sections.extend(continuity_sections)
+
+    selected_candidate_ids = {
+        section.candidate_id for section in sections if section.candidate_id is not None
+    }
+    candidate_records = {
+        record.candidate_id: record for record in request.discovery.candidate_records
+    }
+    candidate_set_by_id = {
+        candidate.candidate_id: candidate_set
+        for candidate_set in request.discovery.candidate_sets
+        for candidate in candidate_set.candidates
+    }
+    admitted_candidate_ids = {
+        candidate.candidate_id
+        for candidate_set in request.discovery.candidate_sets
+        for candidate in candidate_set.admitted_candidates
+    }
+    urban_journey_obligation_ids = {
+        unit.unit_id
+        for unit in getattr(request.corridor_obligations, "units", ())
+        if getattr(unit, "urban_journey_id", None)
+    }
+
+    def _a_section_replaced_by_compared_candidate(
+        section: EffectiveStrategicSection,
+    ) -> bool:
+        if (
+            section.network_role.casefold() != "urban-main-road-spine"
+            or "a-road" not in section.alignment_bases
+            or section.candidate_id is not None
+            or not section.routing_edge_ids
+        ):
+            return False
+        section_node_ids: set[str] = set()
+        for edge_id in section.routing_edge_ids:
+            edge = edge_by_id.get(edge_id)
+            if edge is None:
+                continue
+            section_node_ids.update((edge.from_node_id, edge.to_node_id))
+        if support_attachment_nodes.intersection(section_node_ids):
+            return False
+        first_edge = edge_by_id.get(section.routing_edge_ids[0])
+        last_edge = edge_by_id.get(section.routing_edge_ids[-1])
+        if first_edge is None or last_edge is None:
+            return False
+        section_endpoints = (first_edge.from_node_id, last_edge.to_node_id)
+        for record in request.discovery.candidate_records:
+            if record.candidate_id not in admitted_candidate_ids:
+                continue
+            if record.candidate_id in selected_candidate_ids:
+                continue
+            if record.edge_ids != section.routing_edge_ids:
+                continue
+            if record.endpoints != section_endpoints:
+                continue
+            if record.primary_alignment_basis != "a-road" and (
+                "a-road" not in record.alignment_bases
+            ):
+                continue
+            candidate_set = candidate_set_by_id.get(record.candidate_id)
+            if candidate_set is None:
+                continue
+            selected_ids_in_set = {
+                candidate.candidate_id
+                for candidate in candidate_set.admitted_candidates
+                if candidate.candidate_id in selected_candidate_ids
+            }
+            if not selected_ids_in_set:
+                continue
+            candidate_role = str(
+                getattr(candidate_set.network_role, "value", candidate_set.network_role)
+            ).casefold()
+            if candidate_role != "interurban-spine":
+                continue
+            if any(
+                selected_id != record.candidate_id
+                and candidate_records.get(selected_id) is not None
+                and candidate_records[selected_id].endpoints == record.endpoints
+                and candidate_records[selected_id].network_role == record.network_role
+                for selected_id in selected_ids_in_set
+            ):
+                return True
+        return False
+
+    protected_section_ids = {
+        section.section_id
+        for section in normalized_sections
+        if section.obligation_id in request.backbone_obligation_ids
+        or section.obligation_id in urban_journey_obligation_ids
+        or (
+            section.network_role.casefold() == "urban-main-road-spine"
+            and "a-road" in section.alignment_bases
+            and not _a_section_replaced_by_compared_candidate(section)
+        )
+    }
     assembly = assemble_strategic_main_network(
         StrategicMainNetworkRequest(
             route_sections=tuple(candidates),
             coverage_points=coverage_points,
             profile=request.mesh_profile,
+            preserve_connected_components=bool(protected_section_ids),
+            protected_section_ids=tuple(sorted(protected_section_ids)),
         )
     )
     selected_ids = set(assembly.selected_section_ids)
@@ -1025,7 +1510,439 @@ def _mesh_materialized_sections(
         tuple(sorted(selected, key=lambda item: item.section_id)),
         tuple(diagnostics),
         assembly.gaps,
+        coverage_points,
     )
+
+
+def _resolved_backbone_component_gap_ids(
+    request: StrategicNetworkPlanningRequest,
+    sections: tuple[EffectiveStrategicSection, ...],
+) -> set[str]:
+    """Return preparation component gaps bridged by selected Main sections.
+
+    Preparation records identify the official component groups, while the
+    selected Planning Graph edge chains prove whether the effective result
+    actually traverses those groups.  A source-only component diagnostic must
+    not survive as a final gap once that proof exists.
+    """
+
+    preparation = request.corridor_obligations
+    if preparation is None:
+        return set()
+    units = tuple(getattr(preparation, "units", ()))
+    issues = tuple(getattr(preparation, "issues", ()))
+    component_ids = sorted(
+        {
+            str(component_id)
+            for unit in units
+            for component_id in tuple(getattr(unit, "backbone_component_ids", ()))
+        }
+        | {
+            str(component_id)
+            for issue in issues
+            if getattr(issue, "reason", None) == "a-road-backbone-component-unconnected"
+            for component_id in tuple(getattr(issue, "component_ids", ()))
+        }
+    )
+    if not component_ids:
+        return set()
+    parent = {component_id: component_id for component_id in component_ids}
+
+    def find(component_id: str) -> str:
+        root = component_id
+        while parent[root] != root:
+            root = parent[root]
+        while parent[component_id] != component_id:
+            next_id = parent[component_id]
+            parent[component_id] = root
+            component_id = next_id
+        return root
+
+    def union(component_group: tuple[str, ...]) -> None:
+        roots = sorted({find(component_id) for component_id in component_group})
+        if len(roots) < 2:
+            return
+        for root in roots[1:]:
+            parent[root] = roots[0]
+
+    edge_by_id = {edge.directed_edge_id: edge for edge in request.graph.edge_records}
+    routing_components: dict[str, set[str]] = {}
+    for unit in units:
+        component_group = tuple(
+            str(component_id) for component_id in tuple(getattr(unit, "backbone_component_ids", ()))
+        )
+        # A junction-context unit owns a two-component proof only when that
+        # unit itself is selected.  Attaching both IDs to both endpoints would
+        # let an unrelated route touching one endpoint resolve the other side.
+        if not component_group or len(component_group) != 1:
+            continue
+        for node_id in (
+            getattr(unit, "routing_start_node_id", ""),
+            getattr(unit, "routing_end_node_id", ""),
+        ):
+            routing_components.setdefault(str(node_id), set()).update(component_group)
+
+    for section in sections:
+        if section.obligation_id in {getattr(unit, "unit_id", None) for unit in units}:
+            unit = next(
+                (item for item in units if getattr(item, "unit_id", None) == section.obligation_id),
+                None,
+            )
+            if unit is not None:
+                union(
+                    tuple(
+                        str(component_id)
+                        for component_id in tuple(getattr(unit, "backbone_component_ids", ()))
+                    )
+                )
+        traversed_components: set[str] = set()
+        for edge_id in section.routing_edge_ids:
+            edge = edge_by_id.get(edge_id)
+            if edge is None:
+                continue
+            traversed_components.update(routing_components.get(edge.from_node_id, ()))
+            traversed_components.update(routing_components.get(edge.to_node_id, ()))
+        union(tuple(sorted(traversed_components)))
+
+    resolved: set[str] = set()
+    for issue in issues:
+        if getattr(issue, "reason", None) != "a-road-backbone-component-unconnected":
+            continue
+        issue_components = tuple(
+            str(component_id) for component_id in tuple(getattr(issue, "component_ids", ()))
+        )
+        if (
+            len(issue_components) > 1
+            and len({find(component_id) for component_id in issue_components}) == 1
+        ):
+            obligation_id = getattr(issue, "obligation_id", None)
+            if obligation_id:
+                resolved.add(str(obligation_id))
+    return resolved
+
+
+def _governed_parent_sections_for_access(
+    request: StrategicNetworkPlanningRequest,
+    sections: tuple[EffectiveStrategicSection, ...],
+) -> tuple[EffectiveStrategicSection, ...]:
+    """Retain exact prepared parent corridors needed by governed access links.
+
+    Access rows carry the graph attachment node and, where available, the
+    source parent obligation.  If a backbone Candidate Set selects a cycle or
+    other substitute, retain its admitted A-road parent only when one of those
+    supplied identities binds the parent.  The route is reconstructed from its
+    prepared directed edge IDs; no connector or geometric snap is introduced.
+    """
+
+    support_sections = tuple(
+        section
+        for section in sections
+        if section.network_role.casefold()
+        in {
+            "community-access",
+            "school-access",
+            "strategic-destination-access",
+            "cross-spine-connector",
+        }
+    )
+    if not support_sections:
+        return ()
+    support_nodes = {
+        node_id for section in support_sections for node_id in section.attachment_node_ids
+    }
+    support_parent_ids = {
+        parent_id for section in support_sections for parent_id in section.parent_obligation_ids
+    }
+    if not support_nodes and not support_parent_ids:
+        return ()
+    backbone_units = tuple(
+        unit
+        for unit in getattr(request.corridor_obligations, "units", ())
+        if getattr(unit, "backbone_required", False)
+    )
+    if not backbone_units:
+        return ()
+    edge_by_id = {edge.directed_edge_id: edge for edge in request.graph.edge_records}
+    selected_candidate_ids = {
+        section.candidate_id for section in sections if section.candidate_id is not None
+    }
+    existing_edge_chains = {tuple(section.routing_edge_ids) for section in sections}
+    parent_sections: list[EffectiveStrategicSection] = []
+    for unit in sorted(backbone_units, key=lambda item: str(getattr(item, "unit_id", ""))):
+        unit_id = str(getattr(unit, "unit_id", ""))
+        if not unit_id:
+            continue
+        records = tuple(
+            record
+            for record in request.discovery.candidate_records
+            if record.obligation_id == unit_id
+        )
+        for record in records:
+            candidate = record.candidate_input
+            bases = tuple(getattr(candidate, "alignment_bases", ()))
+            source_class = str(getattr(getattr(candidate, "source_class", None), "value", ""))
+            if "a-road" not in bases and source_class != "a-road-corridor":
+                continue
+            edge_ids = tuple(record.edge_ids)
+            if not edge_ids or record.candidate_id in selected_candidate_ids:
+                continue
+            route_nodes = {
+                node_id
+                for edge_id in edge_ids
+                if (edge := edge_by_id.get(edge_id)) is not None
+                for node_id in (edge.from_node_id, edge.to_node_id)
+            }
+            if unit_id not in support_parent_ids and not support_nodes.intersection(route_nodes):
+                continue
+            if edge_ids in existing_edge_chains:
+                continue
+            try:
+                geometry = _edge_geometry(
+                    request.graph,
+                    edge_ids,
+                    endpoints=(record.endpoints[0], record.endpoints[1]),
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+            role = getattr(getattr(unit, "unit_role", None), "network_role", None)
+            if role is None:
+                role = getattr(getattr(unit, "unit_role", None), "value", "interurban-spine")
+            intervention = getattr(
+                getattr(candidate, "intervention_state", None), "value", None
+            ) or getattr(candidate, "intervention_state", None)
+            parent_sections.append(
+                EffectiveStrategicSection(
+                    section_id=_stable_id(
+                        "strategic-parent-corridor", (unit_id, record.candidate_id)
+                    ),
+                    obligation_id=unit_id,
+                    candidate_id=None,
+                    network_role=str(role),
+                    routing_edge_ids=edge_ids,
+                    reverse_routing_edge_ids=tuple(record.reverse_edge_ids),
+                    geometry_wkt=geometry,
+                    authority=PlanningAuthority.COMPILER,
+                    alignment_bases=bases,
+                    primary_alignment_basis=getattr(candidate, "primary_alignment_basis", None),
+                    intervention_state=intervention,
+                    display_state=_display_state(intervention),
+                    network_scope=getattr(unit, "network_scope", None),
+                )
+            )
+            existing_edge_chains.add(edge_ids)
+    return tuple(sorted(parent_sections, key=lambda item: item.section_id))
+
+
+def _extend_access_support_to_main(
+    request: StrategicNetworkPlanningRequest,
+    sections: tuple[EffectiveStrategicSection, ...],
+) -> tuple[tuple[EffectiveStrategicSection, ...], tuple[ReviewableNetworkGap, ...]]:
+    """Join governed access lines to selected Main through exact graph edges.
+
+    Access preparation binds its target to an exact Planning Graph node. When a
+    candidate substitution leaves that node outside selected Main, preserve the
+    support line and append the directed, allowed graph path to a selected Main
+    node. No geometry is interpolated and no distance rule is introduced.
+    """
+
+    support_roles = {
+        "community-access",
+        "school-access",
+        "strategic-destination-access",
+        "cross-spine-connector",
+    }
+    edge_by_id = {edge.directed_edge_id: edge for edge in request.graph.edge_records}
+    main_node_ids = {
+        node_id
+        for section in sections
+        if section.network_role.casefold() not in support_roles
+        for edge_id in section.routing_edge_ids
+        if (edge := edge_by_id.get(edge_id)) is not None
+        for node_id in (edge.from_node_id, edge.to_node_id)
+    }
+    if not main_node_ids:
+        return sections, tuple(
+            ReviewableNetworkGap(
+                section.obligation_id,
+                section.network_role,
+                (section.attachment_node_ids[-1],),
+                "access support has no selected Main graph node for an exact connection",
+            )
+            for section in sections
+            if section.network_role.casefold() in support_roles and section.attachment_node_ids
+        )
+
+    # Access can only be extended over the same two-way routable graph used by
+    # Main continuity.  Select one deterministic record per direction, retain
+    # only endpoint pairs with both directions, then search once from every
+    # final Main node on the reversed graph.  The path weight is the recorded
+    # physical length; hop count would choose a long one-edge detour.
+    chosen_by_pair: dict[tuple[str, str], PlanningEdgeRecord] = {}
+    for edge in sorted(
+        request.graph.edge_records,
+        key=lambda item: (
+            item.from_node_id,
+            item.to_node_id,
+            int(item.length_mm),
+            item.directed_edge_id,
+        ),
+    ):
+        if edge.reciprocal_state != "reciprocal" or edge.access in {
+            "no",
+            "private",
+            "customers",
+        }:
+            continue
+        pair = (edge.from_node_id, edge.to_node_id)
+        current = chosen_by_pair.get(pair)
+        if current is None or (edge.length_mm, edge.directed_edge_id) < (
+            current.length_mm,
+            current.directed_edge_id,
+        ):
+            chosen_by_pair[pair] = edge
+
+    reciprocal_pairs = {
+        pair: edge for pair, edge in chosen_by_pair.items() if (pair[1], pair[0]) in chosen_by_pair
+    }
+    reverse_graph = nx.DiGraph()
+    for (from_node_id, to_node_id), edge in sorted(reciprocal_pairs.items()):
+        reverse_edge = reciprocal_pairs[(to_node_id, from_node_id)]
+        reverse_graph.add_edge(
+            to_node_id,
+            from_node_id,
+            length_mm=int(edge.length_mm),
+            forward_edge_id=edge.directed_edge_id,
+            reverse_edge_id=reverse_edge.directed_edge_id,
+        )
+
+    available_main_sources = tuple(sorted(main_node_ids.intersection(reverse_graph.nodes)))
+    if available_main_sources:
+        try:
+            _distances, reverse_paths = nx.multi_source_dijkstra(
+                reverse_graph,
+                sources=available_main_sources,
+                weight="length_mm",
+            )
+        except (KeyError, nx.NodeNotFound):
+            reverse_paths = {}
+    else:
+        reverse_paths = {}
+
+    extensions_by_target: dict[str, tuple[tuple[str, ...], tuple[str, ...], str]] = {}
+    for target_node in sorted(
+        {
+            section.attachment_node_ids[-1]
+            for section in sections
+            if section.network_role.casefold() in support_roles
+            and section.attachment_node_ids
+            and section.attachment_node_ids[-1] not in main_node_ids
+        }
+    ):
+        path_nodes = tuple(reverse_paths.get(target_node, ()))
+        if len(path_nodes) < 2:
+            continue
+        reverse_path_edges = tuple(
+            reverse_graph.get_edge_data(left, right) for left, right in pairwise(path_nodes)
+        )
+        if any(edge is None for edge in reverse_path_edges):
+            continue
+        forward_edge_ids = tuple(edge["forward_edge_id"] for edge in reversed(reverse_path_edges))
+        reverse_edge_ids = tuple(edge["reverse_edge_id"] for edge in reverse_path_edges)
+        try:
+            extension_wkt = _edge_geometry(
+                request.graph,
+                forward_edge_ids,
+                endpoints=(target_node, path_nodes[0]),
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not reverse_edge_ids:
+            continue
+        extensions_by_target[target_node] = (
+            forward_edge_ids,
+            reverse_edge_ids,
+            extension_wkt,
+        )
+
+    updated: list[EffectiveStrategicSection] = []
+    gaps: list[ReviewableNetworkGap] = []
+    for section in sections:
+        if section.network_role.casefold() not in support_roles or not section.attachment_node_ids:
+            updated.append(section)
+            continue
+        target_node = section.attachment_node_ids[-1]
+        if target_node in main_node_ids:
+            updated.append(section)
+            continue
+        extension = extensions_by_target.get(target_node)
+        if extension is None:
+            updated.append(section)
+            gaps.append(
+                ReviewableNetworkGap(
+                    section.obligation_id,
+                    section.network_role,
+                    (target_node,),
+                    "access support attachment has no exact allowed Planning Graph path "
+                    "to selected Main",
+                )
+            )
+            continue
+        edge_ids, reverse_edge_ids, extension_wkt = extension
+        try:
+            support_geometry = load_wkt(section.geometry_wkt)
+            extension_geometry = load_wkt(extension_wkt)
+        except (TypeError, ValueError):
+            support_geometry = extension_geometry = None
+        if not isinstance(support_geometry, LineString) or not isinstance(
+            extension_geometry, LineString
+        ):
+            updated.append(section)
+            gaps.append(
+                ReviewableNetworkGap(
+                    section.obligation_id,
+                    section.network_role,
+                    (target_node,),
+                    "access support geometry cannot bind its exact attachment node",
+                )
+            )
+            continue
+        extension_coordinates = list(extension_geometry.coords)
+        support_coordinates = list(support_geometry.coords)
+        target_coordinate = tuple(extension_coordinates[0])
+        if (
+            tuple(support_coordinates[-1]) == target_coordinate
+            and tuple(extension_coordinates[0]) == target_coordinate
+        ):
+            combined_coordinates = support_coordinates + extension_coordinates[1:]
+            combined_edge_ids = (*section.routing_edge_ids, *edge_ids)
+            combined_reverse_edge_ids = (*reverse_edge_ids, *section.reverse_routing_edge_ids)
+        elif (
+            tuple(support_coordinates[0]) == target_coordinate
+            and tuple(extension_coordinates[0]) == target_coordinate
+        ):
+            combined_coordinates = list(reversed(extension_coordinates)) + support_coordinates[1:]
+            combined_edge_ids = (*reverse_edge_ids, *section.routing_edge_ids)
+            combined_reverse_edge_ids = (*section.reverse_routing_edge_ids, *edge_ids)
+        else:
+            updated.append(section)
+            gaps.append(
+                ReviewableNetworkGap(
+                    section.obligation_id,
+                    section.network_role,
+                    (target_node,),
+                    "access support geometry endpoint does not bind its exact attachment node",
+                )
+            )
+            continue
+        updated.append(
+            replace(
+                section,
+                geometry_wkt=LineString(combined_coordinates).wkt,
+                routing_edge_ids=tuple(combined_edge_ids),
+                reverse_routing_edge_ids=tuple(combined_reverse_edge_ids),
+            )
+        )
+    return tuple(updated), tuple(gaps)
 
 
 def compile_strategic_network(
@@ -1040,14 +1957,54 @@ def compile_strategic_network(
     diagnostics: list[PlanningDiagnostic] = []
     gaps: list[ReviewableNetworkGap] = []
     requests: list[EvidenceRequest] = []
+    supplied_diagnostics = request.network_diagnostics
+    diagnostics.extend(
+        item
+        for item in getattr(supplied_diagnostics, "diagnostics", ())
+        if isinstance(item, PlanningDiagnostic)
+    )
+    gaps.extend(
+        item
+        for item in getattr(supplied_diagnostics, "gaps", ())
+        if isinstance(item, ReviewableNetworkGap)
+    )
     required_sections = tuple(request.required_sections)
+    preparation_units = tuple(getattr(request.corridor_obligations, "units", ()))
+    preparation_issues = tuple(getattr(request.corridor_obligations, "issues", ()))
+    endpoint_coordinates_by_obligation = {
+        str(getattr(item, "unit_id", "")): tuple(getattr(item, "endpoint_coordinates", ()))
+        for item in preparation_units
+        if getattr(item, "endpoint_coordinates", ())
+    }
+    endpoint_coordinates_by_obligation.update(
+        {
+            str(getattr(item, "obligation_id", "")): tuple(
+                getattr(item, "endpoint_coordinates", ())
+            )
+            for item in preparation_issues
+            if getattr(item, "obligation_id", None) and getattr(item, "endpoint_coordinates", ())
+        }
+    )
     for gap in sorted(discovery.gaps, key=lambda item: item.obligation_id):
-        role = str(getattr(gap, "network_role", "unresolved-strategic-alignment"))
+        issue = next(
+            (
+                item
+                for item in preparation_issues
+                if getattr(item, "obligation_id", None) == gap.obligation_id
+            ),
+            None,
+        )
+        role = str(
+            getattr(gap, "network_role", None)
+            or getattr(issue, "network_role", None)
+            or "unresolved-strategic-alignment"
+        )
         reviewable_gap = ReviewableNetworkGap(
             gap.obligation_id,
             role,
             tuple(gap.endpoints),
             gap.reason,
+            endpoint_coordinates=endpoint_coordinates_by_obligation.get(gap.obligation_id, ()),
         )
         gaps.append(reviewable_gap)
         requests.append(
@@ -1294,6 +2251,7 @@ def compile_strategic_network(
             )
         )
     )
+    active_officer_metadata = _active_officer_choice_metadata(request.officer_decisions)
     preferred_by_set = dict(request.compiler_preferred_candidate_ids)
     routing_endpoints_by_set = dict(request.routing_endpoint_bindings)
     officer_by_candidate: dict[str, tuple[str, ...]] = {}
@@ -1349,6 +2307,11 @@ def compile_strategic_network(
                 )
             )
         compiler_id = None if compiler is None else compiler.candidate_id
+        compiler_reason = _compiler_selection_reason(
+            candidate_set,
+            compiler,
+            governed_preference,
+        )
         set_candidate_ids = {item.candidate_id for item in candidate_set.candidates}
         officer_ids = tuple(
             candidate_id
@@ -1430,6 +2393,25 @@ def compile_strategic_network(
                 break
             if effective is not None or authority is PlanningAuthority.GOVERNED_REFERENCE:
                 break
+        selection_reason = compiler_reason
+        decision_id: str | None = None
+        decision_maker: str | None = None
+        if authority is PlanningAuthority.OFFICER and officer_id is not None:
+            officer_decision_ids = officer_by_candidate.get(officer_id, ())
+            if len(officer_decision_ids) == 1:
+                selection_reason, decision_id, decision_maker = _officer_selection_details(
+                    officer_id,
+                    officer_decision_ids[0],
+                    active_officer_metadata,
+                )
+            else:
+                selection_reason = (
+                    "officer selection: multiple decision attributions; rationale unavailable"
+                )
+        elif authority is PlanningAuthority.GOVERNED_REFERENCE:
+            selection_reason = (
+                "governed reference route: supplied fallback; compiler comparison unavailable"
+            )
         if (
             officer_id is not None
             and compiler_id is not None
@@ -1463,6 +2445,7 @@ def compile_strategic_network(
                     reference.routing_edge_ids,
                     (),
                     reference_geometry,
+                    selection_reason=selection_reason,
                 )
             )
             sections.append(
@@ -1476,6 +2459,9 @@ def compile_strategic_network(
                     reference_geometry,
                     authority,
                     display_state="reference-route",
+                    network_scope=(
+                        "rural" if str(role).casefold() == "interurban-spine" else "urban"
+                    ),
                 )
             )
             effective_roles.add(str(role))
@@ -1485,7 +2471,12 @@ def compile_strategic_network(
             )
             gaps.append(
                 ReviewableNetworkGap(
-                    obligation_id, str(role), endpoints, reason, candidate_set.candidate_set_id
+                    obligation_id,
+                    str(role),
+                    endpoints,
+                    reason,
+                    candidate_set.candidate_set_id,
+                    endpoint_coordinates=endpoint_coordinates_by_obligation.get(obligation_id, ()),
                 )
             )
             requests.append(
@@ -1526,6 +2517,9 @@ def compile_strategic_network(
                         endpoints,
                         str(error),
                         candidate_set.candidate_set_id,
+                        endpoint_coordinates=endpoint_coordinates_by_obligation.get(
+                            obligation_id, ()
+                        ),
                     )
                 )
                 requests.append(
@@ -1553,6 +2547,9 @@ def compile_strategic_network(
                         edge_ids,
                         reverse_ids,
                         geometry,
+                        selection_reason=selection_reason,
+                        decision_id=decision_id,
+                        decision_maker=decision_maker,
                     )
                 )
                 section_id = effective.candidate_id
@@ -1572,6 +2569,10 @@ def compile_strategic_network(
                             effective.intervention_state, "value", effective.intervention_state
                         ),
                         _display_state(effective.intervention_state),
+                        network_scope=(
+                            getattr(record.sections[0], "network_scope", None)
+                            or ("rural" if str(role).casefold() == "interurban-spine" else "urban")
+                        ),
                     )
                 )
 
@@ -1597,16 +2598,27 @@ def compile_strategic_network(
                 )
                 continue
             if candidate.candidate_id in selected_ids:
-                disposition, reason = (
+                disposition, reason, comparison_reason = (
                     "effective",
                     "candidate is effective in the immutable strategic network",
+                    None,
                 )
             elif getattr(admission.disposition, "value", admission.disposition) == "admitted":
-                disposition, reason = "unselected", "admitted alternative retained for review"
+                disposition, reason, comparison_reason = (
+                    "unselected",
+                    "admitted alternative retained for review",
+                    _compiler_alternative_comparison_reason(
+                        candidate_set,
+                        compiler,
+                        candidate,
+                        governed_preference,
+                    ),
+                )
             else:
-                disposition, reason = (
+                disposition, reason, comparison_reason = (
                     "rejected",
                     getattr(admission.rationale, "value", str(admission.rationale)),
+                    None,
                 )
             dispositions.append(
                 CandidateDisposition(
@@ -1615,6 +2627,7 @@ def compile_strategic_network(
                     candidate.candidate_id,
                     disposition,
                     reason,
+                    comparison_reason,
                 )
             )
 
@@ -1646,20 +2659,29 @@ def compile_strategic_network(
                     )
                 )
 
-    mesh_sections, mesh_diagnostics, mesh_gaps = _mesh_materialized_sections(
-        request, tuple(sections)
+    sections.extend(_governed_parent_sections_for_access(request, tuple(sections)))
+    pre_mesh_sections = tuple(sections)
+    mesh_sections, mesh_diagnostics, mesh_gaps, mesh_coverage_points = _mesh_materialized_sections(
+        request, pre_mesh_sections
     )
-    mesh_omitted_ids = {section.section_id for section in sections} - {
+    mesh_omitted_ids = {section.section_id for section in pre_mesh_sections} - {
         section.section_id for section in mesh_sections
     }
     mesh_omitted_obligation_ids = {
-        section.obligation_id for section in sections if section.section_id in mesh_omitted_ids
+        section.obligation_id
+        for section in pre_mesh_sections
+        if section.section_id in mesh_omitted_ids
     }
     diagnostics.extend(mesh_diagnostics)
+    coverage_points_by_id = {point.point_id: point for point in mesh_coverage_points}
     mesh_gap_groups: dict[tuple[str, str], list[MeshGap]] = {}
     for mesh_gap in mesh_gaps:
         mesh_gap_groups.setdefault((mesh_gap.scope, mesh_gap.reason), []).append(mesh_gap)
     for (scope, reason), grouped_gaps in sorted(mesh_gap_groups.items()):
+        proof_points = tuple(
+            coverage_points_by_id[item.coverage_point_id].coordinates
+            for item in sorted(grouped_gaps, key=lambda value: value.coverage_point_id)
+        )
         gaps.append(
             ReviewableNetworkGap(
                 f"strategic-mesh:{scope}:{reason}",
@@ -1667,8 +2689,14 @@ def compile_strategic_network(
                 ("", ""),
                 f"{scope} mesh coverage is not proved at {len(grouped_gaps)} proof points: "
                 f"{reason}",
+                mesh_proof_points=proof_points,
             )
         )
+    mesh_sections, support_connection_gaps = _extend_access_support_to_main(
+        request,
+        tuple(mesh_sections),
+    )
+    gaps.extend(support_connection_gaps)
     if mesh_omitted_ids:
         selected_ids.difference_update(mesh_omitted_ids)
         selections = [
@@ -1690,6 +2718,12 @@ def compile_strategic_network(
     sections = list(mesh_sections)
     effective_roles = {section.network_role for section in sections}
 
+    resolved_backbone_component_gaps = _resolved_backbone_component_gap_ids(
+        request, tuple(sections)
+    )
+    if resolved_backbone_component_gaps:
+        gaps = [gap for gap in gaps if gap.obligation_id not in resolved_backbone_component_gaps]
+
     missing_roles = set(request.fallback_profile.required_roles) - effective_roles
     for role in sorted(missing_roles):
         diagnostics.append(
@@ -1708,9 +2742,11 @@ def compile_strategic_network(
             )
         )
 
+    selected_obligation_ids = {item.obligation_id for item in selections}
+    canonical_gaps = _canonical_gaps(_published_gaps(request, gaps, selected_obligation_ids))
     status = (
         "complete-with-gaps"
-        if gaps
+        if canonical_gaps
         else "reference-fallback"
         if any(item.authority is PlanningAuthority.GOVERNED_REFERENCE for item in selections)
         else "complete"
@@ -1740,7 +2776,6 @@ def compile_strategic_network(
         fallback_profile_fingerprint=request.fallback_profile.fingerprint,
         mesh_profile_fingerprint=request.mesh_profile_fingerprint,
     )
-    canonical_gaps = _canonical_gaps(gaps)
     payload = {
         "status": status,
         "effective_network": effective_network,

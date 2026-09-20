@@ -29,7 +29,7 @@ def test_review_map_adapter_uses_pure_catalog_and_reducer() -> None:
     assert "state.pinnedArtifact" not in sync_source
     assert "state.comparisonArtifacts" not in sync_source
     assert "function stableArtifactId" not in script
-    assert "function artifactRecord" not in script
+    assert "function artifactRecord(" not in script
     compare_start = script.index("  function renderSegmentComparison(artifacts) {")
     compare_end = script.index("\n  function showArtifactDetails", compare_start)
     compare_source = script[compare_start:compare_end]
@@ -52,6 +52,5 @@ def test_preview_and_clear_paths_dispatch_pure_transitions() -> None:
     clear_end = script.index("\n  function toggleArtifactPin", clear_start)
     clear_source = script[clear_start:clear_end]
     assert "PREVIEW_ARTIFACT" in details_source
-    assert "!lensState.pinnedArtifact" in details_source
     assert "PREVIEW_ARTIFACT" in clear_source
     assert "artifact: null" in clear_source

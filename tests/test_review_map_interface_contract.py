@@ -26,7 +26,8 @@ def test_gradient_inspection_interface_contract() -> None:
     ):
         assert f'id="{identifier}"' in html
     assert 'id="linear-evidence-panel"' not in html
-    assert 'role="dialog" aria-label="Route review lens"' in html
+    assert 'id="review-lens" role="region" aria-label="Route review lens"' in html
+    assert 'role="dialog"' not in html
     assert ">Show gradient details</button>" in html
     assert '<h3 id="linear-evidence-heading">Linear Evidence</h3>' in html
     assert 'id="linear-evidence-view" aria-labelledby="linear-evidence-heading" hidden' in html
@@ -54,7 +55,7 @@ def test_gradient_inspection_interface_contract() -> None:
     assert "Desktop is recommended" in html
     assert "Compiler timing unavailable." in html
     assert "Compiled ${completed} · compiler time ${duration}" in script
-    assert "This legacy review map bundles its available evidence" in script
+    assert "This deployment bundles its available evidence" in script
     assert "MapToolkit" not in script
     assert (
         '"cross-spine-connector"'
@@ -66,12 +67,9 @@ def test_reviewable_network_layer_defaults_and_semantics_are_explicit() -> None:
     html = (ASSETS / "review-map.html").read_text(encoding="utf-8")
     script = (ASSETS / "review-map.js").read_text(encoding="utf-8")
     css = (ASSETS / "review-map.css").read_text(encoding="utf-8")
-    for control_id in (
-        "layer-strategic-network",
-        "layer-mapped-active-travel-assets",
-        "layer-places",
-    ):
+    for control_id in ("layer-strategic-network", "layer-places"):
         assert f'id="{control_id}" type="checkbox" checked' in html
+    assert 'id="layer-mapped-active-travel-assets" type="checkbox" checked' not in html
     assert 'id="layer-strategic-network" type="checkbox" checked' in html
     assert "> Strategic Main Network</label>" in html
     assert 'id="layer-access-support" type="checkbox"' in html
@@ -110,12 +108,24 @@ def test_reviewable_network_layer_defaults_and_semantics_are_explicit() -> None:
     assert ".map-key.basis-strategic-reference" in css
     assert "display_state" in script
     assert "reviewable-gap-endpoint" in script
+    assert "Network coverage gap" in script
+    assert "isAroadComponentGapMarker" in script
+    assert "Disconnected A-road component (representative location)" in script
+    assert "gap_marker_disclaimer" in script
+    assert "coverage point ${properties.proof_point_position}" in script
+    assert '"unknown endpoint"' not in script
     assert "reviewable-dft-traffic-points" in script
     assert "bounded-candidate-route-evidence-no-point" not in script
     assert "bounded candidate-route evidence" in html
     assert 'id="reviewable-findings"' in html
+    assert "representative locations of disconnected official A-road components" in html
+    assert "No direct connection between component markers is proposed" in html
     assert "endpoint geometry unavailable" in script
     assert "renderReviewableFindings()" in script
+    artifact_role_source = script.split("function artifactRole", maxsplit=1)[1]
+    assert artifact_role_source.index(
+        'if (featureType === "reviewable-gap-endpoint")'
+    ) < artifact_role_source.index('if (properties.layer === "Strategic Main Network")')
     assert "const hasBackboneAndAccessNetwork = network.features.some(" in script
     assert "const hasSemanticStrategicMainNetwork = reviewable.features.some(" in script
     assert "const hasSemanticAccessSupport = reviewable.features.some(" in script
@@ -142,13 +152,44 @@ def test_reviewable_network_layer_defaults_and_semantics_are_explicit() -> None:
     assert 'id: "mapped-active-travel-assets"' in script
     assert '"asset_kind"], "mapped-cycleway"' in script
     assert '"layer-mapped-active-travel-assets": ["mapped-active-travel-assets"]' in script
-    assert 'addAvailable("Line colour"' in script
-    assert 'addAvailable("Map meaning"' in script
+    assert "appendArtifactAppearance" in script
+    assert 'summary.textContent = "Colour and line treatment"' in script
+    assert "summary.textContent = `Technical details · All contextual properties (" in script
+    assert 'addDefinition(list, "Stable ID", artifact.id)' in script
+    assert 'addDefinition(list, "Raw type"' in script
+    assert 'addDefinition(list, "Rendered layer"' in script
+    assert (
+        "if (hasDataValue(accessStatus)) "
+        'addDefinition(list, "Access status", humanStatus(accessStatus));'
+    ) in script
+    assert 'map.addSource("review-lens-highlight"' in script
+    assert "function setLensArtifactHighlight(artifact)" in script
+    assert '"review-lens-highlight-line"' in script
+    assert '"review-lens-highlight-point"' in script
+    assert "presentationOnlyLayers" in script
     assert "loadDefaultEvidenceForCurrentView" in script
     assert 'dataset.defaultEvidenceReady = "true"' in script
     assert '"layer-alignment-review": [' in script
     assert '"reviewable-required-connections"' in script
     assert script.count("Object.entries(controlLayerGroups).forEach") == 2
+    assert "function syncControlledLayerVisibility()" in script
+    assert "const requested = owners.some(isControlChecked)" in script
+    assert "topographyLayerIsVisible" in script
+    assert "orderLayersForReadableMainNetwork" in script
+    sync_start = script.index("  function syncControlledLayerVisibility()")
+    sync_end = script.index("\n  function orderLayersForReadableMainNetwork", sync_start)
+    sync_source = script[sync_start:sync_end]
+    assert "ownersByLayer" in sync_source
+    assert "owners.some(isControlChecked)" in sync_source
+    bind_start = script.index("  function bindControls()")
+    bind_end = script.index("\n  function extendBounds", bind_start)
+    bind_source = script[bind_start:bind_end]
+    assert "syncControlledLayerVisibility();" in bind_source
+    assert "layers.forEach" not in bind_source
+    assert '"line-color": "#c0392b"' in main_layer
+    assert "layer-disclosure" in css
+    assert "artifact-context" in css
+    assert '#review-lens[data-state="pinned"]' in css
     assert 'layout: { visibility: usesReviewableStrategicFallback ? "visible" : "none" }' in script
     assert 'usesLegacyStrategicFallback ? ["strategic-network"] : []' in script
     assert 'visibility: usesLegacyStrategicFallback ? "visible" : "none"' in script

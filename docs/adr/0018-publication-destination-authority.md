@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-08-01
+- Revised: 2026-09-05 — local single-writer POC scope
 - Issue: #266
 
 ## Context
@@ -9,9 +10,10 @@
 An Area Definition is governed input, but it is still untrusted at the
 filesystem boundary.  Letting it nominate an arbitrary writable output path
 would let a normal non-interactive compilation replace an unrelated directory.
-Basic lexical checks are not enough: symlink substitutions and a changed
-destination between validation and rename can redirect an otherwise valid
-publication commit.
+The POC is operated by a trusted local user with one publisher per output
+directory. Protecting against ordinary mistakes and failed writes is necessary;
+defending against hostile processes swapping paths during publication is outside
+that operating model.
 
 ## Decision
 
@@ -31,16 +33,13 @@ directory whose prior `compilation_input_fingerprint` exactly matches a
 caller-supplied expected fingerprint.  This permits controlled recovery of a
 pre-marker output without turning a matching filename into authority.
 
-Publisher and Area Deployment builders both stage under a no-follow parent
-directory descriptor.  Immediately before the two renames they revalidate the
-staging inode and current destination authorisation through that descriptor,
-then retain the previous directory until the new install succeeds.  A failed
-install restores the previous output; a failed validation leaves it untouched.
-If a competing destination prevents restoration, it is atomically moved to a
-unique retained conflict sibling before the exact previous publication is
-restored to the canonical destination; the raised error names that conflict.
-If either recovery rename also fails, the error names every retained sibling
-instead of suppressing the rollback failure or deleting an output.
+Publisher and Area Deployment builders validate the destination before creating
+a temporary sibling directory. They retain the previous directory as a backup
+until installation succeeds. A failed install restores the previous output; a
+failed validation leaves it untouched. If rollback fails, the backup remains and
+the error names it. Descriptor-relative operations, inode and content surveillance,
+and competing-writer quarantine were removed following the owner's clarification
+that this is a fast local network-building POC.
 
 ## Consequences
 
@@ -48,7 +47,7 @@ instead of suppressing the rollback failure or deleting an output.
   under their caller-owned workspace and subsequently carry their marker.
 - Operators can automate a deliberately external deployment by supplying the
   exact capability and, where needed, expected prior-run fingerprint.
-- Filesystem, home, repository-root, symlinked and swapped destinations fail
-  closed rather than being treated as publication targets.
+- Filesystem, home, workspace-root and symlinked destinations are rejected during
+  destination validation. Concurrent path substitution is not supported.
 - Area Deployments cannot replace each other merely because their files have a
   superficially valid publication record; owner identity is deployment-specific.

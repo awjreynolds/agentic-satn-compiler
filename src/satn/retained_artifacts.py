@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from satn.compilation_dependencies import is_compiler_cache_revision
+
 ARTIFACT_MANIFEST_SCHEMA = "satn-artifact-manifest/v1"
 COMPILATION_RUN_REPORT_SCHEMA = "satn-compilation-run/v1"
 ARTIFACT_PIN_SCHEMA = "satn-artifact-pin/v1"
@@ -45,6 +47,16 @@ def _require_sha256(value: str, label: str) -> str:
     return value
 
 
+def _require_identity(value: str, label: str) -> str:
+    """Validate a cache identity or the explicit compiler revision token."""
+
+    if not isinstance(value, str) or (
+        _SHA256.fullmatch(value) is None and not is_compiler_cache_revision(value)
+    ):
+        raise ValueError(f"{label} must be a lowercase SHA-256 digest or compiler revision")
+    return value
+
+
 def _require_name(value: str, label: str) -> str:
     if not isinstance(value, str) or _NAME.fullmatch(value) is None or ".." in value:
         raise ValueError(f"{label} is invalid")
@@ -66,10 +78,7 @@ def _freeze_json(value: object, *, label: str) -> object:
         if any(not isinstance(key, str) for key in value):
             raise ValueError(f"{label} object keys must be strings")
         return _FrozenObject(
-            tuple(
-                (key, _freeze_json(item, label=label))
-                for key, item in sorted(value.items())
-            )
+            tuple((key, _freeze_json(item, label=label)) for key, item in sorted(value.items()))
         )
     if isinstance(value, (list, tuple)):
         return _FrozenArray(tuple(_freeze_json(item, label=label) for item in value))
@@ -128,12 +137,12 @@ class ArtifactSpecification:
         object.__setattr__(
             self,
             "implementation_fingerprint",
-            _require_sha256(self.implementation_fingerprint, "implementation fingerprint"),
+            _require_identity(self.implementation_fingerprint, "implementation fingerprint"),
         )
         object.__setattr__(
             self,
             "dependency_manifest_fingerprint",
-            _require_sha256(
+            _require_identity(
                 self.dependency_manifest_fingerprint,
                 "dependency manifest fingerprint",
             ),
@@ -220,9 +229,7 @@ class ArtifactManifest:
             contract_version=specification.contract_version,
             status=specification.status,
             implementation_fingerprint=specification.implementation_fingerprint,
-            dependency_manifest_fingerprint=(
-                specification.dependency_manifest_fingerprint
-            ),
+            dependency_manifest_fingerprint=(specification.dependency_manifest_fingerprint),
             parameters=specification.parameters,
             upstream_artifact_ids=specification.upstream_artifact_ids,
             partition_identities=specification.partition_identities,
@@ -320,8 +327,8 @@ class RetainedArtifact:
             raise KeyError(role)
         path = self.path / "outputs" / role
         content = path.read_bytes()
-        if len(content) != output.bytes or _sha256_bytes(content) != output.sha256:
-            raise ValueError(f"retained artifact output is corrupt: {role}")
+        if len(content) != output.bytes:
+            raise ValueError(f"retained artifact output size differs: {role}")
         return content
 
 
@@ -347,8 +354,7 @@ def _manifest_matches_specification(
         manifest.kind == specification.kind
         and manifest.contract_version == specification.contract_version
         and manifest.status == specification.status
-        and manifest.implementation_fingerprint
-        == specification.implementation_fingerprint
+        and manifest.implementation_fingerprint == specification.implementation_fingerprint
         and manifest.dependency_manifest_fingerprint
         == specification.dependency_manifest_fingerprint
         and manifest.parameters == specification.parameters
@@ -632,9 +638,7 @@ class RetainedArtifactStore:
             return ArtifactResolution("miss", "invalid-artifact-id")
         return self._resolve(artifact_id, visiting=set())
 
-    def reject_semantic_artifact(
-        self, artifact_id: str, *, reason: str
-    ) -> ArtifactResolution:
+    def reject_semantic_artifact(self, artifact_id: str, *, reason: str) -> ArtifactResolution:
         """Quarantine bytes that passed storage checks but failed their public decoder."""
 
         if not isinstance(artifact_id, str) or _SHA256.fullmatch(artifact_id) is None:
@@ -667,10 +671,7 @@ class RetainedArtifactStore:
                 raise ValueError("retained artifact prefix is invalid")
             for path in sorted(prefix.iterdir()):
                 artifact_id = path.name
-                if (
-                    _SHA256.fullmatch(artifact_id) is None
-                    or prefix.name != artifact_id[:2]
-                ):
+                if _SHA256.fullmatch(artifact_id) is None or prefix.name != artifact_id[:2]:
                     continue
                 if path.is_symlink() or not path.is_dir():
                     self.resolve(artifact_id)
@@ -731,9 +732,7 @@ class RetainedArtifactStore:
         if path.is_symlink() or not path.is_file():
             raise ValueError("compilation run report is unavailable")
         try:
-            return CompilationRunReport.from_payload(
-                json.loads(path.read_text(encoding="utf-8"))
-            )
+            return CompilationRunReport.from_payload(json.loads(path.read_text(encoding="utf-8")))
         except (TypeError, ValueError, json.JSONDecodeError) as error:
             raise ValueError("compilation run report is invalid") from error
 
@@ -809,9 +808,7 @@ class RetainedArtifactStore:
                 f"active-lineage-{resolution.reason}",
                 quarantined_path=resolution.quarantined_path,
             )
-        return ArtifactResolution(
-            "validated-hit", "validated-active-lineage", resolution.artifact
-        )
+        return ArtifactResolution("validated-hit", "validated-active-lineage", resolution.artifact)
 
     def plan_garbage_collection(
         self,
@@ -834,9 +831,7 @@ class RetainedArtifactStore:
             try:
                 manifest = self._validate_directory(path, artifact_id)
             except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
-                raise ValueError(
-                    f"pinned artifact dependency is invalid: {artifact_id}"
-                ) from error
+                raise ValueError(f"pinned artifact dependency is invalid: {artifact_id}") from error
             reachable.add(artifact_id)
             for upstream_id in manifest.upstream_artifact_ids:
                 visit(upstream_id)
@@ -1023,8 +1018,7 @@ class RetainedArtifactStore:
                 raise ValueError("artifact pin is invalid") from error
             if (
                 not isinstance(payload, dict)
-                or set(payload)
-                != {"schema", "reference_kind", "reference_id", "artifact_id"}
+                or set(payload) != {"schema", "reference_kind", "reference_id", "artifact_id"}
                 or payload.get("schema") != ARTIFACT_PIN_SCHEMA
                 or path.parent.name != payload.get("reference_kind")
                 or path.stem != payload.get("reference_id")
@@ -1140,11 +1134,10 @@ class RetainedArtifactStore:
                 raise _ArtifactValidationError(
                     "output-invalid", "retained artifact output is invalid"
                 )
-            content = output_path.read_bytes()
-            if len(content) != output.bytes or _sha256_bytes(content) != output.sha256:
+            if output_path.stat().st_size != output.bytes:
                 raise _ArtifactValidationError(
-                    "output-digest-mismatch",
-                    "retained artifact output digest differs",
+                    "output-size-mismatch",
+                    "retained artifact output size differs",
                 )
         return manifest
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 import re
@@ -264,6 +265,52 @@ def test_package_pages_keeps_one_canonical_reviewable_projection(
     assert not (packaged / "strategic-network.json").exists()
 
 
+def test_package_pages_accepts_gzipped_network_and_validates_decompressed_geojson(
+    tmp_path: Path,
+) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    write_catalogue(catalogue)
+    write_bundle(bundles)
+    bundle = bundles / "test-area"
+    raw_path = bundle / "network.geojson"
+    compressed_path = bundle / "network.geojson.gz"
+    compressed_path.write_bytes(gzip.compress(raw_path.read_bytes(), compresslevel=9, mtime=0))
+    raw_path.unlink()
+    data_path = bundle / "data.js"
+    data = json.loads(
+        data_path.read_text(encoding="utf-8")
+        .removeprefix("window.SATN_DATA = ")
+        .removesuffix(";\n")
+    )
+    data["network_url"] = "network.geojson.gz"
+    data["network_compression"] = "gzip"
+    data_path.write_text(
+        "window.SATN_DATA = " + json.dumps(data, separators=(",", ":")) + ";\n",
+        encoding="utf-8",
+    )
+    publication_path = bundle / "publication.json"
+    publication = json.loads(publication_path.read_text(encoding="utf-8"))
+    publication["network_url"] = "network.geojson.gz"
+    publication["network_compression"] = "gzip"
+    publication_path.write_text(json.dumps(publication), encoding="utf-8")
+
+    result = package_pages(
+        catalogue,
+        bundles,
+        tmp_path / "pages",
+        tmp_path / "satn-pages.zip",
+    )
+
+    packaged = result.pages_directory / "deployments" / "test-area"
+    assert (packaged / "network.geojson.gz").is_file()
+    assert not (packaged / "network.geojson").exists()
+    assert (
+        json.loads(gzip.decompress((packaged / "network.geojson.gz").read_bytes()))["type"]
+        == "FeatureCollection"
+    )
+
+
 def test_package_pages_rejects_budget_at_or_above_github_pages_limit(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="1 GB limit"):
         package_fixture(tmp_path, maximum_bytes=GITHUB_PAGES_LIMIT_BYTES)
@@ -351,6 +398,8 @@ def test_real_deployment_shards_use_stable_metadata_without_content_hashes(tmp_p
         path.relative_to(second_deployment).as_posix()
         for path in second_deployment.rglob("*.geojson")
     )
+    assert (deployment / "network.geojson.gz").is_file()
+    assert (second_deployment / "network.geojson.gz").is_file()
     assert relative_geojson == second_relative_geojson
     for relative in relative_geojson:
         if relative.startswith("layers/"):
@@ -360,4 +409,4 @@ def test_real_deployment_shards_use_stable_metadata_without_content_hashes(tmp_p
         elif relative.startswith("evidence/"):
             assert re.fullmatch(r"evidence/topography-profiles-\d{4}\.geojson", relative)
         else:
-            assert relative == "network.geojson"
+            assert relative == "network.geojson.gz"

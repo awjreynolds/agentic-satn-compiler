@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import date
+from types import SimpleNamespace
 
 import pytest
 
@@ -35,6 +36,7 @@ from satn.strategic_network_planning import (
     ReferenceRoute,
     StrategicNetworkPlanningRequest,
     StrategicPlanningFallbackProfile,
+    _resolved_backbone_component_gap_ids,
     compile_strategic_network,
 )
 
@@ -157,6 +159,7 @@ def request(
     fallback_profile=None,
     selection_profile=None,
     compiler_preferred_candidate_ids=(),
+    officer_candidate_choices=(),
 ):
     return StrategicNetworkPlanningRequest(
         area_fingerprint="a" * 64,
@@ -167,6 +170,7 @@ def request(
         fallback_profile=fallback_profile or StrategicPlanningFallbackProfile(),
         selection_profile=selection_profile,
         compiler_preferred_candidate_ids=compiler_preferred_candidate_ids,
+        officer_candidate_choices=officer_candidate_choices,
     )
 
 
@@ -284,6 +288,59 @@ def test_rural_mesh_reduces_avoidable_b_road_and_retains_access_support() -> Non
     assert not any(gap.network_role == "strategic-main-network" for gap in result.gaps)
 
 
+def test_materialized_protected_required_self_loop_survives_mesh_assembly() -> None:
+    base_graph = fixture_graph()
+    graph = replace(
+        base_graph,
+        edge_records=(
+            *base_graph.edge_records,
+            edge(
+                "required-loop-edge",
+                "loop-junction",
+                "loop-junction",
+                "LINESTRING (200 0, 250 0, 200 0)",
+                highway="primary",
+                ref="A2",
+                length_m=100,
+            ),
+        ),
+        graph_fingerprint="5" * 64,
+    )
+    required_loop = EffectiveStrategicSection(
+        "required-loop",
+        "required-loop",
+        None,
+        "interurban-spine",
+        ("required-loop-edge",),
+        (),
+        "LINESTRING (200 0, 250 0, 200 0)",
+        PlanningAuthority.COMPILER,
+        ("a-road",),
+        "a-road",
+        "upgrade-required",
+        "upgrade-required",
+        "rural",
+    )
+
+    result = compile_strategic_network(
+        StrategicNetworkPlanningRequest(
+            graph=graph,
+            discovery=discovery(graph, CorridorObligation("corridor-a-d", "A", "D")),
+            area_fingerprint="a" * 64,
+            required_sections=(required_loop,),
+            backbone_obligation_ids=("required-loop",),
+        )
+    )
+
+    selected_loop = next(
+        section
+        for section in result.effective_network.sections
+        if section.section_id == "required-loop"
+    )
+    assert selected_loop.routing_edge_ids == ("required-loop-edge",)
+    assert selected_loop.geometry_wkt == "LINESTRING (200 0, 250 0, 200 0)"
+
+
 def test_materialized_rural_candidate_reduction_keeps_selection_roster_consistent() -> None:
     graph = fixture_graph()
     discovered = discovery(
@@ -340,6 +397,43 @@ def test_governed_compiler_preference_is_applied_without_reordering_candidates()
 
     assert result.selections[0].compiler_candidate_id == road_id
     assert result.effective_network.sections[0].routing_edge_ids == ("a-road",)
+    assert result.selections[0].selection_reason == (
+        "compiler selection: supplied preference; selection rationale unavailable"
+    )
+    supplied_alternatives = tuple(
+        item for item in result.unselected_candidates if item.disposition == "unselected"
+    )
+    assert supplied_alternatives
+    assert all(
+        item.comparison_reason is not None
+        and "supplied preference rationale unavailable" in item.comparison_reason
+        for item in supplied_alternatives
+    )
+
+
+def test_compiler_selection_exposes_governed_comparison_reason() -> None:
+    graph = fixture_graph()
+    discovered = discovery(graph, CorridorObligation("corridor-a-d", "A", "D"))
+
+    cycle_id = next(
+        item.candidate_id
+        for item in discovered.candidate_records
+        if item.edge_ids == ("cycle-ab", "cycle-bd")
+    )
+    candidate_set_id = discovered.candidate_sets[0].candidate_set_id
+
+    result = compile_strategic_network(request(graph, discovered))
+
+    selection = result.selections[0]
+    assert selection.candidate_set_id == candidate_set_id
+    assert selection.compiler_candidate_id == cycle_id
+    assert selection.effective_candidate_id == cycle_id
+    assert selection.selection_reason.startswith("compiler selection: ")
+    assert "reuse-class" in selection.selection_reason
+    assert "existing-cycle-provision" in selection.selection_reason
+    assert "a-road-major-protected-infrastructure" in selection.selection_reason
+    assert selection.decision_id is None
+    assert selection.decision_maker is None
 
 
 def test_candidate_discovery_gaps_survive_into_reviewable_network() -> None:
@@ -363,6 +457,169 @@ def test_candidate_discovery_gaps_survive_into_reviewable_network() -> None:
     assert any(item.obligation_id == "destination-gap" for item in result.evidence_requests)
 
 
+def test_prepared_optional_interurban_gap_stays_diagnostic_only() -> None:
+    graph = fixture_graph()
+    discovered = discovery(
+        graph,
+        CorridorObligation("valid", "A", "D"),
+        CorridorObligation("optional-gap", "X", "Y", mandatory=False),
+    )
+    preparation = SimpleNamespace(
+        units=(SimpleNamespace(unit_id="valid", backbone_required=False),),
+        issues=(),
+    )
+
+    result = compile_strategic_network(
+        StrategicNetworkPlanningRequest(
+            graph=graph,
+            discovery=discovered,
+            area_fingerprint="a" * 64,
+            corridor_obligations=preparation,
+        )
+    )
+
+    assert result.status == "complete"
+    assert not any(item.obligation_id == "optional-gap" for item in result.gaps)
+    assert any(item.obligation_id == "optional-gap" for item in result.evidence_requests)
+
+
+def test_prepared_backbone_gap_remains_a_published_gap() -> None:
+    graph = fixture_graph()
+    discovered = discovery(graph, CorridorObligation("backbone-gap", "X", "Y"))
+    preparation = SimpleNamespace(
+        units=(
+            SimpleNamespace(
+                unit_id="backbone-gap",
+                backbone_required=True,
+                candidate_set=discovered.candidate_sets[0],
+            ),
+        ),
+        issues=(),
+    )
+
+    result = compile_strategic_network(
+        StrategicNetworkPlanningRequest(
+            graph=graph,
+            discovery=discovered,
+            area_fingerprint="a" * 64,
+            corridor_obligations=preparation,
+            backbone_obligation_ids=("backbone-gap",),
+        )
+    )
+
+    assert result.status == "complete-with-gaps"
+    assert [item.obligation_id for item in result.gaps] == ["backbone-gap"]
+
+
+def test_unselected_junction_context_does_not_resolve_one_sided_component_gap() -> None:
+    graph = fixture_graph()
+    discovered = discovery(graph, CorridorObligation("a-side", "A", "D"))
+    preparation = SimpleNamespace(
+        units=(
+            SimpleNamespace(
+                unit_id="junction-context",
+                backbone_component_ids=("component-a", "component-b"),
+                routing_start_node_id="A",
+                routing_end_node_id="B",
+            ),
+            SimpleNamespace(
+                unit_id="a-side",
+                backbone_component_ids=("component-a",),
+                routing_start_node_id="A",
+                routing_end_node_id="D",
+            ),
+        ),
+        issues=(
+            SimpleNamespace(
+                reason="a-road-backbone-component-unconnected",
+                component_ids=("component-a", "component-b"),
+                obligation_id="component-gap",
+            ),
+        ),
+    )
+    request = StrategicNetworkPlanningRequest(
+        graph=graph,
+        discovery=discovered,
+        area_fingerprint="a" * 64,
+        corridor_obligations=preparation,
+    )
+    a_side = EffectiveStrategicSection(
+        "a-side-section",
+        "a-side",
+        None,
+        "interurban-spine",
+        ("a-road",),
+        (),
+        "LINESTRING (0 0, 100 0)",
+        PlanningAuthority.COMPILER,
+    )
+    context = EffectiveStrategicSection(
+        "junction-context-section",
+        "junction-context",
+        None,
+        "interurban-spine",
+        ("a-road",),
+        (),
+        "LINESTRING (0 0, 0 60)",
+        PlanningAuthority.COMPILER,
+    )
+
+    assert "component-gap" not in _resolved_backbone_component_gap_ids(request, (a_side,))
+    assert "component-gap" in _resolved_backbone_component_gap_ids(request, (context,))
+
+
+def test_selected_obligation_suppresses_its_discovery_failure_gap() -> None:
+    graph = fixture_graph()
+    discovered = discovery(graph, CorridorObligation("valid", "A", "D"))
+    discovered = replace(
+        discovered,
+        gaps=(CandidateSetGapEvidence("valid", ("A", "D"), "no-path", ()),),
+    )
+    preparation = SimpleNamespace(
+        units=(SimpleNamespace(unit_id="valid", backbone_required=False),),
+        issues=(),
+    )
+
+    result = compile_strategic_network(
+        StrategicNetworkPlanningRequest(
+            graph=graph,
+            discovery=discovered,
+            area_fingerprint="a" * 64,
+            corridor_obligations=preparation,
+        )
+    )
+
+    assert result.status == "complete"
+    assert not result.gaps
+
+
+def test_unresolved_obligation_is_deduplicated_by_obligation_id() -> None:
+    graph = fixture_graph()
+    discovered = discovery(graph, CorridorObligation("valid", "A", "D"))
+    discovered = replace(
+        discovered,
+        gaps=(
+            CandidateSetGapEvidence("unresolved", ("X", "Y"), "no-path", ()),
+            CandidateSetGapEvidence(
+                "unresolved",
+                ("X", "Y"),
+                "strategies produced no candidate within configured bounds",
+                (),
+            ),
+        ),
+    )
+
+    result = compile_strategic_network(
+        StrategicNetworkPlanningRequest(
+            graph=graph,
+            discovery=discovered,
+            area_fingerprint="a" * 64,
+        )
+    )
+
+    assert [item.obligation_id for item in result.gaps].count("unresolved") == 1
+
+
 def test_cycleway_is_effective_and_a_road_remains_inspectable() -> None:
     graph = fixture_graph()
     result = compile_strategic_network(
@@ -371,15 +628,202 @@ def test_cycleway_is_effective_and_a_road_remains_inspectable() -> None:
     assert result.status == "complete"
     assert result.effective_network.sections[0].routing_edge_ids == ("cycle-ab", "cycle-bd")
     assert result.effective_network.sections[0].geometry_wkt == "LINESTRING (0 0, 0 60, 100 0)"
-    assert any(
-        item.candidate_id
-        == next(
-            item.candidate_id
-            for item in result.unselected_candidates
-            if item.reason == "admitted alternative retained for review"
+    alternatives = tuple(
+        item
+        for item in result.unselected_candidates
+        if item.reason == "admitted alternative retained for review"
+    )
+    assert alternatives
+    compiler_id = result.selections[0].compiler_candidate_id
+    assert compiler_id is not None
+    assert all(item.comparison_reason is not None for item in alternatives)
+    assert all(compiler_id in item.comparison_reason for item in alternatives)
+    assert all(item.candidate_id in item.comparison_reason for item in alternatives)
+
+
+def test_cycleway_replaces_matching_injected_a_road_section() -> None:
+    graph = fixture_graph()
+    graph = replace(
+        graph,
+        edge_records=(
+            *graph.edge_records,
+            edge(
+                "independent-a",
+                "X",
+                "Y",
+                "LINESTRING (200 0, 300 0)",
+                highway="primary",
+                ref="A2",
+                length_m=100,
+            ),
+        ),
+        graph_fingerprint="6" * 64,
+    )
+    discovered = discovery(graph, CorridorObligation("corridor-a-d", "A", "D"))
+    required_a = EffectiveStrategicSection(
+        "urban-a-road",
+        "urban-structure:urban-a-road",
+        None,
+        "urban-main-road-spine",
+        ("a-road",),
+        (),
+        "LINESTRING (0 0, 100 0)",
+        PlanningAuthority.COMPILER,
+        ("a-road",),
+        "a-road",
+        "upgrade-required",
+        "upgrade-required",
+        "urban",
+    )
+    independent_a = EffectiveStrategicSection(
+        "urban-independent-a",
+        "urban-structure:urban-independent-a",
+        None,
+        "urban-main-road-spine",
+        ("independent-a",),
+        (),
+        "LINESTRING (200 0, 300 0)",
+        PlanningAuthority.COMPILER,
+        ("a-road",),
+        "a-road",
+        "upgrade-required",
+        "upgrade-required",
+        "urban",
+    )
+
+    result = compile_strategic_network(
+        replace(
+            request(graph, discovered),
+            required_sections=(required_a, independent_a),
         )
+    )
+
+    assert result.status == "complete"
+    assert "urban-a-road" not in {
+        section.section_id for section in result.effective_network.sections
+    }
+    assert any(
+        section.routing_edge_ids == ("cycle-ab", "cycle-bd")
+        for section in result.effective_network.sections
+    )
+    assert "urban-independent-a" in {
+        section.section_id for section in result.effective_network.sections
+    }
+    road_candidate_id = next(
+        item.candidate_id for item in discovered.candidate_records if item.edge_ids == ("a-road",)
+    )
+    assert any(
+        item.candidate_id == road_candidate_id
+        and item.disposition == "unselected"
+        and item.reason == "admitted alternative retained for review"
         for item in result.unselected_candidates
     )
+
+
+def test_access_attachment_keeps_exact_parent_corridor_with_cycle_substitute() -> None:
+    base_graph = fixture_graph()
+    new_edges = (
+        *(
+            edge_record
+            for edge_record in base_graph.edge_records
+            if edge_record.directed_edge_id != "a-road"
+        ),
+        edge(
+            "a-road-am",
+            "A",
+            "M",
+            "LINESTRING (0 0, 50 0)",
+            highway="primary",
+            ref="A1",
+            length_m=50,
+        ),
+        edge(
+            "a-road-md",
+            "M",
+            "D",
+            "LINESTRING (50 0, 100 0)",
+            highway="primary",
+            ref="A1",
+            length_m=50,
+        ),
+        edge(
+            "feeder",
+            "F",
+            "M",
+            "LINESTRING (50 -20, 50 0)",
+            highway="residential",
+            length_m=20,
+        ),
+    )
+    graph = replace(
+        base_graph,
+        edge_records=new_edges,
+        node_records=tuple(
+            PlanningNodeRecord(node_id, "main", "main")
+            for node_id in ("A", "B", "D", "F", "M", "Q")
+        ),
+        component_records=(
+            GraphComponentRecord(
+                "main",
+                "weak",
+                ("A", "B", "D", "F", "M", "Q"),
+                tuple(item.directed_edge_id for item in new_edges),
+                6,
+                len(new_edges),
+            ),
+        ),
+        graph_fingerprint="6" * 64,
+    )
+    discovered = discovery(graph, CorridorObligation("corridor-a-d", "A", "D"))
+    parent_corridor = EffectiveStrategicSection(
+        "urban-a-road",
+        "urban-structure:urban-a-road",
+        None,
+        "urban-main-road-spine",
+        ("a-road-am", "a-road-md"),
+        (),
+        "LINESTRING (0 0, 50 0, 100 0)",
+        PlanningAuthority.COMPILER,
+        ("a-road",),
+        "a-road",
+        "upgrade-required",
+        "upgrade-required",
+        "urban",
+    )
+    feeder = EffectiveStrategicSection(
+        "feeder-access",
+        "feeder-obligation",
+        None,
+        "community-access",
+        ("feeder",),
+        (),
+        "LINESTRING (50 -20, 50 0)",
+        PlanningAuthority.COMPILER,
+        ("access-support",),
+        "access-support",
+        "upgrade-required",
+        "upgrade-required",
+        "urban",
+        ("M",),
+    )
+
+    result = compile_strategic_network(
+        StrategicNetworkPlanningRequest(
+            graph=graph,
+            discovery=discovered,
+            area_fingerprint="a" * 64,
+            required_sections=(parent_corridor, feeder),
+        )
+    )
+
+    assert result.status == "complete"
+    selected_main_edges = {
+        edge_id
+        for section in result.effective_network.sections
+        if section.network_role != "community-access"
+        for edge_id in section.routing_edge_ids
+    }
+    assert {"a-road-am", "a-road-md"} <= selected_main_edges
 
 
 def test_graph_and_candidate_permutations_are_fingerprint_stable() -> None:
@@ -434,6 +878,35 @@ def test_officer_choice_applies_without_expiry_and_divergence_is_retained() -> N
     result = compile_strategic_network(request(graph, discovered, officer_decisions=ledger))
     assert result.effective_network.sections[0].routing_edge_ids == ("a-road",)
     assert result.divergences[0].compiler_candidate_id != result.divergences[0].officer_candidate_id
+    selection = result.selections[0]
+    assert selection.selection_reason == "officer decision: retain the direct strategic corridor"
+    assert selection.decision_id == "decision-road"
+    assert selection.decision_maker == "officer"
+
+
+def test_preloaded_officer_choice_keeps_missing_attribution_explicit() -> None:
+    graph = fixture_graph()
+    discovered = discovery(graph, CorridorObligation("corridor-a-d", "A", "D"))
+    cycle_id = next(
+        item.candidate_id
+        for item in discovered.candidate_records
+        if item.edge_ids == ("cycle-ab", "cycle-bd")
+    )
+
+    result = compile_strategic_network(
+        request(
+            graph,
+            discovered,
+            officer_candidate_choices=((cycle_id, "decision-preloaded"),),
+        )
+    )
+
+    selection = result.selections[0]
+    assert selection.selection_reason == (
+        "officer selection: supplied candidate choice; decision rationale unavailable"
+    )
+    assert selection.decision_id == "decision-preloaded"
+    assert selection.decision_maker is None
 
 
 def test_unknown_officer_target_is_diagnostic_and_compiler_continues() -> None:
@@ -678,6 +1151,11 @@ def test_custom_route_length_first_profile_controls_compiler_preference() -> Non
     discovered = discovery_with_profile(graph, profile, CorridorObligation("valid", "A", "D"))
     result = compile_strategic_network(request(graph, discovered, selection_profile=profile))
     assert result.effective_network.sections[0].routing_edge_ids == ("a-road",)
+    assert result.selections[0].selection_reason.startswith(
+        "compiler selection: route-length ranked candidate "
+    )
+    assert "(100m) ahead of candidate" in result.selections[0].selection_reason
+    assert result.selections[0].selection_reason.endswith("(130m)")
 
 
 def test_conflicting_active_officer_choices_are_not_overwritten() -> None:

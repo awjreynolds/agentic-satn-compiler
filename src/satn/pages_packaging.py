@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 import math
 import os
@@ -113,6 +114,16 @@ def _json_object(path: Path, description: str) -> dict[str, Any]:
     return value
 
 
+def _json_object_bytes(contents: bytes, description: str) -> dict[str, Any]:
+    try:
+        value = json.loads(contents)
+    except (UnicodeDecodeError, ValueError) as error:
+        raise ValueError(f"invalid {description}") from error
+    if not isinstance(value, dict):
+        raise ValueError(f"{description} must be a JSON object")
+    return value
+
+
 def _nonblank_text(value: object, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field} must be a non-blank string")
@@ -135,6 +146,10 @@ def _relative_file_path(value: object, field: str) -> Path:
 
 def _feature_collection(path: Path, field: str) -> list[dict[str, object]]:
     payload = _json_object(path, field)
+    return _feature_collection_payload(payload, field)
+
+
+def _feature_collection_payload(payload: dict[str, Any], field: str) -> list[dict[str, object]]:
     features = payload.get("features")
     if payload.get("type") != "FeatureCollection" or not isinstance(features, list):
         raise ValueError(f"{field} must be a GeoJSON FeatureCollection")
@@ -166,10 +181,20 @@ def _coordinates(geometry: object) -> list[tuple[float, float]]:
 def _validate_wgs84_map_artifacts(deployment: Path) -> None:
     """Reject map coordinates that cannot be handed safely to MapLibre."""
     for artifact in _files(deployment):
-        if artifact.suffix.lower() != ".geojson":
-            continue
         relative_path = artifact.relative_to(deployment).as_posix()
-        features = _feature_collection(artifact, f"map artifact {relative_path}")
+        if artifact.suffix.lower() == ".geojson":
+            features = _feature_collection(artifact, f"map artifact {relative_path}")
+        elif artifact.name.endswith(".geojson.gz"):
+            try:
+                payload = _json_object_bytes(
+                    gzip.decompress(artifact.read_bytes()),
+                    f"map artifact {relative_path}",
+                )
+            except (OSError, EOFError) as error:
+                raise ValueError(f"invalid gzip map artifact {relative_path}") from error
+            features = _feature_collection_payload(payload, f"map artifact {relative_path}")
+        else:
+            continue
         for index, feature in enumerate(features):
             for longitude, latitude in _coordinates(feature.get("geometry")):
                 if (
@@ -496,14 +521,34 @@ def _validate_publication_shape(
         path = deployment / _relative_file_path(value, field)
         if path.is_symlink() or not path.is_file():
             raise ValueError(f"deployment {deployment_id} is missing {field}: {path}")
-    for name in ("index.html", "data.js", "network.geojson"):
+    for name in ("index.html", "data.js"):
         path = deployment / name
         if path.is_symlink() or not path.is_file():
             raise ValueError(f"deployment {deployment_id} is missing required file: {path}")
 
     data = _data_payload(deployment / "data.js")
+    network_url = _relative_file_path(data.get("network_url"), "network_url")
+    network_compression = data.get("network_compression")
+    if network_compression == "gzip":
+        expected_network_url = Path("network.geojson.gz")
+    elif network_compression in (None, "identity"):
+        expected_network_url = Path("network.geojson")
+    else:
+        raise ValueError(
+            f"generated data.js network_compression is unsupported: {network_compression}"
+        )
+    if network_url != expected_network_url:
+        raise ValueError(
+            f"generated data.js network_url must match its compression marker: {network_url}"
+        )
+    network_path = deployment / network_url
+    if network_path.is_symlink() or not network_path.is_file():
+        raise ValueError(f"deployment {deployment_id} is missing network data: {network_path}")
+    if publication.get("network_url", network_url.as_posix()) != network_url.as_posix():
+        raise ValueError("deployment publication network_url does not match data.js")
+    if publication.get("network_compression", network_compression) != network_compression:
+        raise ValueError("deployment publication network_compression does not match data.js")
     for field, expected in (
-        ("network_url", "network.geojson"),
         ("layer_manifest_url", "layer-manifest.json"),
         ("topography_manifest_url", "topography-manifest.json"),
         ("profile_evidence_index_url", "topography-profile-evidence.json"),

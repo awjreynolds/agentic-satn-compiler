@@ -97,6 +97,7 @@ from satn.strategic_corridors import (
     NetworkSelectionPreparationResult,
     StrategicCorridorPreparationResult,
     prepare_strategic_corridors,
+    strategic_routable_network_with_a_road_backbone,
 )
 from satn.strategic_network_adapter import compile_prepared_strategic_network
 from satn.strategic_reference_replay import (
@@ -114,6 +115,7 @@ from satn.topography import (
 )
 from satn.urban import derive_urban_structure
 from satn.urban_community import assess_urban_community_access, urban_community_gaps
+from satn.urban_journeys import prepare_urban_journeys
 from satn.urban_school import assess_urban_school_access
 
 if TYPE_CHECKING:
@@ -222,7 +224,9 @@ def governed_input_binding(
 
     Context-local state keeps the public seven-parameter API stable while
     ensuring nested or concurrent compilations cannot leak officer or evidence
-    bindings into one another.
+    bindings into one another. The pipeline caller verifies a bound evidence
+    store before entering this trusted internal context; this function only
+    validates the binding shape and must not repeat that store verification.
     """
 
     if (evidence_store is None) != (evidence_state_fingerprint is None):
@@ -232,7 +236,6 @@ def governed_input_binding(
             raise TypeError("evidence_store must be a LocalEvidenceStore")
         if re.fullmatch(r"[0-9a-f]{64}", evidence_state_fingerprint or "") is None:
             raise ValueError("evidence_state_fingerprint must be a full lowercase SHA-256")
-        evidence_store.resolve_coverage(state_fingerprint=evidence_state_fingerprint)
     if (
         routing_input_fingerprint is not None
         and re.fullmatch(r"[0-9a-f]{64}", routing_input_fingerprint) is None
@@ -683,6 +686,34 @@ def _compile_network(
         source["boundary"],
     )
     urban_spines = urban.spines
+    prepared_urban_journeys = None
+    legacy_urban_journey_mode = False
+    network_selection_profile = config.compilation.network_selection
+    if network_selection_profile is not None and network_selection_profile.contract is None:
+        label_places = source.get("label_places")
+        if label_places is not None:
+            prepared_urban_journeys = prepare_urban_journeys(
+                label_places=label_places,
+                area_definition=source["boundary"],
+                road_graph=road_graph,
+                urban_scope_buffer_m=config.source.urban_scope_buffer_km * 1000.0,
+            )
+            legacy_urban_journey_mode = any(
+                item.preferred for item in prepared_urban_journeys.adjacencies
+            )
+    strategic_routable_network = (
+        routable_network
+        if legacy_urban_journey_mode
+        else strategic_routable_network_with_a_road_backbone(
+            routable_network,
+            official_road_classification,
+        )
+    )
+    strategic_road_graph = (
+        road_graph
+        if strategic_routable_network is routable_network
+        else RoadGraph(strategic_routable_network)
+    )
     urban_classification_unknowns = urban.classification_unknowns
     low_traffic_areas = urban.low_traffic_areas
     low_traffic_area_portals = urban.low_traffic_area_portals
@@ -861,7 +892,7 @@ def _compile_network(
         # those exact compiler-emitted anchors without mutating this network.
         strategic_corridor_preparation = prepare_strategic_corridors(
             config.compilation.network_selection,
-            road_graph=road_graph,
+            road_graph=road_graph if legacy_urban_journey_mode else strategic_road_graph,
             spine_access_connections=spine_access_connections,
             access_obligations=access_obligations,
             context=strategic_corridor_context,
@@ -871,6 +902,12 @@ def _compile_network(
             urban_extent=_population_urban_extent(
                 urban_communities,
                 urban_scope_buffer_km=config.source.urban_scope_buffer_km,
+            ),
+            official_road_classification=official_road_classification,
+            urban_spines=None if legacy_urban_journey_mode else urban_spines,
+            urban_places=None,
+            prepared_urban_journeys=(
+                prepared_urban_journeys if legacy_urban_journey_mode else None
             ),
         )
         network_selection_preparation = NetworkSelectionPreparationResult(
@@ -1187,14 +1224,16 @@ def _compile_network(
     )
     if compiled.strategic_corridor_preparation is not None:
         compiled.strategic_network_planning = compile_prepared_strategic_network(
-            routable_network=routable_network,
+            routable_network=(
+                routable_network if legacy_urban_journey_mode else strategic_routable_network
+            ),
             preparation=compiled.strategic_corridor_preparation,
             snapshot_manifest_path=(
                 config.source.snapshot_dir / config.source.snapshot_id / "snapshot.json"
             ),
             area_definition_path=config.config_path,
             officer_decisions=officer_decisions,
-            urban_spines=compiled.urban_spines,
+            urban_spines=None if legacy_urban_journey_mode else compiled.urban_spines,
             access_support=(
                 compiled.spine_access_connections,
                 compiled.branch_meeting_connections,

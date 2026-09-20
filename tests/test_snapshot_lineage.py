@@ -21,11 +21,11 @@ PROJECT = Path(__file__).parents[1]
 WECA_BENCHMARK_SHA256 = "24a03e50ccfe541ff637b9c75f15caa41ac452cc20667f31df5ad274ffbeae6a"
 WECA_CONFIGURED_SNAPSHOT_ID = (
     "weca-classification-elevation-2026-07-31-v14-fp-20260731T092920522968Z-02-"
-    "fp-20260809T123804416841Z-01-fp-20260819T011108973323Z-01"
+    "fp-20260809T123804416841Z-01-connected-context-20260906-envelope-02"
 )
 WECA_CONFIGURED_PARENT_SNAPSHOT_ID = (
     "weca-classification-elevation-2026-07-31-v14-fp-20260731T092920522968Z-02-"
-    "fp-20260809T123804416841Z-01"
+    "fp-20260809T123804416841Z-01-fp-20260819T011108973323Z-01"
 )
 
 
@@ -257,7 +257,7 @@ def test_weca_configured_snapshot_is_distinct_and_benchmark_fixture_is_byte_pinn
     retained = configured.source.retained_core_source
     assert retained is not None
     assert retained.snapshot_id == WECA_CONFIGURED_PARENT_SNAPSHOT_ID
-    assert configured.source.snapshot_id.startswith(f"{retained.snapshot_id}-fp-")
+    assert configured.source.snapshot_id != retained.snapshot_id
 
 
 def test_lineaged_retained_core_seeds_distinct_target_and_is_idempotent(tmp_path: Path) -> None:
@@ -300,6 +300,52 @@ def test_lineaged_retained_core_seeds_distinct_target_and_is_idempotent(tmp_path
 
     assert snapshot(config, retain_core=True) == target
     assert (target / "snapshot.json").read_bytes() == final_manifest_bytes
+
+
+def test_lineaged_retained_core_without_elevation_can_add_official_roads(
+    tmp_path: Path,
+) -> None:
+    config = copied_config(tmp_path)
+    (config.source.fixture_dir / ELEVATION_EVIDENCE_FILENAME).unlink()
+    config.source.national_elevation = None
+    historical = snapshot(config)
+    historical_manifest_sha256 = hashlib.sha256(
+        (historical / "snapshot.json").read_bytes()
+    ).hexdigest()
+
+    classification = tmp_path / "connected-road.geojson"
+    gpd.GeoDataFrame(
+        [
+            {
+                "osmid": "connected-road",
+                "official_classification": "A road",
+                "geometry": LineString([(-2.5, 51.39), (-2.5, 51.45)]),
+            }
+        ],
+        geometry="geometry",
+        crs=4326,
+    ).to_file(classification, driver="GeoJSON")
+    config.source.official_road_classification = OfficialRoadClassificationConfig(
+        path=classification,
+        source_id="connected-road-source",
+        effective_date="2026-04-07",
+        licence="Synthetic fixture",
+    )
+    config.source.snapshot_id = "fixture-no-elevation-augmented"
+    config.source.retained_core_source = RetainedCoreSourceConfig(
+        snapshot_id=historical.name,
+        manifest_sha256=historical_manifest_sha256,
+    )
+
+    target = snapshot(config, retain_core=True)
+    manifest = json.loads((target / "snapshot.json").read_text(encoding="utf-8"))
+
+    assert "elevation-evidence.geojson" not in manifest["files"]
+    assert not (target / ELEVATION_EVIDENCE_FILENAME).exists()
+    assert set(
+        gpd.read_file(target / "official-road-classification.geojson")["official_feature_id"]
+    ) == {"connected-road"}
+    assert snapshot(config, retain_core=True) == target
 
 
 def test_lineaged_whole_road_selection_is_idempotently_revalidated(
