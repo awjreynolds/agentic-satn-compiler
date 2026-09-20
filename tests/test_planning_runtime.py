@@ -744,6 +744,7 @@ def test_unknown_provision_choice_requests_named_evidence_and_replays_without_pr
 
 def test_investigate_bound_request_retains_judgment_for_next_task_and_replay(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = configured_bath_saltford(tmp_path)
     snapshot(config)
@@ -801,6 +802,16 @@ def test_investigate_bound_request_retains_judgment_for_next_task_and_replay(
         ],
     )
     head_before_investigation = HistoryStore(root).head("main").head_event_id
+    replay_before_investigation = runtime.replay("main")
+    state_puts: list[object] = []
+    original_put = HistoryStore.put
+
+    def put_spy(store: HistoryStore, value: object, *, kind: str = "record") -> str:
+        if kind == "state":
+            state_puts.append(value)
+        return original_put(store, value, kind=kind)
+
+    monkeypatch.setattr(HistoryStore, "put", put_spy)
 
     evidence = {
         "evidence_id": "official-route-context",
@@ -826,6 +837,28 @@ def test_investigate_bound_request_retains_judgment_for_next_task_and_replay(
         evidence,
         output_root=tmp_path / "investigated-run",
     )
+
+    assert initial.state not in state_puts
+    event_id = investigated.history_event_id
+    store = HistoryStore(root)
+    investigation_events: list[dict[str, object]] = []
+    while event_id is not None:
+        event = store.get(event_id)
+        assert isinstance(event, dict)
+        investigation_events.append(event)
+        parent = event.get("timeline_parent_id")
+        event_id = parent if isinstance(parent, str) else None
+    attempt = next(item for item in investigation_events if item.get("event_kind") == "attempt")
+    decision = next(item for item in investigation_events if item.get("event_kind") == "decision")
+    request_ref = attempt["request_ref"]
+    assert isinstance(request_ref, str)
+    request_record = store.get(request_ref)
+    assert isinstance(request_record, dict)
+    assert request_record["state_ref"] == replay_before_investigation["state_ref"]
+    assert attempt["input_state_ref"] == request_record["state_ref"]
+    assert decision["input_state_ref"] == request_record["state_ref"]
+    assert "input_state" not in attempt
+    assert "input_state" not in decision
 
     evidence_packet = packets[0]
     assert evidence_packet["question_kind"] == "evidence-relation"
