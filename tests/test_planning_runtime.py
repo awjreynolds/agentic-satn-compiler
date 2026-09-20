@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from pathlib import Path
 
 import pytest
 from bath_saltford_fixture import configured_bath_saltford
+from shapely.geometry import shape
 
-from satn.planning_engine import build_planning_problem
+from satn.planning_engine import build_planning_problem, initial_proposal
 from satn.planning_history import HistoryStaleHeadError, HistoryStore
 from satn.planning_routing import (
     CapabilityKind,
@@ -957,6 +959,331 @@ def test_graph_candidate_scope_uses_admitted_corridor_topology(tmp_path: Path) -
     assert admitted["scope"]["source_corridor_refs"] == [corridor_id]
     assert admitted["scope"]["section_refs"] == [section_id]
     assert admitted["scope"]["directed_edge_ids"] == [edge_id]
+
+
+def test_investigate_evidence_rejects_touching_only_unbound_candidate_scope(
+    tmp_path: Path,
+) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    calls: list[object] = []
+
+    def provider(*_args: object) -> dict[str, object]:
+        calls.append(True)
+        return {"status": "answered"}
+
+    root = tmp_path / "history"
+    runtime = PlanningRuntime(root, provider=provider)
+    connection = {
+        "connection_id": "bath-saltford-townpair",
+        "origin_place_id": "bath-edge",
+        "destination_place_id": "saltford",
+        "current_or_future": "unknown",
+        "corridor_refs": [],
+    }
+    expanded = runtime.run(
+        config,
+        output_root=tmp_path / "run",
+        mode="deterministic",
+        requested_connections=[connection],
+    )
+    candidate = next(
+        item
+        for item in expanded.problem["candidates"]
+        if item.get("connection_id") == connection["connection_id"] and item.get("role") == "direct"
+    )
+    edge_id = candidate["graph_path"]["directed_edge_ids"][0]
+    corridor = next(
+        item
+        for item in expanded.problem["source_corridors"]
+        if item.get("classification") == "cycleway"
+        and edge_id in item["topology_fact"]["directed_edge_ids"]
+    )
+    graph_edge = next(
+        item
+        for item in expanded.problem["graph_evidence"]["directed_edges"]
+        if item["directed_edge_id"] == edge_id
+    )
+    assert corridor["geometry_ref"]["crs"] == graph_edge["geometry_ref"]["crs"]
+    assert (
+        shape(corridor["geometry_ref"]["geometry"])
+        .intersection(shape(graph_edge["geometry_ref"]["geometry"]))
+        .length
+        == 0
+    )
+    assert candidate["source_corridor_refs"] == []
+
+    request = runtime.advance(
+        "main",
+        {
+            "kind": "request-evidence",
+            "payload": {
+                "request_id": "touching-only-source-request",
+                "target_refs": [candidate["candidate_id"]],
+                "claim": "source corridor supports this town-pair candidate",
+                "reason": "scope binding test",
+            },
+        },
+    )
+    head_before = HistoryStore(root).head("main").head_event_id
+    evidence = {
+        "evidence_id": "touching-only-source",
+        "source": {
+            "url": "https://example.test/source",
+            "title": "Source corridor",
+            "locator": "§1",
+            "retrieved_at": "2026-09-20",
+            "excerpt": "The source describes the named corridor.",
+        },
+        "scope": {
+            "candidate_id": candidate["candidate_id"],
+            "source_corridor_refs": [corridor["corridor_id"]],
+            "section_refs": [corridor["section_id"]],
+            "directed_edge_ids": [edge_id],
+        },
+    }
+
+    with pytest.raises(ValueError, match="positive geometry intersection"):
+        runtime.investigate_evidence(
+            "main",
+            "touching-only-source-request",
+            evidence,
+        )
+
+    assert HistoryStore(root).head("main").head_event_id == head_before
+    assert calls == []
+    assert request.state["candidates"] == expanded.state["candidates"]
+
+
+def test_investigate_evidence_accepts_a367_source_geometry_at_graph_precision(
+    tmp_path: Path,
+) -> None:
+    """The pinned A367 segment binds despite source coordinates retaining extra precision."""
+
+    def digest(value: object) -> str:
+        return hashlib.sha256(
+            json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+        ).hexdigest()
+
+    candidate_id = (
+        "planning-candidate-c571776bc49b3dc419d23732b4986bd60c540cd76da862fd35f4f036dc09ab4a"
+    )
+    corridor_id = (
+        "planning-corridor-10936e578da7c3ee8d0cf03f79dabfb2879bd17e74db4d40d6cc9ae6c4d0af22"
+    )
+    section_id = f"{corridor_id}-section"
+    edge_id = "203490192#512caf4c2171dd14027a"
+    source_ref = {"evidence_id": "a-road-spine-5e0d8bc4d76c", "source_id": "203490192"}
+    source_geometry_ref = {
+        "crs": "EPSG:4326",
+        "geometry": {
+            "type": "LineString",
+            "coordinates": [
+                [-2.454191888811317, 51.29062609520518],
+                [-2.45339368881075, 51.29081879520533],
+            ],
+        },
+    }
+    graph_edge_geometry_ref = {
+        "crs": "EPSG:4326",
+        "geometry": {
+            "type": "LineString",
+            "coordinates": [
+                [-2.4533937, 51.2908188],
+                [-2.4541919, 51.2906261],
+            ],
+        },
+    }
+    corridor = {
+        "corridor_id": corridor_id,
+        "section_id": section_id,
+        "source_refs": [source_ref],
+        "name": "A367",
+        "geometry_ref": source_geometry_ref,
+        "classification": "a-road",
+        "scope_status": "network",
+        "in_scope": True,
+        "current_cycle_asset": None,
+        "provision_status": "unknown",
+        "mandatory_planning_corridor": False,
+        "topology_fact": {
+            "status": "attached",
+            "node_ids": ["2678501462", "1444761739"],
+            "directed_edge_ids": [edge_id],
+            "source_edge_ids": ["203490192"],
+        },
+        "evidence_refs": [source_ref["evidence_id"]],
+        "provenance": {
+            "source_kind": "network",
+            "source_refs": [source_ref],
+            "evidence_refs": [source_ref["evidence_id"]],
+            "source_hash": "a367-source-hash",
+        },
+        "departure_disposition": "not-assessed",
+        "decision_ref": None,
+        "status": "admitted",
+    }
+    candidate = {
+        "candidate_id": candidate_id,
+        "obligation_id": corridor_id,
+        "source_corridor_refs": [],
+        "role": "direct",
+        "status": "admitted",
+        "current_or_future": "unknown",
+        "endpoint_provenance": {
+            "start_node_id": "2678501462",
+            "end_node_id": "1444761739",
+            "source_geometry_ref": source_geometry_ref,
+            "source_edge_ids": ["203490192"],
+            "directed_edge_ids": [edge_id],
+        },
+        "graph_path": {
+            "source_edge_ids": ["203490192"],
+            "directed_edge_ids": [edge_id],
+            "length_km": 0.1,
+        },
+        "geometry_ref": graph_edge_geometry_ref,
+        "provenance": {
+            "source_refs": [source_ref],
+            "evidence_refs": [source_ref["evidence_id"]],
+            "source_corridor_ref": corridor_id,
+            "source_geometry_ref": source_geometry_ref,
+        },
+    }
+    brief = {"brief_ref": "test/a367-precision", "corridor_policy": {}}
+    problem = {
+        "schema_version": "planning-problem/v1",
+        "status": "admitted-with-unknowns",
+        "binding": {"snapshot_id": "synthetic-a367"},
+        "brief": brief,
+        "brief_fingerprint": digest(brief),
+        "places": [],
+        "obligations": [],
+        "source_corridors": [corridor],
+        "candidates": [candidate],
+        "graph_evidence": {
+            "directed_edges": [
+                {
+                    "directed_edge_id": edge_id,
+                    "from_node_id": "2678501462",
+                    "to_node_id": "1444761739",
+                    "geometry_ref": graph_edge_geometry_ref,
+                }
+            ]
+        },
+        "planning_gaps": [],
+        "unknown_facts": [],
+        "exclusions": [],
+        "source_hashes": ["a367-source-hash"],
+    }
+    problem["input_fingerprint"] = digest(problem)
+    problem["problem_id"] = f"planning-problem-{digest(problem['input_fingerprint'])}"
+    state = initial_proposal(problem)
+
+    root = tmp_path / "history"
+    store = HistoryStore(root)
+    store.create_branch("main")
+    problem_ref = store.put(problem, kind="planning-problem")
+    state_ref = store.put(state, kind="state")
+    envelope_ref = store.put(
+        {
+            "schema_version": "planning-run/v1",
+            "mode": "live",
+            "problem_ref": problem_ref,
+            "problem_fingerprint": problem["input_fingerprint"],
+            "binding": problem["binding"],
+            "brief": brief,
+            "policy": {},
+            "connection_options": [],
+        },
+        kind="planning-run",
+    )
+    store.commit(
+        "main",
+        None,
+        {
+            "event_kind": "initialization",
+            "actor_kind": "code",
+            "outcome": "accepted",
+            "state_transition": True,
+            "output_state": state,
+            "operation": {"kind": "initialize", "state_ref": state_ref},
+            "problem_ref": problem_ref,
+            "run_envelope_ref": envelope_ref,
+            "dependency_refs": [problem_ref, envelope_ref],
+        },
+    )
+    calls: list[dict[str, object]] = []
+
+    def provider(packet: object, questions: object) -> dict[str, object]:
+        assert isinstance(packet, dict)
+        assert isinstance(questions, dict)
+        calls.append(packet)
+        return {
+            "status": "answered",
+            "provider": "test-provider",
+            "model": "test-model",
+            "answers": {
+                "decision": {
+                    "type": "choice",
+                    "choice": "does_not_establish",
+                    "probabilities": {
+                        "supports": 0.1,
+                        "contradicts": 0.1,
+                        "does_not_establish": 0.8,
+                    },
+                    "confidence": 0.8,
+                }
+            },
+            "response_receipt": {"body_sha256": "a367-response"},
+        }
+
+    runtime = PlanningRuntime(root, provider=provider)
+    runtime.advance(
+        "main",
+        {
+            "kind": "request-evidence",
+            "payload": {
+                "request_id": "a367-source-request",
+                "target_refs": [candidate_id],
+                "claim": "A367 source context",
+                "reason": "precision binding test",
+            },
+        },
+    )
+    head_before = store.head("main").head_event_id
+    result = runtime.investigate_evidence(
+        "main",
+        "a367-source-request",
+        {
+            "evidence_id": "a367-source-evidence",
+            "source": {
+                "url": "https://example.test/a367",
+                "title": "A367 source",
+                "locator": "§1",
+                "retrieved_at": "2026-09-20",
+                "excerpt": "The source describes the A367 corridor.",
+            },
+            "scope": {
+                "candidate_id": candidate_id,
+                "source_corridor_refs": [corridor_id],
+                "section_refs": [section_id],
+                "directed_edge_ids": [edge_id],
+            },
+        },
+    )
+
+    assert len(calls) == 1
+    assert result.state is not None
+    assert result.state["unknown_facts"][0]["evidence_judgments"][0]["relation"] == (
+        "does_not_establish"
+    )
+    assert result.problem["source_corridors"][0]["geometry_ref"] == source_geometry_ref
+    assert result.problem["graph_evidence"]["directed_edges"][0]["geometry_ref"] == (
+        graph_edge_geometry_ref
+    )
+    assert result.state["candidates"][0]["current_or_future"] == "unknown"
+    assert HistoryStore(root).head("main").head_event_id != head_before
 
 
 def test_advance_rejects_stale_expected_head_without_mutating_branch(tmp_path: Path) -> None:
