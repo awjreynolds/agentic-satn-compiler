@@ -75,3 +75,55 @@ The source, scope, typed relation, distribution and confidence remain inspectabl
 There is no new confidence threshold, general evidence framework or caller input
 version. Live source interpretation and behavioral integration evidence are
 reported separately from route quality or field verification.
+
+## Recorded live judgment
+
+The frozen claim-02 packet was executed on compiler commit `a2ac717` using
+`jev-1.13.0`. The classifier returned `does_not_establish`, matching the held-out
+reference interpretation. Its reported distribution was `supports: 0.0`,
+`contradicts: 0.0`, `does_not_establish: 1.0`, with confidence `1.0`.
+Those are model outputs from this case, not measured calibration or proof of
+section conditions. Usage was 934 input tokens and 48 output tokens.
+
+The accepted classifier event is
+`dc24b25927269edf31d5d59aa67d9680a4b5e6f53b9012d4aed8895584258c69`;
+its redacted response receipt is
+`25115198e3cdb9ce291d3a6fedd11818977b0157bac198b3ce28a9dfa65020d8`.
+Local artifacts live under
+`build/typesafe-experiments/2026-09-20-route-evidence-bound/`.
+The history stores this observation as a `classifier` decision, with the
+mechanical route binding retained locally.
+
+Exactly one TypeSafe call ran. Provider time was 0.711 seconds; the measured
+`investigate_evidence` call took 193.097 seconds including local history work.
+The latter excludes branch preparation and the subsequent replay/context probe.
+The retained-history path is therefore an operational cost in this POC; this
+result does not establish efficient end-to-end execution.
+
+The saved `route-evidence-run.json` records these integration outcomes:
+
+| Check | Recorded result |
+| --- | --- |
+| Offline replay | State exactly equals the live result |
+| Next normal planner context | Same claim, source, candidate/section/edge scope, relation, distribution and confidence retained in `feedback_unknowns` |
+| Evidence request | Still `requested`, with one retained judgment |
+| Candidate provision | Still `unknown` |
+| Parent history | Head unchanged at `408012d7e5e6e0af61359eff2327055ca635b3edc209c17ea71ee49c2d736520` |
+
+The next-context check uses an **offline capture provider**. Its deliberate
+`unavailable` result leaves the run `reviewable-incomplete`; it proves packet
+construction, not a subsequent live planning decision. The live investigation
+also remains `reviewable-incomplete`, because the evidence request remains open.
+The capture is saved as `consumer-probe/packet-capture.json`.
+
+An earlier operator launch failed before dispatch because it passed an event ID
+to the checkpoint-based fork API. Resolving the checkpoint corrected that local
+glue; it did not require repeating a model observation. Preparation artifacts
+and that failed log are retained separately from the successful run.
+
+Focused TDD checks cover retention, subsequent feedback, replay, unchanged
+unknowns and foreign-edge rejection. Independent Astra review verified the
+implementation and live receipt, including its raw body hashes and absence of
+local binding identities from the outbound evidence-classifier payload. Final
+artifact review also confirmed replay equality, next-context retention and
+unchanged original and cloned parent heads without repeating inference.
