@@ -18,6 +18,7 @@ import threading
 import uuid
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -210,6 +211,26 @@ class HistoryStore:
         self.branches_root = self.root / "branches"
         self.locks_root = self.root / "locks"
         self._thread_lock = threading.RLock()
+        # A read cache is scoped to one verification/replay operation.  It is
+        # intentionally discarded afterwards so a later call always observes
+        # tampering or replacement of an immutable object.
+        self._record_read_cache: ContextVar[dict[tuple[str, str], object] | None] = ContextVar(
+            "planning_history_record_read_cache", default=None
+        )
+
+    @contextmanager
+    def _read_cache_scope(self):
+        existing = self._record_read_cache.get()
+        if existing is not None:
+            # Nested store operations (for example a runtime replay calling
+            # the store replay primitive) share the same per-operation cache.
+            yield
+            return
+        token = self._record_read_cache.set({})
+        try:
+            yield
+        finally:
+            self._record_read_cache.reset(token)
 
     # Public paths make corruption and crash tests inspectable without coupling
     # callers to the directory layout.
@@ -256,12 +277,16 @@ class HistoryStore:
     def get(self, record_id: str) -> JSONValue:
         """Read and verify an immutable JSON record."""
 
-        return self._load_record(_require_digest(record_id, "record ID"))[1]
+        # Cached reads share the validated in-memory value internally, but a
+        # public caller receives its own JSON tree so a reducer cannot mutate
+        # a later replay step through an alias.
+        return _copy_json(self._load_record(_require_digest(record_id, "record ID"))[1])
 
     def get_record(self, record_id: str) -> tuple[str, JSONValue]:
         """Return a record's kind and payload after integrity validation."""
 
-        return self._load_record(_require_digest(record_id, "record ID"))
+        kind, payload = self._load_record(_require_digest(record_id, "record ID"))
+        return kind, _copy_json(payload)
 
     def put_artifact(self, content: bytes, *, metadata: object | None = None) -> str:
         """Materialise immutable bytes addressed by their SHA-256 digest."""
@@ -429,6 +454,11 @@ class HistoryStore:
     def verify(self, target_id: str) -> dict[str, JSONValue]:
         """Verify a branch, checkpoint, event, record, or materialised artifact."""
 
+        with self._read_cache_scope():
+            return self._verify_uncached(target_id)
+
+    def _verify_uncached(self, target_id: str) -> dict[str, JSONValue]:
+
         if not isinstance(target_id, str) or not target_id:
             raise ValueError("history target ID is invalid")
         if _NAME.fullmatch(target_id) and self.branch_path(target_id).exists():
@@ -478,6 +508,16 @@ class HistoryStore:
         target_event_id: str | None = None,
     ) -> dict[str, JSONValue]:
         """Replay recorded operations through a caller-supplied pure reducer."""
+
+        with self._read_cache_scope():
+            return self._replay_uncached(branch_id, reducer, target_event_id)
+
+    def _replay_uncached(
+        self,
+        branch_id: str,
+        reducer: Callable[..., object],
+        target_event_id: str | None = None,
+    ) -> dict[str, JSONValue]:
 
         branch_id = _require_name(branch_id, "branch ID")
         if not callable(reducer):
@@ -805,6 +845,12 @@ class HistoryStore:
         )
 
     def _load_record(self, record_id: str) -> tuple[str, JSONValue]:
+        cache = self._record_read_cache.get()
+        cache_key = ("record", record_id)
+        if cache is not None and cache_key in cache:
+            cached = cache[cache_key]
+            if isinstance(cached, tuple) and len(cached) == 2:
+                return cached
         path = self.record_path(record_id)
         if not path.exists() and not path.is_symlink():
             raise HistoryMissingError(f"record is unavailable: {record_id}")
@@ -829,9 +875,18 @@ class HistoryStore:
             raise HistoryCorruptError(f"record payload is invalid: {record_id}") from error
         if _record_digest(kind, value) != record_id:
             raise HistoryCorruptError(f"record digest does not match payload: {record_id}")
-        return kind, value
+        result = (kind, value)
+        if cache is not None:
+            cache[cache_key] = result
+        return result
 
     def _read_artifact(self, artifact_id: str) -> bytes:
+        cache = self._record_read_cache.get()
+        cache_key = ("artifact", artifact_id)
+        if cache is not None and cache_key in cache:
+            cached = cache[cache_key]
+            if isinstance(cached, bytes):
+                return cached
         path = self.artifact_path(artifact_id)
         if not path.exists() and not path.is_symlink():
             raise HistoryMissingError(f"artifact is unavailable: {artifact_id}")
@@ -843,6 +898,8 @@ class HistoryStore:
             raise HistoryCorruptError(f"artifact is invalid: {artifact_id}") from error
         if hashlib.sha256(content).hexdigest() != artifact_id:
             raise HistoryCorruptError(f"artifact digest does not match content: {artifact_id}")
+        if cache is not None:
+            cache[cache_key] = content
         return content
 
     def _get_event(self, event_id: str) -> tuple[str, dict[str, JSONValue]]:
@@ -912,6 +969,18 @@ class HistoryStore:
                 if supplied is not None and supplied != digest:
                     raise ValueError(f"{field} and {ref_field} disagree")
                 prepared[ref_field] = digest
+                # States and operations are often the largest materialized
+                # values in a run.  New events carry their immutable refs;
+                # older events with inline values remain readable and are
+                # still checked against their refs during verification.
+                if field in {
+                    "input_state",
+                    "output_state",
+                    "operation",
+                    "request",
+                    "receipt",
+                }:
+                    prepared.pop(field, None)
             elif prepared.get(ref_field) is not None:
                 _require_digest(prepared[ref_field], ref_field)
 

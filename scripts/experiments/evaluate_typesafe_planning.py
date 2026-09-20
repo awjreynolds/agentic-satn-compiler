@@ -583,7 +583,7 @@ def _runtime_fork_fixture(
     while event_id is not None:
         event = store.get(event_id)
         if isinstance(event, Mapping):
-            operation = event.get("operation")
+            operation = _history_value(store, event, "operation")
             payload = operation.get("payload") if isinstance(operation, Mapping) else None
             if (
                 event.get("event_kind") == "decision"
@@ -633,6 +633,12 @@ def _runtime_fork_fixture(
         )
         for item in fork_state.get("selected_alignments", [])
     )
+    fork_report = _compact_runtime_payload(
+        advanced.as_dict(),  # type: ignore[union-attr]
+        store,
+        report_path=runtime_output / "fork-publication" / "run.json",
+    )
+    replay_report = _compact_runtime_payload(replay, store)
     return {
         "status": "prepared" if replacement_verified else "invalid",
         "parent_branch": "main",
@@ -642,8 +648,8 @@ def _runtime_fork_fixture(
         "parent_preserved": store.head("main").head_event_id == history_event_id,
         "alternate_candidate_id": alternate.get("candidate_id"),
         "replacement_verified": replacement_verified,
-        "fork_result": advanced.as_dict(),  # type: ignore[union-attr]
-        "replay": replay,
+        "fork_result": fork_report,
+        "replay": replay_report,
         "compare": comparison,
     }
 
@@ -664,10 +670,7 @@ def _history_provider_summary(history_root: Path, branch: str) -> dict[str, obje
         event = store.get(event_id)
         if not isinstance(event, Mapping):
             break
-        receipt = event.get("receipt")
-        if not isinstance(receipt, Mapping) and isinstance(event.get("receipt_ref"), str):
-            stored = store.get(event["receipt_ref"])
-            receipt = stored if isinstance(stored, Mapping) else None
+        receipt = _history_value(store, event, "receipt")
         if isinstance(receipt, Mapping) and (
             receipt.get("provider") is not None
             or receipt.get("usage") is not None
@@ -705,6 +708,55 @@ def _history_provider_summary(history_root: Path, branch: str) -> dict[str, obje
         "usage_total": totals if usage_complete and receipts else None,
         "receipts": receipts,
     }
+
+
+def _history_value(
+    store: object,
+    event: Mapping[str, object],
+    field: str,
+) -> object:
+    """Read an event value from its legacy inline field or immutable ref."""
+
+    value = event.get(field)
+    if value is not None:
+        return value
+    ref = event.get(f"{field}_ref")
+    if isinstance(ref, str) and hasattr(store, "get"):
+        return store.get(ref)  # type: ignore[union-attr]
+    return None
+
+
+def _compact_runtime_payload(
+    value: object,
+    store: object,
+    *,
+    report_path: Path | None = None,
+) -> object:
+    """Persist runtime reports as refs while retaining the in-memory API."""
+
+    if report_path is not None and report_path.is_file():
+        try:
+            return json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            pass
+    if not isinstance(value, Mapping):
+        return value
+    report = dict(value)
+    problem = report.pop("problem", None)
+    state = report.pop("state", None)
+    if isinstance(problem, Mapping) and hasattr(store, "put"):
+        report["problem_ref"] = store.put(  # type: ignore[union-attr]
+            problem,
+            kind="planning-problem",
+        )
+        report["problem_fingerprint"] = problem.get("input_fingerprint")
+    if isinstance(state, Mapping) and hasattr(store, "put"):
+        report.setdefault(
+            "state_ref",
+            store.put(state, kind="state"),  # type: ignore[union-attr]
+        )
+        report["state_fingerprint"] = state.get("state_fingerprint")
+    return report
 
 
 def _module_bindings(script_path: Path) -> dict[str, object]:
@@ -999,10 +1051,25 @@ def _run_live_case(
     case["usage"] = provider_history["usage_total"]
     case["publication"] = result.publication
     case["candidate_geojson"] = _candidate_geojson(spec, places, candidate_views)
-    _write_json(case_dir / "runtime-result.json", result_dict)
+    # PlanningRuntime keeps the materialized result for in-process fork and
+    # candidate checks, while its run.json is the durable refs-only report.
+    # Reuse that report for the experiment artifact instead of serializing the
+    # complete problem/state a second time.
+    runtime_report = _compact_runtime_payload(
+        result_dict,
+        runtime.store,
+        report_path=runtime_output / "run.json",
+    )
+    _write_json(case_dir / "runtime-result.json", runtime_report)
     _write_json(case_dir / "provider-result.json", result.provider_result)
     _write_json(case_dir / "provider-history.json", provider_history)
-    _write_json(case_dir / "history.json", case["history"])
+    history_report = dict(case["history"])
+    history_report["replay"] = _compact_runtime_payload(
+        history_report.get("replay"),
+        runtime.store,
+    )
+    case["history_report"] = history_report
+    _write_json(case_dir / "history.json", history_report)
     _write_json(case_dir / "fork-fixture.json", case["fork_fixture"])
     _write_json(case_dir / "decision-fork-fixture.json", case["decision_fixture"])
     _write_json(case_dir / "candidate-options.geojson", case["candidate_geojson"])
@@ -1190,7 +1257,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "usage": case.get("usage"),
                 "latency_seconds": case.get("latency_seconds"),
                 "replay": case.get("replay"),
-                "history": case.get("history"),
+                "history": case.get("history_report", case.get("history")),
                 "fork_fixture": case.get("fork_fixture"),
                 "decision_fixture": case.get("decision_fixture"),
                 "publication": case.get("publication"),
