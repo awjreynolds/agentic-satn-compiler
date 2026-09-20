@@ -130,9 +130,16 @@ typed answer, actual model, usage record and latency for each arm, including
 service failures, and performs no automatic repeat. The requested model is
 `jev-1.13.0`; actual model identity is recorded per response.
 
-No live launch command has been run. The saved envelopes and operator are
-ready for parent/Astra review; this preparation makes no downstream outcome
-claim and does not mutate either packet.
+The frozen launch was submitted after independent review and rejected by
+automatic approval review before process execution. Neither request ran.
+The reviewer requires explicit user approval for these project-derived
+candidate/path and policy packets and the TypeSafe destination; general
+experiment authorization was not accepted for this payload. The exact
+rejection state is retained in `dispatch-approval-block.json`. There is no
+new provider receipt, token usage or downstream outcome to report.
+
+The packets remain unchanged and reviewable. Live dispatch is pending explicit
+approval; the local fake-transport checks are the completed execution evidence.
 
 The frozen dispatch helper SHA-256 is
 `078893cdb90e199122ad1457b30f4c6550f12ae0e3eac04db77226c76e106852`;
