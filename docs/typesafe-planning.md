@@ -124,3 +124,12 @@ History fell from 1,664,983 to 586,894 bytes; `run.json` fell from 293,550 to
 26, with 26 unique records in each case. Problem/state retrieval and replay
 remained exactly equal. These are fixture measurements, not projections of live
 B&NES performance.
+
+## Live API compatibility in the POC
+
+A live Choice response supplied all offered options with finite in-range
+probabilities totaling 0.99. The selected option and confidence were usable.
+The POC preserves those values and accepts the typed Choice without requiring
+an exact probability total; it does not renormalize the provider response.
+The original receipt remains available. This compatibility behavior applies to
+Choice; Score handling is unchanged.

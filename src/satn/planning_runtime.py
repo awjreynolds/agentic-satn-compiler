@@ -79,6 +79,54 @@ def _safe_json(value: object) -> object:
         return {"type": type(value).__name__, "repr": repr(value)}
 
 
+def _classifier_record(value: object) -> object:
+    """Keep classifier facts while leaving full geometry in local history."""
+
+    if isinstance(value, Mapping):
+        projected: dict[str, object] = {}
+        for key, item in value.items():
+            field = str(key)
+            if field == "geometry" or field.endswith("geometry_ref"):
+                continue
+            projected[field] = _classifier_record(item)
+        return projected
+    if isinstance(value, (list, tuple)):
+        return [_classifier_record(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        return sorted((_classifier_record(item) for item in value), key=_canonical_sort_key)
+    return _safe_json(value)
+
+
+def _classifier_candidate(value: Mapping[str, object]) -> dict[str, object]:
+    projected: dict[str, object] = {}
+    for key, item in value.items():
+        field = str(key)
+        if field in {"geometry_ref", "provenance"}:
+            continue
+        if field == "endpoint_provenance" and isinstance(item, Mapping):
+            projected[field] = {
+                str(endpoint_key): _classifier_record(endpoint_value)
+                for endpoint_key, endpoint_value in item.items()
+                if str(endpoint_key)
+                not in {
+                    "origin_geometry_ref",
+                    "destination_geometry_ref",
+                    "source_geometry_ref",
+                    "directed_edge_ids",
+                    "source_edge_ids",
+                }
+            }
+            continue
+        projected[field] = _classifier_record(item)
+
+    provenance = value.get("provenance")
+    if isinstance(provenance, Mapping):
+        evidence_refs = provenance.get("evidence_refs")
+        if isinstance(evidence_refs, (list, tuple, set, frozenset)) and evidence_refs:
+            projected["evidence_refs"] = _sorted_refs(evidence_refs)
+    return projected
+
+
 def _canonical_sort_key(value: object) -> str:
     return json.dumps(
         _safe_json(value),
@@ -939,6 +987,7 @@ class PlanningRuntime:
         termination_reason: str | None = None,
         provider_result: Mapping[str, object] | None = None,
     ) -> PlanningRunResult:
+        output = self._finalize_output(output)
         result = PlanningRunResult(
             status=str(output.get("status", "incomplete")),
             mode=mode,
@@ -1006,6 +1055,18 @@ class PlanningRuntime:
         report["decision_trace"] = self._compact_decision_trace(result.decision_trace)
         self._atomic_json(destination / "run.json", report)
         return result
+
+    @staticmethod
+    def _finalize_output(output: Mapping[str, object]) -> dict[str, object]:
+        """Refresh derived output identity after runtime diagnostics are added."""
+
+        finalized = dict(output)
+        if "output_fingerprint" in finalized:
+            identity = {
+                key: value for key, value in finalized.items() if key != "output_fingerprint"
+            }
+            finalized["output_fingerprint"] = _digest(identity)
+        return finalized
 
     def _decision_trace(self, branch: str, event_id: object) -> tuple[dict[str, object], ...]:
         """Project stable attribution and safe provider identity from history."""
@@ -1813,32 +1874,36 @@ class PlanningRuntime:
                     if source_name == "state" and collection_name == "unknown_facts":
                         feedback_unknowns.append(entry)
 
-        unresolved = [cast(dict[str, object], _canonical_semantic(item)) for item in unresolved]
+        unresolved = [
+            cast(dict[str, object], _classifier_record(_canonical_semantic(item)))
+            for item in unresolved
+        ]
         feedback_unknowns = [
-            cast(dict[str, object], _canonical_semantic(item)) for item in feedback_unknowns
+            cast(dict[str, object], _classifier_record(_canonical_semantic(item)))
+            for item in feedback_unknowns
         ]
         unresolved.sort(key=lambda item: (_canonical_sort_key(item),))
         feedback_unknowns.sort(key=lambda item: (_canonical_sort_key(item),))
 
         prior_decisions = {
             "connection_intents": [
-                _safe_json(item)
+                _classifier_record(item)
                 for item in _sorted_records(state.get("connection_intents", []), "connection_id")
             ],
             "selected_alignments": [
-                _safe_json(item)
+                _classifier_record(item)
                 for item in _sorted_records(
                     state.get("selected_alignments", []), "obligation_id", "candidate_id"
                 )
             ],
             "departures": [
-                _safe_json(item)
+                _classifier_record(item)
                 for item in _sorted_records(
                     state.get("departures", []), "obligation_id", "departure_id"
                 )
             ],
             "future_interventions": [
-                _safe_json(item)
+                _classifier_record(item)
                 for item in _sorted_records(
                     state.get("future_interventions", []), "obligation_id", "intervention_id"
                 )
@@ -1864,14 +1929,14 @@ class PlanningRuntime:
                 named_connections,
                 key=lambda item: (str(item.get("connection_id", "")), _canonical_sort_key(item)),
             ),
-            "candidates": [_safe_json(item) for item in candidates],
+            "candidates": [_classifier_candidate(item) for item in candidates],
             "facts": {
-                "obligations": [_safe_json(item) for item in obligations],
-                "source_corridors": [_safe_json(item) for item in source_corridors],
+                "obligations": [_classifier_record(item) for item in obligations],
+                "source_corridors": [_classifier_record(item) for item in source_corridors],
             },
             "source_evidence": {
                 "evidence_refs": sorted(evidence_ids),
-                "directed_edges": [_safe_json(item) for item in source_edges],
+                "directed_edges": [_classifier_record(item) for item in source_edges],
             },
             "prior_decisions": prior_decisions,
             "feedback_unknowns": feedback_unknowns,
