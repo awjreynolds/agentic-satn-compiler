@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 
+import geopandas as gpd
 from bath_saltford_fixture import configured_bath_saltford
 from shapely.geometry import LineString
 
@@ -16,6 +17,212 @@ from satn.planning_engine import (
     validate_proposal,
 )
 from satn.sources import snapshot
+
+
+def _bidirectional_corridor_source() -> dict[str, object]:
+    geometry = LineString([(0.0, 0.0), (0.01, 0.0)])
+    reverse_geometry = LineString(list(geometry.coords)[::-1])
+    network = gpd.GeoDataFrame(
+        [
+            {
+                "u": "node-a",
+                "v": "node-b",
+                "key": 0,
+                "osmid": "way-1",
+                "ref": "A4",
+                "highway": "primary",
+                "oneway": False,
+                "geometry": geometry,
+            },
+            {
+                "u": "node-b",
+                "v": "node-a",
+                "key": 0,
+                "osmid": "way-1",
+                "ref": "A4",
+                "highway": "primary",
+                "oneway": False,
+                "geometry": reverse_geometry,
+            },
+        ],
+        geometry="geometry",
+        crs=4326,
+    )
+    context = gpd.GeoDataFrame(
+        [
+            {
+                "evidence_id": "a-road-spine-way-1",
+                "feature_type": "a-road-spine",
+                "source_id": "way-1",
+                "name": "A4",
+                "network_scope": "urban",
+                "geometry": geometry,
+            },
+            {
+                "evidence_id": "a-road-spine-way-1",
+                "feature_type": "a-road-spine",
+                "source_id": "way-1",
+                "name": "A4",
+                "network_scope": "urban",
+                "geometry": reverse_geometry,
+            },
+        ],
+        geometry="geometry",
+        crs=4326,
+    )
+    return {"network": network, "context": context}
+
+
+def _fake_planning_config(tmp_path):
+    config = configured_bath_saltford(tmp_path)
+    manifest_path = config.source.snapshot_dir / config.source.snapshot_id
+    manifest_path.mkdir(parents=True)
+    (manifest_path / "snapshot.json").write_text("{}", encoding="utf-8")
+    return config
+
+
+def test_opposite_directed_context_rows_become_one_source_corridor(monkeypatch, tmp_path) -> None:
+    config = _fake_planning_config(tmp_path)
+    source = _bidirectional_corridor_source()
+    monkeypatch.setattr("satn.planning_engine.load_snapshot", lambda _config: source)
+
+    problem = build_planning_problem(config)
+
+    corridors = problem["source_corridors"]
+    assert len(corridors) == 1
+    corridor = corridors[0]
+    assert corridor["classification"] == "a-road"
+    assert corridor["mandatory_planning_corridor"] is True
+    assert corridor["source_refs"] == [{"evidence_id": "a-road-spine-way-1", "source_id": "way-1"}]
+    assert corridor["geometry_ref"]["content_fingerprint"] == (
+        canonical_network_geometry_fingerprint(LineString([(0.0, 0.0), (0.01, 0.0)]), "EPSG:4326")
+    )
+    assert len(corridor["topology_fact"]["directed_edge_ids"]) == 2
+    assert len(problem["graph_evidence"]["directed_edges"]) == 2
+
+
+def test_corridor_merge_keeps_identity_boundaries_and_name_conflicts(monkeypatch, tmp_path) -> None:
+    geometry = LineString([(0.0, 0.0), (0.01, 0.0)])
+    reverse_geometry = LineString(list(geometry.coords)[::-1])
+    other_geometry = LineString([(0.0, 1.0), (0.01, 1.0)])
+    context = gpd.GeoDataFrame(
+        [
+            {
+                "evidence_id": "evidence-1",
+                "feature_type": "a-road-spine",
+                "source_id": "way-1",
+                "name": "New Street,Avon Street",
+                "geometry": geometry,
+            },
+            {
+                "evidence_id": "evidence-1",
+                "feature_type": "a-road-spine",
+                "source_id": "way-1",
+                "name": "Avon Street,New Street",
+                "geometry": reverse_geometry,
+            },
+            {
+                "evidence_id": "evidence-1",
+                "feature_type": "a-road-spine",
+                "source_id": "way-1",
+                "name": "A4",
+                "geometry": other_geometry,
+            },
+            {
+                "evidence_id": "evidence-1",
+                "feature_type": "cycleway",
+                "source_id": "way-1",
+                "name": "A4 cycleway",
+                "geometry": geometry,
+            },
+            {
+                "evidence_id": "evidence-2",
+                "feature_type": "a-road-spine",
+                "source_id": "way-2",
+                "name": "A4",
+                "geometry": geometry,
+            },
+            {
+                "evidence_id": "evidence-2",
+                "feature_type": "a-road-spine",
+                "source_id": "way-1",
+                "name": "A4",
+                "geometry": geometry,
+            },
+        ],
+        geometry="geometry",
+        crs=4326,
+    )
+    config = _fake_planning_config(tmp_path)
+    monkeypatch.setattr(
+        "satn.planning_engine.load_snapshot",
+        lambda _config: {"context": context},
+    )
+
+    problem = build_planning_problem(config)
+
+    corridors = problem["source_corridors"]
+    assert len(corridors) == 5
+    merged = next(
+        corridor
+        for corridor in corridors
+        if corridor["source_refs"] == [{"evidence_id": "evidence-1", "source_id": "way-1"}]
+        and corridor["classification"] == "a-road"
+        and corridor["geometry_ref"]["content_fingerprint"]
+        == canonical_network_geometry_fingerprint(geometry, "EPSG:4326")
+    )
+    assert merged["name"] == "Avon Street,New Street"
+    assert merged["provenance"]["name_variants"] == [
+        "Avon Street,New Street",
+        "New Street,Avon Street",
+    ]
+    assert len(merged["provenance"]["source_hashes"]) == 2
+    assert sorted(
+        (
+            corridor["classification"],
+            corridor["source_refs"][0]["evidence_id"],
+            corridor["source_refs"][0]["source_id"],
+        )
+        for corridor in corridors
+    ) == sorted(
+        [
+            ("a-road", "evidence-1", "way-1"),
+            ("a-road", "evidence-1", "way-1"),
+            ("cycleway", "evidence-1", "way-1"),
+            ("a-road", "evidence-2", "way-2"),
+            ("a-road", "evidence-2", "way-1"),
+        ]
+    )
+    assert (
+        sum(
+            corridor["geometry_ref"]["content_fingerprint"]
+            == canonical_network_geometry_fingerprint(other_geometry, "EPSG:4326")
+            for corridor in corridors
+        )
+        == 1
+    )
+
+
+def test_equivalent_direction_order_has_stable_corridor_identity(monkeypatch, tmp_path) -> None:
+    config = _fake_planning_config(tmp_path)
+    source = _bidirectional_corridor_source()
+    monkeypatch.setattr("satn.planning_engine.load_snapshot", lambda _config: source)
+    first = build_planning_problem(config)
+
+    reversed_source = {
+        **source,
+        "network": source["network"].iloc[::-1].reset_index(drop=True),
+        "context": source["context"].iloc[::-1].reset_index(drop=True),
+    }
+    monkeypatch.setattr("satn.planning_engine.load_snapshot", lambda _config: reversed_source)
+    second = build_planning_problem(config)
+
+    assert second["input_fingerprint"] == first["input_fingerprint"]
+    assert second["source_corridors"] == first["source_corridors"]
+    assert (
+        second["source_corridors"][0]["provenance"]["source_hash"]
+        == (first["source_corridors"][0]["provenance"]["source_hash"])
+    )
 
 
 def test_build_planning_problem_admits_configured_source_families_with_provenance(
