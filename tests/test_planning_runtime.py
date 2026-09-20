@@ -478,6 +478,86 @@ def test_feedback_unknown_is_visible_in_the_next_task_packet(tmp_path: Path) -> 
     assert result.state["unknown_facts"]
 
 
+def test_connection_feedback_packet_retains_unscoped_request_and_stops_no_progress(
+    tmp_path: Path,
+) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    problem = build_planning_problem(config)
+    unrelated_ref = str(problem["candidates"][0]["obligation_id"])
+    packets: list[dict[str, object]] = []
+
+    def provider(packet: object, _questions: object) -> dict[str, object]:
+        assert isinstance(packet, dict)
+        packets.append(packet)
+        return {
+            "status": "answered",
+            "provider": "test-provider",
+            "model": "test-model",
+            "answers": {
+                "decision": {
+                    "type": "choice",
+                    "choice": "__needs_evidence__",
+                }
+            },
+            "response_receipt": {"body_sha256": f"response-{len(packets)}"},
+        }
+
+    result = PlanningRuntime(tmp_path / "history", provider=provider).run(
+        config,
+        output_root=tmp_path / "run",
+        mode="live",
+        operations=[
+            {
+                "kind": "request-evidence",
+                "payload": {
+                    "target_refs": [unrelated_ref],
+                    "claim": "unrelated-scoped-request",
+                    "reason": "must stay outside this connection task",
+                },
+            }
+        ],
+        connection_options=[
+            {
+                "connection_id": "focused-connection",
+                "origin_place_id": "bath-edge",
+                "destination_place_id": "saltford",
+                "current_or_future": "future",
+            }
+        ],
+    )
+
+    assert result.termination_reason == "semantic-no-progress"
+    assert len(packets) == 2
+    prior_requests = [
+        item
+        for item in packets[1]["feedback_unknowns"]
+        if isinstance(item, dict)
+        and item.get("request_kind")
+        in {
+            "request-evidence",
+            "request-candidates",
+        }
+    ]
+    assert len(prior_requests) == 1
+    assert prior_requests[0]["claim"] == "planning-decision"
+    assert prior_requests[0]["reason"] == "provider marked the planning choice unresolved"
+    assert any(
+        isinstance(item, dict)
+        and item.get("request_kind") == "request-evidence"
+        and item.get("unknown_id") == prior_requests[0]["unknown_id"]
+        for item in packets[1]["unknowns"]
+    )
+    assert all(
+        not isinstance(item, dict) or unrelated_ref not in item.get("subject_refs", [])
+        for item in packets[1]["unknowns"]
+    )
+    assert all(
+        not isinstance(item, dict) or item.get("claim") != "routing-graph attachment"
+        for item in packets[1]["unknowns"]
+    )
+
+
 def test_advance_rejects_stale_expected_head_without_mutating_branch(tmp_path: Path) -> None:
     config = configured_bath_saltford(tmp_path)
     snapshot(config)

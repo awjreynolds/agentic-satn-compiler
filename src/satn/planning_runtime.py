@@ -1627,14 +1627,21 @@ class PlanningRuntime:
                         continue
                     subject_refs = {
                         str(item.get(key))
-                        for key in ("subject_id", "obligation_id", "gap_id", "unknown_id")
+                        for key in ("subject_id", "obligation_id", "gap_id")
                         if item.get(key)
                     }
                     subject_refs.update(
                         str(reference) for reference in item.get("subject_refs", [])
                     )
-                    if subject_refs and not subject_refs.intersection(
-                        endpoint_ids | corridor_ids | obligation_ids | candidate_ids
+                    if subject_refs:
+                        if not subject_refs.intersection(
+                            endpoint_ids | corridor_ids | obligation_ids | candidate_ids
+                        ):
+                            continue
+                    elif not (
+                        source_name == "state"
+                        and collection_name == "unknown_facts"
+                        and item.get("request_kind") in {"request-evidence", "request-candidates"}
                     ):
                         continue
                     entry = dict(item)
