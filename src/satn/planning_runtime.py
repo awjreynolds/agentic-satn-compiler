@@ -2404,27 +2404,16 @@ class PlanningRuntime:
                 "date_context",
                 "retrieved_at",
                 "excerpt",
-                "source_id",
             )
             if key in source
         }
-        scope_fields = {
-            "candidate_refs": [str(scope["candidate_id"])],
-            "source_corridor_refs": _sorted_refs(scope.get("source_corridor_refs", [])),
-            "directed_edge_refs": [str(item) for item in scope.get("directed_edge_ids", [])],
-        }
-        section_refs = scope.get("section_refs")
-        if isinstance(section_refs, list):
-            scope_fields["section_refs"] = _sorted_refs(section_refs)
         semantic: dict[str, object] = {
             "schema_version": "planning-evidence-task/v1",
             "mode": mode,
             "question_kind": "evidence-relation",
             "claim": claim,
             "source_evidence": {
-                "evidence_id": evidence_id,
                 "source": source_fields,
-                "scope": scope_fields,
             },
             "questions": _safe_json(questions),
         }

@@ -66,8 +66,9 @@ The fixture SHA-256 is
 Reference labels and source-grounded rationales are held out of model inputs.
 The binding proof and its interpretation limits are also held out: Jev must
 classify the supplied passage, not repeat a prewritten conclusion. The model
-receives the source, claim and admitted scope. Scope admission remains code's
-job; Jev does not infer a spatial join from road names.
+receives the public source and claim. Candidate, corridor, section and edge
+identifiers stay local, bound to the request and retained judgment. Scope
+admission remains code's job; Jev does not infer a spatial join from road names.
 
 No judgment clears a request or promotes a whole candidate to current provision.
 The source, scope, typed relation, distribution and confidence remain inspectable.

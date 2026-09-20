@@ -803,6 +803,7 @@ def test_investigate_bound_request_retains_judgment_for_next_task_and_replay(
     evidence = {
         "evidence_id": "official-route-context",
         "source": {
+            "source_id": "official-route-context",
             "url": "https://example.test/official-route",
             "title": "Official route context",
             "locator": "§1.2",
@@ -829,8 +830,20 @@ def test_investigate_bound_request_retains_judgment_for_next_task_and_replay(
     assert evidence_packet["claim"] == "route-section-context"
     assert "brief" not in evidence_packet
     assert "candidates" not in evidence_packet
-    assert evidence_packet["source_evidence"]["source"] == evidence["source"]
-    assert evidence_packet["source_evidence"]["scope"]["directed_edge_refs"] == [directed_edge_id]
+    assert evidence_packet["source_evidence"]["source"] == {
+        key: value for key, value in evidence["source"].items() if key != "source_id"
+    }
+    assert "scope" not in evidence_packet["source_evidence"]
+    assert "evidence_id" not in evidence_packet["source_evidence"]
+    packet_text = json.dumps(evidence_packet, sort_keys=True)
+    for local_id in (
+        candidate["candidate_id"],
+        corridor_id,
+        section_id,
+        directed_edge_id,
+        evidence["evidence_id"],
+    ):
+        assert local_id not in packet_text
 
     assert initial.state["unknown_facts"]
     assert investigated.state["unknown_facts"]
