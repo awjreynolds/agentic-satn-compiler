@@ -485,6 +485,180 @@ def test_unresolved_jev_judgment_escalates_to_configured_specialist(tmp_path: Pa
     assert receipt["provider"] == "configured-specialist"
 
 
+def test_unresolved_jev_feedback_routes_offered_specialist_operation_and_replays(
+    tmp_path: Path,
+) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    tasks: dict[str, list[DecisionTask]] = {"jev": [], "specialist": []}
+
+    def jev(task: DecisionTask) -> dict[str, object]:
+        tasks["jev"].append(task)
+        question_kind = task.input_state["question_kind"]
+        choice = "bath-edge-to-saltford" if question_kind == "connection" else "__needs_evidence__"
+        return {
+            "status": "answered",
+            "provider": "configured-jev",
+            "model": "jev-model",
+            "usage": {"input_tokens": 3, "output_tokens": 1},
+            "answers": {
+                "decision": {
+                    "type": "choice",
+                    "choice": choice,
+                }
+            },
+            "response_receipt": {"body_sha256": "jev-response"},
+        }
+
+    selected: list[dict[str, object]] = []
+
+    def specialist(task: DecisionTask) -> dict[str, object]:
+        tasks["specialist"].append(task)
+        candidate = next(
+            (
+                item
+                for item in task.candidates
+                if isinstance(item, dict) and item.get("current_or_future") == "unknown"
+            ),
+            next(item for item in task.candidates if isinstance(item, dict)),
+        )
+        selected.append(
+            {
+                "candidate_id": candidate["candidate_id"],
+                "graph_path": copy.deepcopy(candidate.get("graph_path")),
+                "current_or_future": candidate.get("current_or_future"),
+            }
+        )
+        return {
+            "status": "answered",
+            "provider": "configured-specialist",
+            "model": "specialist-model",
+            "usage": {"input_tokens": 5, "output_tokens": 2},
+            "proposal": {
+                "operation": {
+                    "kind": "select-alignment",
+                    "payload": {
+                        "candidate_id": candidate["candidate_id"],
+                        "obligation_id": candidate.get("obligation_id"),
+                    },
+                }
+            },
+            "response_receipt": {"body_sha256": "specialist-response"},
+        }
+
+    router = StaticCapabilityRouter(
+        (
+            CapabilityRecord(
+                capability_id="jev",
+                kind=CapabilityKind.JEV,
+                judgment_forms=("choice",),
+                provider="configured-jev",
+                adapter=jev,
+            ),
+            CapabilityRecord(
+                capability_id="specialist",
+                kind=CapabilityKind.SPECIALIST,
+                operations=("select-alignment",),
+                judgment_forms=("structured-proposal",),
+                operation_scopes=("select-alignment",),
+                provider="configured-specialist",
+                adapter=specialist,
+            ),
+        )
+    )
+    root = tmp_path / "history"
+    result = PlanningRuntime(root, router=router).run(
+        config,
+        output_root=tmp_path / "run",
+        mode="live",
+        connection_options=[
+            {
+                "connection_id": "bath-edge-to-saltford",
+                "origin_place_id": "bath-edge",
+                "destination_place_id": "saltford",
+                "current_or_future": "unknown",
+            }
+        ],
+    )
+
+    assert len(tasks["jev"]) == 2
+    assert tasks["jev"][1].input_state["question_kind"] == "alignment"
+    assert tasks["specialist"]
+    specialist_task = tasks["specialist"][0]
+    assert "select-alignment" in specialist_task.allowed_operations
+    feedback_unknowns = specialist_task.input_state["feedback_unknowns"]
+    assert feedback_unknowns
+    assert any(
+        isinstance(item, dict)
+        and item.get("request_kind") == "request-evidence"
+        and item.get("status") == "requested"
+        for item in feedback_unknowns
+    )
+    assert result.provider_result["provider"] == "configured-specialist"
+    assert result.provider_result["status"] == "answered"
+    assert result.state["selected_alignments"]
+    selected_ids = {item["candidate_id"] for item in selected}
+    assert selected[0]["current_or_future"] == "unknown"
+    result_ids = {
+        item["candidate_id"]
+        for item in result.state["selected_alignments"]
+        if isinstance(item, dict)
+    }
+    assert result_ids & selected_ids
+    for alignment in result.state["selected_alignments"]:
+        if not isinstance(alignment, dict) or alignment.get("candidate_id") not in selected_ids:
+            continue
+        original = next(
+            item for item in selected if item["candidate_id"] == alignment["candidate_id"]
+        )
+        assert alignment["graph_path"] == original["graph_path"]
+        assert alignment["current_or_future"] == original["current_or_future"]
+    matching_unknown = next(
+        item
+        for item in result.state["selected_alignments"]
+        if item.get("candidate_id") == selected[0]["candidate_id"]
+    )
+    assert matching_unknown["current_or_future"] == "unknown"
+
+    decision_trace = [
+        item
+        for item in result.decision_trace
+        if item.get("decision_class") in {"classifier", "agent"}
+    ]
+    first_agent = next(
+        index for index, item in enumerate(decision_trace) if item["decision_class"] == "agent"
+    )
+    assert first_agent >= 1
+    assert all(item["decision_class"] == "classifier" for item in decision_trace[:first_agent])
+    assert all(item["decision_class"] == "agent" for item in decision_trace[first_agent:])
+    assert all(item["provider"] == "configured-jev" for item in decision_trace[:first_agent])
+    assert all(item["provider"] == "configured-specialist" for item in decision_trace[first_agent:])
+    store = HistoryStore(root)
+    for trace_item, expected_provider in zip(
+        decision_trace,
+        (
+            *("configured-jev",) * first_agent,
+            *("configured-specialist",) * (len(decision_trace) - first_agent),
+        ),
+        strict=True,
+    ):
+        event = store.get(trace_item["event_id"])
+        assert event["decision_class"] == trace_item["decision_class"]
+        receipt = store.get(event["receipt_ref"])
+        assert receipt["provider"] == expected_provider
+
+    replay_calls: list[object] = []
+
+    def should_not_call(*_args: object, **_kwargs: object) -> object:
+        replay_calls.append(True)
+        raise AssertionError("offline replay dispatched a provider")
+
+    replay = PlanningRuntime(root, provider=should_not_call).replay("main")
+    assert replay["state"] == result.state
+    assert replay["problem"] == result.problem
+    assert replay_calls == []
+
+
 def test_requested_connection_options_schedule_each_intent_before_remaining_work(
     tmp_path: Path,
 ) -> None:
