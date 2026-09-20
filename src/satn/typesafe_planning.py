@@ -32,6 +32,7 @@ TYPE_SAFE_ENDPOINT = "https://api.typesafe.ai/v1/systemone"
 DEFAULT_MODEL = "jev-latest"
 DEFAULT_CREDENTIAL_ENV = "TYPESAFE_API_KEY"
 DEFAULT_CREDENTIAL_PATH = "~/.config/typesafe/api-key"
+_RESULT_TRANSFORMATION = "typesafe-typed-result/v1"
 
 
 class TypeSafeStatus(StrEnum):
@@ -338,6 +339,90 @@ def _base_result(
     if failure_class is not None:
         result["failure_class"] = failure_class
     return result
+
+
+def _canonical_hash(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _compact_answer(question: Mapping[str, JSONValue], answer: object) -> dict[str, JSONValue]:
+    if not isinstance(answer, Mapping):  # pragma: no cover - validated before projection.
+        return {}
+    answer_type = question.get("type")
+    if answer_type == "choice":
+        probabilities = answer.get("probabilities")
+        compact_probabilities = (
+            {
+                str(key): value
+                for key, value in sorted(probabilities.items(), key=lambda item: str(item[0]))
+            }
+            if isinstance(probabilities, Mapping)
+            else {}
+        )
+        return {
+            "type": "choice",
+            "choice": answer.get("choice"),
+            "probabilities": compact_probabilities,
+            "confidence": answer.get("confidence"),
+        }
+    if answer_type == "score":
+        probabilities = answer.get("probabilities")
+        compact_probabilities = (
+            {
+                str(key): value
+                for key, value in sorted(probabilities.items(), key=lambda item: str(item[0]))
+            }
+            if isinstance(probabilities, Mapping)
+            else {}
+        )
+        return {
+            "type": "score",
+            "score": answer.get("score"),
+            "probabilities": compact_probabilities,
+            "confidence": answer.get("confidence"),
+        }
+    return {"type": "noul", "noul": answer.get("noul")}
+
+
+def _compact_answers(
+    request: Mapping[str, JSONValue], answers: Mapping[str, object]
+) -> dict[str, JSONValue]:
+    questions = request.get("questions")
+    if not isinstance(questions, Mapping):  # pragma: no cover - validated before projection.
+        return {}
+    return {
+        str(question_id): _compact_answer(question, answers[question_id])
+        for question_id, question in questions.items()
+        if isinstance(question, Mapping) and question_id in answers
+    }
+
+
+def _answer_binding(
+    request: Mapping[str, JSONValue],
+    response: Mapping[str, JSONValue],
+    request_receipt: Mapping[str, JSONValue],
+    response_receipt: Mapping[str, JSONValue],
+) -> dict[str, JSONValue]:
+    request_hash = request_receipt.get("body_sha256")
+    response_hash = response_receipt.get("body_sha256")
+    return {
+        "transformation": _RESULT_TRANSFORMATION,
+        "request_fingerprint": request_hash,
+        "question_fingerprint": _canonical_hash(request.get("questions", {})),
+        "requested_model": request.get("model"),
+        "actual_model": response.get("model"),
+        "exchange_ref": {
+            "request_body_sha256": request_hash,
+            "response_body_sha256": response_hash,
+        },
+    }
 
 
 def _number(value: object) -> bool:
@@ -680,13 +765,20 @@ class TypeSafeClient:
         assert isinstance(response_payload, Mapping)  # validated above
         usage = response_payload["usage"]
         answers = response_payload["answers"]
+        assert isinstance(answers, Mapping)  # validated above
         return {
             "status": TypeSafeStatus.ANSWERED,
             "provider": self.provider.provider,
             "model": response_payload["model"],
             "requested_model": self.provider.model,
             "usage": usage,
-            "answers": answers,
+            "answers": _compact_answers(request_payload, answers),
+            "binding": _answer_binding(
+                request_payload,
+                response_payload,
+                request_receipt,
+                response_receipt,
+            ),
             "request": request_payload,
             "response": response_payload,
             "request_receipt": request_receipt,
