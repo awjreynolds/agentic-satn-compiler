@@ -14,6 +14,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, cast
 
+import geopandas as gpd
+from pyproj import CRS
+from shapely.geometry import shape
+from shapely.ops import transform as transform_geometry
+
 from satn.models import AreaConfig, AreaDefinition
 from satn.planning_engine import (
     apply_operation,
@@ -171,6 +176,15 @@ def _sorted_refs(value: object) -> list[str]:
     if not isinstance(value, (list, tuple, set, frozenset)):
         return []
     return sorted(str(item) for item in value)
+
+
+def _round_geographic_geometry(geometry: object) -> object:
+    """Round only the comparison copy at the routing graph's coordinate precision."""
+
+    return transform_geometry(
+        lambda x, y, z=None: (round(x, 7), round(y, 7)),
+        geometry,
+    )
 
 
 def _sorted_records(
@@ -1044,6 +1058,60 @@ class PlanningRuntime:
                 topology_edges
             ):
                 raise ValueError("evidence scope corridor is foreign to the candidate")
+            if corridor_id not in candidate_corridors:
+                graph_evidence = problem.get("graph_evidence")
+                directed_edges = (
+                    graph_evidence.get("directed_edges")
+                    if isinstance(graph_evidence, Mapping)
+                    else None
+                )
+                edge_by_id = (
+                    {
+                        str(item.get("directed_edge_id")): item
+                        for item in directed_edges
+                        if isinstance(item, Mapping) and item.get("directed_edge_id")
+                    }
+                    if isinstance(directed_edges, list)
+                    else {}
+                )
+                source_geometry_ref = corridor.get("geometry_ref")
+                if not isinstance(source_geometry_ref, Mapping):
+                    raise ValueError("evidence scope corridor geometry is missing")
+                try:
+                    source_geometry = shape(source_geometry_ref["geometry"])
+                    source_crs = source_geometry_ref["crs"]
+                    for edge_id in normalized_edges:
+                        edge = edge_by_id.get(edge_id)
+                        edge_geometry_ref = edge.get("geometry_ref") if edge else None
+                        if not isinstance(edge_geometry_ref, Mapping):
+                            raise ValueError("evidence scope graph edge geometry is missing")
+                        edge_geometry = shape(edge_geometry_ref["geometry"])
+                        source_in_edge_crs = source_geometry
+                        if source_crs != edge_geometry_ref["crs"]:
+                            source_in_edge_crs = (
+                                gpd.GeoSeries([source_geometry], crs=source_crs)
+                                .to_crs(edge_geometry_ref["crs"])
+                                .iloc[0]
+                            )
+                        if source_in_edge_crs.intersection(edge_geometry).length <= 0:
+                            source_crs_identity = CRS.from_user_input(source_crs)
+                            edge_crs_identity = CRS.from_user_input(edge_geometry_ref["crs"])
+                            if (
+                                source_crs_identity.is_geographic
+                                and edge_crs_identity.is_geographic
+                            ):
+                                rounded_source = _round_geographic_geometry(source_in_edge_crs)
+                                rounded_edge = _round_geographic_geometry(edge_geometry)
+                                if rounded_source.intersection(rounded_edge).length > 0:
+                                    continue
+                            raise ValueError(
+                                "evidence scope corridor has no positive geometry intersection "
+                                "with the candidate edge"
+                            )
+                except (KeyError, TypeError, ValueError) as error:
+                    if "positive geometry intersection" in str(error):
+                        raise
+                    raise ValueError("evidence scope graph geometry is invalid") from error
         admitted_sections = {
             str(corridor_by_id[ref].get("section_id"))
             for ref in normalized_corridors
