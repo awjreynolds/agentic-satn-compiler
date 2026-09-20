@@ -1,0 +1,154 @@
+{
+  "question": {
+    "instructions": "Classify how the supplied source excerpt, with its title and stated date context, relates to the referenced claim. Use only that supplied evidence, not outside knowledge or assumptions about current conditions. Preserve place, time, extent and conditions. Lack of support is not itself a contradiction.",
+    "criteria": {
+      "supports": "The supplied evidence states or directly entails the whole claim, including its place, time, extent and conditions.",
+      "contradicts": "The supplied evidence states or directly entails something incompatible with the claim about the same subject and circumstances; mere omission is not a contradiction.",
+      "does_not_establish": "The supplied evidence does not establish either the whole claim or its contradiction, including when necessary details, scope, timing or conditions are absent or ambiguous."
+    }
+  },
+  "source": {
+    "url": "https://democracy.bathnes.gov.uk/documents/s81370/E3519%20-%20Somer%20Valley%20Links%20Strategic%20Corridor%20Project.pdf",
+    "title": "Somer Valley Links strategic corridor project",
+    "publisher": "Bath & North East Somerset Council",
+    "locator": "§1.2, page 1",
+    "date_context": "Decision date listed as not before 4 May 2024",
+    "retrieved_at": "2026-09-20",
+    "excerpt": "The SVL project aims to improve travel between Midsomer Norton, Radstock, Westfield and Bath via the A367",
+    "source_id": "banes-e3519-section-1-2"
+  },
+  "scope": {
+    "candidate_refs": [
+      "planning-candidate-c571776bc49b3dc419d23732b4986bd60c540cd76da862fd35f4f036dc09ab4a"
+    ],
+    "source_corridor_refs": [
+      "planning-corridor-10936e578da7c3ee8d0cf03f79dabfb2879bd17e74db4d40d6cc9ae6c4d0af22"
+    ],
+    "section_refs": [
+      "planning-corridor-10936e578da7c3ee8d0cf03f79dabfb2879bd17e74db4d40d6cc9ae6c4d0af22-section"
+    ],
+    "directed_edge_refs": [
+      "203490192#512caf4c2171dd14027a"
+    ]
+  },
+  "claims": [
+    {
+      "id": "claim-01",
+      "claim": "The council passage describes a project aiming to improve travel via the A367 between named settlements including Radstock and Midsomer Norton.",
+      "expected": "supports",
+      "rationale": "The passage explicitly names these settlements, the A367 and a travel-improvement project aim."
+    },
+    {
+      "id": "claim-02",
+      "claim": "The overlapping A367 section of this candidate already provides dedicated cycling infrastructure.",
+      "expected": "does_not_establish",
+      "rationale": "The supplied project-aim passage provides no section-specific observation of existing dedicated cycling provision, and does not deny its existence."
+    }
+  ],
+  "binding_proof": {
+    "relation": "corridor-context-only",
+    "source_files": [
+      {
+        "role": "candidate_record",
+        "path": "/Users/awjre/Work/banes-satn/build/typesafe-experiments/2026-09-19-rebuild/cases/radstock-midsomer-norton/expansion-receipt.json",
+        "sha256": "6c7bdfc57543b8e3d3916efc7447426895f35fca68ca65f3c67daf7ff7e53084"
+      },
+      {
+        "role": "source_inventory",
+        "path": "/Users/awjre/Work/banes-satn/build/typesafe-experiments/2026-09-19-live-poc-alignment/cases/radstock-midsomer-norton/runtime/publications/proposal-state-16df4723dc4610c4f0b83c9f652bacfcffd4d862cc63fbd4eaeae81947b6e6e0-09a9054e8c0c27b0/source-inventory.json",
+        "sha256": "eb7f7e01358972ec28d4e10258b6ea84bbfc89cb322e00af00d48612a67d34f4"
+      },
+      {
+        "role": "pinned_graph_evidence",
+        "path": "/Users/awjre/Work/banes-satn/build/typesafe-experiments/2026-09-19-rebuild/cases/radstock-midsomer-norton/child-problem.json",
+        "sha256": "caef0d74eb91ecff724043af6c12a9807f66a1a654f600bfcdb5a3912feee984"
+      }
+    ],
+    "candidate_id": "planning-candidate-c571776bc49b3dc419d23732b4986bd60c540cd76da862fd35f4f036dc09ab4a",
+    "candidate_current_or_future": "unknown",
+    "inventory_section": {
+      "corridor_id": "planning-corridor-10936e578da7c3ee8d0cf03f79dabfb2879bd17e74db4d40d6cc9ae6c4d0af22",
+      "section_id": "planning-corridor-10936e578da7c3ee8d0cf03f79dabfb2879bd17e74db4d40d6cc9ae6c4d0af22-section",
+      "name": "A367",
+      "classification": "a-road",
+      "source_refs": [
+        {
+          "evidence_id": "a-road-spine-5e0d8bc4d76c",
+          "source_id": "203490192"
+        }
+      ],
+      "topology_source_edge_ids": [
+        "203490192",
+        "23011342",
+        "27244287"
+      ],
+      "geometry_id": "geometry-37d55f5b2b1c197e04da350ed28ba3ae5fa70b9b1b5d3c8007f90ca02c4db7cb",
+      "geometry_content_fingerprint": "334f04f68aa658feea2b8bdb2d56b4c9ac4c54afdf4437fed2151b81dc437694",
+      "source_ref": "203490192"
+    },
+    "overlap": {
+      "shared_source_edge_id": "203490192",
+      "candidate_source_edge_occurrence_indices": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "candidate_geometry_point_indices": [
+        16,
+        17
+      ],
+      "candidate_geometry_points": [
+        [
+          -2.4533937,
+          51.2908188
+        ],
+        [
+          -2.4541919,
+          51.2906261
+        ]
+      ],
+      "source_section_geometry_point_indices": [
+        0,
+        1
+      ],
+      "source_section_geometry_points": [
+        [
+          -2.454191889,
+          51.290626095
+        ],
+        [
+          -2.453393689,
+          51.290818795
+        ]
+      ],
+      "comparison": "The candidate and graph-evidence coordinates are identical as stored at seven decimal places. The source-inventory section stores the same endpoints at nine decimal places; the listed source points match after representation-level rounding to the candidate’s seven decimal places.",
+      "shared_directed_edge_id": "203490192#512caf4c2171dd14027a",
+      "candidate_directed_edge_index": 4,
+      "candidate_directed_edge_geometry_id": "geometry-90cbcbe3483532657dc2ff72c4ec363d2e4b7765c513fa80c39f4329900b2f40",
+      "candidate_directed_edge_content_fingerprint": "e1da7edc8501b9791e7178d77bf9b2f7177d160123b1fc2cb09d40743732b3a2",
+      "candidate_directed_edge_nodes": {
+        "from_node_id": "2678501462",
+        "to_node_id": "1444761739"
+      },
+      "candidate_directed_edge_points": [
+        [
+          -2.4533937,
+          51.2908188
+        ],
+        [
+          -2.4541919,
+          51.2906261
+        ]
+      ],
+      "mapping_basis": "Pinned child-problem graph_evidence gives this directed edge exactly the two candidate geometry points that correspond to the source-inventory section endpoints at seven-decimal representation precision; the other four 203490192 directed edges precede this segment in the candidate path."
+    },
+    "limitations": [
+      "The source passage is a project aim and corridor context, not evidence of delivered works.",
+      "The deterministic overlap is partial; it does not cover the candidate’s remaining source edges or establish whole-route continuity.",
+      "No safety, access, or current/future status is inferred from the geometry or road classification.",
+      "The directed-edge mapping is to the retained candidate segment only; it does not map the official prose to the candidate’s remaining edges."
+    ]
+  }
+}

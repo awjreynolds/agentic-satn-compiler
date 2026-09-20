@@ -1229,6 +1229,10 @@ _Avoid_: rendered map, source inventory, adopted network
 The retained evidence, requests, responses and validated transitions that explain a Proposal State and permit its recorded decisions to be replayed without new judgments. A branch starts before a chosen decision and preserves the original continuation; shared ancestry alone does not establish causation.
 _Avoid_: model transcript, causal proof, mutable undo log
 
+**Planning Claim Judgment**:
+A source-linked interpretation of whether supplied evidence supports, contradicts or does not establish a specific claim, retaining its affected route section and uncertainty. It informs a planning investigation without extending the source's coverage or independently establishing current provision, safety or feasibility.
+_Avoid_: verified field fact, whole-route status, automatic evidence-request closure
+
 **Planning Corridor**:
 A source-identified corridor whose identity and geometry remain in the planning problem independently of the proposed alignment choice. Every in-scope A-road is a Planning Corridor.
 _Avoid_: silently excluded route, deleted evidence, network gap

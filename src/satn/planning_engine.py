@@ -51,6 +51,7 @@ _CONTEXT_CLASSIFICATIONS = {
 }
 
 _DEPARTURE_OUTCOMES = {"alternate", "unresolved", "no-loss"}
+_EVIDENCE_RELATIONS = {"supports", "contradicts", "does_not_establish"}
 _PLANNING_CODE_CONTRACT = "planning-engine/v1"
 
 _DEFAULT_BRIEF = {
@@ -1811,6 +1812,14 @@ def apply_operation(
             payload.get("request_id")
             or _stable_id("request", (kind, target_refs, payload.get("claim")))
         )
+        existing_request = next(
+            (
+                item
+                for item in state.get("unknown_facts", [])
+                if isinstance(item, Mapping) and item.get("unknown_id") == request_id
+            ),
+            None,
+        )
         request = {
             "unknown_id": request_id,
             "subject_refs": target_refs,
@@ -1819,6 +1828,123 @@ def apply_operation(
             "request_kind": kind,
             "status": "requested",
         }
+        prior_judgments = (
+            existing_request.get("evidence_judgments", [])
+            if isinstance(existing_request, Mapping)
+            else []
+        )
+        if isinstance(prior_judgments, list) and prior_judgments:
+            request["evidence_judgments"] = _json_copy(prior_judgments)
+        judgment = payload.get("evidence_judgment")
+        if judgment is not None:
+            if kind != "request-evidence" or not isinstance(judgment, Mapping):
+                return _operation_error(
+                    "evidence-judgment",
+                    "evidence judgment must belong to a request-evidence operation",
+                )
+            relation = judgment.get("relation")
+            if relation not in _EVIDENCE_RELATIONS:
+                return _operation_error(
+                    "evidence-judgment", "evidence judgment relation is not supported"
+                )
+            evidence_id = judgment.get("evidence_id")
+            source = judgment.get("source")
+            scope = judgment.get("scope")
+            probabilities = judgment.get("probabilities")
+            confidence = judgment.get("confidence")
+            if not isinstance(evidence_id, str) or not evidence_id.strip():
+                return _operation_error(
+                    "evidence-judgment", "evidence judgment needs an evidence identity"
+                )
+            if not isinstance(source, Mapping) or not isinstance(source.get("excerpt"), str):
+                return _operation_error(
+                    "evidence-judgment", "evidence judgment needs retained source prose"
+                )
+            if not isinstance(scope, Mapping):
+                return _operation_error("evidence-judgment", "evidence judgment scope is missing")
+            candidate_id = scope.get("candidate_id")
+            if not isinstance(candidate_id, str) or candidate_id not in indexes["candidate"]:
+                return _operation_error(
+                    "evidence-judgment", "evidence judgment candidate is not admitted"
+                )
+            candidate = next(
+                item for item in problem["candidates"] if item.get("candidate_id") == candidate_id
+            )
+            corridor_refs = _as_ref_list(scope.get("source_corridor_refs", []))
+            graph_path = candidate.get("graph_path")
+            directed_edge_ids = _as_ref_list(scope.get("directed_edge_ids", []))
+            path_edges = (
+                _as_ref_list(graph_path.get("directed_edge_ids", []))
+                if isinstance(graph_path, Mapping)
+                else []
+            )
+            if not directed_edge_ids or any(edge not in path_edges for edge in directed_edge_ids):
+                return _operation_error(
+                    "evidence-judgment",
+                    "evidence judgment directed edge is foreign to the candidate",
+                )
+            candidate_corridors = _as_ref_list(candidate.get("source_corridor_refs", []))
+            corridors = {
+                str(item.get("corridor_id")): item
+                for item in problem.get("source_corridors", [])
+                if isinstance(item, Mapping) and item.get("corridor_id")
+            }
+            for corridor_id in corridor_refs:
+                corridor = corridors.get(corridor_id)
+                topology = corridor.get("topology_fact") if isinstance(corridor, Mapping) else None
+                topology_edges = (
+                    _as_ref_list(topology.get("directed_edge_ids", []))
+                    if isinstance(topology, Mapping)
+                    else []
+                )
+                if corridor is None or (
+                    corridor_id not in candidate_corridors
+                    and not set(directed_edge_ids).issubset(topology_edges)
+                ):
+                    return _operation_error(
+                        "evidence-judgment",
+                        "evidence judgment corridor scope is foreign to the candidate",
+                    )
+            section_refs = _as_ref_list(scope.get("section_refs", []))
+            admitted_sections = {
+                str(corridors[corridor_id].get("section_id"))
+                for corridor_id in corridor_refs
+                if corridor_id in corridors and corridors[corridor_id].get("section_id")
+            }
+            if any(section_id not in admitted_sections for section_id in section_refs):
+                return _operation_error(
+                    "evidence-judgment",
+                    "evidence judgment section scope is foreign to the candidate",
+                )
+            if not isinstance(probabilities, Mapping) or any(
+                label not in probabilities for label in _EVIDENCE_RELATIONS
+            ):
+                return _operation_error(
+                    "evidence-judgment",
+                    "evidence judgment must retain the full relation distribution",
+                )
+            if not isinstance(confidence, (int, float)) or isinstance(confidence, bool):
+                return _operation_error(
+                    "evidence-judgment", "evidence judgment confidence is missing"
+                )
+            claim = judgment.get("claim", request["claim"])
+            if claim != request["claim"]:
+                return _operation_error(
+                    "evidence-judgment", "evidence judgment claim does not match the request"
+                )
+            normalized_judgment = _json_copy(dict(judgment))
+            if not isinstance(normalized_judgment, dict):  # pragma: no cover - mapping copy
+                return _operation_error("evidence-judgment", "evidence judgment is malformed")
+            normalized_judgment["claim"] = request["claim"]
+            normalized_judgment.setdefault(
+                "judgment_id",
+                _stable_id("evidence-judgment", (request_id, normalized_judgment)),
+            )
+            judgments = request.setdefault("evidence_judgments", [])
+            if not isinstance(judgments, list):  # pragma: no cover - set above or prior list
+                judgments = []
+                request["evidence_judgments"] = judgments
+            _append_unique(judgments, normalized_judgment, "judgment_id")
         record = request
         field = "unknown_facts"
         item_key = "unknown_id"

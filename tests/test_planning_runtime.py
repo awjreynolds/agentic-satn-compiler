@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 
@@ -737,6 +738,212 @@ def test_unknown_provision_choice_requests_named_evidence_and_replays_without_pr
     ).replay()
     assert replay["state"] == result.state
     assert HistoryStore(root).verify("main")["valid"] is True
+
+
+def test_investigate_bound_request_retains_judgment_for_next_task_and_replay(
+    tmp_path: Path,
+) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    packets: list[dict[str, object]] = []
+
+    def provider(packet: object, questions: object) -> dict[str, object]:
+        assert isinstance(packet, dict)
+        assert isinstance(questions, dict)
+        packets.append(packet)
+        options = _choice_keys(questions["decision"])
+        choice = "supports" if len(packets) == 1 else "__needs_evidence__"
+        return {
+            "status": "answered",
+            "provider": "test-provider",
+            "model": "test-model",
+            "usage": {"input_tokens": 7, "output_tokens": 3},
+            "answers": {
+                "decision": {
+                    "type": "choice",
+                    "choice": choice,
+                    "probabilities": {key: 0.8 if key == choice else 0.1 for key in options},
+                    "confidence": 0.8,
+                }
+            },
+            "request_receipt": {"body_sha256": f"request-{len(packets)}"},
+            "response_receipt": {"body_sha256": f"response-{len(packets)}"},
+        }
+
+    root = tmp_path / "history"
+    runtime = PlanningRuntime(root, provider=provider)
+    problem = build_planning_problem(config)
+    candidate = next(item for item in problem["candidates"] if isinstance(item, dict))
+    candidate_provision_status = candidate["current_or_future"]
+    corridor_id = candidate["source_corridor_refs"][0]
+    section_id = next(
+        item["section_id"]
+        for item in problem["source_corridors"]
+        if item["corridor_id"] == corridor_id
+    )
+    directed_edge_id = candidate["graph_path"]["directed_edge_ids"][0]
+    initial = runtime.run(
+        config,
+        output_root=tmp_path / "initial-run",
+        mode="deterministic",
+        operations=[
+            {
+                "kind": "request-evidence",
+                "payload": {
+                    "request_id": "route-request-1",
+                    "target_refs": [candidate["candidate_id"]],
+                    "claim": "route-section-context",
+                    "reason": "source-backed route investigation",
+                },
+            }
+        ],
+    )
+    head_before_investigation = HistoryStore(root).head("main").head_event_id
+
+    evidence = {
+        "evidence_id": "official-route-context",
+        "source": {
+            "url": "https://example.test/official-route",
+            "title": "Official route context",
+            "locator": "§1.2",
+            "published_at": None,
+            "retrieved_at": "2026-09-20",
+            "excerpt": "The project aims to improve travel along the named corridor.",
+        },
+        "scope": {
+            "candidate_id": candidate["candidate_id"],
+            "source_corridor_refs": [corridor_id],
+            "section_refs": [section_id],
+            "directed_edge_ids": [directed_edge_id],
+        },
+    }
+    investigated = runtime.investigate_evidence(
+        "main",
+        "route-request-1",
+        evidence,
+        output_root=tmp_path / "investigated-run",
+    )
+
+    evidence_packet = packets[0]
+    assert evidence_packet["question_kind"] == "evidence-relation"
+    assert evidence_packet["claim"] == "route-section-context"
+    assert "brief" not in evidence_packet
+    assert "candidates" not in evidence_packet
+    assert evidence_packet["source_evidence"]["source"] == evidence["source"]
+    assert evidence_packet["source_evidence"]["scope"]["directed_edge_refs"] == [directed_edge_id]
+
+    assert initial.state["unknown_facts"]
+    assert investigated.state["unknown_facts"]
+    retained = next(
+        item
+        for item in investigated.state["unknown_facts"]
+        if item["unknown_id"] == "route-request-1"
+    )
+    assert len(retained["evidence_judgments"]) == 1
+    judgment = retained["evidence_judgments"][0]
+    assert judgment["evidence_id"] == "official-route-context"
+    assert judgment["claim"] == "route-section-context"
+    assert judgment["relation"] == "supports"
+    assert judgment["probabilities"] == {
+        "supports": 0.8,
+        "contradicts": 0.1,
+        "does_not_establish": 0.1,
+    }
+    assert judgment["confidence"] == 0.8
+    assert judgment["source"] == evidence["source"]
+    assert judgment["scope"] == evidence["scope"]
+    assert candidate["current_or_future"] == candidate_provision_status
+    retained_candidate = next(
+        item
+        for item in investigated.state["candidates"]
+        if item["candidate_id"] == candidate["candidate_id"]
+    )
+    assert retained_candidate["current_or_future"] == candidate_provision_status
+    assert any(item.get("decision_class") == "classifier" for item in investigated.decision_trace)
+
+    resumed = runtime.run(
+        config,
+        output_root=tmp_path / "resumed-run",
+        mode="live",
+    )
+    feedback = next(
+        item
+        for item in packets[-1].get("feedback_unknowns", [])
+        if isinstance(item, dict) and item.get("unknown_id") == "route-request-1"
+    )
+    assert feedback["evidence_judgments"][0]["claim"] == "route-section-context"
+    assert feedback["evidence_judgments"][0]["source"] == evidence["source"]
+    assert feedback["evidence_judgments"][0]["scope"] == evidence["scope"]
+    resumed_candidate = next(
+        item
+        for item in resumed.state["candidates"]
+        if item["candidate_id"] == candidate["candidate_id"]
+    )
+    assert resumed_candidate["current_or_future"] == candidate_provision_status
+
+    replay_calls: list[object] = []
+    replay = PlanningRuntime(
+        root,
+        provider=lambda *_args: replay_calls.append(True),
+    ).replay("main")
+    assert replay["state"] == resumed.state
+    assert replay_calls == []
+
+    head_before_invalid = HistoryStore(root).head("main").head_event_id
+    packet_count_before_invalid = len(packets)
+    foreign = dict(evidence)
+    foreign["scope"] = {**evidence["scope"], "directed_edge_ids": ["foreign-edge"]}
+    with pytest.raises(ValueError, match="directed edge"):
+        runtime.investigate_evidence("main", "route-request-1", foreign)
+    assert HistoryStore(root).head("main").head_event_id == head_before_invalid
+    assert len(packets) == packet_count_before_invalid
+    assert head_before_investigation != head_before_invalid
+
+
+def test_graph_candidate_scope_uses_admitted_corridor_topology(tmp_path: Path) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    problem = build_planning_problem(config)
+    candidate = next(item for item in problem["candidates"] if isinstance(item, dict))
+    corridor_id = candidate["source_corridor_refs"][0]
+    section_id = next(
+        item["section_id"]
+        for item in problem["source_corridors"]
+        if item["corridor_id"] == corridor_id
+    )
+    edge_id = candidate["graph_path"]["directed_edge_ids"][0]
+    graph_candidate_problem = copy.deepcopy(problem)
+    graph_candidate = next(
+        item
+        for item in graph_candidate_problem["candidates"]
+        if item["candidate_id"] == candidate["candidate_id"]
+    )
+    graph_candidate["source_corridor_refs"] = []
+
+    admitted = PlanningRuntime._validate_evidence_scope(
+        graph_candidate_problem,
+        {"subject_refs": []},
+        {
+            "evidence_id": "topology-bound-source",
+            "source": {
+                "url": "https://example.test/source",
+                "title": "Source context",
+                "locator": "§1",
+                "retrieved_at": "2026-09-20",
+                "excerpt": "The source describes the named corridor.",
+            },
+            "scope": {
+                "candidate_id": candidate["candidate_id"],
+                "source_corridor_refs": [corridor_id],
+                "section_refs": [section_id],
+                "directed_edge_ids": [edge_id],
+            },
+        },
+    )
+
+    assert admitted["scope"]["source_corridor_refs"] == [corridor_id]
+    assert admitted["scope"]["section_refs"] == [section_id]
+    assert admitted["scope"]["directed_edge_ids"] == [edge_id]
 
 
 def test_advance_rejects_stale_expected_head_without_mutating_branch(tmp_path: Path) -> None:
