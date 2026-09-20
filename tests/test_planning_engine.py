@@ -4,7 +4,7 @@ import copy
 
 import geopandas as gpd
 from bath_saltford_fixture import configured_bath_saltford
-from shapely.geometry import LineString
+from shapely.geometry import LineString, Point
 
 from satn.content_identity import canonical_network_geometry_fingerprint, content_fingerprint
 from satn.planning_engine import (
@@ -91,6 +91,108 @@ def _fake_planning_config(tmp_path):
     return config
 
 
+def _ncn_context_planning_source() -> dict[str, object]:
+    geometry = LineString([(0.0, 0.0), (100.0, 0.0)])
+    reverse_geometry = LineString(list(geometry.coords)[::-1])
+    network = gpd.GeoDataFrame(
+        [
+            {
+                "source_id": "ncn-edge",
+                "u": "node-a",
+                "v": "node-b",
+                "highway": "cycleway",
+                "oneway": True,
+                "geometry": geometry,
+            },
+            {
+                "source_id": "ncn-edge",
+                "u": "node-b",
+                "v": "node-a",
+                "highway": "cycleway",
+                "oneway": True,
+                "geometry": reverse_geometry,
+            },
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    context = gpd.GeoDataFrame(
+        [
+            {
+                "evidence_id": "ncn-evidence",
+                "feature_type": "ncn-route",
+                "source_id": "ncn-route",
+                "name": "Governed NCN",
+                "geometry": geometry,
+            }
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    places = gpd.GeoDataFrame(
+        [
+            {
+                "place_id": "place-a",
+                "source_id": "place-a-source",
+                "name": "Place A",
+                "kind": "community",
+                "geometry": Point(0.0, 0.0),
+            },
+            {
+                "place_id": "place-b",
+                "source_id": "place-b-source",
+                "name": "Place B",
+                "kind": "community",
+                "geometry": Point(100.0, 0.0),
+            },
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    return {"network": network, "context": context, "places": places}
+
+
+def test_planning_graph_reuses_admitted_ncn_context_for_build_and_expansion(
+    monkeypatch, tmp_path
+) -> None:
+    config = _fake_planning_config(tmp_path)
+    source = _ncn_context_planning_source()
+    monkeypatch.setattr("satn.planning_engine.load_snapshot", lambda _config: source)
+
+    problem = build_planning_problem(config)
+
+    graph_edges = problem["graph_evidence"]["directed_edges"]
+    assert graph_edges[0]["road_facts"]["satn_ncn"] is True
+    candidates = [item for item in problem["candidates"] if item["source_corridor_refs"]]
+    assert candidates
+    assert all(item["graph_path"]["ncn_share"] == 1.0 for item in candidates)
+    assert {item["current_or_future"] for item in candidates} == {"unknown"}
+    assert "satn_ncn" not in source["network"].columns
+
+    state = initial_proposal(problem)
+    operation = {
+        "kind": "propose-connection",
+        "parent_state_fingerprint": state["state_fingerprint"],
+        "payload": {
+            "connection_id": "place-a-to-place-b",
+            "origin_place_id": "place-a",
+            "destination_place_id": "place-b",
+            "current_or_future": "future",
+        },
+    }
+    expanded = expand_connection(problem, state, operation, config)
+
+    assert expanded["status"] == "expanded"
+    expansion_candidates = [
+        item
+        for item in expanded["problem"]["candidates"]
+        if item.get("connection_id") == "place-a-to-place-b"
+    ]
+    assert expansion_candidates
+    assert all(item["graph_path"]["ncn_share"] == 1.0 for item in expansion_candidates)
+    assert "satn_ncn" not in source["network"].columns
+
+
 def test_opposite_directed_context_rows_become_one_source_corridor(monkeypatch, tmp_path) -> None:
     config = _fake_planning_config(tmp_path)
     source = _bidirectional_corridor_source()
@@ -122,6 +224,8 @@ def test_opposite_directed_context_rows_become_one_source_corridor(monkeypatch, 
         "access": None,
         "surface": "asphalt",
         "oneway": False,
+        "satn_ncn": False,
+        "cycle_alignment_bases": [],
     }
     assert by_direction[("node-b", "node-a")]["road_facts"]["access"] == "no"
     assert "cycleway" not in by_direction[("node-a", "node-b")]["road_facts"]

@@ -24,6 +24,7 @@ from satn.content_identity import (
     canonical_network_geometry,
     canonical_network_geometry_fingerprint,
 )
+from satn.evidence import mark_ncn_edges
 from satn.models import AreaConfig
 from satn.planning_contracts import _source_ref, _stable_id, _topology_fact
 from satn.routing import RoadGraph, RouteOption, choose_alignment
@@ -507,6 +508,18 @@ def _source_corridors(
             }
         )
     return corridors, gaps, unknowns
+
+
+def _admitted_network(source: Mapping[str, object]) -> gpd.GeoDataFrame | None:
+    """Return an NCN-enriched copy of the admitted routing network."""
+
+    network = source.get("network")
+    if not isinstance(network, gpd.GeoDataFrame):
+        return None
+    context = source.get("context")
+    if not isinstance(context, gpd.GeoDataFrame):
+        return network.copy(deep=True)
+    return mark_ncn_edges(network, context)
 
 
 def _place_records(source: Mapping[str, object]) -> list[dict[str, object]]:
@@ -1064,8 +1077,8 @@ def expand_connection(
         return admitted
     connection = admitted["connection_intents"][-1]
     source = load_snapshot(config)
-    network = source.get("network")
-    if not isinstance(network, gpd.GeoDataFrame) or network.empty:
+    network = _admitted_network(source)
+    if network is None or network.empty:
         return _operation_error("network-empty", "connection expansion requires a routing graph")
     graph = RoadGraph(network)
     places_by_id = {str(item["place_id"]): item for item in problem.get("places", [])}
@@ -1177,7 +1190,7 @@ def build_planning_problem(
     """Admit one validated snapshot as the planner's JSON input boundary."""
 
     source = load_snapshot(config)
-    network = source.get("network")
+    network = _admitted_network(source)
     graph = (
         RoadGraph(network) if isinstance(network, gpd.GeoDataFrame) and not network.empty else None
     )
