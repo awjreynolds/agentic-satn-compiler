@@ -6,14 +6,26 @@ This note supports [Choose a source-grounded comparison for Jev planning value](
 
 The retained expansion packet contains four candidates:
 
-| Candidate | Role | `ncn_share` | Exact directed-edge intersection with admitted Greenway sections |
+| Candidate | Role | `ncn_share` | Exact directed-edge intersection with admitted `greenway-cycleway` inventory |
 | --- | --- | ---: | --- |
 | `planning-candidate-c571776bc49b3dc419d23732b4986bd60c540cd76da862fd35f4f036dc09ab4a` | direct | 0.0 | none |
 | `planning-candidate-9ed0af896a13be89941aa026b9d867d5be3a58c25b2892b4f2fbf77330df4324` | strategic-spine | 0.0 | none |
 | `planning-candidate-e0e06f6751b5a4ad799af233b5dd03d55a92148d639d5cede67c25cce16c8c35` | ncn-informed | 0.0 | none |
 | `planning-candidate-6d4a4004bf6e378682beed8b343eadf8ba7b5dbfc6b52742c9b6c9ad80034038` | low-traffic | 0.0 | none |
 
-This is an exact identity check against the retained source inventory and graph paths, not a spatial tolerance claim. The inventory admits 83 `greenway-cycleway` sections, 60 with graph attachment and 472 unique attached directed-edge identities. None occurs in any of the four candidate edge lists. The direct candidate still has the previously verified partial A367 overlap at `203490192#512caf4c2171dd14027a`; that is not Greenway evidence.
+This is an exact identity check against the retained source inventory and graph paths, not a spatial tolerance claim. The inventory admits 83 `greenway-cycleway` sections, 60 with graph attachment and 472 unique attached directed-edge identities. None occurs in any of the four candidate edge lists. This column is specifically the admitted `greenway-cycleway` category; it is not an authoritative identification of every named Norton–Radstock Greenway `cycleway` row. The direct candidate still has the previously verified partial A367 overlap at `203490192#512caf4c2171dd14027a`; that is not Greenway evidence.
+
+## 2026-09-20 correction and bounded follow-up
+
+The dated [Greenway candidate coverage evidence](greenway-candidate-coverage.md)
+corrects the category interpretation: the low-traffic candidate already
+traverses named Greenway `cycleway` rows. Four named-cycleway topology
+intersections were found, with exact geometry proof retained for two directed
+sections. This establishes no missing candidate from the retained evidence;
+the empty `source_corridor_refs` field is a provenance limitation. The prior
+comparison protocol and its frozen results remain historical and are not
+recast as a route-quality or classifier-quality finding. Current-provision and
+other source uncertainty remain unchanged.
 
 The inputs are `/Users/awjre/Work/banes-satn/build/typesafe-experiments/2026-09-19-rebuild/cases/radstock-midsomer-norton/expansion-receipt.json` (SHA-256 `6c7bdfc57543b8e3d3916efc7447426895f35fca68ca65f3c67daf7ff7e53084`) and `/Users/awjre/Work/banes-satn/build/typesafe-experiments/2026-09-19-live-poc-alignment/cases/radstock-midsomer-norton/runtime/publications/proposal-state-16df4723dc4610c4f0b83c9f652bacfcffd4d862cc63fbd4eaeae81947b6e6e0-09a9054e8c0c27b0/source-inventory.json` (SHA-256 `eb7f7e01358972ec28d4e10258b6ea84bbfc89cb322e00af00d48612a67d34f4`). Reproduction command:
 
@@ -37,4 +49,6 @@ A narrower comparison can test whether a retained claim judgment helps the next 
 
 The existing runtime cannot yet construct that fair control through its public operations: source prose reaches alignment context inside a completed `evidence_judgments` record, while `request-evidence` has no source-only observation. A direct packet experiment can isolate the judgment without changing production code, but must be reported as experimental rather than an integrated branch comparison. Adding a production evidence abstraction solely for this test is unnecessary. This is also not a Jev-versus-code route-quality comparison: a mechanical shortest path would introduce a preference that the agreed brief does not treat as ground truth.
 
-Before another inference, [Explain missing greenway coverage in retained planning alternatives](https://github.com/awjreynolds/agentic-satn-compiler/issues/485) will establish whether the offered alternatives omit meaningful admitted paths because of topology, binding or candidate generation. The observation above motivates that investigation; it does not yet prove a compiler defect. No further classifier calls were made for this research.
+The earlier next-investigation wording about missing Greenway coverage is
+superseded by the dated correction above. The bounded next step is [Replay a
+counterfactual choice of the existing Greenway option](https://github.com/awjreynolds/agentic-satn-compiler/issues/494), using the existing retained path through `PlanningRuntime.fork` → replay the fork baseline → `advance(select-alignment existing candidate)` → replay/compare. No source-binding admission or new candidate prescription is planned, and no further classifier calls were made for this research.
