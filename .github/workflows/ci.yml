@@ -63,6 +63,7 @@ jobs:
           tests/test_planning_classifier_projection.py
           tests/test_planning_vertical_slice.py
           tests/test_typesafe_decision_experiment.py
+          tests/test_typesafe_claim_experiment.py
       - run: uv run playwright install chromium
       - run: >-
           uv run pytest --browser -m browser
