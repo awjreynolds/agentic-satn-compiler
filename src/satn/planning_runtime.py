@@ -57,6 +57,28 @@ _CURRENT_FUTURE_PROVISION_REASON = (
     "intervention state."
 )
 _CLASSIFIER_TRANSFORMATION = "satn-planning-classifier/v1"
+_EVIDENCE_RELATIONS = ("supports", "contradicts", "does_not_establish")
+_EVIDENCE_RELATION_INSTRUCTIONS = (
+    "Classify how the supplied source excerpt, with its title and stated date context, "
+    "relates to the referenced claim. Use only that supplied evidence, not outside "
+    "knowledge or assumptions about current conditions. Preserve place, time, extent "
+    "and conditions. Lack of support is not itself a contradiction."
+)
+_EVIDENCE_RELATION_CRITERIA = {
+    "supports": (
+        "The supplied evidence states or directly entails the whole claim, including "
+        "its place, time, extent and conditions."
+    ),
+    "contradicts": (
+        "The supplied evidence states or directly entails something incompatible with "
+        "the claim about the same subject and circumstances; mere omission is not a contradiction."
+    ),
+    "does_not_establish": (
+        "The supplied evidence does not establish either the whole claim or its "
+        "contradiction, including when necessary details, scope, timing or conditions "
+        "are absent or ambiguous."
+    ),
+}
 
 
 def _copy_json(value: object) -> object:
@@ -706,6 +728,345 @@ class PlanningRuntime:
             validate_proposal(child_problem, child_state),
             output_root,
         )
+
+    def investigate_evidence(
+        self,
+        branch: str,
+        request_id: str,
+        evidence: Mapping[str, object],
+        *,
+        output_root: Path | str | None = None,
+        expected_head: str | None = None,
+    ) -> PlanningRunResult:
+        """Judge supplied source prose against one retained evidence request.
+
+        Scope admission is mechanical: the supplied source must bind to an
+        admitted candidate, corridor section, and ordered graph edge.  The
+        provider only judges the relation of that source to the request claim;
+        it does not change provision status or select a route.
+        """
+
+        problem, envelope_ref = self._context(branch)
+        replay = self.replay(branch)
+        state = replay.get("state")
+        if not isinstance(state, Mapping):
+            raise HistoryReplayError("branch has no replayable state")
+        request = next(
+            (
+                item
+                for item in state.get("unknown_facts", [])
+                if isinstance(item, Mapping)
+                and item.get("unknown_id") == request_id
+                and item.get("request_kind") == "request-evidence"
+            ),
+            None,
+        )
+        if request is None:
+            raise ValueError(f"evidence request is not admitted: {request_id}")
+        admitted = self._validate_evidence_scope(problem, request, evidence)
+        scope = admitted["scope"]
+        candidate_id = str(scope["candidate_id"])
+        candidate = next(
+            item
+            for item in problem.get("candidates", [])
+            if isinstance(item, Mapping) and item.get("candidate_id") == candidate_id
+        )
+        source = admitted["source"]
+        evidence_id = str(admitted["evidence_id"])
+        claim = str(request.get("claim") or "requested planning claim")
+        questions = {
+            "decision": ChoiceQuestion(
+                instructions=_EVIDENCE_RELATION_INSTRUCTIONS,
+                criteria=_EVIDENCE_RELATION_CRITERIA,
+            )
+        }
+        # Keep reference order in directed edge sequences while flattening the
+        # other scoped identities for the existing packet projection.
+        scope_refs = [
+            *[str(item) for item in request.get("subject_refs", [])],
+            candidate_id,
+            *[str(item) for item in scope.get("source_corridor_refs", [])],
+            *[str(item) for item in scope.get("directed_edge_ids", [])],
+        ]
+        candidate_evidence = candidate.get("evidence_refs", [])
+        if not isinstance(candidate_evidence, list):
+            candidate_evidence = (
+                candidate.get("provenance", {}).get("evidence_refs", [])
+                if isinstance(candidate.get("provenance"), Mapping)
+                else []
+            )
+        context: dict[str, object] = {
+            "question_kind": "evidence-relation",
+            "candidates": {candidate_id: dict(candidate)},
+            "candidate_refs": [candidate_id],
+            "scope_refs": scope_refs,
+            "source_corridor_refs": list(scope["source_corridor_refs"]),
+            "place_refs": [str(item) for item in candidate.get("place_refs", [])],
+            "evidence_refs": [*candidate_evidence, evidence_id],
+            "permitted_action_kinds": ["request-evidence"],
+            "dispatchable": True,
+            "claim_evidence": {
+                "claim": claim,
+                "evidence_id": evidence_id,
+                "source": source,
+                "scope": scope,
+            },
+        }
+        request_record = self._request(
+            problem,
+            state,
+            questions,
+            "live",
+            context,
+            branch,
+        )
+        self._commit(
+            branch,
+            {
+                **self._event_context(problem, envelope_ref, state),
+                "event_kind": "attempt",
+                "actor_kind": "provider",
+                "outcome": "started",
+                "state_transition": False,
+                "input_state": state,
+                "request": request_record,
+            },
+            expected_head=expected_head,
+        )
+        provider_result = self._dispatch(questions, branch, request_record)
+        status = _status(provider_result.get("status"))
+        if status != "answered":
+            event_id = self._commit(
+                branch,
+                {
+                    **self._event_context(problem, envelope_ref, state),
+                    "event_kind": "receipt",
+                    "actor_kind": "provider",
+                    "outcome": status or "failed",
+                    "state_transition": False,
+                    "input_state": state,
+                    "request": request_record,
+                    "receipt": provider_result,
+                    "decision_class": _decision_class(provider_result),
+                },
+            )
+            output = self._provider_failure_output(
+                validate_proposal(problem, state), provider_result
+            )
+            return self._result(
+                branch,
+                "live",
+                problem,
+                state,
+                event_id,
+                output,
+                output_root,
+                termination_reason=f"provider-{status or 'failed'}",
+                provider_result=provider_result,
+            )
+        try:
+            answer = provider_result.get("answers", {}).get("decision")
+            if not isinstance(answer, Mapping):
+                raise ValueError("evidence judgment answer is not an object")
+            relation = answer.get("choice")
+            if relation not in _EVIDENCE_RELATIONS:
+                raise ValueError("evidence judgment relation is outside the offered choices")
+            probabilities = answer.get("probabilities")
+            if not isinstance(probabilities, Mapping) or any(
+                label not in probabilities for label in _EVIDENCE_RELATIONS
+            ):
+                raise ValueError("evidence judgment must retain the full relation distribution")
+            confidence = answer.get("confidence")
+            if not isinstance(confidence, (int, float)) or isinstance(confidence, bool):
+                raise ValueError("evidence judgment confidence is missing")
+            judgment = {
+                "evidence_id": evidence_id,
+                "claim": claim,
+                "relation": relation,
+                "probabilities": _safe_json(dict(probabilities)),
+                "confidence": confidence,
+                "source": _safe_json(source),
+                "scope": _safe_json(scope),
+            }
+            operation = self._bind_operation(
+                {
+                    "kind": "request-evidence",
+                    "payload": {
+                        "request_id": request_id,
+                        "target_refs": list(request.get("subject_refs", [])),
+                        "claim": claim,
+                        "reason": request.get("reason"),
+                        "evidence_judgment": judgment,
+                    },
+                },
+                state,
+            )
+        except (TypeError, ValueError) as error:
+            event_id = self._commit(
+                branch,
+                {
+                    **self._event_context(problem, envelope_ref, state),
+                    "event_kind": "receipt",
+                    "actor_kind": "provider",
+                    "outcome": "invalid",
+                    "state_transition": False,
+                    "input_state": state,
+                    "request": request_record,
+                    "receipt": provider_result,
+                    "decision_class": _decision_class(provider_result),
+                    "diagnostics": [str(error)],
+                },
+            )
+            output = self._invalid_output(
+                validate_proposal(problem, state),
+                {"status": "invalid", "error": str(error)},
+            )
+            return self._result(
+                branch,
+                "live",
+                problem,
+                state,
+                event_id,
+                output,
+                output_root,
+                termination_reason="invalid-provider-choice",
+                provider_result=provider_result,
+            )
+        advanced = self._apply_and_record(
+            branch,
+            problem,
+            state,
+            operation,
+            config=None,
+            envelope_ref=envelope_ref,
+            actor_kind="model",
+            decision_class=_decision_class(provider_result),
+            mode="live",
+            request=request_record,
+            receipt=provider_result,
+        )
+        event_id = advanced[0]
+        if advanced[2] is not None:
+            output = self._invalid_output(validate_proposal(problem, state), advanced[2])
+            return self._result(
+                branch,
+                "live",
+                problem,
+                state,
+                event_id,
+                output,
+                output_root,
+                termination_reason="invalid-operation",
+                provider_result=provider_result,
+            )
+        child_problem, child_state = advanced[3], advanced[1]
+        return self._result(
+            branch,
+            "live",
+            child_problem,
+            child_state,
+            event_id,
+            validate_proposal(child_problem, child_state),
+            output_root,
+            provider_result=provider_result,
+        )
+
+    @staticmethod
+    def _validate_evidence_scope(
+        problem: Mapping[str, object],
+        request: Mapping[str, object],
+        evidence: Mapping[str, object],
+    ) -> dict[str, object]:
+        if not isinstance(evidence, Mapping):
+            raise ValueError("evidence must be an object")
+        evidence_id = evidence.get("evidence_id")
+        if not isinstance(evidence_id, str) or not evidence_id.strip():
+            raise ValueError("evidence needs an identity")
+        source = evidence.get("source")
+        if not isinstance(source, Mapping):
+            raise ValueError("evidence source is missing")
+        for field in ("url", "title", "locator", "retrieved_at", "excerpt"):
+            if not isinstance(source.get(field), str) or not source[field].strip():
+                raise ValueError(f"evidence source needs {field}")
+        scope = evidence.get("scope")
+        if not isinstance(scope, Mapping):
+            raise ValueError("evidence scope is missing")
+        candidate_id = scope.get("candidate_id")
+        candidate_refs = scope.get("candidate_refs")
+        if candidate_id is None and isinstance(candidate_refs, list) and len(candidate_refs) == 1:
+            candidate_id = candidate_refs[0]
+        candidate = next(
+            (
+                item
+                for item in problem.get("candidates", [])
+                if isinstance(item, Mapping) and item.get("candidate_id") == candidate_id
+            ),
+            None,
+        )
+        if candidate is None:
+            raise ValueError("evidence scope candidate is not admitted")
+        source_corridor_refs = scope.get("source_corridor_refs")
+        directed_edge_ids = scope.get("directed_edge_ids", scope.get("directed_edge_refs"))
+        if not isinstance(source_corridor_refs, list) or not source_corridor_refs:
+            raise ValueError("evidence scope needs source corridors")
+        if not isinstance(directed_edge_ids, list) or not directed_edge_ids:
+            raise ValueError("evidence scope needs directed edges")
+        normalized_corridors = [str(item) for item in source_corridor_refs]
+        section_refs = scope.get("section_refs", [])
+        if not isinstance(section_refs, list):
+            raise ValueError("evidence scope section references must be a list")
+        corridor_by_id = {
+            str(item.get("corridor_id")): item
+            for item in problem.get("source_corridors", [])
+            if isinstance(item, Mapping) and item.get("corridor_id")
+        }
+        candidate_corridors = {str(item) for item in candidate.get("source_corridor_refs", [])}
+        graph_path = candidate.get("graph_path")
+        path_edges = (
+            {str(item) for item in graph_path.get("directed_edge_ids", [])}
+            if isinstance(graph_path, Mapping)
+            else set()
+        )
+        normalized_edges = [str(item) for item in directed_edge_ids]
+        if any(item not in path_edges for item in normalized_edges):
+            raise ValueError("evidence scope directed edge is foreign to the candidate")
+        for corridor_id in normalized_corridors:
+            corridor = corridor_by_id.get(corridor_id)
+            if corridor is None:
+                raise ValueError("evidence scope corridor is not admitted")
+            topology = corridor.get("topology_fact")
+            topology_edges = (
+                {str(item) for item in topology.get("directed_edge_ids", [])}
+                if isinstance(topology, Mapping)
+                else set()
+            )
+            if corridor_id not in candidate_corridors and not set(normalized_edges).issubset(
+                topology_edges
+            ):
+                raise ValueError("evidence scope corridor is foreign to the candidate")
+        admitted_sections = {
+            str(corridor_by_id[ref].get("section_id"))
+            for ref in normalized_corridors
+            if ref in corridor_by_id and corridor_by_id[ref].get("section_id")
+        }
+        normalized_sections = [str(item) for item in section_refs]
+        if any(item not in admitted_sections for item in normalized_sections):
+            raise ValueError("evidence scope section is foreign to the candidate")
+        subject_refs = {str(item) for item in request.get("subject_refs", [])}
+        if subject_refs and not subject_refs.intersection(
+            {str(candidate_id), *candidate_corridors}
+        ):
+            raise ValueError("evidence scope is outside the existing request")
+        return {
+            "evidence_id": evidence_id,
+            "source": _safe_json(dict(source)),
+            "scope": {
+                "candidate_id": str(candidate_id),
+                "source_corridor_refs": normalized_corridors,
+                "directed_edge_ids": normalized_edges,
+                **({"section_refs": normalized_sections} if normalized_sections else {}),
+            },
+        }
 
     def compare(self, base_branch: str, branch: str) -> dict[str, object]:
         return self.store.compare(base_branch, branch)
@@ -1775,6 +2136,9 @@ class PlanningRuntime:
         identify the exact input it is judging.
         """
 
+        if context.get("question_kind") == "evidence-relation":
+            return self._evidence_task_packet(mode, questions, context)
+
         raw_candidates = context.get("candidates", {})
         candidates: list[dict[str, object]] = []
         if isinstance(raw_candidates, Mapping):
@@ -2009,6 +2373,53 @@ class PlanningRuntime:
             "task_id": f"planning-task-{_digest(packet_basis)[:24]}",
             **packet_semantic,
         }
+
+    @staticmethod
+    def _evidence_task_packet(
+        mode: RunMode,
+        questions: Mapping[str, object],
+        context: Mapping[str, object],
+    ) -> dict[str, object]:
+        claim_evidence = context.get("claim_evidence")
+        if not isinstance(claim_evidence, Mapping):
+            raise ValueError("evidence-relation task is missing its claim evidence")
+        source = claim_evidence.get("source")
+        scope = claim_evidence.get("scope")
+        claim = claim_evidence.get("claim")
+        evidence_id = claim_evidence.get("evidence_id")
+        if not isinstance(source, Mapping) or not isinstance(scope, Mapping):
+            raise ValueError("evidence-relation task has malformed claim evidence")
+        if not isinstance(claim, str) or not claim.strip():
+            raise ValueError("evidence-relation task has no claim")
+        if not isinstance(evidence_id, str) or not evidence_id.strip():
+            raise ValueError("evidence-relation task has no evidence identity")
+        source_fields = {
+            str(key): _safe_json(source[key])
+            for key in (
+                "url",
+                "title",
+                "publisher",
+                "locator",
+                "published_at",
+                "date_context",
+                "retrieved_at",
+                "excerpt",
+            )
+            if key in source
+        }
+        semantic: dict[str, object] = {
+            "schema_version": "planning-evidence-task/v1",
+            "mode": mode,
+            "question_kind": "evidence-relation",
+            "claim": claim,
+            "source_evidence": {
+                "source": source_fields,
+            },
+            "questions": _safe_json(questions),
+        }
+        semantic = cast(dict[str, object], _canonical_semantic(semantic))
+        basis = {"transformation": _CLASSIFIER_TRANSFORMATION, "semantic": semantic}
+        return {"task_id": f"planning-task-{_digest(basis)[:24]}", **semantic}
 
     @staticmethod
     def _connection_packet(
