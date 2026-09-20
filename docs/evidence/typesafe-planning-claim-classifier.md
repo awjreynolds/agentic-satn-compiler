@@ -62,6 +62,50 @@ For a live pass, supply `--execute` and a different output directory. The client
 reads `TYPESAFE_API_KEY` or its existing local credential file. Inspect the saved
 `summary.json` and referenced exchanges without rerunning inference.
 
+## Live result
+
+The single frozen pass ran on 2026-09-20 from commit `4264464`, using requested
+model `jev-latest`. All three calls reported actual model `jev-1.13.0`.
+All nine answers matched their reference labels: three supports, three
+contradicts and three does_not_establish. There were no incorrect or missing
+answers and no service failures. No fixture or prompt revision followed the run.
+
+| Source | Correct / cases | Input / output tokens | Provider-call seconds |
+| --- | ---: | ---: | ---: |
+| Keynsham network gaps | 3 / 3 | 1,033 / 141 | 0.694 |
+| PRoW prerequisites | 3 / 3 | 1,031 / 141 | 0.739 |
+| Quiet-route uses | 3 / 3 | 1,025 / 141 | 0.598 |
+
+Usage totals **3,089 input and 423 output tokens**. Timings measure the client
+call boundary and exclude local preparation. No monetary cost was returned.
+
+| Claim | Selected label | Selected probability | Confidence |
+| --- | --- | ---: | ---: |
+| claim-01 | supports | 1.00 | 0.99 |
+| claim-02 | contradicts | 1.00 | 1.00 |
+| claim-03 | does_not_establish | 0.56 | 0.35 |
+| claim-04 | supports | 0.97 | 0.95 |
+| claim-05 | contradicts | 0.99 | 0.99 |
+| claim-06 | does_not_establish | 0.96 | 0.94 |
+| claim-07 | supports | 0.98 | 0.97 |
+| claim-08 | contradicts | 0.99 | 0.99 |
+| claim-09 | does_not_establish | 1.00 | 0.99 |
+
+Claim-03 asserts universal individual-route inaccessibility from a statement
+about network gaps. Jev selected the reference label, but assigned 0.44 to
+contradicts alongside 0.56 to does_not_establish. The other alternative,
+supports, received 0.00. This close distribution should remain visible; counting
+the selected answer as correct does not turn it into a certain interpretation.
+
+Artifacts are retained under the ignored repository directory
+`build/typesafe-experiments/2026-09-20-claim-classifier`: frozen fixture,
+manifest, summary and one exchange per source. The harness SHA-256 is
+`bf581a88b478e43971058594f79320ce1a79871d777ce43a21c6d91eaeaebb50`.
+The reference-label blind-review packet is retained locally under
+`/tmp/satn-claim-classifier`; the fixture and protocol above are the durable
+record. The focused CI-shaped harness checks passed (two test functions),
+and independent Astra code review found no blocking issues before inference.
+
 ## Interpretation boundary
 
 These cases test evidence interpretation, not route choice, network quality or
@@ -69,7 +113,13 @@ whether a route is presently usable. Correct answers on this constructed set
 cannot establish representative accuracy or probability calibration. Confident
 errors remain errors; low concentration does not by itself prove failure.
 
-The smallest prospective integration is to attach a typed, source-linked claim
-judgment to an existing evidence investigation. Code must retain its scope and
-unknowns. A classifier result alone cannot promote a proposal into verified
-current provision or authorise a corridor departure.
+The results support proceeding with a typed, source-linked claim judgment in an
+existing evidence investigation. The required next input is actual source prose
+bound to the specific candidate or route section under investigation: these
+general excerpts do not resolve the existing candidates' provision status.
+Code must retain scope and unknowns. A classifier result alone cannot promote
+a proposal into verified current provision or authorise a corridor departure.
+This PR provides the reusable experiment and evidence for that decision; it does
+not change production planner behavior or introduce an unmeasured confidence
+threshold. A larger benchmark, automatic escalation policy and additional
+planner framework are outside this experiment's contract.
