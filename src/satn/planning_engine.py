@@ -740,12 +740,14 @@ def _graph_evidence(graph: RoadGraph | None) -> dict[str, object] | None:
             or not isinstance(geometry, LineString)
         ):
             continue
+        source_facts = data.get("source_facts", {})
         directed_edges.append(
             {
                 "directed_edge_id": str(directed_edge_id),
                 "source_edge_id": str(source_edge_id),
                 "from_node_id": str(from_node),
                 "to_node_id": str(to_node),
+                "road_facts": dict(source_facts) if isinstance(source_facts, Mapping) else {},
                 "geometry_ref": _geometry_ref(geometry, graph.crs, str(source_edge_id)),
             }
         )

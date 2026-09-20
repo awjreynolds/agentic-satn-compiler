@@ -31,6 +31,11 @@ def _bidirectional_corridor_source() -> dict[str, object]:
                 "osmid": "way-1",
                 "ref": "A4",
                 "highway": "primary",
+                "name": "Shared A4",
+                "lanes": 2,
+                "maxspeed": "30 mph",
+                "access": None,
+                "surface": "asphalt",
                 "oneway": False,
                 "geometry": geometry,
             },
@@ -41,6 +46,11 @@ def _bidirectional_corridor_source() -> dict[str, object]:
                 "osmid": "way-1",
                 "ref": "A4",
                 "highway": "primary",
+                "name": "Shared A4",
+                "lanes": 2,
+                "maxspeed": "30 mph",
+                "access": "no",
+                "surface": "asphalt",
                 "oneway": False,
                 "geometry": reverse_geometry,
             },
@@ -99,6 +109,31 @@ def test_opposite_directed_context_rows_become_one_source_corridor(monkeypatch, 
     )
     assert len(corridor["topology_fact"]["directed_edge_ids"]) == 2
     assert len(problem["graph_evidence"]["directed_edges"]) == 2
+    by_direction = {
+        (edge["from_node_id"], edge["to_node_id"]): edge
+        for edge in problem["graph_evidence"]["directed_edges"]
+    }
+    assert by_direction[("node-a", "node-b")]["road_facts"] == {
+        "highway": "primary",
+        "ref": "A4",
+        "name": "Shared A4",
+        "lanes": 2,
+        "maxspeed": "30 mph",
+        "access": None,
+        "surface": "asphalt",
+        "oneway": False,
+    }
+    assert by_direction[("node-b", "node-a")]["road_facts"]["access"] == "no"
+    assert "cycleway" not in by_direction[("node-a", "node-b")]["road_facts"]
+
+    reversed_source = {
+        **source,
+        "network": source["network"].iloc[::-1].reset_index(drop=True),
+        "context": source["context"].iloc[::-1].reset_index(drop=True),
+    }
+    monkeypatch.setattr("satn.planning_engine.load_snapshot", lambda _config: reversed_source)
+    reversed_problem = build_planning_problem(config)
+    assert reversed_problem["graph_evidence"] == problem["graph_evidence"]
 
 
 def test_corridor_merge_keeps_identity_boundaries_and_name_conflicts(monkeypatch, tmp_path) -> None:

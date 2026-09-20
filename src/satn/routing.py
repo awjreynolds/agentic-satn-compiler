@@ -41,6 +41,28 @@ LOW_TRAFFIC = {
 }
 MAIN_ROADS = {"motorway", "trunk", "primary", "secondary", "tertiary"}
 
+_SOURCE_FACT_FIELDS = (
+    "highway",
+    "ref",
+    "name",
+    "lanes",
+    "maxspeed",
+    "access",
+    "bicycle",
+    "cycleway",
+    "surface",
+    "oneway",
+    "service",
+    "bridge",
+    "tunnel",
+    "width",
+    "est_width",
+    "junction",
+    "satn_alongside",
+    "satn_ncn",
+    "cycle_alignment_bases",
+)
+
 LOGGER = logging.getLogger(__name__)
 ATTACHMENT_TIE_BREAK_EPSILON = 1e-9
 _REVERSE_PATH_UNSET = object()
@@ -213,6 +235,7 @@ class RoadGraph:
                 "alongside": str(row.get("satn_alongside", "possible")),
                 "ncn": _truthy(row.get("satn_ncn")),
                 "cycle_alignment_bases": tuple(_tag_values(row.get("cycle_alignment_bases"))),
+                "source_facts": _source_facts(row),
             }
             self._add_best_edge(u, v, attrs)
             if not _present(row.get("u")) and not attrs["oneway"]:
@@ -1492,6 +1515,35 @@ def _truthy(value: object) -> bool:
 
 def _present(value: object) -> bool:
     return value is not None and str(value).lower() not in {"nan", "none", ""}
+
+
+def _source_fact_value(value: object) -> object:
+    if value is None:
+        return None
+    try:
+        if bool(pd.isna(value)):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, Mapping):
+        return {str(key): _source_fact_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        values = [_source_fact_value(item) for item in value]
+        return sorted(values, key=str) if isinstance(value, (set, frozenset)) else values
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    try:
+        return _source_fact_value(value.item())  # type: ignore[union-attr]
+    except (AttributeError, TypeError, ValueError):
+        return str(value)
+
+
+def _source_facts(row: pd.Series) -> dict[str, object]:
+    facts: dict[str, object] = {}
+    for fact_field in _SOURCE_FACT_FIELDS:
+        if fact_field in row:
+            facts[fact_field] = _source_fact_value(row.get(fact_field))
+    return facts
 
 
 def _source_edge_id(row: pd.Series, fallback: object) -> str:

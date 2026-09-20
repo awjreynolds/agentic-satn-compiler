@@ -162,6 +162,7 @@ _Avoid_: dead end, dangling route
 
 **Alignment Option**:
 One evidence-backed, end-to-end way of realising a Community Connection. It may follow one source corridor or form a continuous composite from compatible Parallel Alignment Sections. Only one Alignment Option may be selected into a published network.
+An option is a planning proposal. Generating or preferring it does not establish current cycling provision or Intervention State; those assessments may differ by section and remain unknown until supported by evidence.
 _Avoid_: parallel connection, final design
 
 **Alignment Candidate Set**:
