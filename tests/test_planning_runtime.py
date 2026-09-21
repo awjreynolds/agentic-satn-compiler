@@ -11,6 +11,7 @@ import pytest
 from bath_saltford_fixture import configured_bath_saltford
 from shapely.geometry import LineString, Point, Polygon, shape
 
+import satn.planning_runtime as planning_runtime_module
 from satn.evidence import empty_context
 from satn.planning_engine import build_planning_problem, initial_proposal
 from satn.planning_history import HistoryStaleHeadError, HistoryStore
@@ -172,6 +173,37 @@ def test_fresh_run_mechanically_expands_prepared_connections_once(
         sum(item.get("operation_kind") == "expand-connection" for item in resumed.decision_trace)
         == 1
     )
+
+
+def test_runtime_defers_full_validation_projection_until_final_result(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config = configured_bath_saltford(tmp_path)
+    source = _urban_runtime_source()
+    monkeypatch.setattr("satn.planning_engine.load_snapshot", lambda _config: source)
+    calls: list[bool] = []
+    original_validate = planning_runtime_module._validate_proposal_with_context
+
+    def observed_validate(problem, state, *, context=None, project=True):
+        calls.append(project)
+        return original_validate(problem, state, context=context, project=project)
+
+    monkeypatch.setattr(
+        planning_runtime_module,
+        "_validate_proposal_with_context",
+        observed_validate,
+    )
+
+    result = PlanningRuntime(tmp_path / "history").run(
+        config,
+        output_root=tmp_path / "run",
+        mode="deterministic",
+    )
+
+    assert result.status in {"validated", "reviewable-incomplete"}
+    assert calls
+    assert calls[-1] is True
+    assert all(project is False for project in calls[:-1])
 
 
 def test_pre_expansion_fork_consumes_pending_prepared_connection_once(
@@ -514,6 +546,65 @@ def test_policy_allows_mechanical_selection_of_unique_exact_mandatory_corridor(
     )
 
 
+def test_public_run_reads_each_history_record_once_within_one_invocation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The ordinary run shares immutable record reads without weakening boundaries."""
+
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    physical_reads: list[str] = []
+    original_read = HistoryStore._read_record_envelope
+
+    def observed_read(store: HistoryStore, record_id: str) -> tuple[str, object]:
+        cache = store._record_read_cache.get()
+        if cache is None or ("record-envelope", record_id) not in cache:
+            physical_reads.append(record_id)
+        return original_read(store, record_id)
+
+    monkeypatch.setattr(HistoryStore, "_read_record_envelope", observed_read)
+    result = PlanningRuntime(
+        tmp_path / "history",
+        policy={"allow_provisional_choices": True},
+    ).run(config, output_root=tmp_path / "run", mode="deterministic")
+
+    assert result.decision_trace
+    assert physical_reads
+    assert len(physical_reads) == len(set(physical_reads))
+
+
+def test_policy_indexes_mandatory_candidate_checks_for_one_problem(monkeypatch, tmp_path: Path):
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    checked: list[str] = []
+    original = PlanningRuntime._candidate_graph_path_is_valid
+
+    def observed(
+        problem: object,
+        candidate: object,
+        *,
+        edge_index: object = None,
+    ) -> bool:
+        assert isinstance(candidate, dict)
+        checked.append(str(candidate["candidate_id"]))
+        return original(problem, candidate, edge_index=edge_index)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        PlanningRuntime,
+        "_candidate_graph_path_is_valid",
+        staticmethod(observed),
+    )
+    result = PlanningRuntime(
+        tmp_path / "history",
+        policy={"allow_provisional_choices": True},
+    ).run(config, output_root=tmp_path / "run", mode="deterministic")
+
+    assert result.decision_trace
+    assert checked
+    assert len(checked) == len(set(checked))
+
+
 def test_runtime_reuses_verified_refs_when_recording_mechanical_decisions(monkeypatch, tmp_path):
     """A resumed decision loop should not reserialize verified immutable records."""
 
@@ -529,7 +620,7 @@ def test_runtime_reuses_verified_refs_when_recording_mechanical_decisions(monkey
     )
 
     original_put = HistoryStore.put
-    original_put_state = HistoryStore.put_state
+    original_put_state = HistoryStore._put_state_with_context
     writes = []
 
     def record_write(store, value, *, kind="record"):
@@ -538,13 +629,18 @@ def test_runtime_reuses_verified_refs_when_recording_mechanical_decisions(monkey
             writes.append((kind, reference))
         return reference
 
-    def record_state_write(store: HistoryStore, value: object, *, problem_ref: str) -> str:
-        reference = original_put_state(store, value, problem_ref=problem_ref)
+    def record_state_write(
+        store: HistoryStore,
+        value: object,
+        problem_ref: str,
+        context: object,
+    ) -> str:
+        reference = original_put_state(store, value, problem_ref, context)
         writes.append(("state", reference))
         return reference
 
     monkeypatch.setattr(HistoryStore, "put", record_write)
-    monkeypatch.setattr(HistoryStore, "put_state", record_state_write)
+    monkeypatch.setattr(HistoryStore, "_put_state_with_context", record_state_write)
     result = PlanningRuntime(history_root).run(
         config,
         output_root=tmp_path / "output",
