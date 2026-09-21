@@ -24,12 +24,15 @@ from shapely.ops import transform as transform_geometry
 from satn.content_identity import canonical_network_geometry_fingerprint
 from satn.models import AreaConfig, AreaDefinition
 from satn.planning_engine import (
-    apply_operation,
+    _apply_operation_with_context,
+    _bind_planning_context_problem_ref,
+    _PlanningContext,
+    _prepare_planning_context,
+    _validate_proposal_with_context,
     build_planning_problem,
     expand_connection,
     initial_proposal,
     replay_expansion,
-    semantic_fingerprint,
     validate_proposal,
 )
 from satn.planning_history import (
@@ -343,8 +346,37 @@ class PlanningRuntime:
         self.connection_options = [dict(item) for item in connection_options]
         self.brief_ref: str | None = None
         self.policy_ref: str | None = None
+        self._execution_context: _PlanningContext | None = None
+        self._mechanical_problem_id: str | None = None
+        self._mechanical_templates: tuple[str, ...] | None = None
+        self._mechanical_operations: dict[str, dict[str, object] | None] = {}
+        self._mechanical_edge_index: dict[str, Mapping[str, object]] | None = None
 
     def run(
+        self,
+        config: AreaConfig | str | Path,
+        *,
+        output_root: Path | str,
+        branch: str = "main",
+        mode: RunMode = "deterministic",
+        operations: Sequence[Mapping[str, object]] = (),
+        requested_connections: Sequence[Mapping[str, object]] = (),
+        connection_options: Sequence[Mapping[str, object]] = (),
+    ) -> PlanningRunResult:
+        """Run one invocation with a private immutable-record read scope."""
+
+        with self.store._read_cache_scope():
+            return self._run(
+                config,
+                output_root=output_root,
+                branch=branch,
+                mode=mode,
+                operations=operations,
+                requested_connections=requested_connections,
+                connection_options=connection_options,
+            )
+
+    def _run(
         self,
         config: AreaConfig | str | Path,
         *,
@@ -417,7 +449,12 @@ class PlanningRuntime:
         provider_result: dict[str, object] | None = None
         blocked_scope_refs: set[str] = set()
         while True:
-            output = validate_proposal(problem, state)
+            output = _validate_proposal_with_context(
+                problem,
+                state,
+                context=self._execution_context,
+                project=False,
+            )
             if output.get("status") == "validated":
                 break
             mechanical_operation = self._mechanical_mandatory_operation(problem, state)
@@ -534,7 +571,7 @@ class PlanningRuntime:
                     },
                 )
                 operation = self._bind_operation(self._coverage_operation(choice_context), state)
-                old_fingerprint = semantic_fingerprint(state)
+                old_fingerprint = state.get("state_fingerprint")
                 advanced = self._apply_and_record(
                     branch,
                     problem,
@@ -565,7 +602,7 @@ class PlanningRuntime:
                     )
                 problem, state = advanced[3], advanced[1]
                 problem_ref, state_ref = advanced[4], advanced[5]
-                if semantic_fingerprint(state) == old_fingerprint:
+                if state.get("state_fingerprint") == old_fingerprint:
                     termination_reason = "semantic-no-progress"
                     break
                 continue
@@ -636,10 +673,10 @@ class PlanningRuntime:
                         output_root,
                         termination_reason=termination_reason,
                     )
-                old_fingerprint = semantic_fingerprint(state)
+                old_fingerprint = state.get("state_fingerprint")
                 problem, state = advanced[3], advanced[1]
                 problem_ref, state_ref = advanced[4], advanced[5]
-                if semantic_fingerprint(state) == old_fingerprint:
+                if state.get("state_fingerprint") == old_fingerprint:
                     termination_reason = "semantic-no-progress"
                     break
                 continue
@@ -716,7 +753,12 @@ class PlanningRuntime:
                         "decision_class": _decision_class(provider_result),
                     },
                 )
-                output = self._provider_failure_output(output, provider_result)
+                output = self._provider_failure_output(
+                    _validate_proposal_with_context(
+                        problem, state, context=self._execution_context
+                    ),
+                    provider_result,
+                )
                 return self._result(
                     branch,
                     mode,
@@ -767,7 +809,7 @@ class PlanningRuntime:
                     termination_reason="invalid-provider-choice",
                     provider_result=provider_result,
                 )
-            old_fingerprint = semantic_fingerprint(state)
+            old_fingerprint = state.get("state_fingerprint")
             advanced = self._apply_and_record(
                 branch,
                 problem,
@@ -799,11 +841,11 @@ class PlanningRuntime:
                 )
             problem, state = advanced[3], advanced[1]
             problem_ref, state_ref = advanced[4], advanced[5]
-            if semantic_fingerprint(state) == old_fingerprint:
+            if state.get("state_fingerprint") == old_fingerprint:
                 termination_reason = "semantic-no-progress"
                 break
 
-        output = validate_proposal(problem, state)
+        output = _validate_proposal_with_context(problem, state, context=self._execution_context)
         if output.get("status") == "invalid":
             termination_reason = termination_reason or "invalid-proposal"
         return self._result(
@@ -827,16 +869,22 @@ class PlanningRuntime:
         """Replay a branch with recorded operations and expansion receipts only."""
 
         with self.store._read_cache_scope():
-            return self._replay_uncached(branch)
+            result = self._replay_uncached(branch)
+        for key in ("problem", "state", "output"):
+            value = result.get(key)
+            if isinstance(value, Mapping):
+                result[key] = _safe_json(value)
+        return result
 
     def _replay_uncached(self, branch: str) -> dict[str, object]:
 
         _current_problem, _envelope, _problem_ref = self._context(branch)
         problem = self._root_problem(branch)
         current_problem = problem
+        execution_context: _PlanningContext | None = None
 
         def reducer(state: object, operation: object) -> object:
-            nonlocal current_problem
+            nonlocal current_problem, execution_context
             if not isinstance(operation, Mapping):
                 raise HistoryReplayError("recorded operation is not an object")
             if operation.get("kind") == "initialize":
@@ -848,7 +896,14 @@ class PlanningRuntime:
                 )
                 if not isinstance(initial, Mapping):
                     raise HistoryReplayError("initial state is missing")
-                return _safe_json(initial)
+                try:
+                    execution_context = _prepare_planning_context(current_problem, initial)
+                except ValueError:
+                    # Historical callers may have stored a full record whose
+                    # identity predates the private fast-path contract.  Keep
+                    # replay strict and uncached for that record.
+                    execution_context = None
+                return initial
             if operation.get("kind") == "expand-connection":
                 receipt = operation.get("receipt")
                 problem_ref = operation.get("problem_ref")
@@ -865,19 +920,46 @@ class PlanningRuntime:
                 if isinstance(child_problem, Mapping) and expanded.get("problem") != child_problem:
                     raise HistoryReplayError("recorded expansion problem differs")
                 current_problem = dict(expanded["problem"])
-                return _safe_json(expanded["state"])
+                try:
+                    execution_context = _prepare_planning_context(
+                        current_problem, expanded["state"]
+                    )
+                except ValueError:
+                    execution_context = None
+                return expanded["state"]
             if not isinstance(state, Mapping):
                 raise HistoryReplayError("operation has no input state")
-            child = apply_operation(current_problem, state, operation)
+            if execution_context is None:
+                try:
+                    execution_context = _prepare_planning_context(current_problem, state)
+                except ValueError:
+                    execution_context = None
+            child = _apply_operation_with_context(
+                current_problem,
+                state,
+                operation,
+                context=execution_context,
+            )
             if child.get("status") == "invalid":
                 raise HistoryReplayError("recorded operation was rejected")
-            return _safe_json(child)
+            return child
 
         result = self.store.replay(branch, reducer)
         state = result.get("state")
         if isinstance(state, Mapping):
             result["problem"] = current_problem
-            result["output"] = validate_proposal(current_problem, state)
+            if execution_context is None:
+                try:
+                    execution_context = _prepare_planning_context(current_problem, state)
+                except ValueError:
+                    execution_context = None
+            if execution_context is not None:
+                self._set_execution_context(execution_context)
+            result["output"] = _validate_proposal_with_context(
+                current_problem,
+                state,
+                context=execution_context,
+            )
             result["binding"] = current_problem.get("binding")
         result["decision_trace"] = list(self._decision_trace(branch, result.get("target_event_id")))
         return result
@@ -899,9 +981,27 @@ class PlanningRuntime:
 
         problem, envelope, problem_ref = self._context(branch)
         replay = self.replay(branch)
+        replay_problem = replay.get("problem")
+        if isinstance(replay_problem, Mapping):
+            # ``replay`` returns defensive public copies.  Rebind the private
+            # context to those copies before applying the replacement so the
+            # identity checks remain meaningful at the public branch seam.
+            problem = dict(replay_problem)
         state = replay.get("state")
         if not isinstance(state, Mapping):
             raise HistoryReplayError("branch has no replayable state")
+        try:
+            self._set_execution_context(
+                _bind_planning_context_problem_ref(
+                    _prepare_planning_context(problem, state), problem_ref
+                )
+            )
+        except ValueError:
+            self._execution_context = None
+            self._mechanical_problem_id = None
+            self._mechanical_templates = None
+            self._mechanical_operations = {}
+            self._mechanical_edge_index = None
         state_ref = replay.get("state_ref")
         if not isinstance(state_ref, str):
             state_ref = None
@@ -966,9 +1066,24 @@ class PlanningRuntime:
 
         problem, envelope_ref, problem_ref = self._context(branch)
         replay = self.replay(branch)
+        replay_problem = replay.get("problem")
+        if isinstance(replay_problem, Mapping):
+            problem = dict(replay_problem)
         state = replay.get("state")
         if not isinstance(state, Mapping):
             raise HistoryReplayError("branch has no replayable state")
+        try:
+            self._set_execution_context(
+                _bind_planning_context_problem_ref(
+                    _prepare_planning_context(problem, state), problem_ref
+                )
+            )
+        except ValueError:
+            self._execution_context = None
+            self._mechanical_problem_id = None
+            self._mechanical_templates = None
+            self._mechanical_operations = {}
+            self._mechanical_edge_index = None
         state_ref = replay.get("state_ref")
         if not isinstance(state_ref, str):
             state_ref = None
@@ -1394,70 +1509,113 @@ class PlanningRuntime:
             )
             if reference is not None
         }
-        candidates = [
-            item
-            for item in problem.get("candidates", [])
-            if isinstance(item, Mapping)
-            and item.get("status") == "admitted"
-            and item.get("obligation_id")
-            and item.get("current_or_future") == "unknown"
-        ]
-        for corridor in sorted(
-            (
-                item
-                for item in problem.get("source_corridors", [])
-                if isinstance(item, Mapping)
-                and item.get("mandatory_planning_corridor") is True
-                and item.get("classification") == "a-road"
-                and item.get("in_scope") is True
-                and item.get("corridor_id")
-                and str(item["corridor_id"]) not in selected_corridors
-            ),
-            key=lambda item: str(item["corridor_id"]),
-        ):
-            corridor_id = str(corridor["corridor_id"])
-            source_geometry_ref = corridor.get("geometry_ref")
-            if not isinstance(source_geometry_ref, Mapping):
+        cache_key = (
+            f"{problem.get('input_fingerprint', problem.get('problem_id', ''))}:{_digest(policy)}"
+        )
+        if self._mechanical_problem_id != cache_key:
+            self._mechanical_problem_id = cache_key
+            self._mechanical_templates = ()
+            self._mechanical_operations = {}
+            graph_evidence = problem.get("graph_evidence")
+            directed_edges = (
+                graph_evidence.get("directed_edges")
+                if isinstance(graph_evidence, Mapping)
+                else None
+            )
+            self._mechanical_edge_index = (
+                {
+                    str(edge["directed_edge_id"]): edge
+                    for edge in directed_edges
+                    if isinstance(edge, Mapping) and edge.get("directed_edge_id")
+                }
+                if isinstance(directed_edges, list)
+                else {}
+            )
+            candidates_by_corridor: dict[str, list[Mapping[str, object]]] = {}
+            for candidate in problem.get("candidates", []):
+                if (
+                    isinstance(candidate, Mapping)
+                    and candidate.get("status") == "admitted"
+                    and candidate.get("obligation_id")
+                    and candidate.get("current_or_future") == "unknown"
+                ):
+                    candidates_by_corridor.setdefault(str(candidate["obligation_id"]), []).append(
+                        candidate
+                    )
+
+            templates: list[str] = []
+            for corridor in sorted(
+                (
+                    item
+                    for item in problem.get("source_corridors", [])
+                    if isinstance(item, Mapping)
+                    and item.get("mandatory_planning_corridor") is True
+                    and item.get("classification") == "a-road"
+                    and item.get("in_scope") is True
+                    and item.get("corridor_id")
+                ),
+                key=lambda item: str(item["corridor_id"]),
+            ):
+                corridor_id = str(corridor["corridor_id"])
+                templates.append(corridor_id)
+                source_geometry_ref = corridor.get("geometry_ref")
+                if not isinstance(source_geometry_ref, Mapping):
+                    self._mechanical_operations[corridor_id] = None
+                    continue
+                qualifying = [
+                    dict(candidate)
+                    for candidate in candidates_by_corridor.get(corridor_id, [])
+                    if [str(reference) for reference in candidate.get("source_corridor_refs", [])]
+                    == [corridor_id]
+                    and self._candidate_graph_path_is_valid(
+                        problem,
+                        candidate,
+                        edge_index=self._mechanical_edge_index,
+                    )
+                    and self._same_planning_geometry(
+                        source_geometry_ref,
+                        candidate.get("geometry_ref"),
+                    )
+                ]
+                groups = self._candidate_alias_groups(qualifying)
+                if len(groups) != 1:
+                    self._mechanical_operations[corridor_id] = None
+                    continue
+                candidate = groups[0][0]
+                self._mechanical_operations[corridor_id] = {
+                    "kind": "select-alignment",
+                    "payload": {
+                        "candidate_id": candidate["candidate_id"],
+                        "obligation_id": corridor_id,
+                        "provisional": True,
+                        "reason": (
+                            "Unique admitted alignment exactly covers mandatory A-road source "
+                            f"corridor {corridor_id}; provision, access and continuity remain "
+                            "unresolved."
+                        ),
+                        "uncertainties": [
+                            "current provision remains unresolved",
+                            "cycling access remains unresolved",
+                            "route continuity remains unresolved",
+                        ],
+                    },
+                }
+            self._mechanical_templates = tuple(templates)
+
+        for corridor_id in self._mechanical_templates or ():
+            if corridor_id in selected_corridors:
                 continue
-            qualifying = [
-                dict(candidate)
-                for candidate in candidates
-                if str(candidate.get("obligation_id")) == corridor_id
-                and [str(reference) for reference in candidate.get("source_corridor_refs", [])]
-                == [corridor_id]
-                and self._candidate_graph_path_is_valid(problem, candidate)
-                and self._same_planning_geometry(
-                    source_geometry_ref,
-                    candidate.get("geometry_ref"),
-                )
-            ]
-            groups = self._candidate_alias_groups(qualifying)
-            if len(groups) != 1:
-                continue
-            candidate = groups[0][0]
-            return {
-                "kind": "select-alignment",
-                "payload": {
-                    "candidate_id": candidate["candidate_id"],
-                    "obligation_id": corridor_id,
-                    "provisional": True,
-                    "reason": (
-                        "Unique admitted alignment exactly covers mandatory A-road source "
-                        f"corridor {corridor_id}; provision, access and continuity remain "
-                        "unresolved."
-                    ),
-                    "uncertainties": [
-                        "current provision remains unresolved",
-                        "cycling access remains unresolved",
-                        "route continuity remains unresolved",
-                    ],
-                },
-            }
+            operation = self._mechanical_operations.get(corridor_id)
+            if operation is not None:
+                return operation
         return None
 
     @staticmethod
     def _candidate_graph_path_is_valid(
-        problem: Mapping[str, object], candidate: Mapping[str, object]
+        problem: Mapping[str, object],
+        candidate: Mapping[str, object],
+        *,
+        edge_index: Mapping[str, Mapping[str, object]] | None = None,
     ) -> bool:
         graph_evidence = problem.get("graph_evidence")
         if not isinstance(graph_evidence, Mapping):
@@ -1465,11 +1623,15 @@ class PlanningRuntime:
         directed_edges = graph_evidence.get("directed_edges")
         if not isinstance(directed_edges, list):
             return False
-        by_id = {
-            str(edge["directed_edge_id"]): edge
-            for edge in directed_edges
-            if isinstance(edge, Mapping) and edge.get("directed_edge_id")
-        }
+        by_id = (
+            dict(edge_index)
+            if edge_index is not None
+            else {
+                str(edge["directed_edge_id"]): edge
+                for edge in directed_edges
+                if isinstance(edge, Mapping) and edge.get("directed_edge_id")
+            }
+        )
         graph_path = candidate.get("graph_path")
         endpoint = candidate.get("endpoint_provenance")
         if not isinstance(graph_path, Mapping) or not isinstance(endpoint, Mapping):
@@ -1566,12 +1728,27 @@ class PlanningRuntime:
         if head.head_event_id is not None:
             problem, envelope_ref, problem_ref = self._context(branch)
             replay = self.replay(branch)
+            replay_problem = replay.get("problem")
+            if isinstance(replay_problem, Mapping):
+                problem = dict(replay_problem)
             state = replay.get("state")
             if not isinstance(state, Mapping):
                 raise HistoryReplayError("existing branch has no replayable state")
             state_ref = replay.get("state_ref")
             if not isinstance(state_ref, str):
                 raise HistoryReplayError("existing branch has no state reference")
+            try:
+                self._set_execution_context(
+                    _bind_planning_context_problem_ref(
+                        _prepare_planning_context(problem, state), problem_ref
+                    )
+                )
+            except ValueError:
+                self._execution_context = None
+                self._mechanical_problem_id = None
+                self._mechanical_templates = None
+                self._mechanical_operations = {}
+                self._mechanical_edge_index = None
             envelope = self.store.get(envelope_ref)
             recorded_defaults = (
                 envelope.get("prepared_connection_defaults")
@@ -1593,8 +1770,18 @@ class PlanningRuntime:
             self.brief = dict(problem["brief"])
         problem = self._bind_problem_context(problem)
         state = dict(initial_proposal(problem))
+        self._set_execution_context(_prepare_planning_context(problem, state))
         problem_ref = self.store.put(problem, kind="planning-problem")
-        state_ref = self.store.put_state(state, problem_ref=problem_ref)
+        if self._execution_context is not None:
+            self._set_execution_context(
+                _bind_planning_context_problem_ref(self._execution_context, problem_ref)
+            )
+        state_ref = self._store_state(
+            state,
+            problem,
+            problem_ref,
+            context=self._execution_context,
+        )
         self.brief_ref = self.store.put(self.brief, kind="planning-brief") if self.brief else None
         self.policy_ref = (
             self.store.put(self.policy, kind="planning-policy") if self.policy else None
@@ -1636,6 +1823,13 @@ class PlanningRuntime:
             problem_ref,
             state_ref,
         )
+
+    def _set_execution_context(self, context: _PlanningContext) -> None:
+        self._execution_context = context
+        self._mechanical_problem_id = None
+        self._mechanical_templates = None
+        self._mechanical_operations = {}
+        self._mechanical_edge_index = None
 
     def _bind_problem_context(self, problem: dict[str, object]) -> dict[str, object]:
         if self.brief and "brief" not in problem:
@@ -1742,8 +1936,12 @@ class PlanningRuntime:
         state: Mapping[str, object],
         problem: Mapping[str, object],
         problem_ref: str,
+        *,
+        context: _PlanningContext | None = None,
     ) -> str:
         if problem.get("schema_version") == "planning-problem/v1":
+            if context is not None:
+                return self.store._put_state_with_context(state, problem_ref, context)
             return self.store.put_state(state, problem_ref=problem_ref)
         return self.store.put(state, kind="state")
 
@@ -1783,6 +1981,7 @@ class PlanningRuntime:
         str,
     ]:
         current_problem = dict(problem)
+        execution_context = self._execution_context
         current_problem_ref = problem_ref
         expanded = None
         payload = operation.get("payload")
@@ -1813,6 +2012,10 @@ class PlanningRuntime:
                         current_problem_ref = self.store.put(child_problem, kind="planning-problem")
                     current_problem = dict(child_problem)
                     child = dict(child_state)
+                    execution_context = _bind_planning_context_problem_ref(
+                        _prepare_planning_context(current_problem, child), current_problem_ref
+                    )
+                    self._set_execution_context(execution_context)
                 else:
                     child = dict(expanded)
         elif (
@@ -1839,12 +2042,21 @@ class PlanningRuntime:
                     current_problem = dict(child_problem)
                     current_problem_ref = child_problem_ref
                     child = dict(child_state)
+                    execution_context = _bind_planning_context_problem_ref(
+                        _prepare_planning_context(current_problem, child), current_problem_ref
+                    )
+                    self._set_execution_context(execution_context)
                 else:
                     child = {"status": "invalid"}
             else:
                 child = dict(expanded)
         else:
-            child = apply_operation(current_problem, state, operation)
+            child = _apply_operation_with_context(
+                current_problem,
+                state,
+                operation,
+                context=execution_context,
+            )
         event_context = self._event_context(
             problem,
             envelope_ref,
@@ -1883,7 +2095,12 @@ class PlanningRuntime:
         child_state_ref = (
             input_state_ref
             if input_state_ref is not None and dict(child) == dict(state)
-            else self._store_state(child, current_problem, current_problem_ref)
+            else self._store_state(
+                child,
+                current_problem,
+                current_problem_ref,
+                context=execution_context,
+            )
         )
         event = {
             **event_context,
