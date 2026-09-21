@@ -1221,6 +1221,10 @@ _Avoid_: compiler phase, confidence level, authority rank
 The admitted evidence, places, source corridors and obligations governed by one explicit planning brief. An expansion creates a newly bound problem without rewriting the evidence of an earlier proposal.
 _Avoid_: model prompt, selected network, mutable evidence pool
 
+**Prepared Planning Connection**:
+A connection intent between source-identified urban places derived from an observed transition between their graph regions. It retains the source places and graph evidence that justify considering the connection; it does not select an alignment or establish current provision.
+_Avoid_: inferred demand, approved route, arbitrary place pair
+
 **Proposal State**:
 A versioned proposed network containing connection intents, selected alignments, corridor departures and unresolved planning facts under one Planning Problem. It is the authority for what the proposal selects, distinct from the complete source inventory.
 _Avoid_: rendered map, source inventory, adopted network

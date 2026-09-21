@@ -360,11 +360,20 @@ class PlanningRuntime:
             raise ValueError("mode must be deterministic or live")
         config = self._load_config(config)
         self.connection_options = [dict(item) for item in connection_options]
-        problem, state, event_id, envelope_ref = self._start_or_resume(
-            config, branch, mode, connection_options
+        requested_default_preparation = (
+            not operations and not requested_connections and not connection_options
+        )
+        problem, state, event_id, envelope_ref, prepare_defaults = self._start_or_resume(
+            config,
+            branch,
+            mode,
+            connection_options,
+            prepare_connection_defaults=requested_default_preparation,
         )
         explicit = [dict(item) for item in operations]
         explicit.extend(self._connection_operations(requested_connections))
+        if prepare_defaults and not explicit and not connection_options:
+            explicit.extend(self._prepared_connection_operations(problem, state))
         for template in explicit:
             operation = self._bind_operation(template, state)
             advanced = self._apply_and_record(
@@ -1438,7 +1447,9 @@ class PlanningRuntime:
         branch: str,
         mode: RunMode,
         connection_options: Sequence[Mapping[str, object]],
-    ) -> tuple[dict[str, object], dict[str, object], str, str]:
+        *,
+        prepare_connection_defaults: bool,
+    ) -> tuple[dict[str, object], dict[str, object], str, str, bool]:
         try:
             head = self.store.head(branch)
         except HistoryMissingError:
@@ -1450,7 +1461,19 @@ class PlanningRuntime:
             state = replay.get("state")
             if not isinstance(state, Mapping):
                 raise HistoryReplayError("existing branch has no replayable state")
-            return dict(problem), dict(state), head.head_event_id, envelope_ref
+            envelope = self.store.get(envelope_ref)
+            recorded_defaults = (
+                envelope.get("prepared_connection_defaults")
+                if isinstance(envelope, Mapping)
+                else None
+            )
+            return (
+                dict(problem),
+                dict(state),
+                head.head_event_id,
+                envelope_ref,
+                recorded_defaults is True,
+            )
 
         problem = dict(build_planning_problem(config, brief=self.brief or None))
         if not self.brief and isinstance(problem.get("brief"), Mapping):
@@ -1474,6 +1497,7 @@ class PlanningRuntime:
             "brief_ref": self.brief_ref,
             "policy_ref": self.policy_ref,
             "connection_options": _safe_json(connection_options),
+            "prepared_connection_defaults": prepare_connection_defaults,
         }
         envelope_ref = self.store.put(envelope, kind="planning-run")
         event_id = self._commit(
@@ -1490,7 +1514,7 @@ class PlanningRuntime:
                 "dependency_refs": [problem_ref, envelope_ref],
             },
         )
-        return problem, state, event_id, envelope_ref
+        return problem, state, event_id, envelope_ref, prepare_connection_defaults
 
     def _bind_problem_context(self, problem: dict[str, object]) -> dict[str, object]:
         if self.brief and "brief" not in problem:
@@ -1893,6 +1917,54 @@ class PlanningRuntime:
                 operations.append(dict(item))
             else:
                 operations.append({"kind": "propose-connection", "payload": dict(item)})
+        return operations
+
+    @staticmethod
+    def _prepared_connection_operations(
+        problem: Mapping[str, object],
+        state: Mapping[str, object] | None = None,
+    ) -> list[dict[str, object]]:
+        prepared = problem.get("prepared_connections")
+        if not isinstance(prepared, Mapping):
+            return []
+        completed: set[str] = set()
+        if isinstance(state, Mapping):
+            intents = state.get("connection_intents")
+            if isinstance(intents, list):
+                completed = {
+                    str(item.get("connection_id"))
+                    for item in intents
+                    if isinstance(item, Mapping) and item.get("connection_id")
+                }
+        operations: list[dict[str, object]] = []
+        for connection_id, item in sorted(prepared.items(), key=lambda pair: str(pair[0])):
+            if not isinstance(item, Mapping):
+                continue
+            prepared_id = str(item.get("connection_id") or connection_id)
+            if prepared_id in completed:
+                continue
+            origin = item.get("origin_place_id")
+            destination = item.get("destination_place_id")
+            if not isinstance(origin, str) or not isinstance(destination, str):
+                continue
+            corridor_refs = item.get("corridor_refs", [])
+            if not isinstance(corridor_refs, list):
+                corridor_refs = []
+            current_or_future = item.get("current_or_future")
+            if current_or_future not in {"current", "future", "unknown"}:
+                continue
+            operations.append(
+                {
+                    "kind": "propose-connection",
+                    "payload": {
+                        "connection_id": prepared_id,
+                        "origin_place_id": origin,
+                        "destination_place_id": destination,
+                        "corridor_refs": [str(ref) for ref in corridor_refs],
+                        "current_or_future": current_or_future,
+                    },
+                }
+            )
         return operations
 
     @staticmethod
