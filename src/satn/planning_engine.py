@@ -29,6 +29,7 @@ from satn.models import AreaConfig
 from satn.planning_contracts import _source_ref, _stable_id, _topology_fact
 from satn.routing import RoadGraph, RouteOption, choose_alignment
 from satn.sources import load_snapshot
+from satn.urban_journeys import UrbanJourneyPreparation, prepare_urban_journeys
 
 _LINE_GEOMETRIES = (LineString, MultiLineString)
 _GEOMETRIES = (Point, LineString, MultiLineString)
@@ -522,53 +523,185 @@ def _admitted_network(source: Mapping[str, object]) -> gpd.GeoDataFrame | None:
     return mark_ncn_edges(network, context)
 
 
-def _place_records(source: Mapping[str, object]) -> list[dict[str, object]]:
+def _planning_place_record(
+    *,
+    place_id: str,
+    name: str | None,
+    kind: str | None,
+    place_class: str | None,
+    source_id: str | None,
+    geometry: Point,
+    crs: object,
+) -> dict[str, object]:
+    source_refs = [{"source_id": source_id}] if source_id is not None else []
+    geometry_ref = _geometry_ref(geometry, crs, source_id)
+    return {
+        "place_id": place_id,
+        "name": name,
+        "kind": kind,
+        "place_class": place_class,
+        "source_refs": source_refs,
+        "geometry_ref": geometry_ref,
+        "provenance": {
+            "source_refs": source_refs,
+            "evidence_refs": [],
+            "source_hash": _fingerprint(
+                {
+                    "place_id": place_id,
+                    "source_refs": source_refs,
+                    "geometry": geometry_ref["content_fingerprint"],
+                }
+            ),
+        },
+    }
+
+
+def _urban_source_aliases(source_id: str) -> tuple[str, ...]:
+    aliases = [source_id]
+    if "/" in source_id:
+        aliases.append(source_id.rsplit("/", 1)[-1])
+    return tuple(dict.fromkeys(aliases))
+
+
+def _source_matches(
+    source_id: str,
+    existing_by_source: Mapping[str, Sequence[object]],
+) -> list[object]:
+    exact = existing_by_source.get(source_id)
+    if exact:
+        return list(exact)
+    return [
+        candidate
+        for alias in _urban_source_aliases(source_id)[1:]
+        for candidate in existing_by_source.get(alias, [])
+    ]
+
+
+def _place_records(
+    source: Mapping[str, object],
+    urban_preparation: UrbanJourneyPreparation | None = None,
+    *,
+    urban_crs: object | None = None,
+) -> list[dict[str, object]]:
     places: list[dict[str, object]] = []
     frame = source.get("places")
-    if not isinstance(frame, gpd.GeoDataFrame):
-        return places
-    for _, row in frame.iterrows():
-        place_id = _required_identifier(row.get("place_id"), "place identity")
-        geometry = row.geometry
-        if not isinstance(geometry, Point) or geometry.is_empty or not geometry.is_valid:
-            raise ValueError("planning place requires valid non-empty point geometry")
-        source_id = row.get("source_id")
-        source_refs = (
-            [{"source_id": _required_identifier(source_id, "place source identity")}]
-            if _present_identifier(source_id)
-            else []
-        )
-        geometry_ref = _geometry_ref(
-            geometry,
-            frame.crs,
-            source_refs[0]["source_id"] if source_refs else None,
-        )
-        places.append(
-            {
-                "place_id": place_id,
-                "name": str(row.get("name")) if _present_identifier(row.get("name")) else None,
-                "kind": str(row.get("kind")) if _present_identifier(row.get("kind")) else None,
-                "place_class": (
-                    str(row.get("place_class"))
-                    if _present_identifier(row.get("place_class"))
-                    else None
-                ),
-                "source_refs": source_refs,
-                "geometry_ref": geometry_ref,
-                "provenance": {
-                    "source_refs": source_refs,
-                    "evidence_refs": [],
-                    "source_hash": _fingerprint(
-                        {
-                            "place_id": place_id,
-                            "source_refs": source_refs,
-                            "geometry": geometry_ref["content_fingerprint"],
-                        }
+    if isinstance(frame, gpd.GeoDataFrame):
+        for _, row in frame.iterrows():
+            place_id = _required_identifier(row.get("place_id"), "place identity")
+            geometry = row.geometry
+            if not isinstance(geometry, Point) or geometry.is_empty or not geometry.is_valid:
+                raise ValueError("planning place requires valid non-empty point geometry")
+            source_id = (
+                _required_identifier(row.get("source_id"), "place source identity")
+                if _present_identifier(row.get("source_id"))
+                else None
+            )
+            places.append(
+                _planning_place_record(
+                    place_id=place_id,
+                    name=(str(row.get("name")) if _present_identifier(row.get("name")) else None),
+                    kind=(str(row.get("kind")) if _present_identifier(row.get("kind")) else None),
+                    place_class=(
+                        str(row.get("place_class"))
+                        if _present_identifier(row.get("place_class"))
+                        else None
                     ),
-                },
-            }
+                    source_id=source_id,
+                    geometry=geometry,
+                    crs=frame.crs,
+                )
+            )
+    if urban_preparation is None or urban_crs is None:
+        return sorted(places, key=lambda item: str(item["place_id"]))
+
+    existing_by_source: dict[str, list[dict[str, object]]] = {}
+    for place in places:
+        for source_ref in place.get("source_refs", []):
+            if isinstance(source_ref, Mapping) and isinstance(source_ref.get("source_id"), str):
+                existing_by_source.setdefault(source_ref["source_id"], []).append(place)
+    for urban_place in urban_preparation.places:
+        matches = {
+            id(candidate)
+            for candidate in _source_matches(urban_place.source_id, existing_by_source)
+        }
+        if matches:
+            continue
+        places.append(
+            _planning_place_record(
+                place_id=urban_place.place_id,
+                name=urban_place.name,
+                kind="community",
+                place_class=urban_place.place_class,
+                source_id=urban_place.source_id,
+                geometry=Point(urban_place.coordinates),
+                crs=urban_crs,
+            )
         )
     return sorted(places, key=lambda item: str(item["place_id"]))
+
+
+def _urban_preparation(
+    source: Mapping[str, object], graph: RoadGraph | None
+) -> UrbanJourneyPreparation | None:
+    if graph is None:
+        return None
+    label_places = source.get("label_places")
+    if not isinstance(label_places, gpd.GeoDataFrame):
+        return None
+    boundary = source.get("boundary")
+    if not isinstance(boundary, gpd.GeoDataFrame):
+        boundary = None
+    return prepare_urban_journeys(
+        label_places=label_places,
+        area_definition=boundary,
+        road_graph=graph,
+    )
+
+
+def _prepared_connections(
+    preparation: UrbanJourneyPreparation | None,
+    places: Sequence[Mapping[str, object]],
+) -> tuple[dict[str, dict[str, object]], list[dict[str, object]]]:
+    if preparation is None:
+        return {}, []
+    existing_by_source: dict[str, list[str]] = {}
+    for place in places:
+        place_id = place.get("place_id")
+        if not isinstance(place_id, str):
+            continue
+        for source_ref in place.get("source_refs", []):
+            if isinstance(source_ref, Mapping) and isinstance(source_ref.get("source_id"), str):
+                existing_by_source.setdefault(source_ref["source_id"], []).append(place_id)
+    urban_to_planning: dict[str, str] = {}
+    issues = [item.canonical() for item in preparation.issues]
+    for urban_place in preparation.places:
+        matches = set(_source_matches(urban_place.source_id, existing_by_source))
+        if len(matches) == 1:
+            urban_to_planning[urban_place.place_id] = next(iter(matches))
+        elif len(matches) > 1:
+            issues.append(
+                {
+                    "reason": "urban-place-source-binding-ambiguous",
+                    "detail": urban_place.source_id,
+                    "source_id": urban_place.source_id,
+                }
+            )
+        else:
+            urban_to_planning[urban_place.place_id] = urban_place.place_id
+    prepared: dict[str, dict[str, object]] = {}
+    for adjacency in preparation.adjacencies:
+        record = adjacency.canonical()
+        record.update(
+            {
+                "connection_id": adjacency.journey_id,
+                "origin_place_id": urban_to_planning.get(adjacency.place_ids[0]),
+                "destination_place_id": urban_to_planning.get(adjacency.place_ids[1]),
+                "corridor_refs": [],
+                "current_or_future": "unknown",
+            }
+        )
+        prepared[adjacency.journey_id] = record
+    return prepared, sorted(issues, key=lambda item: json.dumps(item, sort_keys=True))
 
 
 def _obligation_records(
@@ -1195,7 +1328,16 @@ def build_planning_problem(
         RoadGraph(network) if isinstance(network, gpd.GeoDataFrame) and not network.empty else None
     )
     corridors, gaps, unknowns = _source_corridors(source, graph)
-    places = _place_records(source)
+    urban_preparation = _urban_preparation(source, graph)
+    places = _place_records(
+        source,
+        urban_preparation,
+        urban_crs=graph.crs if graph is not None else None,
+    )
+    prepared_connections, prepared_connection_issues = _prepared_connections(
+        urban_preparation,
+        places,
+    )
     obligations = _obligation_records(places, source)
     candidates = _graph_candidates(corridors, graph)
     resolved_brief, brief_fingerprint = _resolve_brief(brief)
@@ -1210,6 +1352,8 @@ def build_planning_problem(
         "brief_fingerprint": brief_fingerprint,
         "places": places,
         "obligations": obligations,
+        "prepared_connections": prepared_connections,
+        "prepared_connection_issues": prepared_connection_issues,
         "source_corridors": sorted(corridors, key=lambda item: str(item["corridor_id"])),
         "candidates": candidates,
         "graph_evidence": _graph_evidence(graph),

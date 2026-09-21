@@ -4,9 +4,10 @@ import copy
 
 import geopandas as gpd
 from bath_saltford_fixture import configured_bath_saltford
-from shapely.geometry import LineString, Point
+from shapely.geometry import LineString, Point, Polygon
 
 from satn.content_identity import canonical_network_geometry_fingerprint, content_fingerprint
+from satn.evidence import empty_context
 from satn.planning_engine import (
     apply_operation,
     build_planning_problem,
@@ -150,6 +151,207 @@ def _ncn_context_planning_source() -> dict[str, object]:
         crs=27700,
     )
     return {"network": network, "context": context, "places": places}
+
+
+def _urban_adjacency_planning_source() -> dict[str, object]:
+    geometry = LineString([(0.0, 0.0), (100.0, 0.0)])
+    reverse_geometry = LineString(list(geometry.coords)[::-1])
+    network = gpd.GeoDataFrame(
+        [
+            {
+                "u": "node-a",
+                "v": "node-b",
+                "osmid": "urban-edge",
+                "highway": "primary",
+                "oneway": False,
+                "geometry": geometry,
+            },
+            {
+                "u": "node-b",
+                "v": "node-a",
+                "osmid": "urban-edge",
+                "highway": "primary",
+                "oneway": False,
+                "geometry": reverse_geometry,
+            },
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    places = gpd.GeoDataFrame(
+        [
+            {
+                "place_id": "place-a",
+                "source_id": "1",
+                "name": "Alpha",
+                "kind": "community",
+                "place_class": "town",
+                "geometry": Point(0.0, 0.0),
+            },
+            {
+                "place_id": "place-b",
+                "source_id": "2",
+                "name": "Beta",
+                "kind": "community",
+                "place_class": "town",
+                "geometry": Point(100.0, 0.0),
+            },
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    label_places = gpd.GeoDataFrame(
+        [
+            {
+                "element": "node",
+                "id": 1,
+                "place": "town",
+                "name": "Alpha",
+                "geometry": Point(0.0, 0.0),
+            },
+            {
+                "element": "node",
+                "id": 2,
+                "place": "town",
+                "name": "Beta",
+                "geometry": Point(100.0, 0.0),
+            },
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    boundary = gpd.GeoDataFrame(
+        [{"geometry": Polygon([(-1, -1), (101, -1), (101, 1), (-1, 1), (-1, -1)])}],
+        geometry="geometry",
+        crs=27700,
+    )
+    return {
+        "boundary": boundary,
+        "network": network,
+        "context": empty_context(network.crs),
+        "places": places,
+        "label_places": label_places,
+    }
+
+
+def test_build_planning_problem_retains_graph_prepared_connections(monkeypatch, tmp_path) -> None:
+    config = _fake_planning_config(tmp_path)
+    monkeypatch.setattr(
+        "satn.planning_engine.load_snapshot", lambda _config: _urban_adjacency_planning_source()
+    )
+
+    problem = build_planning_problem(config)
+
+    prepared = problem["prepared_connections"]
+    assert isinstance(prepared, dict)
+    assert len(prepared) == 1
+    connection = next(iter(prepared.values()))
+    assert {
+        connection["origin_place_id"],
+        connection["destination_place_id"],
+    } == {"place-a", "place-b"}
+    assert connection["current_or_future"] == "unknown"
+    assert connection["corridor_refs"] == []
+    assert connection["cross_region_edge_ids"]
+    assert connection["cross_region_edge_ids"] != connection["corridor_refs"]
+    assert set(connection["place_names"]) == {"Alpha", "Beta"}
+
+
+def test_build_planning_problem_admits_missing_sourced_urban_place(monkeypatch, tmp_path) -> None:
+    source = _urban_adjacency_planning_source()
+    source["network"] = gpd.GeoDataFrame(
+        [
+            *source["network"].to_dict("records"),
+            {
+                "u": "node-b",
+                "v": "node-c",
+                "osmid": "urban-edge-bc",
+                "highway": "primary",
+                "oneway": False,
+                "geometry": LineString([(100.0, 0.0), (200.0, 0.0)]),
+            },
+            {
+                "u": "node-c",
+                "v": "node-b",
+                "osmid": "urban-edge-bc",
+                "highway": "primary",
+                "oneway": False,
+                "geometry": LineString([(200.0, 0.0), (100.0, 0.0)]),
+            },
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    source["label_places"] = gpd.GeoDataFrame(
+        [
+            *source["label_places"].to_dict("records"),
+            {
+                "element": "node",
+                "id": 3,
+                "place": "city",
+                "name": "Gamma",
+                "geometry": Point(200.0, 0.0),
+            },
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    source["boundary"] = gpd.GeoDataFrame(
+        [{"geometry": Polygon([(-1, -1), (201, -1), (201, 1), (-1, 1), (-1, -1)])}],
+        geometry="geometry",
+        crs=27700,
+    )
+    source["context"] = empty_context(source["network"].crs)
+    config = _fake_planning_config(tmp_path)
+    monkeypatch.setattr("satn.planning_engine.load_snapshot", lambda _config: source)
+
+    problem = build_planning_problem(config)
+
+    gamma = next(item for item in problem["places"] if item["name"] == "Gamma")
+    assert gamma["source_refs"] == [{"source_id": "node/3"}]
+    assert gamma["kind"] == "community"
+    assert gamma["place_class"] == "city"
+    assert gamma["geometry_ref"]["geometry"]["coordinates"] == [200.0, 0.0]
+    gamma_connection = next(
+        item for item in problem["prepared_connections"].values() if "Gamma" in item["place_names"]
+    )
+    assert gamma["place_id"] in {
+        gamma_connection["origin_place_id"],
+        gamma_connection["destination_place_id"],
+    }
+
+
+def test_build_planning_problem_prefers_exact_urban_source_binding(monkeypatch, tmp_path) -> None:
+    source = _urban_adjacency_planning_source()
+    source["places"] = gpd.GeoDataFrame(
+        [
+            *source["places"].to_dict("records"),
+            {
+                "place_id": "place-a-exact",
+                "source_id": "node/1",
+                "name": "Alpha exact",
+                "kind": "community",
+                "place_class": "town",
+                "geometry": Point(0.0, 0.0),
+            },
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    config = _fake_planning_config(tmp_path)
+    monkeypatch.setattr("satn.planning_engine.load_snapshot", lambda _config: source)
+
+    problem = build_planning_problem(config)
+
+    connection = next(iter(problem["prepared_connections"].values()))
+    assert "place-a-exact" in {
+        connection["origin_place_id"],
+        connection["destination_place_id"],
+    }
+    assert "place-a" not in {
+        connection["origin_place_id"],
+        connection["destination_place_id"],
+    }
 
 
 def test_planning_graph_reuses_admitted_ncn_context_for_build_and_expansion(

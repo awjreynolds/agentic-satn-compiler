@@ -5,10 +5,12 @@ import hashlib
 import json
 from pathlib import Path
 
+import geopandas as gpd
 import pytest
 from bath_saltford_fixture import configured_bath_saltford
-from shapely.geometry import shape
+from shapely.geometry import LineString, Point, Polygon, shape
 
+from satn.evidence import empty_context
 from satn.planning_engine import build_planning_problem, initial_proposal
 from satn.planning_history import HistoryStaleHeadError, HistoryStore
 from satn.planning_routing import (
@@ -26,6 +28,85 @@ def _choice_keys(question: object) -> tuple[str, ...]:
     if isinstance(criteria, dict):
         return tuple(str(key) for key in criteria)
     return ()
+
+
+def _urban_runtime_source() -> dict[str, object]:
+    network = gpd.GeoDataFrame(
+        [
+            {
+                "u": "node-a",
+                "v": "node-b",
+                "osmid": "urban-edge",
+                "highway": "primary",
+                "oneway": False,
+                "geometry": LineString([(0.0, 0.0), (100.0, 0.0)]),
+            },
+            {
+                "u": "node-b",
+                "v": "node-a",
+                "osmid": "urban-edge",
+                "highway": "primary",
+                "oneway": False,
+                "geometry": LineString([(100.0, 0.0), (0.0, 0.0)]),
+            },
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    places = gpd.GeoDataFrame(
+        [
+            {
+                "place_id": "place-a",
+                "source_id": "1",
+                "name": "Alpha",
+                "kind": "community",
+                "place_class": "town",
+                "geometry": Point(0.0, 0.0),
+            },
+            {
+                "place_id": "place-b",
+                "source_id": "2",
+                "name": "Beta",
+                "kind": "community",
+                "place_class": "town",
+                "geometry": Point(100.0, 0.0),
+            },
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    label_places = gpd.GeoDataFrame(
+        [
+            {
+                "element": "node",
+                "id": 1,
+                "place": "town",
+                "name": "Alpha",
+                "geometry": Point(0.0, 0.0),
+            },
+            {
+                "element": "node",
+                "id": 2,
+                "place": "town",
+                "name": "Beta",
+                "geometry": Point(100.0, 0.0),
+            },
+        ],
+        geometry="geometry",
+        crs=27700,
+    )
+    boundary = gpd.GeoDataFrame(
+        [{"geometry": Polygon([(-1, -1), (101, -1), (101, 1), (-1, 1), (-1, -1)])}],
+        geometry="geometry",
+        crs=27700,
+    )
+    return {
+        "boundary": boundary,
+        "network": network,
+        "context": empty_context(network.crs),
+        "places": places,
+        "label_places": label_places,
+    }
 
 
 def test_run_report_references_problem_and_state_without_inlining_them(tmp_path: Path) -> None:
@@ -54,6 +135,153 @@ def test_run_report_references_problem_and_state_without_inlining_them(tmp_path:
     # The Python result remains the materialized logical API for callers.
     assert result.as_dict()["problem"] == problem
     assert result.as_dict()["state"] == state
+
+
+def test_fresh_run_mechanically_expands_prepared_connections_once(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config = configured_bath_saltford(tmp_path)
+    source = _urban_runtime_source()
+    monkeypatch.setattr("satn.planning_engine.load_snapshot", lambda _config: source)
+
+    root = tmp_path / "history"
+    first = PlanningRuntime(root).run(
+        config,
+        output_root=tmp_path / "run-first",
+        mode="deterministic",
+    )
+
+    prepared = first.problem["prepared_connections"]
+    assert isinstance(prepared, dict)
+    assert len(prepared) == 1
+    prepared_id = next(iter(prepared))
+    assert [item["connection_id"] for item in first.state["connection_intents"]] == [prepared_id]
+    assert (
+        sum(item.get("operation_kind") == "expand-connection" for item in first.decision_trace) == 1
+    )
+
+    resumed = PlanningRuntime(root).run(
+        config,
+        output_root=tmp_path / "run-resumed",
+        mode="deterministic",
+    )
+
+    assert resumed.state["connection_intents"] == first.state["connection_intents"]
+    assert (
+        sum(item.get("operation_kind") == "expand-connection" for item in resumed.decision_trace)
+        == 1
+    )
+
+
+def test_pre_expansion_fork_consumes_pending_prepared_connection_once(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config = configured_bath_saltford(tmp_path)
+    source = _urban_runtime_source()
+    monkeypatch.setattr("satn.planning_engine.load_snapshot", lambda _config: source)
+
+    root = tmp_path / "history"
+    runtime = PlanningRuntime(root)
+    first = runtime.run(config, output_root=tmp_path / "run-first", mode="deterministic")
+    expansion_event_id = next(
+        item["event_id"]
+        for item in first.decision_trace
+        if item.get("operation_kind") == "expand-connection"
+    )
+    checkpoint = runtime.store.checkpoint(expansion_event_id)
+    runtime.fork(checkpoint, "before-expansion")
+
+    child = PlanningRuntime(root).run(
+        config,
+        output_root=tmp_path / "run-child",
+        branch="before-expansion",
+        mode="deterministic",
+    )
+    child_again = PlanningRuntime(root).run(
+        config,
+        output_root=tmp_path / "run-child-again",
+        branch="before-expansion",
+        mode="deterministic",
+    )
+
+    prepared_id = next(iter(first.problem["prepared_connections"]))
+    assert [item["connection_id"] for item in child.state["connection_intents"]] == [prepared_id]
+    assert [item["connection_id"] for item in child_again.state["connection_intents"]] == [
+        prepared_id
+    ]
+    assert (
+        sum(
+            item.get("operation_kind") == "expand-connection" for item in child_again.decision_trace
+        )
+        == 1
+    )
+
+
+def test_pre_expansion_fork_preserves_original_explicit_connection_override(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config = configured_bath_saltford(tmp_path)
+    source = _urban_runtime_source()
+    monkeypatch.setattr("satn.planning_engine.load_snapshot", lambda _config: source)
+
+    root = tmp_path / "history"
+    runtime = PlanningRuntime(root)
+    first = runtime.run(
+        config,
+        output_root=tmp_path / "run-first",
+        mode="deterministic",
+        requested_connections=[
+            {
+                "connection_id": "caller-connection",
+                "origin_place_id": "place-a",
+                "destination_place_id": "place-b",
+                "current_or_future": "unknown",
+            }
+        ],
+    )
+    expansion_event_id = next(
+        item["event_id"]
+        for item in first.decision_trace
+        if item.get("operation_kind") == "expand-connection"
+    )
+    checkpoint = runtime.store.checkpoint(expansion_event_id)
+    runtime.fork(checkpoint, "before-explicit-expansion")
+
+    child = PlanningRuntime(root).run(
+        config,
+        output_root=tmp_path / "run-child",
+        branch="before-explicit-expansion",
+        mode="deterministic",
+    )
+
+    assert child.state["connection_intents"] == []
+    assert not any(
+        item.get("operation_kind") == "expand-connection" for item in child.decision_trace
+    )
+
+
+def test_explicit_connection_input_preserves_caller_scope(monkeypatch, tmp_path: Path) -> None:
+    config = configured_bath_saltford(tmp_path)
+    source = _urban_runtime_source()
+    monkeypatch.setattr("satn.planning_engine.load_snapshot", lambda _config: source)
+
+    result = PlanningRuntime(tmp_path / "history").run(
+        config,
+        output_root=tmp_path / "run",
+        mode="deterministic",
+        requested_connections=[
+            {
+                "connection_id": "caller-connection",
+                "origin_place_id": "place-a",
+                "destination_place_id": "place-b",
+                "current_or_future": "unknown",
+            }
+        ],
+    )
+
+    assert [item["connection_id"] for item in result.state["connection_intents"]] == [
+        "caller-connection"
+    ]
 
 
 def test_typed_choice_changes_state_and_replays_without_provider(tmp_path: Path) -> None:
