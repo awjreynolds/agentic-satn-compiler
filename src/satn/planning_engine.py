@@ -87,6 +87,16 @@ class _PlanningContext:
     problem_ref: str | None = None
 
 
+@dataclass(frozen=True)
+class _PlanningSourceContext:
+    """Run-owned source, network, and routing graph for one pinned snapshot."""
+
+    source: Mapping[str, object]
+    network: gpd.GeoDataFrame | None
+    graph: RoadGraph | None
+    binding: Mapping[str, object]
+
+
 _DEFAULT_BRIEF = {
     "brief_ref": "satn-planning-brief/resolved-corridor-policy-v1",
     "corridor_policy": {
@@ -1059,6 +1069,18 @@ def admit_expansion(
 ) -> dict[str, object]:
     """Admit a materialised expansion receipt without reading or routing inputs."""
 
+    return _admit_expansion_with_context(problem, state, request, context=None)
+
+
+def _admit_expansion_with_context(
+    problem: Mapping[str, object],
+    state: Mapping[str, object],
+    request: Mapping[str, object],
+    *,
+    context: _PlanningContext | None,
+) -> dict[str, object]:
+    """Admit an expansion using a verified runtime context when available."""
+
     if request.get("base_problem_fingerprint") != problem.get("input_fingerprint"):
         return _operation_error("stale-expansion", "expansion receipt belongs to another problem")
     if request.get("base_state_fingerprint") != state.get("state_fingerprint"):
@@ -1086,7 +1108,11 @@ def admit_expansion(
         return _operation_error(
             "expansion-operation", "expansion receipt has no connection operation"
         )
-    admitted = apply_operation(problem, state, operation)
+    admitted = (
+        _apply_operation_with_context(problem, state, operation, context=context)
+        if context is not None
+        else apply_operation(problem, state, operation)
+    )
     if admitted.get("status") == "invalid":
         return admitted
     connection = admitted["connection_intents"][-1]
@@ -1226,6 +1252,27 @@ def expand_connection(
     operation: Mapping[str, object],
     config: AreaConfig,
 ) -> dict[str, object]:
+    """Admit graph-backed alternatives for one named-place connection intent."""
+
+    return _expand_connection_with_context(
+        problem,
+        state,
+        operation,
+        config,
+        source_context=None,
+        context=None,
+    )
+
+
+def _expand_connection_with_context(
+    problem: Mapping[str, object],
+    state: Mapping[str, object],
+    operation: Mapping[str, object],
+    config: AreaConfig,
+    *,
+    source_context: _PlanningSourceContext | None,
+    context: _PlanningContext | None,
+) -> dict[str, object]:
     """Admit graph-backed alternatives for one named-place connection intent.
 
     Expansion is on demand.  It uses the same pinned snapshot and routing
@@ -1236,15 +1283,20 @@ def expand_connection(
         return _operation_error(
             "operation-kind", "connection expansion requires a connection operation"
         )
-    admitted = apply_operation(problem, state, operation)
+    admitted = (
+        _apply_operation_with_context(problem, state, operation, context=context)
+        if context is not None
+        else apply_operation(problem, state, operation)
+    )
     if admitted.get("status") == "invalid":
         return admitted
     connection = admitted["connection_intents"][-1]
-    source = load_snapshot(config)
-    network = _admitted_network(source)
-    if network is None or network.empty:
+    if source_context is None:
+        source_context = _prepare_planning_source_context(config)
+    graph = source_context.graph
+    network = source_context.network
+    if graph is None or network is None or network.empty:
         return _operation_error("network-empty", "connection expansion requires a routing graph")
-    graph = RoadGraph(network)
     places_by_id = {str(item["place_id"]): item for item in problem.get("places", [])}
     origin = places_by_id.get(str(connection["origin_place_id"]))
     destination = places_by_id.get(str(connection["destination_place_id"]))
@@ -1285,7 +1337,7 @@ def expand_connection(
         "base_state_fingerprint": state["state_fingerprint"],
         "brief_fingerprint": problem["brief_fingerprint"],
         "operation": _json_copy(operation),
-        "snapshot_binding": _snapshot_binding(config),
+        "snapshot_binding": _json_copy(source_context.binding),
         "candidates": candidates,
         "obligation": {
             "obligation_id": connection["connection_id"],
@@ -1310,7 +1362,7 @@ def expand_connection(
             else None
         ),
     }
-    return admit_expansion(problem, state, receipt)
+    return _admit_expansion_with_context(problem, state, receipt, context=context)
 
 
 def replay_expansion(
@@ -1339,6 +1391,22 @@ def _snapshot_binding(config: AreaConfig) -> dict[str, object]:
     }
 
 
+def _prepare_planning_source_context(config: AreaConfig) -> _PlanningSourceContext:
+    """Load one pinned source snapshot and its routing graph for a run."""
+
+    source = load_snapshot(config)
+    network = _admitted_network(source)
+    graph = (
+        RoadGraph(network) if isinstance(network, gpd.GeoDataFrame) and not network.empty else None
+    )
+    return _PlanningSourceContext(
+        source=source,
+        network=network,
+        graph=graph,
+        binding=_snapshot_binding(config),
+    )
+
+
 def _resolve_brief(brief: Mapping[str, object] | None) -> tuple[dict[str, object], str]:
     resolved = _json_copy(brief if brief is not None else _DEFAULT_BRIEF)
     if not isinstance(resolved, dict):  # pragma: no cover - _json_copy preserves mappings.
@@ -1353,11 +1421,18 @@ def build_planning_problem(
 ) -> dict[str, object]:
     """Admit one validated snapshot as the planner's JSON input boundary."""
 
-    source = load_snapshot(config)
-    network = _admitted_network(source)
-    graph = (
-        RoadGraph(network) if isinstance(network, gpd.GeoDataFrame) and not network.empty else None
-    )
+    problem, _source_context = _build_planning_problem_with_source_context(config, brief)
+    return problem
+
+
+def _build_planning_problem_with_source_context(
+    config: AreaConfig, brief: Mapping[str, object] | None = None
+) -> tuple[dict[str, object], _PlanningSourceContext]:
+    """Build the public problem while retaining its run-owned source context."""
+
+    source_context = _prepare_planning_source_context(config)
+    source = source_context.source
+    graph = source_context.graph
     corridors, gaps, unknowns = _source_corridors(source, graph)
     urban_preparation = _urban_preparation(source, graph)
     places = _place_records(
@@ -1372,7 +1447,7 @@ def build_planning_problem(
     obligations = _obligation_records(places, source)
     candidates = _graph_candidates(corridors, graph)
     resolved_brief, brief_fingerprint = _resolve_brief(brief)
-    binding = _snapshot_binding(config)
+    binding = _json_copy(source_context.binding)
     binding["brief_ref"] = resolved_brief["brief_ref"]
     binding["brief_fingerprint"] = brief_fingerprint
     problem: dict[str, object] = {
@@ -1399,7 +1474,7 @@ def build_planning_problem(
     }
     problem["input_fingerprint"] = _fingerprint(problem)
     problem["problem_id"] = _stable_id("planning-problem", problem["input_fingerprint"])
-    return problem
+    return problem, source_context
 
 
 def _ref_index(problem: Mapping[str, object]) -> dict[str, set[str]]:

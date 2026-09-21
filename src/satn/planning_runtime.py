@@ -24,13 +24,16 @@ from shapely.ops import transform as transform_geometry
 from satn.content_identity import canonical_network_geometry_fingerprint
 from satn.models import AreaConfig, AreaDefinition
 from satn.planning_engine import (
+    _admit_expansion_with_context,
     _apply_operation_with_context,
     _bind_planning_context_problem_ref,
+    _build_planning_problem_with_source_context,
+    _expand_connection_with_context,
     _PlanningContext,
+    _PlanningSourceContext,
     _prepare_planning_context,
+    _prepare_planning_source_context,
     _validate_proposal_with_context,
-    build_planning_problem,
-    expand_connection,
     initial_proposal,
     replay_expansion,
     validate_proposal,
@@ -347,6 +350,7 @@ class PlanningRuntime:
         self.brief_ref: str | None = None
         self.policy_ref: str | None = None
         self._execution_context: _PlanningContext | None = None
+        self._source_context: _PlanningSourceContext | None = None
         self._mechanical_problem_id: str | None = None
         self._mechanical_templates: tuple[str, ...] | None = None
         self._mechanical_operations: dict[str, dict[str, object] | None] = {}
@@ -392,6 +396,7 @@ class PlanningRuntime:
         if mode not in {"deterministic", "live"}:
             raise ValueError("mode must be deterministic or live")
         config = self._load_config(config)
+        self._source_context = None
         self.connection_options = [dict(item) for item in connection_options]
         requested_default_preparation = (
             not operations and not requested_connections and not connection_options
@@ -1765,7 +1770,10 @@ class PlanningRuntime:
                 state_ref,
             )
 
-        problem = dict(build_planning_problem(config, brief=self.brief or None))
+        problem, self._source_context = _build_planning_problem_with_source_context(
+            config, brief=self.brief or None
+        )
+        problem = dict(problem)
         if not self.brief and isinstance(problem.get("brief"), Mapping):
             self.brief = dict(problem["brief"])
         problem = self._bind_problem_context(problem)
@@ -1830,6 +1838,34 @@ class PlanningRuntime:
         self._mechanical_templates = None
         self._mechanical_operations = {}
         self._mechanical_edge_index = None
+
+    def _source_context_for(
+        self,
+        config: AreaConfig,
+        problem: Mapping[str, object],
+    ) -> _PlanningSourceContext:
+        """Reuse source preparation only for the problem's pinned snapshot."""
+
+        binding = problem.get("binding")
+        source_binding_keys = (
+            "area_id",
+            "area_name",
+            "deployment_id",
+            "snapshot_id",
+            "snapshot_manifest_sha256",
+            "code_contract",
+        )
+        if (
+            self._source_context is not None
+            and isinstance(binding, Mapping)
+            and all(
+                self._source_context.binding.get(key) == binding.get(key)
+                for key in source_binding_keys
+            )
+        ):
+            return self._source_context
+        self._source_context = _prepare_planning_source_context(config)
+        return self._source_context
 
     def _bind_problem_context(self, problem: dict[str, object]) -> dict[str, object]:
         if self.brief and "brief" not in problem:
@@ -1991,7 +2027,12 @@ class PlanningRuntime:
             if not isinstance(receipt_value, Mapping):
                 child = {"status": "invalid", "diagnostics": ["expansion receipt is missing"]}
             else:
-                expanded = replay_expansion(current_problem, state, receipt_value)
+                expanded = _admit_expansion_with_context(
+                    current_problem,
+                    state,
+                    receipt_value,
+                    context=execution_context,
+                )
                 child_problem = expanded.get("problem")
                 child_state = expanded.get("state")
                 if (
@@ -2027,7 +2068,14 @@ class PlanningRuntime:
                 for item in current_problem.get("candidates", [])
             )
         ):
-            expanded = expand_connection(current_problem, state, operation, config)
+            expanded = _expand_connection_with_context(
+                current_problem,
+                state,
+                operation,
+                config,
+                source_context=self._source_context_for(config, current_problem),
+                context=execution_context,
+            )
             if expanded.get("status") == "expanded":
                 child_problem = expanded.get("problem")
                 child_state = expanded.get("state")
