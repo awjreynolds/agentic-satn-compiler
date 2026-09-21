@@ -358,6 +358,11 @@ def test_planning_state_storage_shares_problem_facts_without_changing_reads(
     loaded["source_corridors"][0]["geometry"] = "mutated"
     assert store.get(compact_ref) == state
 
+    loaded_kind, loaded_record = store.get_record(compact_ref)
+    assert loaded_kind == "state"
+    loaded_record["source_corridors"][0]["geometry"] = "mutated-record"
+    assert store.get_record(compact_ref) == ("state", state)
+
     problem_path = store.record_path(problem_ref)
     problem_path.unlink()
     with pytest.raises(HistoryMissingError):
