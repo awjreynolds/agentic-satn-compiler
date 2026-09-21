@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from itertools import pairwise
@@ -58,6 +59,7 @@ from satn.typesafe_planning import ChoiceQuestion, TypeSafeClient
 RunMode = Literal["deterministic", "live"]
 DecisionClass = Literal["mechanical", "classifier", "agent"]
 ProviderFunction = Callable[[Mapping[str, object], Mapping[str, object]], object]
+ProgressCallback = Callable[[Mapping[str, object]], None]
 
 _UNKNOWN = "__unknown__"
 _EVIDENCE = "__needs_evidence__"
@@ -351,6 +353,12 @@ class PlanningRuntime:
         self.policy_ref: str | None = None
         self._execution_context: _PlanningContext | None = None
         self._source_context: _PlanningSourceContext | None = None
+        self._progress_callback: ProgressCallback | None = None
+        self._progress_started_at = 0.0
+        self._progress_branch: str | None = None
+        self._progress_mode: RunMode | None = None
+        self._progress_head: str | None = None
+        self._progress_committed = 0
         self._mechanical_problem_id: str | None = None
         self._mechanical_templates: tuple[str, ...] | None = None
         self._mechanical_operations: dict[str, dict[str, object] | None] = {}
@@ -366,19 +374,69 @@ class PlanningRuntime:
         operations: Sequence[Mapping[str, object]] = (),
         requested_connections: Sequence[Mapping[str, object]] = (),
         connection_options: Sequence[Mapping[str, object]] = (),
+        progress: ProgressCallback | None = None,
     ) -> PlanningRunResult:
         """Run one invocation with a private immutable-record read scope."""
 
-        with self.store._read_cache_scope():
-            return self._run(
-                config,
-                output_root=output_root,
-                branch=branch,
-                mode=mode,
-                operations=operations,
-                requested_connections=requested_connections,
-                connection_options=connection_options,
-            )
+        previous_progress = self._progress_callback
+        previous_started_at = self._progress_started_at
+        previous_branch = self._progress_branch
+        previous_mode = self._progress_mode
+        previous_head = self._progress_head
+        previous_committed = self._progress_committed
+        self._progress_callback = progress
+        self._progress_started_at = time.monotonic()
+        self._progress_branch = branch
+        self._progress_mode = mode
+        self._progress_head = None
+        self._progress_committed = 0
+        try:
+            self._emit_progress("preparation", status="started")
+            with self.store._read_cache_scope():
+                return self._run(
+                    config,
+                    output_root=output_root,
+                    branch=branch,
+                    mode=mode,
+                    operations=operations,
+                    requested_connections=requested_connections,
+                    connection_options=connection_options,
+                )
+        except KeyboardInterrupt:
+            self._emit_progress("interrupted", status="interrupted")
+            raise
+        except Exception as error:
+            self._emit_progress("failed", status="failed", error_class=type(error).__name__)
+            raise
+        finally:
+            self._progress_callback = previous_progress
+            self._progress_started_at = previous_started_at
+            self._progress_branch = previous_branch
+            self._progress_mode = previous_mode
+            self._progress_head = previous_head
+            self._progress_committed = previous_committed
+
+    def _emit_progress(self, stage: str, *, status: str, **details: object) -> None:
+        callback = self._progress_callback
+        if callback is None:
+            return
+        event: dict[str, object] = {
+            "stage": stage,
+            "status": status,
+            "elapsed_seconds": float(time.monotonic() - self._progress_started_at),
+            "branch": self._progress_branch,
+            "mode": self._progress_mode,
+        }
+        if self._progress_head is not None:
+            event["history_head"] = self._progress_head
+        if self._progress_committed:
+            event["committed_count"] = self._progress_committed
+        event.update(details)
+        try:
+            callback(event)
+        except Exception:
+            # Progress is observational; an output sink must not alter planning.
+            return
 
     def _run(
         self,
@@ -415,6 +473,13 @@ class PlanningRuntime:
             mode,
             connection_options,
             prepare_connection_defaults=requested_default_preparation,
+        )
+        if isinstance(event_id, str):
+            self._progress_head = event_id
+        self._emit_progress(
+            "preparation",
+            status="ready",
+            history_head=event_id,
         )
         explicit = [dict(item) for item in operations]
         explicit.extend(self._connection_operations(requested_connections))
@@ -736,6 +801,13 @@ class PlanningRuntime:
                     },
                 )
                 raise
+            self._emit_progress(
+                "decision",
+                status="received",
+                decision_class=_decision_class(provider_result),
+                provider=provider_result.get("provider"),
+                result_status=provider_result.get("status"),
+            )
             status = _status(provider_result.get("status"))
             if status != "answered":
                 event_id = self._commit(
@@ -1989,7 +2061,17 @@ class PlanningRuntime:
     ) -> str:
         if expected_head is None:
             expected_head = self.store.head(branch).head_event_id
-        return self.store.commit(branch, expected_head, event)
+        event_id = self.store.commit(branch, expected_head, event)
+        if self._progress_callback is not None:
+            self._progress_head = event_id
+            self._progress_committed += 1
+            self._emit_progress(
+                "history",
+                status=str(event.get("outcome") or "committed"),
+                event_kind=event.get("event_kind"),
+                decision_class=event.get("decision_class"),
+            )
+        return event_id
 
     def _apply_and_record(
         self,
@@ -2016,6 +2098,12 @@ class PlanningRuntime:
         str,
         str,
     ]:
+        if decision_class is not None:
+            self._emit_progress(
+                decision_class,
+                status="started",
+                operation_kind=operation.get("kind"),
+            )
         current_problem = dict(problem)
         execution_context = self._execution_context
         current_problem_ref = problem_ref
@@ -2209,11 +2297,18 @@ class PlanningRuntime:
             provider_result=dict(provider_result) if provider_result is not None else None,
         )
         if output_root is None:
+            self._emit_progress(
+                "completed",
+                status=result.status,
+                history_head=event_id,
+                termination_reason=termination_reason,
+            )
             return result
         destination = Path(output_root)
         destination.mkdir(parents=True, exist_ok=True)
         publication: dict[str, object] | None = None
         if result.status in {"validated", "reviewable-incomplete"}:
+            self._emit_progress("publication", status="started")
             history_metadata = {
                 "history_ref": str(self.history_root),
                 "history_root": str(self.history_root),
@@ -2234,6 +2329,11 @@ class PlanningRuntime:
                 )
             except PublicationValidationError as error:
                 publication = {"status": "failed", "error": str(error)}
+            self._emit_progress(
+                "publication",
+                status="completed" if publication.get("status") != "failed" else "failed",
+                publication_status=publication.get("status"),
+            )
             self._atomic_json(destination / "proposal.json", result.output)
         result = replace(
             result,
@@ -2271,6 +2371,13 @@ class PlanningRuntime:
         )
         report["decision_trace"] = self._compact_decision_trace(result.decision_trace)
         self._atomic_json(destination / "run.json", report)
+        self._emit_progress(
+            "completed",
+            status=result.status,
+            history_head=event_id,
+            termination_reason=termination_reason,
+            publication_status=publication.get("status") if publication else "skipped",
+        )
         return result
 
     @staticmethod
@@ -3479,9 +3586,10 @@ class PlanningRuntime:
             if not isinstance(task_packet, Mapping):
                 raise TypeError("planning request has no task packet")
             if self.router is not None:
+                requirements = self._router_requirements(task_packet, branch)
                 task = DecisionTask(
                     task_id=f"planning-judgment-{_digest(request)[:24]}",
-                    required_capabilities=self._router_requirements(task_packet, branch),
+                    required_capabilities=requirements,
                     branch_id=branch,
                     input_state=task_packet,
                     state=task_packet,
@@ -3502,6 +3610,12 @@ class PlanningRuntime:
                         for item in task_packet.get("scope", {}).get("permitted_action_kinds", [])
                     ),
                 )
+                wait_stage = (
+                    "specialist-wait"
+                    if "structured-proposal" in requirements.judgment_forms
+                    else "classifier-wait"
+                )
+                self._emit_progress(wait_stage, status="started")
                 routed = self.router.route(task)
                 if routed.status is RoutingStatus.JEV_JUDGMENT and isinstance(
                     routed.result, Mapping
@@ -3565,6 +3679,7 @@ class PlanningRuntime:
                     result["decision_class"] = capability_class
                 return result
             provider = self.provider or TypeSafeClient()
+            self._emit_progress("classifier-wait", status="started")
             if hasattr(provider, "judge"):
                 result = provider.judge(task_packet, questions)  # type: ignore[union-attr]
             elif callable(provider):

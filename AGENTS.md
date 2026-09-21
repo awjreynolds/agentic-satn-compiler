@@ -27,12 +27,16 @@ halt ; report
 
 **report** — the outcome against the contract; the proof; rejected claims worth the user's attention, one line each. Nothing else.
 
-## fuses — outside the program, for when its evaluator fails
+## Progress and continuation
 
-```
-rounds = 3            → halt anyway ; report open items, do not chase them
-claim born in round n+1, visible in round n   → rejected
-```
+Continue necessary, evidence-backed work until the contract is proven, the user
+pauses it, or a concrete dependency prevents further authorized progress. Evaluate
+new findings against the contract regardless of when they were discovered.
+
+For delegated or long-running work, maintain the progress record described in
+`docs/agents/delegation.md` before handoffs, after meaningful results, and before
+stopping or resuming. Use recorded evidence to choose the next action; report a
+stalled approach and change it instead of repeating it without new evidence.
 
 ## No unauthoritative limits
 

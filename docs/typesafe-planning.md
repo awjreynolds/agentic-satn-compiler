@@ -63,6 +63,11 @@ Implementation and review evidence are tracked in [the rebuild epic](https://git
 
 Use an explicit history directory and a separate output directory for each experiment. `satn plan run CONFIG --root HISTORY --output-root OUTPUT` performs deterministic admission by default. This retains source obligations and unknowns; it is not an intelligently selected network.
 
+While a run is active, compact stage and history-head updates are written to
+stderr, including elapsed time and observed decision/provider activity. The
+completed result remains the only stdout payload, so `satn plan run ... >
+result.json` remains valid JSON without exposing model packets or secrets.
+
 For a configured live Jev run, add `--mode live --connection-options OPTIONS.json`. The options file supplies admitted named-place connections; the experiment runner derives their identifiers from the pinned input. Supply `TYPESAFE_API_KEY` through the environment rather than command-line arguments or tracked files. A live run does not imply that a specialist is configured.
 
 To opt into one-shot Codex reasoning for an unresolved, scoped judgment, provide both explicit specialist settings on the ordinary run command:
