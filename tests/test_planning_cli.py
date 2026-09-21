@@ -1,13 +1,30 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import yaml
+from bath_saltford_fixture import configured_bath_saltford
 from typer.testing import CliRunner
 
 import satn.cli as cli
 import satn.planning_cli as planning_cli
+from satn.codex_specialist import CodexSpecialistAdapter as RealCodexSpecialistAdapter
+from satn.planning_history import HistoryStore
+from satn.sources import snapshot
+
+
+def _write_cli_config(config: object, path: Path) -> Path:
+    path.write_text(
+        yaml.safe_dump(
+            config.model_dump(mode="json", exclude={"config_path"}),
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    return path
 
 
 def _config(path: Path) -> Path:
@@ -72,6 +89,321 @@ def test_plan_run_uses_explicit_roots_and_branch(tmp_path: Path, monkeypatch) ->
         "branch": "case-bath-keynsham",
         "mode": "deterministic",
     }
+
+
+def test_plan_run_explicitly_wires_jev_and_codex_specialist(tmp_path: Path, monkeypatch) -> None:
+    observed: dict[str, object] = {}
+
+    class StubRuntime:
+        def __init__(self, root: Path, **kwargs: object) -> None:
+            observed["root"] = root
+            observed["constructor"] = kwargs
+
+        def run(self, _config: object, **kwargs: object) -> SimpleNamespace:
+            observed["run"] = kwargs
+            return SimpleNamespace(as_dict=lambda: {"status": "reviewable-incomplete"})
+
+    monkeypatch.setattr(planning_cli, "PlanningRuntime", StubRuntime)
+    response = CliRunner().invoke(
+        cli.app,
+        [
+            "plan",
+            "run",
+            str(_config(tmp_path / "area.yaml")),
+            "--root",
+            str(tmp_path / "history"),
+            "--output-root",
+            str(tmp_path / "output"),
+            "--mode",
+            "live",
+            "--specialist-model",
+            "gpt-5.6-luna",
+            "--specialist-reasoning-effort",
+            "max",
+        ],
+    )
+
+    assert response.exit_code == 0, response.output
+    router = observed["constructor"].get("router")
+    assert router is not None
+    assert [capability.capability_id for capability in router.capabilities] == [
+        "jev",
+        "codex-specialist",
+    ]
+    specialist = router.capabilities[1]
+    assert specialist.provider == "codex-exec"
+    assert specialist.adapter.model == "gpt-5.6-luna"
+    assert specialist.adapter.reasoning_effort == "max"
+    assert observed["run"]["mode"] == "live"
+
+
+def test_public_cli_runs_configured_jev_then_codex_and_replays_offline(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    config_path = _write_cli_config(config, tmp_path / "area.yaml")
+    calls = {"jev": 0, "codex": 0}
+    codex_tasks: list[str] = []
+    response_body = json.dumps(
+        {
+            "proposal": {
+                "operation": {
+                    "kind": "select-alignment",
+                    "payload": {"candidate_id": "placeholder"},
+                }
+            }
+        }
+    )
+
+    class FakeJev:
+        def judge(self, _state: object, _questions: object) -> dict[str, object]:
+            calls["jev"] += 1
+            return {
+                "status": "answered",
+                "provider": "jev",
+                "model": "jev-test",
+                "answers": {
+                    "decision": {"type": "choice", "choice": "__unknown__"},
+                },
+                "response_receipt": {"body": "jev", "body_sha256": "jev"},
+            }
+
+    def fake_codex(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        nonlocal response_body
+        calls["codex"] += 1
+        prompt = str(kwargs["input"])
+        packet = json.loads(prompt.split("Frozen planning task:\n", 1)[1])
+        codex_tasks.append(str(packet["task_id"]))
+        candidate_id = packet["scope"]["selection_candidate_refs"][0]
+        response = {
+            "proposal": {
+                "operation": {
+                    "kind": "select-alignment",
+                    "payload": {"candidate_id": candidate_id},
+                }
+            }
+        }
+        response_body = json.dumps(response)
+        output_path = Path(command[command.index("--output-last-message") + 1])
+        output_path.write_text(response_body, encoding="utf-8")
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps({"type": "thread.started", "model": "gpt-5.6-luna"}),
+            stderr="",
+        )
+
+    def adapter_factory(*, model: str, reasoning_effort: str) -> RealCodexSpecialistAdapter:
+        return RealCodexSpecialistAdapter(
+            model=model,
+            reasoning_effort=reasoning_effort,
+            runner=fake_codex,
+        )
+
+    monkeypatch.setattr(planning_cli, "TypeSafeClient", FakeJev)
+    monkeypatch.setattr(planning_cli, "CodexSpecialistAdapter", adapter_factory)
+    history = tmp_path / "history"
+    run_output = tmp_path / "run"
+    response = CliRunner().invoke(
+        cli.app,
+        [
+            "plan",
+            "run",
+            str(config_path),
+            "--root",
+            str(history),
+            "--output-root",
+            str(run_output),
+            "--mode",
+            "live",
+            "--specialist-model",
+            "gpt-5.6-luna",
+            "--specialist-reasoning-effort",
+            "max",
+        ],
+    )
+
+    assert response.exit_code == 0, response.output
+    payload = json.loads(response.stdout)
+    assert calls["jev"] == 1
+    assert calls["codex"] == len(codex_tasks) > 0
+    assert len(codex_tasks) == len(set(codex_tasks))
+    assert payload["provider_status"] == "answered"
+    assert payload["provider"] == "codex-exec"
+    assert payload["model"] == "gpt-5.6-luna"
+    assert payload["output"]["status"] != "invalid"
+    assert any(item.get("decision_class") == "agent" for item in payload["decision_trace"])
+    event = HistoryStore(history).get(payload["history_event_id"])
+    assert event["decision_class"] == "agent"
+    assert event["outcome"] == "accepted"
+    receipt = HistoryStore(history).get(event["receipt_ref"])
+    assert receipt["capability_id"] == "codex-specialist"
+    assert receipt["provider"] == "codex-exec"
+    assert receipt["requested_model"] == "gpt-5.6-luna"
+    assert receipt["observed_model"] == "gpt-5.6-luna"
+    assert receipt["request"]["prompt"] == receipt["request_receipt"]["body"]
+    assert receipt["response_receipt"]["body"] == response_body
+
+    def provider_must_not_run(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("replay dispatched a provider")
+
+    monkeypatch.setattr(planning_cli, "TypeSafeClient", provider_must_not_run)
+    monkeypatch.setattr(planning_cli, "CodexSpecialistAdapter", provider_must_not_run)
+    replay = CliRunner().invoke(cli.app, ["plan", "replay", str(history)])
+
+    assert replay.exit_code == 0, replay.output
+    replay_payload = json.loads(replay.stdout)
+    assert replay_payload["state"] == payload["state"]
+
+
+def test_public_cli_persists_failed_codex_receipt(tmp_path: Path, monkeypatch) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    config_path = _write_cli_config(config, tmp_path / "area.yaml")
+
+    class FakeJev:
+        def judge(self, _state: object, _questions: object) -> dict[str, object]:
+            return {
+                "status": "answered",
+                "answers": {
+                    "decision": {"type": "choice", "choice": "__unknown__"},
+                },
+            }
+
+    def failed_codex(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(command, 17, stdout="", stderr="process failed")
+
+    def adapter_factory(*, model: str, reasoning_effort: str) -> RealCodexSpecialistAdapter:
+        return RealCodexSpecialistAdapter(
+            model=model,
+            reasoning_effort=reasoning_effort,
+            runner=failed_codex,
+        )
+
+    monkeypatch.setattr(planning_cli, "TypeSafeClient", FakeJev)
+    monkeypatch.setattr(planning_cli, "CodexSpecialistAdapter", adapter_factory)
+    history = tmp_path / "history"
+    response = CliRunner().invoke(
+        cli.app,
+        [
+            "plan",
+            "run",
+            str(config_path),
+            "--root",
+            str(history),
+            "--output-root",
+            str(tmp_path / "run"),
+            "--mode",
+            "live",
+            "--specialist-model",
+            "gpt-5.6-luna",
+            "--specialist-reasoning-effort",
+            "max",
+        ],
+    )
+
+    assert response.exit_code == 0, response.output
+    payload = json.loads(response.stdout)
+    assert payload["provider_status"] == "unavailable"
+    event = HistoryStore(history).get(payload["history_event_id"])
+    assert event["decision_class"] == "agent"
+    receipt = HistoryStore(history).get(event["receipt_ref"])
+    assert receipt["capability_id"] == "codex-specialist"
+    assert receipt["provider"] == "codex-exec"
+    assert receipt["requested_model"] == "gpt-5.6-luna"
+    assert receipt["observed_model"] is None
+    assert receipt["request"]["prompt"] == receipt["request_receipt"]["body"]
+    assert receipt["response_receipt"] is None
+    assert receipt["failure_class"] == "codex-process-failed"
+
+
+def test_public_cli_persists_malformed_codex_receipt(tmp_path: Path, monkeypatch) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    config_path = _write_cli_config(config, tmp_path / "area.yaml")
+
+    class FakeJev:
+        def judge(self, _state: object, _questions: object) -> dict[str, object]:
+            return {
+                "status": "answered",
+                "answers": {
+                    "decision": {"type": "choice", "choice": "__unknown__"},
+                },
+            }
+
+    def malformed_codex(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        output_path = Path(command[command.index("--output-last-message") + 1])
+        output_path.write_text("not json", encoding="utf-8")
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps({"type": "thread.started", "model": "actual-model"}),
+            stderr="",
+        )
+
+    def adapter_factory(*, model: str, reasoning_effort: str) -> RealCodexSpecialistAdapter:
+        return RealCodexSpecialistAdapter(
+            model=model,
+            reasoning_effort=reasoning_effort,
+            runner=malformed_codex,
+        )
+
+    monkeypatch.setattr(planning_cli, "TypeSafeClient", FakeJev)
+    monkeypatch.setattr(planning_cli, "CodexSpecialistAdapter", adapter_factory)
+    history = tmp_path / "history"
+    response = CliRunner().invoke(
+        cli.app,
+        [
+            "plan",
+            "run",
+            str(config_path),
+            "--root",
+            str(history),
+            "--output-root",
+            str(tmp_path / "run"),
+            "--mode",
+            "live",
+            "--specialist-model",
+            "gpt-5.6-luna",
+            "--specialist-reasoning-effort",
+            "max",
+        ],
+    )
+
+    assert response.exit_code == 0, response.output
+    payload = json.loads(response.stdout)
+    assert payload["provider_status"] == "invalid-provider-response"
+    event = HistoryStore(history).get(payload["history_event_id"])
+    assert event["decision_class"] == "agent"
+    receipt = HistoryStore(history).get(event["receipt_ref"])
+    assert receipt["provider"] == "codex-exec"
+    assert receipt["capability_id"] == "codex-specialist"
+    assert receipt["requested_model"] == "gpt-5.6-luna"
+    assert receipt["observed_model"] == "actual-model"
+    assert receipt["failure_class"] == "malformed-response"
+    assert receipt["response_receipt"]["body"] == "not json"
+
+
+def test_plan_run_rejects_partial_codex_configuration(tmp_path: Path) -> None:
+    response = CliRunner().invoke(
+        cli.app,
+        [
+            "plan",
+            "run",
+            str(_config(tmp_path / "area.yaml")),
+            "--root",
+            str(tmp_path / "history"),
+            "--output-root",
+            str(tmp_path / "output"),
+            "--specialist-model",
+            "gpt-5.6-sol",
+        ],
+    )
+
+    assert response.exit_code != 0
+    assert "must be" in response.output
+    assert "supplied together" in response.output
 
 
 def test_plan_verify_and_compare_are_read_only_branch_operations(

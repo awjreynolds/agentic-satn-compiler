@@ -65,6 +65,15 @@ Use an explicit history directory and a separate output directory for each exper
 
 For a configured live Jev run, add `--mode live --connection-options OPTIONS.json`. The options file supplies admitted named-place connections; the experiment runner derives their identifiers from the pinned input. Supply `TYPESAFE_API_KEY` through the environment rather than command-line arguments or tracked files. A live run does not imply that a specialist is configured.
 
+To opt into one-shot Codex reasoning for an unresolved, scoped judgment, provide both explicit specialist settings on the ordinary run command:
+
+```text
+satn plan run CONFIG --root HISTORY --output-root OUTPUT --mode live \
+  --specialist-model gpt-5.6-luna --specialist-reasoning-effort max
+```
+
+The run registers the existing Jev classifier and a `codex exec` specialist in the static capability router. Codex receives the frozen task through stdin and must return one strict JSON proposal; the existing planning operation validator checks its scope and payload before applying it. The process is invoked once with read-only sandboxing, an ephemeral session, and no repository check. The exact task and final JSON response are retained as receipts, with requested and observed model identity kept separate. Deterministic runs and runs without both specialist options keep their existing behavior.
+
 ```text
 satn plan verify HISTORY --branch main
 satn plan replay HISTORY --branch main

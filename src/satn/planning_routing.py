@@ -572,6 +572,8 @@ class StaticCapabilityRouter:
             return RoutingOutcome(
                 status=RoutingStatus.UNAVAILABLE,
                 capability_id=capability.capability_id,
+                result=response,
+                provider_request=response.get("request"),
                 failure_class=str(response.get("failure_class", "provider-unavailable")),
             )
         if provider_status == "servicefailed":
@@ -586,6 +588,7 @@ class StaticCapabilityRouter:
             return RoutingOutcome(
                 status=RoutingStatus.INVALID_PROVIDER_RESPONSE,
                 capability_id=capability.capability_id,
+                result=response,
                 provider_request=response.get("request"),
                 violations=tuple(str(item) for item in response.get("violations", ())),
             )

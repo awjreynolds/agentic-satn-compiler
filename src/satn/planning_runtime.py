@@ -2702,17 +2702,32 @@ class PlanningRuntime:
                     RoutingStatus.NO_CAPABLE_PROVIDER,
                     RoutingStatus.UNAVAILABLE,
                 }:
-                    return {
-                        "status": "unavailable",
-                        "provider": routed.capability_id or "router",
-                        "failure_class": routed.reason or routed.status.value,
-                        "routing": routed.as_dict(),
-                    }
+                    result = (
+                        dict(_safe_json(routed.result))
+                        if isinstance(routed.result, Mapping)
+                        else {}
+                    )
+                    result["status"] = "unavailable"
+                    result.setdefault("provider", routed.capability_id or "router")
+                    result["capability_id"] = routed.capability_id
+                    result.setdefault(
+                        "failure_class",
+                        routed.failure_class or routed.reason or routed.status.value,
+                    )
+                    result["routing"] = routed.as_dict()
+                    capability_class = self._router_decision_class(routed.capability_id)
+                    if capability_class is not None:
+                        result["decision_class"] = capability_class
+                    return result
                 result = {"status": routed.status.value, **routed.as_dict()}
                 if isinstance(routed.result, Mapping):
                     for key in (
                         "provider",
                         "model",
+                        "failure_class",
+                        "requested_model",
+                        "requested_reasoning_effort",
+                        "observed_model",
                         "usage",
                         "request",
                         "response",
