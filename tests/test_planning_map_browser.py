@@ -185,3 +185,73 @@ def test_planning_map_default_shows_departure_and_accessible_details(tmp_path: P
         browser.close()
 
     assert screenshot.exists()
+
+
+@pytest.mark.browser
+def test_planning_map_conspicuously_labels_provisional_selection(tmp_path: Path) -> None:
+    output = _validated_output()
+    output["selected_alignments"][2].update(
+        {
+            "provisional": True,
+            "reason": (
+                "The preferred route is supported while a governance fact remains unresolved."
+            ),
+            "uncertainties": ["Whether continuous access can be confirmed."],
+        }
+    )
+    publication = publish_planning_output(output, tmp_path)
+    page_url = (Path(publication["publication_dir"]) / "review-map" / "index.html").as_uri()
+    screenshot = Path("/tmp/satn-provisional-selection-map.png")
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1440, "height": 900})
+        page.route("https://tile.openstreetmap.org/**", lambda route: route.abort())
+        page.goto(page_url)
+        page.wait_for_function("document.documentElement.dataset.mapReady === 'true'")
+
+        assert page.get_by_text("Provisional selection — best guess", exact=True).is_visible()
+        assert page.get_by_text("The preferred route is supported", exact=False).is_visible()
+        assert page.get_by_text(
+            "Whether continuous access can be confirmed.", exact=False
+        ).is_visible()
+        assert page.evaluate(
+            """() => ({
+              provisionalLayerVisible: window.SATN_REVIEW_MAP.getLayoutProperty(
+                'planning-selected-provisional', 'visibility'
+              ) !== 'none',
+              provisionalLayerColor: window.SATN_REVIEW_MAP.getPaintProperty(
+                'planning-selected-provisional', 'line-color'
+              ),
+              provisionalLayerDash: window.SATN_REVIEW_MAP.getPaintProperty(
+                'planning-selected-provisional', 'line-dasharray'
+              ),
+              provisionalFeatures: window.SATN_REVIEW_MAP.getSource(
+                'planning-output'
+              )._data.features.filter(
+                feature => feature.properties?.provisional === true
+              ).length,
+              unknownFeatureType: window.SATN_REVIEW_MAP.getSource(
+                'planning-output'
+              )._data.features.find(
+                feature => feature.properties?.candidate_id === 'candidate-unknown'
+              )?.properties?.feature_type,
+              unknownCurrentOrFuture: window.SATN_REVIEW_MAP.getSource(
+                'planning-output'
+              )._data.features.find(
+                feature => feature.properties?.candidate_id === 'candidate-unknown'
+              )?.properties?.current_or_future
+            })"""
+        ) == {
+            "provisionalLayerVisible": True,
+            "provisionalLayerColor": "#ef6c00",
+            "provisionalLayerDash": [1, 1],
+            "provisionalFeatures": 1,
+            "unknownFeatureType": "planning-selected-unknown",
+            "unknownCurrentOrFuture": "unknown",
+        }
+        page.screenshot(path=str(screenshot), full_page=True)
+
+        browser.close()
+
+    assert screenshot.exists()

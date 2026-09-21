@@ -448,6 +448,112 @@ def test_operations_bind_named_places_and_select_a_graph_alignment(tmp_path) -> 
     assert output["unresolved_obligation_refs"]
 
 
+def test_select_alignment_retains_explicit_provisional_choice_metadata(tmp_path) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    problem = build_planning_problem(config)
+    state = initial_proposal(problem)
+    corridor = next(
+        item for item in problem["source_corridors"] if item["mandatory_planning_corridor"]
+    )
+    candidate = next(
+        item
+        for item in problem["candidates"]
+        if item["source_corridor_refs"] == [corridor["corridor_id"]]
+    )
+    operation = {
+        "kind": "select-alignment",
+        "parent_state_fingerprint": state["state_fingerprint"],
+        "payload": {
+            "candidate_id": candidate["candidate_id"],
+            "obligation_id": corridor["corridor_id"],
+            "provisional": True,
+            "reason": "The governed alternatives remain materially unresolved.",
+            "uncertainties": [
+                "Whether the preferred corridor can provide continuous access.",
+            ],
+        },
+    }
+
+    selected = apply_operation(problem, state, operation)
+
+    assert selected["status"] != "invalid"
+    choice = selected["selected_alignments"][0]
+    assert choice["provisional"] is True
+    assert choice["reason"] == operation["payload"]["reason"]
+    assert choice["uncertainties"] == operation["payload"]["uncertainties"]
+    assert selected["operations"][-1]["payload"]["provisional"] is True
+    output = validate_proposal(problem, selected)
+    assert output["selected_alignments"][0]["provisional"] is True
+    assert output["selected_alignments"][0]["uncertainties"] == choice["uncertainties"]
+
+
+def test_provisional_selection_requires_reason_and_stated_uncertainty(tmp_path) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    problem = build_planning_problem(config)
+    corridor = next(
+        item for item in problem["source_corridors"] if item["mandatory_planning_corridor"]
+    )
+    candidate = next(
+        item
+        for item in problem["candidates"]
+        if item["source_corridor_refs"] == [corridor["corridor_id"]]
+    )
+
+    for incomplete in (
+        {"provisional": True, "uncertainties": ["A stated uncertainty"]},
+        {"provisional": True, "reason": "A reason"},
+    ):
+        state = initial_proposal(problem)
+        result = apply_operation(
+            problem,
+            state,
+            {
+                "kind": "select-alignment",
+                "parent_state_fingerprint": state["state_fingerprint"],
+                "payload": {
+                    "candidate_id": candidate["candidate_id"],
+                    "obligation_id": corridor["corridor_id"],
+                    **incomplete,
+                },
+            },
+        )
+
+        assert result["status"] == "invalid"
+        assert result["diagnostics"][0]["code"] == "provisional-choice"
+
+
+def test_selection_without_provisional_metadata_keeps_historical_shape(tmp_path) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    problem = build_planning_problem(config)
+    state = initial_proposal(problem)
+    corridor = next(
+        item for item in problem["source_corridors"] if item["mandatory_planning_corridor"]
+    )
+    candidate = next(
+        item
+        for item in problem["candidates"]
+        if item["source_corridor_refs"] == [corridor["corridor_id"]]
+    )
+
+    selected = apply_operation(
+        problem,
+        state,
+        {
+            "kind": "select-alignment",
+            "parent_state_fingerprint": state["state_fingerprint"],
+            "payload": {
+                "candidate_id": candidate["candidate_id"],
+                "obligation_id": corridor["corridor_id"],
+            },
+        },
+    )
+
+    assert "provisional" not in selected["selected_alignments"][0]
+
+
 def test_partial_and_full_departures_keep_explicit_source_geometry_and_accounting(
     tmp_path,
 ) -> None:

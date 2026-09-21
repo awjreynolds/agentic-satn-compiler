@@ -174,6 +174,49 @@ def test_projection_keeps_full_partial_and_source_only_records_distinct() -> Non
     )
 
 
+def test_projection_retains_and_labels_provisional_selection() -> None:
+    output = _validated_output()
+    output["selected_alignments"][2].update(
+        {
+            "provisional": True,
+            "reason": (
+                "The preferred route is supported while a governance fact remains unresolved."
+            ),
+            "uncertainties": ["Whether continuous access can be confirmed."],
+        }
+    )
+
+    projected = project_planning_output(output)
+
+    selection = projected["selected_alignments"][2]
+    assert selection["provisional"] is True
+    assert selection["reason"].startswith("The preferred route")
+    assert selection["uncertainties"] == ["Whether continuous access can be confirmed."]
+    feature = next(
+        item
+        for item in projected["geojson"]["features"]
+        if item["properties"].get("candidate_id") == "candidate-unknown"
+    )
+    assert feature["properties"]["map_label"] == "Provisional selection — best guess"
+    assert feature["properties"]["reason"] == selection["reason"]
+    assert feature["properties"]["uncertainties"] == selection["uncertainties"]
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    (
+        {"provisional": True, "uncertainties": ["A stated uncertainty"]},
+        {"provisional": True, "reason": "A reason"},
+    ),
+)
+def test_projection_rejects_incomplete_provisional_selection(metadata) -> None:
+    invalid = _validated_output()
+    invalid["selected_alignments"][0].update(metadata)
+
+    with pytest.raises(PublicationValidationError, match="provisional selection"):
+        project_planning_output(invalid)
+
+
 def test_publication_is_atomic_and_preserves_previous_pointer_on_invalid_bundle(
     tmp_path: Path,
 ) -> None:

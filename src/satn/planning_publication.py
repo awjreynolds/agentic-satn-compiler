@@ -133,6 +133,31 @@ def _source_refs(value: object, field: str) -> list[str]:
     return [str(item) for item in value]
 
 
+def _validate_provisional_selection(value: Mapping[str, object], field: str) -> bool:
+    provisional = value.get("provisional")
+    if "provisional" in value and not isinstance(provisional, bool):
+        raise PublicationValidationError(f"{field}.provisional must be boolean")
+    reason = value.get("reason")
+    if "reason" in value and (not isinstance(reason, str) or not reason.strip()):
+        raise PublicationValidationError(f"{field}.reason must be non-blank text")
+    uncertainties = value.get("uncertainties")
+    if "uncertainties" in value and (
+        not isinstance(uncertainties, list)
+        or any(not isinstance(item, str) or not item.strip() for item in uncertainties)
+    ):
+        raise PublicationValidationError(f"{field}.uncertainties must be a list of non-blank text")
+    if provisional is True:
+        if not isinstance(reason, str) or not reason.strip():
+            raise PublicationValidationError(
+                f"{field} provisional selection requires a non-blank reason"
+            )
+        if not isinstance(uncertainties, list) or not uncertainties:
+            raise PublicationValidationError(
+                f"{field} provisional selection requires at least one stated uncertainty"
+            )
+    return provisional is True
+
+
 def _safe_component(value: str) -> str:
     rendered = re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip(".-")
     return rendered or "planning-output"
@@ -327,6 +352,7 @@ def project_planning_output(
     ):
         if not isinstance(selection, Mapping):
             raise PublicationValidationError(f"selected_alignments[{index}] must be an object")
+        is_provisional = _validate_provisional_selection(selection, f"selected_alignments[{index}]")
         selected_id = _required_text(
             selection.get("candidate_id") or selection.get("alignment_id"),
             f"selected_alignments[{index}].candidate_id",
@@ -352,6 +378,11 @@ def project_planning_output(
             or "unknown"
         ).lower()
         cycle = cycle if cycle in {"current", "future"} else "unknown"
+        selection_metadata = {
+            key: _json_copy(selection[key])
+            for key in ("provisional", "reason", "uncertainties")
+            if key in selection
+        }
         features.append(
             {
                 "type": "Feature",
@@ -363,7 +394,12 @@ def project_planning_output(
                     "candidate_id": selected_id,
                     "source_corridor_refs": source_refs,
                     "current_or_future": cycle,
-                    "map_label": f"Selected {cycle} alignment",
+                    "map_label": (
+                        "Provisional selection — best guess"
+                        if is_provisional
+                        else f"Selected {cycle} alignment"
+                    ),
+                    **selection_metadata,
                 },
                 "geometry": geometry,
             }
