@@ -336,9 +336,29 @@ def test_typed_choice_changes_state_and_replays_without_provider(tmp_path: Path)
         for item in persisted["decision_trace"]
     )
     assert all(isinstance(item.get("receipt_ref"), str) for item in persisted["decision_trace"])
-    history_event = HistoryStore(tmp_path / "history").get(result.history_event_id)
+    store = HistoryStore(tmp_path / "history")
+    history_event = store.get(result.history_event_id)
     assert history_event["decision_class"] == "classifier"
     assert (tmp_path / "run" / "run.json").is_file()
+
+    state_refs: list[str] = []
+    event_id = result.history_event_id
+    while isinstance(event_id, str):
+        event = store.get(event_id)
+        output_state_ref = event.get("output_state_ref")
+        if isinstance(output_state_ref, str):
+            state_refs.append(output_state_ref)
+            raw_event = json.loads(store.record_path(event_id).read_text(encoding="utf-8"))
+            assert "output_state" not in raw_event["payload"]
+        parent_event_id = event.get("timeline_parent_id")
+        event_id = parent_event_id if isinstance(parent_event_id, str) else None
+    assert state_refs
+    for state_ref in set(state_refs):
+        state_record = json.loads(store.record_path(state_ref).read_text(encoding="utf-8"))
+        assert set(state_record["payload"]) == {
+            "_planning_state_context_ref",
+            "_planning_state_delta",
+        }
 
     replay_calls: list[object] = []
 
@@ -352,7 +372,7 @@ def test_typed_choice_changes_state_and_replays_without_provider(tmp_path: Path)
     assert replay["state"] == result.state
     assert replay["decision_trace"] == list(result.decision_trace)
     assert replay_calls == []
-    assert HistoryStore(tmp_path / "history").verify("main")["valid"] is True
+    assert store.verify("main")["valid"] is True
 
 
 def test_fork_replacement_replays_prefix_and_preserves_parent(tmp_path: Path) -> None:
@@ -509,6 +529,7 @@ def test_runtime_reuses_verified_refs_when_recording_mechanical_decisions(monkey
     )
 
     original_put = HistoryStore.put
+    original_put_state = HistoryStore.put_state
     writes = []
 
     def record_write(store, value, *, kind="record"):
@@ -517,7 +538,13 @@ def test_runtime_reuses_verified_refs_when_recording_mechanical_decisions(monkey
             writes.append((kind, reference))
         return reference
 
+    def record_state_write(store: HistoryStore, value: object, *, problem_ref: str) -> str:
+        reference = original_put_state(store, value, problem_ref=problem_ref)
+        writes.append(("state", reference))
+        return reference
+
     monkeypatch.setattr(HistoryStore, "put", record_write)
+    monkeypatch.setattr(HistoryStore, "put_state", record_state_write)
     result = PlanningRuntime(history_root).run(
         config,
         output_root=tmp_path / "output",
@@ -540,6 +567,13 @@ def test_runtime_reuses_verified_refs_when_recording_mechanical_decisions(monkey
         assert writes_by_reference[event["problem_ref"]] == 0
         assert writes_by_reference[event["input_state_ref"]] <= 1
         assert writes_by_reference[event["output_state_ref"]] == 1
+        stored = json.loads(
+            store.record_path(event["output_state_ref"]).read_text(encoding="utf-8")
+        )
+        assert set(stored["payload"]) == {
+            "_planning_state_context_ref",
+            "_planning_state_delta",
+        }
 
 
 def _seed_runtime_problem(

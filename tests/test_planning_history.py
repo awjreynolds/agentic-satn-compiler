@@ -301,6 +301,132 @@ def test_new_events_store_materialized_state_and_operation_by_reference(
     assert store.get(event["receipt_ref"]) == receipt
 
 
+def test_planning_state_storage_shares_problem_facts_without_changing_reads(
+    tmp_path: Path,
+) -> None:
+    shared_geometry = "line-" + ("x" * 4096)
+    problem = {
+        "schema_version": "planning-problem/v1",
+        "problem_id": "planning-problem-test",
+        "input_fingerprint": "problem-fingerprint",
+        "brief": {"brief_ref": "brief-test", "corridor_policy": "retain"},
+        "brief_fingerprint": "brief-fingerprint",
+        "source_corridors": [{"corridor_id": "corridor-1", "geometry": shared_geometry}],
+        "places": [{"place_id": "place-1", "geometry": shared_geometry}],
+        "obligations": [{"obligation_id": "obligation-1", "subject": "corridor-1"}],
+        "candidates": [{"candidate_id": "candidate-1", "geometry": shared_geometry}],
+    }
+    state = {
+        "schema_version": "proposal-state/v1",
+        "parent_problem_id": problem["problem_id"],
+        "problem_fingerprint": problem["input_fingerprint"],
+        "brief": problem["brief"],
+        "brief_fingerprint": problem["brief_fingerprint"],
+        "source_corridors": problem["source_corridors"],
+        "places": problem["places"],
+        "obligations": problem["obligations"],
+        "candidates": problem["candidates"],
+        "obligation_dispositions": {"obligation-1": "unresolved"},
+        "connection_intents": [],
+        "selected_alignments": [],
+        "departures": [],
+        "planning_gaps": [],
+        "unknown_facts": [],
+        "future_interventions": [],
+        "operations": [],
+    }
+
+    legacy_store = HistoryStore(tmp_path / "legacy")
+    legacy_ref = legacy_store.put(state, kind="state")
+    assert legacy_store.get(legacy_ref) == state
+
+    store = HistoryStore(tmp_path / "compact")
+    problem_ref = store.put(problem, kind="planning-problem")
+    compact_ref = store.put_state(state, problem_ref=problem_ref)
+
+    assert compact_ref == legacy_ref
+    assert store.get(compact_ref) == state
+    assert store.get_record(compact_ref) == ("state", state)
+    assert (
+        store.record_path(compact_ref).stat().st_size
+        < legacy_store.record_path(legacy_ref).stat().st_size
+    )
+    assert store.verify(compact_ref)["valid"] is True
+
+    loaded = store.get(compact_ref)
+    assert isinstance(loaded, dict)
+    loaded["source_corridors"][0]["geometry"] = "mutated"
+    assert store.get(compact_ref) == state
+
+    problem_path = store.record_path(problem_ref)
+    problem_path.unlink()
+    with pytest.raises(HistoryMissingError):
+        store.get(compact_ref)
+    with pytest.raises(HistoryMissingError):
+        store.verify(compact_ref)
+
+    tampered_store = HistoryStore(tmp_path / "tampered")
+    tampered_problem_ref = tampered_store.put(problem, kind="planning-problem")
+    tampered_ref = tampered_store.put_state(state, problem_ref=tampered_problem_ref)
+    tampered_path = tampered_store.record_path(tampered_problem_ref)
+    tampered_path.write_text("{}", encoding="utf-8")
+    with pytest.raises(HistoryCorruptError):
+        tampered_store.get(tampered_ref)
+
+
+def test_put_state_reuses_verified_problem_context_during_publication(
+    tmp_path: Path, monkeypatch
+) -> None:
+    problem = {
+        "schema_version": "planning-problem/v1",
+        "problem_id": "planning-problem-context-cache",
+        "input_fingerprint": "problem-fingerprint",
+        "brief": {"brief_ref": "brief-test"},
+        "brief_fingerprint": "brief-fingerprint",
+        "source_corridors": [{"corridor_id": "corridor-1"}],
+        "places": [{"place_id": "place-1"}],
+        "obligations": [{"obligation_id": "obligation-1"}],
+        "candidates": [{"candidate_id": "candidate-1"}],
+    }
+    state = {
+        "schema_version": "proposal-state/v1",
+        "parent_problem_id": problem["problem_id"],
+        "problem_fingerprint": problem["input_fingerprint"],
+        "brief": problem["brief"],
+        "brief_fingerprint": problem["brief_fingerprint"],
+        "source_corridors": problem["source_corridors"],
+        "places": problem["places"],
+        "obligations": problem["obligations"],
+        "candidates": problem["candidates"],
+        "obligation_dispositions": {"obligation-1": "unresolved"},
+        "connection_intents": [],
+        "selected_alignments": [],
+        "departures": [],
+        "planning_gaps": [],
+        "unknown_facts": [],
+        "future_interventions": [],
+        "operations": [],
+    }
+
+    store = HistoryStore(tmp_path / "history")
+    problem_ref = store.put(problem, kind="planning-problem")
+    problem_path = store.record_path(problem_ref)
+    reads: list[Path] = []
+    original_read_bytes = Path.read_bytes
+
+    def counted_read(path: Path) -> bytes:
+        if path == problem_path:
+            reads.append(path)
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", counted_read)
+    state_ref = store.put_state(state, problem_ref=problem_ref)
+
+    assert reads.count(problem_path) == 1
+    assert store.get(state_ref) == state
+    assert store.verify(state_ref)["valid"] is True
+
+
 def test_shared_record_is_loaded_once_per_verification(tmp_path: Path, monkeypatch) -> None:
     store = HistoryStore(tmp_path / "history")
     store.create_branch("main")

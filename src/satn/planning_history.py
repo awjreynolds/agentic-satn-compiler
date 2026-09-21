@@ -33,6 +33,9 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _KIND = re.compile(r"^[a-z][a-z0-9._/-]*$")
 _UNSET = object()
+_STATE_CONTEXT_REF = "_planning_state_context_ref"
+_STATE_DELTA = "_planning_state_delta"
+_STATE_SHARED_FIELDS = ("source_corridors", "places", "obligations", "candidates")
 
 
 class HistoryError(Exception):
@@ -273,6 +276,59 @@ class HistoryStore:
         # orphan that remains diagnosable and can never be referenced as valid.
         self._load_record(record_id)
         return record_id
+
+    def put_state(self, state: Mapping[str, object], *, problem_ref: str) -> str:
+        """Store a planning state with its admitted problem facts shared by reference."""
+
+        with self._read_cache_scope():
+            if not isinstance(state, Mapping):
+                raise ValueError("planning state must be an object")
+            problem_ref = _require_digest(problem_ref, "planning problem ref")
+            problem_kind, problem = self._load_record(problem_ref)
+            if problem_kind != "planning-problem" or not isinstance(problem, Mapping):
+                raise HistoryCorruptError(
+                    "planning problem ref does not identify a planning problem"
+                )
+
+            payload = _validate_json(state, label="state payload")
+            if not isinstance(payload, dict):
+                raise ValueError("planning state must be an object")
+            for field in _STATE_SHARED_FIELDS:
+                if field not in payload or field not in problem:
+                    raise ValueError(f"planning state context is missing {field}")
+                if _canonical_bytes(payload[field]) != _canonical_bytes(problem[field]):
+                    raise ValueError(f"planning state {field} does not match its problem")
+            if payload.get("parent_problem_id") != problem.get("problem_id"):
+                raise ValueError("planning state parent problem does not match its problem")
+            if payload.get("problem_fingerprint") != problem.get("input_fingerprint"):
+                raise ValueError("planning state problem fingerprint does not match its problem")
+            if payload.get("brief_fingerprint") != problem.get("brief_fingerprint"):
+                raise ValueError("planning state brief fingerprint does not match its problem")
+            if _canonical_bytes(payload.get("brief")) != _canonical_bytes(problem.get("brief")):
+                raise ValueError("planning state brief does not match its problem")
+
+            record_id = _record_digest("state", payload)
+            destination = self.record_path(record_id)
+            if destination.exists() or destination.is_symlink():
+                existing_kind, existing = self._load_record(record_id)
+                if existing_kind != "state" or existing != payload:
+                    raise HistoryCorruptError(f"immutable record {record_id} changed")
+                return record_id
+            compact_payload = {
+                _STATE_CONTEXT_REF: problem_ref,
+                _STATE_DELTA: {
+                    key: value for key, value in payload.items() if key not in _STATE_SHARED_FIELDS
+                },
+            }
+            envelope = {
+                "schema": HISTORY_RECORD_SCHEMA,
+                "record_digest": record_id,
+                "kind": "state",
+                "payload": compact_payload,
+            }
+            self._atomic_write(destination, _canonical_bytes(envelope) + b"\n")
+            self._load_record(record_id)
+            return record_id
 
     def get(self, record_id: str) -> JSONValue:
         """Read and verify an immutable JSON record."""
@@ -851,6 +907,24 @@ class HistoryStore:
             cached = cache[cache_key]
             if isinstance(cached, tuple) and len(cached) == 2:
                 return cached
+        kind, stored_value = self._read_record_envelope(record_id)
+        value = stored_value
+        if kind == "state" and self._is_compact_state(stored_value):
+            value = self._materialize_compact_state(stored_value)
+        if _record_digest(kind, value) != record_id:
+            raise HistoryCorruptError(f"record digest does not match payload: {record_id}")
+        result = (kind, value)
+        if cache is not None:
+            cache[cache_key] = result
+        return result
+
+    def _read_record_envelope(self, record_id: str) -> tuple[str, JSONValue]:
+        cache = self._record_read_cache.get()
+        cache_key = ("record-envelope", record_id)
+        if cache is not None and cache_key in cache:
+            cached = cache[cache_key]
+            if isinstance(cached, tuple) and len(cached) == 2:
+                return cached
         path = self.record_path(record_id)
         if not path.exists() and not path.is_symlink():
             raise HistoryMissingError(f"record is unavailable: {record_id}")
@@ -873,12 +947,39 @@ class HistoryStore:
             value = _validate_json(payload.get("payload"), label="record payload")
         except ValueError as error:
             raise HistoryCorruptError(f"record payload is invalid: {record_id}") from error
-        if _record_digest(kind, value) != record_id:
-            raise HistoryCorruptError(f"record digest does not match payload: {record_id}")
         result = (kind, value)
         if cache is not None:
             cache[cache_key] = result
         return result
+
+    @staticmethod
+    def _is_compact_state(value: object) -> bool:
+        return isinstance(value, Mapping) and set(value) == {_STATE_CONTEXT_REF, _STATE_DELTA}
+
+    def _materialize_compact_state(self, value: Mapping[str, object]) -> dict[str, JSONValue]:
+        context_ref = value.get(_STATE_CONTEXT_REF)
+        if not isinstance(context_ref, str):
+            raise HistoryCorruptError("compact planning state context ref is invalid")
+        context_kind, context = self._load_record(_require_digest(context_ref, "state context ref"))
+        if context_kind != "planning-problem" or not isinstance(context, Mapping):
+            raise HistoryCorruptError("compact planning state context is not a planning problem")
+        delta = value.get(_STATE_DELTA)
+        if not isinstance(delta, Mapping):
+            raise HistoryCorruptError("compact planning state delta is invalid")
+        materialized = dict(_validate_json(delta, label="planning state delta"))
+        if materialized.get("parent_problem_id") != context.get("problem_id"):
+            raise HistoryCorruptError("compact planning state parent problem is stale")
+        if materialized.get("problem_fingerprint") != context.get("input_fingerprint"):
+            raise HistoryCorruptError("compact planning state problem fingerprint is stale")
+        if materialized.get("brief_fingerprint") != context.get("brief_fingerprint"):
+            raise HistoryCorruptError("compact planning state brief fingerprint is stale")
+        if _canonical_bytes(materialized.get("brief")) != _canonical_bytes(context.get("brief")):
+            raise HistoryCorruptError("compact planning state brief is stale")
+        for field in _STATE_SHARED_FIELDS:
+            if field not in context:
+                raise HistoryCorruptError(f"compact planning state context is missing {field}")
+            materialized[field] = _copy_json(context[field])
+        return materialized
 
     def _read_artifact(self, artifact_id: str) -> bytes:
         cache = self._record_read_cache.get()
@@ -1165,7 +1266,9 @@ class HistoryStore:
             record_path = self.record_path(ref)
             artifact_path = self.artifact_path(ref)
             if record_path.exists() or record_path.is_symlink():
-                _kind, payload = self._load_record(ref)
+                kind, payload = self._load_record(ref)
+                if kind == "state":
+                    _, payload = self._read_record_envelope(ref)
                 for child in self._payload_refs(payload):
                     visit(child)
             elif artifact_path.exists() or artifact_path.is_symlink():
