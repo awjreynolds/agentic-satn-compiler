@@ -374,6 +374,59 @@ def test_planning_state_storage_shares_problem_facts_without_changing_reads(
         tampered_store.get(tampered_ref)
 
 
+def test_put_state_reuses_verified_problem_context_during_publication(
+    tmp_path: Path, monkeypatch
+) -> None:
+    problem = {
+        "schema_version": "planning-problem/v1",
+        "problem_id": "planning-problem-context-cache",
+        "input_fingerprint": "problem-fingerprint",
+        "brief": {"brief_ref": "brief-test"},
+        "brief_fingerprint": "brief-fingerprint",
+        "source_corridors": [{"corridor_id": "corridor-1"}],
+        "places": [{"place_id": "place-1"}],
+        "obligations": [{"obligation_id": "obligation-1"}],
+        "candidates": [{"candidate_id": "candidate-1"}],
+    }
+    state = {
+        "schema_version": "proposal-state/v1",
+        "parent_problem_id": problem["problem_id"],
+        "problem_fingerprint": problem["input_fingerprint"],
+        "brief": problem["brief"],
+        "brief_fingerprint": problem["brief_fingerprint"],
+        "source_corridors": problem["source_corridors"],
+        "places": problem["places"],
+        "obligations": problem["obligations"],
+        "candidates": problem["candidates"],
+        "obligation_dispositions": {"obligation-1": "unresolved"},
+        "connection_intents": [],
+        "selected_alignments": [],
+        "departures": [],
+        "planning_gaps": [],
+        "unknown_facts": [],
+        "future_interventions": [],
+        "operations": [],
+    }
+
+    store = HistoryStore(tmp_path / "history")
+    problem_ref = store.put(problem, kind="planning-problem")
+    problem_path = store.record_path(problem_ref)
+    reads: list[Path] = []
+    original_read_bytes = Path.read_bytes
+
+    def counted_read(path: Path) -> bytes:
+        if path == problem_path:
+            reads.append(path)
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", counted_read)
+    state_ref = store.put_state(state, problem_ref=problem_ref)
+
+    assert reads.count(problem_path) == 1
+    assert store.get(state_ref) == state
+    assert store.verify(state_ref)["valid"] is True
+
+
 def test_shared_record_is_loaded_once_per_verification(tmp_path: Path, monkeypatch) -> None:
     store = HistoryStore(tmp_path / "history")
     store.create_branch("main")

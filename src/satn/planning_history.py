@@ -280,52 +280,55 @@ class HistoryStore:
     def put_state(self, state: Mapping[str, object], *, problem_ref: str) -> str:
         """Store a planning state with its admitted problem facts shared by reference."""
 
-        if not isinstance(state, Mapping):
-            raise ValueError("planning state must be an object")
-        problem_ref = _require_digest(problem_ref, "planning problem ref")
-        problem_kind, problem = self._load_record(problem_ref)
-        if problem_kind != "planning-problem" or not isinstance(problem, Mapping):
-            raise HistoryCorruptError("planning problem ref does not identify a planning problem")
+        with self._read_cache_scope():
+            if not isinstance(state, Mapping):
+                raise ValueError("planning state must be an object")
+            problem_ref = _require_digest(problem_ref, "planning problem ref")
+            problem_kind, problem = self._load_record(problem_ref)
+            if problem_kind != "planning-problem" or not isinstance(problem, Mapping):
+                raise HistoryCorruptError(
+                    "planning problem ref does not identify a planning problem"
+                )
 
-        payload = _validate_json(state, label="state payload")
-        if not isinstance(payload, dict):
-            raise ValueError("planning state must be an object")
-        for field in _STATE_SHARED_FIELDS:
-            if field not in payload or field not in problem:
-                raise ValueError(f"planning state context is missing {field}")
-            if _canonical_bytes(payload[field]) != _canonical_bytes(problem[field]):
-                raise ValueError(f"planning state {field} does not match its problem")
-        if payload.get("parent_problem_id") != problem.get("problem_id"):
-            raise ValueError("planning state parent problem does not match its problem")
-        if payload.get("problem_fingerprint") != problem.get("input_fingerprint"):
-            raise ValueError("planning state problem fingerprint does not match its problem")
-        if payload.get("brief_fingerprint") != problem.get("brief_fingerprint"):
-            raise ValueError("planning state brief fingerprint does not match its problem")
-        if _canonical_bytes(payload.get("brief")) != _canonical_bytes(problem.get("brief")):
-            raise ValueError("planning state brief does not match its problem")
+            payload = _validate_json(state, label="state payload")
+            if not isinstance(payload, dict):
+                raise ValueError("planning state must be an object")
+            for field in _STATE_SHARED_FIELDS:
+                if field not in payload or field not in problem:
+                    raise ValueError(f"planning state context is missing {field}")
+                if _canonical_bytes(payload[field]) != _canonical_bytes(problem[field]):
+                    raise ValueError(f"planning state {field} does not match its problem")
+            if payload.get("parent_problem_id") != problem.get("problem_id"):
+                raise ValueError("planning state parent problem does not match its problem")
+            if payload.get("problem_fingerprint") != problem.get("input_fingerprint"):
+                raise ValueError("planning state problem fingerprint does not match its problem")
+            if payload.get("brief_fingerprint") != problem.get("brief_fingerprint"):
+                raise ValueError("planning state brief fingerprint does not match its problem")
+            if _canonical_bytes(payload.get("brief")) != _canonical_bytes(problem.get("brief")):
+                raise ValueError("planning state brief does not match its problem")
 
-        record_id = _record_digest("state", payload)
-        destination = self.record_path(record_id)
-        if destination.exists() or destination.is_symlink():
-            existing_kind, existing = self._load_record(record_id)
-            if existing_kind != "state" or existing != payload:
-                raise HistoryCorruptError(f"immutable record {record_id} changed")
+            record_id = _record_digest("state", payload)
+            destination = self.record_path(record_id)
+            if destination.exists() or destination.is_symlink():
+                existing_kind, existing = self._load_record(record_id)
+                if existing_kind != "state" or existing != payload:
+                    raise HistoryCorruptError(f"immutable record {record_id} changed")
+                return record_id
+            compact_payload = {
+                _STATE_CONTEXT_REF: problem_ref,
+                _STATE_DELTA: {
+                    key: value for key, value in payload.items() if key not in _STATE_SHARED_FIELDS
+                },
+            }
+            envelope = {
+                "schema": HISTORY_RECORD_SCHEMA,
+                "record_digest": record_id,
+                "kind": "state",
+                "payload": compact_payload,
+            }
+            self._atomic_write(destination, _canonical_bytes(envelope) + b"\n")
+            self._load_record(record_id)
             return record_id
-        compact_payload = {
-            _STATE_CONTEXT_REF: problem_ref,
-            _STATE_DELTA: {
-                key: value for key, value in payload.items() if key not in _STATE_SHARED_FIELDS
-            },
-        }
-        envelope = {
-            "schema": HISTORY_RECORD_SCHEMA,
-            "record_digest": record_id,
-            "kind": "state",
-            "payload": compact_payload,
-        }
-        self._atomic_write(destination, _canonical_bytes(envelope) + b"\n")
-        self._load_record(record_id)
-        return record_id
 
     def get(self, record_id: str) -> JSONValue:
         """Read and verify an immutable JSON record."""
