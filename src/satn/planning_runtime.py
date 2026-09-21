@@ -34,6 +34,7 @@ from satn.planning_engine import (
 )
 from satn.planning_history import (
     Branch,
+    HistoryError,
     HistoryMissingError,
     HistoryReplayError,
     HistoryStore,
@@ -363,7 +364,15 @@ class PlanningRuntime:
         requested_default_preparation = (
             not operations and not requested_connections and not connection_options
         )
-        problem, state, event_id, envelope_ref, prepare_defaults = self._start_or_resume(
+        (
+            problem,
+            state,
+            event_id,
+            envelope_ref,
+            prepare_defaults,
+            problem_ref,
+            state_ref,
+        ) = self._start_or_resume(
             config,
             branch,
             mode,
@@ -386,6 +395,8 @@ class PlanningRuntime:
                 actor_kind="code",
                 decision_class="mechanical",
                 mode=mode,
+                problem_ref=problem_ref,
+                input_state_ref=state_ref,
             )
             event_id = advanced[0]
             if advanced[2] is not None:
@@ -400,6 +411,7 @@ class PlanningRuntime:
                     termination_reason="invalid-operation",
                 )
             problem, state = advanced[3], advanced[1]
+            problem_ref, state_ref = advanced[4], advanced[5]
 
         termination_reason: str | None = None
         provider_result: dict[str, object] | None = None
@@ -428,6 +440,8 @@ class PlanningRuntime:
                     decision_class="mechanical",
                     mode=mode,
                     receipt=mechanical_receipt,
+                    problem_ref=problem_ref,
+                    input_state_ref=state_ref,
                 )
                 event_id = advanced[0]
                 if advanced[2] is not None:
@@ -443,6 +457,7 @@ class PlanningRuntime:
                         termination_reason="invalid-operation",
                     )
                 problem, state = advanced[3], advanced[1]
+                problem_ref, state_ref = advanced[4], advanced[5]
                 provider_result = mechanical_receipt
                 continue
             questions, choice_context = self._questions(
@@ -491,16 +506,30 @@ class PlanningRuntime:
                 if skip_without_provider:
                     break
             if not choice_context.get("dispatchable", True):
-                request = self._request(problem, state, questions, mode, choice_context, branch)
+                request = self._request(
+                    problem,
+                    state,
+                    questions,
+                    mode,
+                    choice_context,
+                    branch,
+                    state_ref=state_ref,
+                )
                 self._commit(
                     branch,
                     {
-                        **self._event_context(problem, envelope_ref, state),
+                        **self._event_context(
+                            problem,
+                            envelope_ref,
+                            state,
+                            problem_ref=problem_ref,
+                            state_ref=state_ref,
+                        ),
                         "event_kind": "request",
                         "actor_kind": "code",
                         "outcome": "unresolved",
                         "state_transition": False,
-                        "input_state": state,
+                        "input_state_ref": state_ref,
                         "request": request,
                     },
                 )
@@ -518,6 +547,8 @@ class PlanningRuntime:
                     mode=mode,
                     request=request,
                     receipt={"status": "unresolved", "provider": "none"},
+                    problem_ref=problem_ref,
+                    input_state_ref=state_ref,
                 )
                 event_id = advanced[0]
                 if advanced[2] is not None:
@@ -533,6 +564,7 @@ class PlanningRuntime:
                         termination_reason="invalid-operation",
                     )
                 problem, state = advanced[3], advanced[1]
+                problem_ref, state_ref = advanced[4], advanced[5]
                 if semantic_fingerprint(state) == old_fingerprint:
                     termination_reason = "semantic-no-progress"
                     break
@@ -541,16 +573,30 @@ class PlanningRuntime:
                 operation = self._bind_operation(
                     self._deterministic_operation(problem, state, choice_context), state
                 )
-                request = self._request(problem, state, questions, mode, choice_context, branch)
+                request = self._request(
+                    problem,
+                    state,
+                    questions,
+                    mode,
+                    choice_context,
+                    branch,
+                    state_ref=state_ref,
+                )
                 event_id = self._commit(
                     branch,
                     {
-                        **self._event_context(problem, envelope_ref, state),
+                        **self._event_context(
+                            problem,
+                            envelope_ref,
+                            state,
+                            problem_ref=problem_ref,
+                            state_ref=state_ref,
+                        ),
                         "event_kind": "request",
                         "actor_kind": "code",
                         "outcome": "deterministic",
                         "state_transition": False,
-                        "input_state": state,
+                        "input_state_ref": state_ref,
                         "request": request,
                     },
                 )
@@ -573,6 +619,8 @@ class PlanningRuntime:
                     mode=mode,
                     request=request,
                     receipt=provider_result,
+                    problem_ref=problem_ref,
+                    input_state_ref=state_ref,
                 )
                 event_id = advanced[0]
                 if advanced[2] is not None:
@@ -590,21 +638,36 @@ class PlanningRuntime:
                     )
                 old_fingerprint = semantic_fingerprint(state)
                 problem, state = advanced[3], advanced[1]
+                problem_ref, state_ref = advanced[4], advanced[5]
                 if semantic_fingerprint(state) == old_fingerprint:
                     termination_reason = "semantic-no-progress"
                     break
                 continue
 
-            request = self._request(problem, state, questions, mode, choice_context, branch)
+            request = self._request(
+                problem,
+                state,
+                questions,
+                mode,
+                choice_context,
+                branch,
+                state_ref=state_ref,
+            )
             attempt = self._commit(
                 branch,
                 {
-                    **self._event_context(problem, envelope_ref, state),
+                    **self._event_context(
+                        problem,
+                        envelope_ref,
+                        state,
+                        problem_ref=problem_ref,
+                        state_ref=state_ref,
+                    ),
                     "event_kind": "attempt",
                     "actor_kind": "provider",
                     "outcome": "started",
                     "state_transition": False,
-                    "input_state": state,
+                    "input_state_ref": state_ref,
                     "request": request,
                 },
             )
@@ -615,12 +678,18 @@ class PlanningRuntime:
                 self._commit(
                     branch,
                     {
-                        **self._event_context(problem, envelope_ref, state),
+                        **self._event_context(
+                            problem,
+                            envelope_ref,
+                            state,
+                            problem_ref=problem_ref,
+                            state_ref=state_ref,
+                        ),
                         "event_kind": "attempt",
                         "actor_kind": "provider",
                         "outcome": "interrupted",
                         "state_transition": False,
-                        "input_state": state,
+                        "input_state_ref": state_ref,
                         "request": request,
                     },
                 )
@@ -630,12 +699,18 @@ class PlanningRuntime:
                 event_id = self._commit(
                     branch,
                     {
-                        **self._event_context(problem, envelope_ref, state),
+                        **self._event_context(
+                            problem,
+                            envelope_ref,
+                            state,
+                            problem_ref=problem_ref,
+                            state_ref=state_ref,
+                        ),
                         "event_kind": "receipt",
                         "actor_kind": "provider",
                         "outcome": status or "failed",
                         "state_transition": False,
-                        "input_state": state,
+                        "input_state_ref": state_ref,
                         "request": request,
                         "receipt": provider_result,
                         "decision_class": _decision_class(provider_result),
@@ -662,12 +737,18 @@ class PlanningRuntime:
                 event_id = self._commit(
                     branch,
                     {
-                        **self._event_context(problem, envelope_ref, state),
+                        **self._event_context(
+                            problem,
+                            envelope_ref,
+                            state,
+                            problem_ref=problem_ref,
+                            state_ref=state_ref,
+                        ),
                         "event_kind": "receipt",
                         "actor_kind": "provider",
                         "outcome": "invalid",
                         "state_transition": False,
-                        "input_state": state,
+                        "input_state_ref": state_ref,
                         "request": request,
                         "receipt": provider_result,
                         "decision_class": _decision_class(provider_result),
@@ -699,6 +780,8 @@ class PlanningRuntime:
                 mode=mode,
                 request=request,
                 receipt=provider_result,
+                problem_ref=problem_ref,
+                input_state_ref=state_ref,
             )
             event_id = advanced[0]
             if advanced[2] is not None:
@@ -715,6 +798,7 @@ class PlanningRuntime:
                     provider_result=provider_result,
                 )
             problem, state = advanced[3], advanced[1]
+            problem_ref, state_ref = advanced[4], advanced[5]
             if semantic_fingerprint(state) == old_fingerprint:
                 termination_reason = "semantic-no-progress"
                 break
@@ -747,7 +831,7 @@ class PlanningRuntime:
 
     def _replay_uncached(self, branch: str) -> dict[str, object]:
 
-        _current_problem, _envelope = self._context(branch)
+        _current_problem, _envelope, _problem_ref = self._context(branch)
         problem = self._root_problem(branch)
         current_problem = problem
 
@@ -813,11 +897,14 @@ class PlanningRuntime:
     ) -> PlanningRunResult:
         """Replay the existing prefix, apply one explicit replacement, and append it."""
 
-        problem, envelope = self._context(branch)
+        problem, envelope, problem_ref = self._context(branch)
         replay = self.replay(branch)
         state = replay.get("state")
         if not isinstance(state, Mapping):
             raise HistoryReplayError("branch has no replayable state")
+        state_ref = replay.get("state_ref")
+        if not isinstance(state_ref, str):
+            state_ref = None
         bound = self._bind_operation(operation, state)
         head = self.store.head(branch).head_event_id
         if expected_head is None:
@@ -832,6 +919,8 @@ class PlanningRuntime:
             actor_kind="code",
             mode="deterministic",
             decision_class="mechanical",
+            problem_ref=problem_ref,
+            input_state_ref=state_ref,
             expected_head=expected_head,
         )
         event_id = advanced[0]
@@ -875,7 +964,7 @@ class PlanningRuntime:
         it does not change provision status or select a route.
         """
 
-        problem, envelope_ref = self._context(branch)
+        problem, envelope_ref, problem_ref = self._context(branch)
         replay = self.replay(branch)
         state = replay.get("state")
         if not isinstance(state, Mapping):
@@ -962,7 +1051,13 @@ class PlanningRuntime:
         self._commit(
             branch,
             {
-                **self._event_context(problem, envelope_ref, state, state_ref=state_ref),
+                **self._event_context(
+                    problem,
+                    envelope_ref,
+                    state,
+                    problem_ref=problem_ref,
+                    state_ref=state_ref,
+                ),
                 "event_kind": "attempt",
                 "actor_kind": "provider",
                 "outcome": "started",
@@ -978,7 +1073,13 @@ class PlanningRuntime:
             event_id = self._commit(
                 branch,
                 {
-                    **self._event_context(problem, envelope_ref, state, state_ref=state_ref),
+                    **self._event_context(
+                        problem,
+                        envelope_ref,
+                        state,
+                        problem_ref=problem_ref,
+                        state_ref=state_ref,
+                    ),
                     "event_kind": "receipt",
                     "actor_kind": "provider",
                     "outcome": status or "failed",
@@ -1044,7 +1145,13 @@ class PlanningRuntime:
             event_id = self._commit(
                 branch,
                 {
-                    **self._event_context(problem, envelope_ref, state, state_ref=state_ref),
+                    **self._event_context(
+                        problem,
+                        envelope_ref,
+                        state,
+                        problem_ref=problem_ref,
+                        state_ref=state_ref,
+                    ),
                     "event_kind": "receipt",
                     "actor_kind": "provider",
                     "outcome": "invalid",
@@ -1081,6 +1188,7 @@ class PlanningRuntime:
             actor_kind="model",
             decision_class=_decision_class(provider_result),
             mode="live",
+            problem_ref=problem_ref,
             input_state_ref=state_ref,
             request=request_record,
             receipt=provider_result,
@@ -1449,18 +1557,21 @@ class PlanningRuntime:
         connection_options: Sequence[Mapping[str, object]],
         *,
         prepare_connection_defaults: bool,
-    ) -> tuple[dict[str, object], dict[str, object], str, str, bool]:
+    ) -> tuple[dict[str, object], dict[str, object], str, str, bool, str, str]:
         try:
             head = self.store.head(branch)
         except HistoryMissingError:
             self.store.create_branch(branch)
             head = self.store.head(branch)
         if head.head_event_id is not None:
-            problem, envelope_ref = self._context(branch)
+            problem, envelope_ref, problem_ref = self._context(branch)
             replay = self.replay(branch)
             state = replay.get("state")
             if not isinstance(state, Mapping):
                 raise HistoryReplayError("existing branch has no replayable state")
+            state_ref = replay.get("state_ref")
+            if not isinstance(state_ref, str):
+                raise HistoryReplayError("existing branch has no state reference")
             envelope = self.store.get(envelope_ref)
             recorded_defaults = (
                 envelope.get("prepared_connection_defaults")
@@ -1473,6 +1584,8 @@ class PlanningRuntime:
                 head.head_event_id,
                 envelope_ref,
                 recorded_defaults is True,
+                problem_ref,
+                state_ref,
             )
 
         problem = dict(build_planning_problem(config, brief=self.brief or None))
@@ -1514,7 +1627,15 @@ class PlanningRuntime:
                 "dependency_refs": [problem_ref, envelope_ref],
             },
         )
-        return problem, state, event_id, envelope_ref, prepare_connection_defaults
+        return (
+            problem,
+            state,
+            event_id,
+            envelope_ref,
+            prepare_connection_defaults,
+            problem_ref,
+            state_ref,
+        )
 
     def _bind_problem_context(self, problem: dict[str, object]) -> dict[str, object]:
         if self.brief and "brief" not in problem:
@@ -1529,7 +1650,7 @@ class PlanningRuntime:
             problem["problem_id"] = f"planning-problem-{_digest(problem['input_fingerprint'])}"
         return problem
 
-    def _context(self, branch: str) -> tuple[dict[str, object], str]:
+    def _context(self, branch: str) -> tuple[dict[str, object], str, str]:
         branch_record = self.store.branch(branch)
         head = self.store.head(branch)
         event_id = head.head_event_id or branch_record.base_history_event_id
@@ -1567,7 +1688,7 @@ class PlanningRuntime:
             self.connection_options = [
                 dict(item) for item in envelope["connection_options"] if isinstance(item, Mapping)
             ]
-        return dict(problem), envelope_ref
+        return dict(problem), envelope_ref, problem_ref
 
     def _root_problem(self, branch: str) -> dict[str, object]:
         branch_record = self.store.branch(branch)
@@ -1602,9 +1723,11 @@ class PlanningRuntime:
         envelope_ref: str,
         state: Mapping[str, object],
         *,
+        problem_ref: str | None = None,
         state_ref: str | None = None,
     ) -> dict[str, object]:
-        problem_ref = self.store.put(problem, kind="planning-problem")
+        if problem_ref is None:
+            problem_ref = self.store.put(problem, kind="planning-problem")
         if state_ref is None:
             state_ref = self.store.put(state, kind="state")
         return {
@@ -1636,12 +1759,21 @@ class PlanningRuntime:
         actor_kind: str,
         mode: RunMode,
         decision_class: DecisionClass | None = None,
+        problem_ref: str | None = None,
         input_state_ref: str | None = None,
         request: Mapping[str, object] | None = None,
         receipt: Mapping[str, object] | None = None,
         expected_head: str | None = None,
-    ) -> tuple[str, dict[str, object], dict[str, object] | None, dict[str, object]]:
+    ) -> tuple[
+        str,
+        dict[str, object],
+        dict[str, object] | None,
+        dict[str, object],
+        str,
+        str,
+    ]:
         current_problem = dict(problem)
+        current_problem_ref = problem_ref
         expanded = None
         payload = operation.get("payload")
         payload_mapping = payload if isinstance(payload, Mapping) else {}
@@ -1658,6 +1790,17 @@ class PlanningRuntime:
                     and isinstance(child_problem, Mapping)
                     and isinstance(child_state, Mapping)
                 ):
+                    current_problem_ref = None
+                    recorded_problem_ref = operation.get("problem_ref")
+                    if isinstance(recorded_problem_ref, str):
+                        try:
+                            recorded_problem = self.store.get(recorded_problem_ref)
+                        except (FileNotFoundError, HistoryError, KeyError, ValueError):
+                            recorded_problem = None
+                        if recorded_problem == child_problem:
+                            current_problem_ref = recorded_problem_ref
+                    if current_problem_ref is None:
+                        current_problem_ref = self.store.put(child_problem, kind="planning-problem")
                     current_problem = dict(child_problem)
                     child = dict(child_state)
                 else:
@@ -1684,6 +1827,7 @@ class PlanningRuntime:
                         "problem_ref": child_problem_ref,
                     }
                     current_problem = dict(child_problem)
+                    current_problem_ref = child_problem_ref
                     child = dict(child_state)
                 else:
                     child = {"status": "invalid"}
@@ -1691,15 +1835,21 @@ class PlanningRuntime:
                 child = dict(expanded)
         else:
             child = apply_operation(current_problem, state, operation)
-        input_state = (
-            {"input_state_ref": input_state_ref}
-            if input_state_ref is not None
-            else {"input_state": state}
+        event_context = self._event_context(
+            problem,
+            envelope_ref,
+            state,
+            problem_ref=problem_ref,
+            state_ref=input_state_ref,
         )
+        input_state_ref = event_context["state_ref"]
+        input_state = {"input_state_ref": input_state_ref}
+        if current_problem_ref is None:
+            current_problem_ref = self.store.put(current_problem, kind="planning-problem")
         if child.get("status") == "invalid":
             diagnostic = child.get("diagnostics", [{"code": "operation", "message": "rejected"}])
             event = {
-                **self._event_context(problem, envelope_ref, state, state_ref=input_state_ref),
+                **event_context,
                 "event_kind": "diagnostic",
                 "actor_kind": actor_kind,
                 "outcome": "invalid",
@@ -1712,26 +1862,48 @@ class PlanningRuntime:
                 "diagnostics": _safe_json(diagnostic),
             }
             event_id = self._commit(branch, event, expected_head)
-            return event_id, dict(state), dict(child), current_problem
+            return (
+                event_id,
+                dict(state),
+                dict(child),
+                current_problem,
+                current_problem_ref,
+                input_state_ref,
+            )
+        child_state_ref = (
+            input_state_ref
+            if input_state_ref is not None and dict(child) == dict(state)
+            else self.store.put(child, kind="state")
+        )
         event = {
-            **self._event_context(problem, envelope_ref, state, state_ref=input_state_ref),
+            **event_context,
             "event_kind": "decision",
             "actor_kind": actor_kind,
             "outcome": "accepted",
             "state_transition": True,
             **input_state,
-            "output_state": child,
+            "output_state_ref": child_state_ref,
             "operation": operation,
             "request": request,
             "receipt": receipt,
             "decision_class": decision_class,
             "mode": mode,
         }
-        child_problem_ref = self.store.put(current_problem, kind="planning-problem")
-        event["problem_ref"] = child_problem_ref
-        event["dependency_refs"] = sorted(set(event["dependency_refs"]) | {child_problem_ref})
+        if current_problem_ref is None:
+            current_problem_ref = self.store.put(current_problem, kind="planning-problem")
+        event["problem_ref"] = current_problem_ref
+        event["dependency_refs"] = sorted(
+            set(event["dependency_refs"]) | {current_problem_ref, child_state_ref}
+        )
         event_id = self._commit(branch, event, expected_head)
-        return event_id, dict(child), None, current_problem
+        return (
+            event_id,
+            dict(child),
+            None,
+            current_problem,
+            current_problem_ref,
+            child_state_ref,
+        )
 
     def _result(
         self,
@@ -1803,8 +1975,21 @@ class PlanningRuntime:
         report = result.as_dict()
         report.pop("problem", None)
         report.pop("state", None)
-        problem_ref = self.store.put(problem, kind="planning-problem")
-        state_ref = self.store.put(state, kind="state") if state is not None else None
+        problem_ref = None
+        state_ref = None
+        if isinstance(event_id, str):
+            event = self.store.get(event_id)
+            if isinstance(event, Mapping):
+                candidate_problem_ref = event.get("problem_ref")
+                candidate_state_ref = event.get("output_state_ref") or event.get("input_state_ref")
+                if isinstance(candidate_problem_ref, str):
+                    problem_ref = candidate_problem_ref
+                if isinstance(candidate_state_ref, str):
+                    state_ref = candidate_state_ref
+        if problem_ref is None:
+            problem_ref = self.store.put(problem, kind="planning-problem")
+        if state_ref is None and state is not None:
+            state_ref = self.store.put(state, kind="state")
         report["problem_ref"] = problem_ref
         report["state_ref"] = state_ref
         report["problem_fingerprint"] = problem.get("input_fingerprint")

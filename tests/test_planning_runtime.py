@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+from collections import Counter
 from pathlib import Path
 
 import geopandas as gpd
@@ -491,6 +492,54 @@ def test_policy_allows_mechanical_selection_of_unique_exact_mandatory_corridor(
         item.get("decision_class") == "mechanical" and item.get("actor_kind") == "code"
         for item in result.decision_trace
     )
+
+
+def test_runtime_reuses_verified_refs_when_recording_mechanical_decisions(monkeypatch, tmp_path):
+    """A resumed decision loop should not reserialize verified immutable records."""
+
+    source = _urban_runtime_source()
+    monkeypatch.setattr("satn.planning_engine.load_snapshot", lambda _config: source)
+    config = configured_bath_saltford(tmp_path)
+    problem = build_planning_problem(config)
+    history_root = tmp_path / "history"
+    _seed_runtime_problem(
+        history_root,
+        problem,
+        policy={"allow_provisional_choices": True},
+    )
+
+    original_put = HistoryStore.put
+    writes = []
+
+    def record_write(store, value, *, kind="record"):
+        reference = original_put(store, value, kind=kind)
+        if kind in {"planning-problem", "state"}:
+            writes.append((kind, reference))
+        return reference
+
+    monkeypatch.setattr(HistoryStore, "put", record_write)
+    result = PlanningRuntime(history_root).run(
+        config,
+        output_root=tmp_path / "output",
+        mode="deterministic",
+    )
+
+    store = HistoryStore(history_root)
+    decision_events = []
+    event_id = result.history_event_id
+    while event_id:
+        event = store.get(event_id)
+        if event.get("event_kind") == "decision":
+            decision_events.append(event)
+        event_id = event.get("parent_event_id")
+
+    assert decision_events
+    decision_events.reverse()
+    writes_by_reference = Counter(reference for _kind, reference in writes)
+    for event in decision_events:
+        assert writes_by_reference[event["problem_ref"]] == 0
+        assert writes_by_reference[event["input_state_ref"]] <= 1
+        assert writes_by_reference[event["output_state_ref"]] == 1
 
 
 def _seed_runtime_problem(
