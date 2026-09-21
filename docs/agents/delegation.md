@@ -61,3 +61,30 @@ The main agent reads `CONTEXT.md` and relevant ADRs directly. Subagents receive 
 the relevant paths and concepts in their capsule. The main agent alone decides
 whether verified work changes the domain model or requires an ADR; a documentation
 worker may edit those files only when given an explicit, already-resolved decision.
+
+## Durable progress tracking
+
+For delegated or long-running work, the main agent keeps a current progress record
+in the existing task artifact directory and links it from the task handoff. Keep
+private evidence local; use the GitHub issue for public milestones and remaining
+acceptance criteria. Reuse existing records rather than creating another tracker.
+
+The current record contains:
+
+- Objective, acceptance criteria and current milestone.
+- Last verified result, check time and supporting artifact or check output.
+- Active work: owner, worktree/commit, command or session ID and observed status.
+- Completed work, remaining criteria and the next necessary action.
+- Checkpoint or receipt locations needed to resume without repeating work.
+- A concrete stop reason or external dependency when applicable; otherwise none.
+
+Update the record when work is dispatched, a meaningful result arrives, a command
+finishes, or the next action changes. Record failed attempts as evidence alongside
+the changed hypothesis or input that justifies another attempt. Preserve prior
+checkpoints and model exchanges. Distinguish queued, running, failed and verified
+work; elapsed time or an unchanged log alone proves neither progress nor failure.
+
+Before resuming, reconcile the record with agent status, running commands and Git
+state. Continue from the verified checkpoint. Completion requires the acceptance
+evidence, not a completed subtask or a percentage inferred from effort. When
+blocked, record the exact dependency and continue independent authorized work.
