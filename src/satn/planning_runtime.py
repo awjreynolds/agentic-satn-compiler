@@ -1594,7 +1594,7 @@ class PlanningRuntime:
         problem = self._bind_problem_context(problem)
         state = dict(initial_proposal(problem))
         problem_ref = self.store.put(problem, kind="planning-problem")
-        state_ref = self.store.put(state, kind="state")
+        state_ref = self.store.put_state(state, problem_ref=problem_ref)
         self.brief_ref = self.store.put(self.brief, kind="planning-brief") if self.brief else None
         self.policy_ref = (
             self.store.put(self.policy, kind="planning-policy") if self.policy else None
@@ -1620,7 +1620,7 @@ class PlanningRuntime:
                 "actor_kind": "code",
                 "outcome": "accepted",
                 "state_transition": True,
-                "output_state": state,
+                "output_state_ref": state_ref,
                 "operation": {"kind": "initialize", "state_ref": state_ref},
                 "problem_ref": problem_ref,
                 "run_envelope_ref": envelope_ref,
@@ -1729,13 +1729,23 @@ class PlanningRuntime:
         if problem_ref is None:
             problem_ref = self.store.put(problem, kind="planning-problem")
         if state_ref is None:
-            state_ref = self.store.put(state, kind="state")
+            state_ref = self._store_state(state, problem, problem_ref)
         return {
             "problem_ref": problem_ref,
             "run_envelope_ref": envelope_ref,
             "state_ref": state_ref,
             "dependency_refs": [problem_ref, envelope_ref, state_ref],
         }
+
+    def _store_state(
+        self,
+        state: Mapping[str, object],
+        problem: Mapping[str, object],
+        problem_ref: str,
+    ) -> str:
+        if problem.get("schema_version") == "planning-problem/v1":
+            return self.store.put_state(state, problem_ref=problem_ref)
+        return self.store.put(state, kind="state")
 
     def _commit(
         self,
@@ -1873,7 +1883,7 @@ class PlanningRuntime:
         child_state_ref = (
             input_state_ref
             if input_state_ref is not None and dict(child) == dict(state)
-            else self.store.put(child, kind="state")
+            else self._store_state(child, current_problem, current_problem_ref)
         )
         event = {
             **event_context,
@@ -1889,8 +1899,6 @@ class PlanningRuntime:
             "decision_class": decision_class,
             "mode": mode,
         }
-        if current_problem_ref is None:
-            current_problem_ref = self.store.put(current_problem, kind="planning-problem")
         event["problem_ref"] = current_problem_ref
         event["dependency_refs"] = sorted(
             set(event["dependency_refs"]) | {current_problem_ref, child_state_ref}
@@ -1989,7 +1997,7 @@ class PlanningRuntime:
         if problem_ref is None:
             problem_ref = self.store.put(problem, kind="planning-problem")
         if state_ref is None and state is not None:
-            state_ref = self.store.put(state, kind="state")
+            state_ref = self._store_state(state, problem, problem_ref)
         report["problem_ref"] = problem_ref
         report["state_ref"] = state_ref
         report["problem_fingerprint"] = problem.get("input_fingerprint")
@@ -2781,8 +2789,12 @@ class PlanningRuntime:
             "policy": _safe_json(self.policy),
             "state_id": state.get("state_id"),
             "state_fingerprint": state.get("state_fingerprint"),
-            "state_ref": (
-                state_ref if state_ref is not None else self.store.put(state, kind="state")
+            "state_ref": state_ref
+            if state_ref is not None
+            else self._store_state(
+                state,
+                problem,
+                self.store.put(problem, kind="planning-problem"),
             ),
             "task_packet": task_packet,
             "task_packet_ref": packet_ref,
