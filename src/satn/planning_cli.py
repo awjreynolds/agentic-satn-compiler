@@ -9,8 +9,11 @@ from typing import Annotated
 
 import typer
 
+from satn.codex_specialist import CodexSpecialistAdapter
 from satn.models import AreaDefinition
+from satn.planning_routing import CapabilityKind, CapabilityRecord, StaticCapabilityRouter
 from satn.planning_runtime import PlanningRuntime
+from satn.typesafe_planning import TypeSafeClient
 
 plan_app = typer.Typer(
     no_args_is_help=True,
@@ -44,6 +47,22 @@ def run_command(
             help="JSON list of admitted named-place connection choices for this run.",
         ),
     ] = None,
+    specialist_model: Annotated[
+        str | None,
+        typer.Option(
+            "--specialist-model",
+            "--codex-model",
+            help="Explicit Codex model for one-shot unresolved specialist judgments.",
+        ),
+    ] = None,
+    specialist_reasoning_effort: Annotated[
+        str | None,
+        typer.Option(
+            "--specialist-reasoning-effort",
+            "--codex-reasoning-effort",
+            help="Explicit Codex reasoning effort for one-shot specialist judgments.",
+        ),
+    ] = None,
 ) -> None:
     """Admit one area and write a reviewable planning result."""
 
@@ -54,6 +73,10 @@ def run_command(
         if not isinstance(payload, list) or any(not isinstance(item, Mapping) for item in payload):
             raise typer.BadParameter("connection options must be a JSON list of objects")
         options = [dict(item) for item in payload]
+    if (specialist_model is None) != (specialist_reasoning_effort is None):
+        raise typer.BadParameter(
+            "--specialist-model and --specialist-reasoning-effort must be supplied together"
+        )
     kwargs: dict[str, object] = {
         "output_root": output_root,
         "branch": branch,
@@ -61,7 +84,30 @@ def run_command(
     }
     if options:
         kwargs["connection_options"] = options
-    result = PlanningRuntime(root).run(area, **kwargs)  # type: ignore[arg-type]
+    runtime_kwargs: dict[str, object] = {}
+    if mode == "live" and specialist_model is not None and specialist_reasoning_effort is not None:
+        runtime_kwargs["router"] = StaticCapabilityRouter(
+            (
+                CapabilityRecord(
+                    capability_id="jev",
+                    kind=CapabilityKind.JEV,
+                    judgment_forms=("choice",),
+                    provider="typesafe",
+                    adapter=TypeSafeClient(),
+                ),
+                CapabilityRecord(
+                    capability_id="codex-specialist",
+                    kind=CapabilityKind.SPECIALIST,
+                    judgment_forms=("structured-proposal",),
+                    provider="codex-exec",
+                    adapter=CodexSpecialistAdapter(
+                        model=specialist_model,
+                        reasoning_effort=specialist_reasoning_effort,
+                    ),
+                ),
+            )
+        )
+    result = PlanningRuntime(root, **runtime_kwargs).run(area, **kwargs)  # type: ignore[arg-type]
     _emit(result)
 
 

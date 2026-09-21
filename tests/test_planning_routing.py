@@ -127,6 +127,70 @@ def test_no_configured_adapter_is_no_capable_provider_and_unknown_is_distinct() 
     assert unknown.capability_id == "jev"
 
 
+def test_unavailable_specialist_route_retains_provider_result() -> None:
+    receipt = {
+        "status": "unavailable",
+        "provider": "codex-exec",
+        "requested_model": "gpt-5.6-luna",
+        "observed_model": None,
+        "request": {"prompt": "frozen task"},
+        "request_receipt": {"body": "frozen task", "body_sha256": "request"},
+        "response_receipt": {"body": "final response", "body_sha256": "response"},
+        "failure_class": "codex-process-failed",
+    }
+    capability = _capability(
+        "codex-specialist",
+        CapabilityKind.SPECIALIST,
+        adapter=lambda _task: receipt,
+        judgment_forms=("structured-proposal",),
+    )
+    requirements = _requirements(
+        operations=(),
+        judgment_forms=("structured-proposal",),
+        exactness="proposal-then-validate",
+    )
+
+    outcome = StaticCapabilityRouter((capability,)).route(
+        _task(requirements, allowed_operations=())
+    )
+
+    assert outcome.status is RoutingStatus.UNAVAILABLE
+    assert outcome.result == receipt
+    assert outcome.as_dict()["result"] == receipt
+
+
+def test_invalid_specialist_route_retains_provider_result() -> None:
+    receipt = {
+        "status": "invalid",
+        "provider": "codex-exec",
+        "requested_model": "gpt-5.6-luna",
+        "observed_model": "actual-model",
+        "request": {"prompt": "frozen task"},
+        "request_receipt": {"body": "frozen task", "body_sha256": "request"},
+        "response_receipt": {"body": "not json", "body_sha256": "response"},
+        "violations": ["response:invalid-json"],
+    }
+    capability = _capability(
+        "codex-specialist",
+        CapabilityKind.SPECIALIST,
+        adapter=lambda _task: receipt,
+        judgment_forms=("structured-proposal",),
+    )
+    requirements = _requirements(
+        operations=(),
+        judgment_forms=("structured-proposal",),
+        exactness="proposal-then-validate",
+    )
+
+    outcome = StaticCapabilityRouter((capability,)).route(
+        _task(requirements, allowed_operations=())
+    )
+
+    assert outcome.status is RoutingStatus.INVALID_PROVIDER_RESPONSE
+    assert outcome.result == receipt
+    assert outcome.as_dict()["result"] == receipt
+
+
 def test_retrieval_items_are_untrusted_until_provenance_admitted() -> None:
     capability = _capability(
         "retrieval",

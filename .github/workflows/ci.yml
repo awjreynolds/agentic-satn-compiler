@@ -54,6 +54,7 @@ jobs:
           tests/test_planning_routing.py
           tests/test_planning_runtime.py
           tests/test_planning_cli.py
+          tests/test_codex_specialist.py
           tests/test_published_site.py
           tests/test_publisher.py
           tests/test_snapshot_lineage.py
