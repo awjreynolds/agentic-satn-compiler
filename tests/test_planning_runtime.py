@@ -11,6 +11,7 @@ import pytest
 from bath_saltford_fixture import configured_bath_saltford
 from shapely.geometry import LineString, Point, Polygon, shape
 
+import satn.planning_engine as planning_engine_module
 import satn.planning_runtime as planning_runtime_module
 from satn.evidence import empty_context
 from satn.planning_engine import build_planning_problem, initial_proposal
@@ -173,6 +174,105 @@ def test_fresh_run_mechanically_expands_prepared_connections_once(
         sum(item.get("operation_kind") == "expand-connection" for item in resumed.decision_trace)
         == 1
     )
+
+
+def test_public_run_reuses_source_and_graph_for_prepared_expansions(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config = configured_bath_saltford(tmp_path)
+    source = _urban_runtime_source()
+    network = source["network"]
+    places = source["places"]
+    label_places = source["label_places"]
+    boundary = source["boundary"]
+    assert isinstance(network, gpd.GeoDataFrame)
+    assert isinstance(places, gpd.GeoDataFrame)
+    assert isinstance(label_places, gpd.GeoDataFrame)
+    assert isinstance(boundary, gpd.GeoDataFrame)
+    source["network"] = gpd.GeoDataFrame(
+        [
+            *network.to_dict("records"),
+            {
+                "u": "node-b",
+                "v": "node-c",
+                "osmid": "urban-edge-2",
+                "highway": "primary",
+                "oneway": False,
+                "geometry": LineString([(100.0, 0.0), (200.0, 0.0)]),
+            },
+            {
+                "u": "node-c",
+                "v": "node-b",
+                "osmid": "urban-edge-2",
+                "highway": "primary",
+                "oneway": False,
+                "geometry": LineString([(200.0, 0.0), (100.0, 0.0)]),
+            },
+        ],
+        geometry="geometry",
+        crs=network.crs,
+    )
+    source["places"] = gpd.GeoDataFrame(
+        [
+            *places.to_dict("records"),
+            {
+                "place_id": "place-c",
+                "source_id": "3",
+                "name": "Gamma",
+                "kind": "community",
+                "place_class": "town",
+                "geometry": Point(200.0, 0.0),
+            },
+        ],
+        geometry="geometry",
+        crs=places.crs,
+    )
+    source["label_places"] = gpd.GeoDataFrame(
+        [
+            *label_places.to_dict("records"),
+            {
+                "element": "node",
+                "id": 3,
+                "place": "town",
+                "name": "Gamma",
+                "geometry": Point(200.0, 0.0),
+            },
+        ],
+        geometry="geometry",
+        crs=label_places.crs,
+    )
+    source["boundary"] = gpd.GeoDataFrame(
+        [{"geometry": Polygon([(-1, -1), (201, -1), (201, 1), (-1, 1), (-1, -1)])}],
+        geometry="geometry",
+        crs=boundary.crs,
+    )
+    load_calls: list[object] = []
+    graph_calls: list[object] = []
+    original_graph = planning_engine_module.RoadGraph
+
+    def observed_load(config):
+        load_calls.append(config)
+        return source
+
+    class ObservedRoadGraph(original_graph):
+        def __init__(self, edges, **kwargs):
+            graph_calls.append(edges)
+            super().__init__(edges, **kwargs)
+
+    monkeypatch.setattr(planning_engine_module, "load_snapshot", observed_load)
+    monkeypatch.setattr(planning_engine_module, "RoadGraph", ObservedRoadGraph)
+    result = PlanningRuntime(
+        tmp_path / "history",
+        policy={"allow_provisional_choices": True},
+    ).run(config, output_root=tmp_path / "run", mode="deterministic")
+
+    assert len(result.problem["prepared_connections"]) == 2
+    assert (
+        sum(item.get("operation_kind") == "expand-connection" for item in result.decision_trace)
+        == 2
+    )
+    assert len(load_calls) == 1
+    assert len(graph_calls) == 1
 
 
 def test_runtime_defers_full_validation_projection_until_final_result(
