@@ -1741,6 +1741,166 @@ def test_live_connection_choice_expands_then_scopes_alignment_choice(tmp_path: P
         assert store.get(packet_ref) == packet
 
 
+def test_exact_candidate_aliases_are_one_choice_without_auto_selection(tmp_path: Path) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    root = tmp_path / "history"
+    connection = {
+        "connection_id": "bath-edge-to-saltford",
+        "origin_place_id": "bath-edge",
+        "destination_place_id": "saltford",
+        "current_or_future": "unknown",
+    }
+
+    prepared = PlanningRuntime(root).run(
+        config,
+        output_root=tmp_path / "prepared",
+        mode="deterministic",
+        requested_connections=[connection],
+    )
+    connection_candidates = [
+        item
+        for item in prepared.problem["candidates"]
+        if isinstance(item, dict) and item.get("connection_id") == connection["connection_id"]
+    ]
+    assert connection_candidates
+    path_groups: dict[str, list[dict[str, object]]] = {}
+    for candidate in connection_candidates:
+        graph_path = candidate.get("graph_path")
+        assert isinstance(graph_path, dict)
+        path_key = json.dumps(graph_path, sort_keys=True)
+        path_groups.setdefault(path_key, []).append(candidate)
+    alias_group = max(path_groups.values(), key=len)
+    assert len(alias_group) > 1
+    different = next(group[0] for group in path_groups.values() if group is not alias_group)
+    aliases = sorted(alias_group, key=lambda item: str(item["candidate_id"]))
+    representative = aliases[0]
+    alias_id = str(aliases[-1]["candidate_id"])
+    representative_id = str(representative["candidate_id"])
+    different_id = str(different["candidate_id"])
+
+    def comparable(candidate: dict[str, object]) -> str:
+        return json.dumps(
+            {key: value for key, value in candidate.items() if key not in {"candidate_id", "role"}},
+            sort_keys=True,
+        )
+
+    assert len({comparable(item) for item in aliases}) == 1
+    assert comparable(different) != comparable(representative)
+    assert representative_id != alias_id
+    assert representative["current_or_future"] == "unknown"
+
+    runtime = PlanningRuntime(root)
+    assert prepared.history_event_id is not None
+    checkpoint = runtime.store.checkpoint(prepared.history_event_id)
+    runtime.fork(checkpoint, "selected")
+    runtime.fork(checkpoint, "reserved")
+    alias_feedback = {
+        "kind": "request-evidence",
+        "payload": {
+            "target_refs": [alias_id],
+            "claim": "alias-targeted-provision-check",
+            "reason": "retain evidence request for the exact admitted alias",
+        },
+    }
+    selected_packets: list[dict[str, object]] = []
+
+    def select_provider(packet: object, questions: object) -> dict[str, object]:
+        assert isinstance(packet, dict)
+        assert isinstance(questions, dict)
+        selected_packets.append(packet)
+        if len(selected_packets) > 1:
+            return {
+                "status": "unavailable",
+                "provider": "test-provider",
+                "model": "test-model",
+                "failure_class": "test-stop",
+            }
+        criteria = questions["decision"].criteria
+        reserved = {"__unknown__", "__needs_evidence__", "__none__", "current-future-provision"}
+        assert set(criteria) - reserved == {representative_id, different_id}
+        return {
+            "status": "answered",
+            "provider": "test-provider",
+            "model": "test-model",
+            "answers": {"decision": {"type": "choice", "choice": representative_id}},
+            "response_receipt": {"body_sha256": "selected-response"},
+        }
+
+    selected = PlanningRuntime(root, provider=select_provider).run(
+        config,
+        output_root=tmp_path / "selected",
+        branch="selected",
+        mode="live",
+        operations=[alias_feedback],
+    )
+
+    assert selected_packets
+    packet = selected_packets[0]
+    offered = packet["candidates"]
+    assert isinstance(offered, list)
+    assert {str(item["candidate_id"]) for item in offered} == {
+        representative_id,
+        different_id,
+    }
+    assert alias_id in packet["scope"]["candidate_refs"]
+    alias_provenance = packet["candidate_provenance"]["aliases"]
+    group_provenance = next(
+        item for item in alias_provenance if item["representative_id"] == representative_id
+    )
+    assert {str(item["candidate_id"]) for item in group_provenance["aliases"]} == {
+        str(item["candidate_id"]) for item in aliases
+    }
+    assert {item["role"] for item in group_provenance["aliases"]} == {
+        str(item["role"]) for item in aliases
+    }
+    assert any(
+        alias_id in item.get("subject_refs", [])
+        for item in packet["feedback_unknowns"]
+        if isinstance(item, dict)
+    )
+    selected_alignment = next(
+        item
+        for item in selected.state["selected_alignments"]
+        if isinstance(item, dict) and item["candidate_id"] == representative_id
+    )
+    assert selected_alignment["graph_path"] == representative["graph_path"]
+    assert selected_alignment["current_or_future"] == "unknown"
+    assert alias_id not in {item["candidate_id"] for item in selected.state["selected_alignments"]}
+    assert selected.problem["candidates"] == prepared.problem["candidates"]
+
+    reserved_packets: list[dict[str, object]] = []
+
+    def reserved_provider(packet: object, _questions: object) -> dict[str, object]:
+        assert isinstance(packet, dict)
+        reserved_packets.append(packet)
+        if len(reserved_packets) > 1:
+            return {
+                "status": "unavailable",
+                "provider": "test-provider",
+                "model": "test-model",
+                "failure_class": "test-stop",
+            }
+        return {
+            "status": "answered",
+            "provider": "test-provider",
+            "model": "test-model",
+            "answers": {"decision": {"type": "choice", "choice": "__needs_evidence__"}},
+            "response_receipt": {"body_sha256": "reserved-response"},
+        }
+
+    reserved_result = PlanningRuntime(root, provider=reserved_provider).run(
+        config,
+        output_root=tmp_path / "reserved",
+        branch="reserved",
+        mode="live",
+        operations=[alias_feedback],
+    )
+    assert reserved_packets
+    assert not reserved_result.state["selected_alignments"]
+    assert reserved_result.state["unknown_facts"]
+
+
 def test_configured_specialist_proposal_is_engine_validated_and_replayed(tmp_path: Path) -> None:
     config = configured_bath_saltford(tmp_path)
     snapshot(config)

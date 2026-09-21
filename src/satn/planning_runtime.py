@@ -1744,14 +1744,22 @@ class PlanningRuntime:
         else:
             candidates = self._task_candidates(problem, state, all_candidates)
         candidates = sorted(candidates, key=lambda item: str(item.get("candidate_id", "")))
+        alias_groups = self._candidate_alias_groups(candidates)
+        representatives = [group[0] for group in alias_groups]
         scope_refs = sorted(
             {str(item.get("obligation_id")) for item in candidates if item.get("obligation_id")}
         )
         has_unknown_provision = any(
             item.get("current_or_future") == "unknown" for item in candidates
         )
-        dispatchable = len(candidates) + len(reserved) + (1 if has_unknown_provision else 0) <= 255
-        offered_candidates = candidates if dispatchable else []
+        dispatchable = (
+            len(representatives) + len(reserved) + (1 if has_unknown_provision else 0) <= 255
+        )
+        offered_candidates = representatives if dispatchable else []
+        selection_candidates = {
+            str(item["candidate_id"]): dict(item) for item in offered_candidates
+        }
+        candidate_aliases = self._candidate_alias_provenance(alias_groups if dispatchable else [])
         criteria = {
             str(item["candidate_id"]): self._candidate_label(item)
             for item in sorted(offered_candidates, key=lambda value: str(value["candidate_id"]))
@@ -1816,10 +1824,13 @@ class PlanningRuntime:
             {
                 "question_kind": "alignment",
                 "kind": "select-alignment",
-                "candidates": {
-                    str(item["candidate_id"]): dict(item) for item in offered_candidates
-                },
-                "candidate_refs": [str(item["candidate_id"]) for item in offered_candidates],
+                "candidates": {str(item["candidate_id"]): dict(item) for item in candidates},
+                "selection_candidates": selection_candidates,
+                "candidate_aliases": candidate_aliases,
+                "candidate_refs": [str(item["candidate_id"]) for item in candidates],
+                "selection_candidate_refs": [
+                    str(item["candidate_id"]) for item in offered_candidates
+                ],
                 "evidence_refs": evidence_refs,
                 "scope_refs": scope_refs,
                 "source_corridor_refs": source_corridor_refs,
@@ -1879,6 +1890,46 @@ class PlanningRuntime:
         ordered = sorted(candidates, key=lambda item: str(item.get("candidate_id", "")))
         obligation_id = str(ordered[0].get("obligation_id"))
         return [item for item in ordered if str(item.get("obligation_id")) == obligation_id]
+
+    @staticmethod
+    def _candidate_alias_groups(
+        candidates: Sequence[Mapping[str, object]],
+    ) -> list[list[dict[str, object]]]:
+        groups: dict[str, list[dict[str, object]]] = {}
+        for candidate in candidates:
+            comparable = {
+                str(key): value
+                for key, value in candidate.items()
+                if str(key) not in {"candidate_id", "role"}
+            }
+            key = _canonical_sort_key(comparable)
+            groups.setdefault(key, []).append(dict(candidate))
+        return [
+            sorted(group, key=lambda item: str(item.get("candidate_id", "")))
+            for group in sorted(
+                groups.values(),
+                key=lambda group: min(str(item.get("candidate_id", "")) for item in group),
+            )
+        ]
+
+    @staticmethod
+    def _candidate_alias_provenance(
+        groups: Sequence[Sequence[Mapping[str, object]]],
+    ) -> list[dict[str, object]]:
+        return [
+            {
+                "representative_id": str(group[0]["candidate_id"]),
+                "aliases": [
+                    {
+                        "candidate_id": str(item["candidate_id"]),
+                        "role": item.get("role"),
+                    }
+                    for item in group
+                ],
+            }
+            for group in groups
+            if len(group) > 1
+        ]
 
     @staticmethod
     def _candidate_label(candidate: Mapping[str, object]) -> str:
@@ -2025,7 +2076,7 @@ class PlanningRuntime:
             if kind not in {"propose-connection", "revise-connection"}:
                 raise ValueError("connection option has an unsupported operation kind")
             return {"kind": kind, "payload": payload}
-        candidates = context.get("candidates", {})
+        candidates = context.get("selection_candidates", context.get("candidates", {}))
         if not isinstance(candidates, Mapping) or choice not in candidates:
             raise ValueError("provider selected an option outside the offered menu")
         candidate = candidates[choice]
@@ -2087,7 +2138,7 @@ class PlanningRuntime:
                 raise ValueError(message)
 
         if kind == "select-alignment":
-            offered = context.get("candidates", {})
+            offered = context.get("selection_candidates", context.get("candidates", {}))
             candidate_id = payload.get("candidate_id")
             if not isinstance(offered, Mapping) or candidate_id not in offered:
                 raise ValueError("specialist selected a candidate outside the offered task scope")
@@ -2115,7 +2166,7 @@ class PlanningRuntime:
                 raise ValueError("specialist referenced evidence outside the offered task scope")
             outcome = payload.get("outcome")
             if isinstance(outcome, Mapping) and outcome.get("candidate_id") is not None:
-                offered = context.get("candidates", {})
+                offered = context.get("selection_candidates", context.get("candidates", {}))
                 if not isinstance(offered, Mapping) or outcome.get("candidate_id") not in offered:
                     raise ValueError(
                         "specialist referenced an alternate outside the offered task scope"
@@ -2159,6 +2210,9 @@ class PlanningRuntime:
         }
         request_id = f"planning-request-{_digest(semantic_request)[:24]}"
         packet_ref = self.store.put(task_packet, kind="planning-task-packet")
+        selection_refs = context.get("selection_candidate_refs")
+        if not isinstance(selection_refs, list):
+            selection_refs = context.get("candidate_refs", [])
         audit_binding = {
             "transformation": _CLASSIFIER_TRANSFORMATION,
             "request_id": request_id,
@@ -2194,7 +2248,7 @@ class PlanningRuntime:
             "policy_ref": self.policy_ref or problem.get("policy_fingerprint"),
             "offered_consideration_refs": _safe_json(
                 [
-                    *context.get("candidate_refs", []),
+                    *selection_refs,
                     _UNKNOWN,
                     _EVIDENCE,
                     _NONE,
@@ -2234,9 +2288,18 @@ class PlanningRuntime:
             return self._evidence_task_packet(mode, questions, context)
 
         raw_candidates = context.get("candidates", {})
-        candidates: list[dict[str, object]] = []
+        all_candidates: list[dict[str, object]] = []
         if isinstance(raw_candidates, Mapping):
             for candidate_id, value in raw_candidates.items():
+                if isinstance(value, Mapping):
+                    candidate = dict(value)
+                    candidate.setdefault("candidate_id", str(candidate_id))
+                    all_candidates.append(candidate)
+        all_candidates.sort(key=lambda item: str(item.get("candidate_id", "")))
+        raw_selection_candidates = context.get("selection_candidates", raw_candidates)
+        candidates: list[dict[str, object]] = []
+        if isinstance(raw_selection_candidates, Mapping):
+            for candidate_id, value in raw_selection_candidates.items():
                 if isinstance(value, Mapping):
                     candidate = dict(value)
                     candidate.setdefault("candidate_id", str(candidate_id))
@@ -2299,7 +2362,11 @@ class PlanningRuntime:
         corridor_ids: set[str] = set()
         obligation_ids: set[str] = set(str(item) for item in context.get("scope_refs", []))
         evidence_ids: set[str] = set(str(item) for item in context.get("evidence_refs", []))
-        candidate_ids: set[str] = set()
+        candidate_ids: set[str] = {
+            str(candidate["candidate_id"])
+            for candidate in all_candidates
+            if candidate.get("candidate_id")
+        }
         for candidate in candidates:
             candidate_id = candidate.get("candidate_id")
             if candidate_id:
@@ -2467,6 +2534,9 @@ class PlanningRuntime:
             "scope": {
                 "scope_refs": _sorted_refs(context.get("scope_refs", [])),
                 "candidate_refs": sorted(candidate_ids),
+                "selection_candidate_refs": _sorted_refs(
+                    context.get("selection_candidate_refs", [])
+                ),
                 "evidence_refs": sorted(evidence_ids),
                 "permitted_action_kinds": _sorted_refs(context.get("permitted_action_kinds", [])),
             },
@@ -2476,6 +2546,9 @@ class PlanningRuntime:
                 key=lambda item: (str(item.get("connection_id", "")), _canonical_sort_key(item)),
             ),
             "candidates": [_classifier_candidate(item) for item in candidates],
+            "candidate_provenance": {
+                "aliases": _safe_json(context.get("candidate_aliases", [])),
+            },
             "facts": {
                 "obligations": [_classifier_record(item) for item in obligations],
                 "source_corridors": [_classifier_record(item) for item in source_corridors],
