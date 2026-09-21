@@ -581,8 +581,10 @@ def test_unresolved_jev_feedback_routes_offered_specialist_operation_and_replays
         ],
     )
 
-    assert len(tasks["jev"]) == 2
-    assert tasks["jev"][1].input_state["question_kind"] == "alignment"
+    assert [task.input_state["question_kind"] for task in tasks["jev"]][:2] == [
+        "connection",
+        "alignment",
+    ]
     assert tasks["specialist"]
     specialist_task = tasks["specialist"][0]
     assert "select-alignment" in specialist_task.allowed_operations
@@ -630,22 +632,15 @@ def test_unresolved_jev_feedback_routes_offered_specialist_operation_and_replays
     )
     assert first_agent >= 1
     assert all(item["decision_class"] == "classifier" for item in decision_trace[:first_agent])
-    assert all(item["decision_class"] == "agent" for item in decision_trace[first_agent:])
     assert all(item["provider"] == "configured-jev" for item in decision_trace[:first_agent])
-    assert all(item["provider"] == "configured-specialist" for item in decision_trace[first_agent:])
+    assert decision_trace[first_agent]["decision_class"] == "agent"
+    assert decision_trace[first_agent]["provider"] == "configured-specialist"
     store = HistoryStore(root)
-    for trace_item, expected_provider in zip(
-        decision_trace,
-        (
-            *("configured-jev",) * first_agent,
-            *("configured-specialist",) * (len(decision_trace) - first_agent),
-        ),
-        strict=True,
-    ):
+    for trace_item in decision_trace:
         event = store.get(trace_item["event_id"])
         assert event["decision_class"] == trace_item["decision_class"]
         receipt = store.get(event["receipt_ref"])
-        assert receipt["provider"] == expected_provider
+        assert receipt["provider"] == trace_item["provider"]
 
     replay_calls: list[object] = []
 
@@ -657,6 +652,131 @@ def test_unresolved_jev_feedback_routes_offered_specialist_operation_and_replays
     assert replay["state"] == result.state
     assert replay["problem"] == result.problem
     assert replay_calls == []
+
+
+def test_unrelated_townpair_feedback_does_not_escalate_source_corridor(
+    tmp_path: Path,
+) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    tasks: dict[str, list[DecisionTask]] = {"jev": [], "specialist": []}
+    source_corridor = (
+        "planning-corridor-dd94b1d7e44392a560eaa9ea696edbb6206b29c9db60aa2c5269745347d2eb4c"
+    )
+    alignment_count = 0
+
+    def jev(task: DecisionTask) -> dict[str, object]:
+        nonlocal alignment_count
+        tasks["jev"].append(task)
+        if task.input_state["question_kind"] == "connection":
+            choice = "townpair-obligation"
+        else:
+            alignment_count += 1
+            if alignment_count == 1:
+                choice = "__needs_evidence__"
+            else:
+                return {
+                    "status": "unavailable",
+                    "provider": "configured-jev",
+                    "model": "jev-model",
+                    "failure_class": "observation-stop",
+                }
+        return {
+            "status": "answered",
+            "provider": "configured-jev",
+            "model": "jev-model",
+            "answers": {"decision": {"type": "choice", "choice": choice}},
+            "response_receipt": {"body_sha256": f"jev-response-{len(tasks['jev'])}"},
+        }
+
+    def specialist(task: DecisionTask) -> dict[str, object]:
+        tasks["specialist"].append(task)
+        assert task.input_state["question_kind"] == "alignment"
+        candidate = next(item for item in task.candidates if isinstance(item, dict))
+        return {
+            "status": "answered",
+            "provider": "configured-specialist",
+            "model": "specialist-model",
+            "proposal": {
+                "operation": {
+                    "kind": "select-alignment",
+                    "payload": {
+                        "candidate_id": candidate["candidate_id"],
+                        "obligation_id": candidate.get("obligation_id"),
+                    },
+                }
+            },
+            "response_receipt": {"body_sha256": "specialist-response"},
+        }
+
+    router = StaticCapabilityRouter(
+        (
+            CapabilityRecord(
+                capability_id="jev",
+                kind=CapabilityKind.JEV,
+                judgment_forms=("choice",),
+                provider="configured-jev",
+                adapter=jev,
+            ),
+            CapabilityRecord(
+                capability_id="specialist",
+                kind=CapabilityKind.SPECIALIST,
+                operations=("select-alignment",),
+                judgment_forms=("structured-proposal",),
+                operation_scopes=("select-alignment",),
+                provider="configured-specialist",
+                adapter=specialist,
+            ),
+        )
+    )
+    root = tmp_path / "history"
+    result = PlanningRuntime(root, router=router).run(
+        config,
+        output_root=tmp_path / "run",
+        mode="live",
+        connection_options=[
+            {
+                "connection_id": "townpair-obligation",
+                "origin_place_id": "bath-edge",
+                "destination_place_id": "saltford",
+                "current_or_future": "unknown",
+            }
+        ],
+    )
+
+    assert [task.input_state["question_kind"] for task in tasks["jev"]] == [
+        "connection",
+        "alignment",
+        "alignment",
+    ]
+    assert len(tasks["specialist"]) == 1
+    ordinary_alignment = tasks["jev"][2].input_state
+    assert ordinary_alignment["question_kind"] == "alignment"
+    assert all(
+        item.get("connection_id") != "townpair-obligation"
+        for item in ordinary_alignment["connection_options"]
+        if isinstance(item, dict)
+    )
+    assert ordinary_alignment["feedback_unknowns"] == []
+    candidates = ordinary_alignment["candidates"]
+    assert candidates
+    assert any(
+        source_corridor in item.get("source_corridor_refs", [])
+        for item in candidates
+        if isinstance(item, dict)
+    )
+    assert any(
+        item.get("connection_id") == "townpair-obligation"
+        for item in ordinary_alignment["prior_decisions"]["connection_intents"]
+        if isinstance(item, dict)
+    )
+    assert result.provider_result["status"] == "unavailable"
+    assert any(
+        isinstance(item, dict)
+        and item.get("claim") == "planning-decision"
+        and "townpair-obligation" in item.get("subject_refs", [])
+        for item in result.state["unknown_facts"]
+    )
 
 
 def test_requested_connection_options_schedule_each_intent_before_remaining_work(

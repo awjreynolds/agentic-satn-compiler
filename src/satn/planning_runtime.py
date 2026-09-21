@@ -2249,9 +2249,40 @@ class PlanningRuntime:
             for value in raw_connections.values():
                 if isinstance(value, Mapping):
                     connections.append(dict(value))
+        relevant_connection_ids = {
+            str(reference) for reference in context.get("scope_refs", []) if reference is not None
+        }
+        relevant_corridor_ids = {
+            str(reference)
+            for reference in context.get("source_corridor_refs", [])
+            if reference is not None
+        }
+        for candidate in candidates:
+            for key in ("connection_id", "obligation_id"):
+                if candidate.get(key) is not None:
+                    relevant_connection_ids.add(str(candidate[key]))
+            relevant_corridor_ids.update(
+                str(reference) for reference in candidate.get("source_corridor_refs", [])
+            )
+        relevant_corridor_ids.update(
+            str(reference)
+            for connection in connections
+            for reference in connection.get("corridor_refs", [])
+        )
         intents = state.get("connection_intents")
         if isinstance(intents, list):
-            connections.extend(item for item in intents if isinstance(item, Mapping))
+            connections.extend(
+                item
+                for item in intents
+                if isinstance(item, Mapping)
+                and (
+                    str(item.get("connection_id")) in relevant_connection_ids
+                    or bool(
+                        set(str(reference) for reference in item.get("corridor_refs", []))
+                        & relevant_corridor_ids
+                    )
+                )
+            )
         connections.sort(
             key=lambda item: (
                 str(item.get("connection_id", "")),
