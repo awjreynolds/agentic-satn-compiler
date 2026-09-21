@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
 from itertools import pairwise
 
 import geopandas as gpd
@@ -55,6 +56,36 @@ _CONTEXT_CLASSIFICATIONS = {
 _DEPARTURE_OUTCOMES = {"alternate", "unresolved", "no-loss"}
 _EVIDENCE_RELATIONS = {"supports", "contradicts", "does_not_establish"}
 _PLANNING_CODE_CONTRACT = "planning-engine/v1"
+_CONTEXT_SHARED_FIELDS = ("brief", "source_corridors", "places", "obligations", "candidates")
+_CONTEXT_STATE_FINGERPRINT_FIELDS = frozenset(
+    {
+        "brief",
+        "brief_fingerprint",
+        "candidates",
+        "obligations",
+        "parent_problem_id",
+        "places",
+        "problem_fingerprint",
+        "schema_version",
+        "source_corridors",
+    }
+)
+
+
+@dataclass(frozen=True)
+class _PlanningContext:
+    """Verified, run-owned bindings for one immutable planning problem."""
+
+    problem_id: str
+    input_fingerprint: str
+    brief_fingerprint: str
+    problem_fields: Mapping[str, object]
+    state_fields: Mapping[str, object]
+    indexes: Mapping[str, frozenset[str]]
+    semantic_field_bytes: Mapping[str, bytes]
+    state_field_bytes: Mapping[str, bytes]
+    problem_ref: str | None = None
+
 
 _DEFAULT_BRIEF = {
     "brief_ref": "satn-planning-brief/resolved-corridor-policy-v1",
@@ -1491,7 +1522,12 @@ def _problem_binding_error(problem: Mapping[str, object]) -> str | None:
     return None
 
 
-def _state_binding_error(problem: Mapping[str, object], state: Mapping[str, object]) -> str | None:
+def _state_binding_error(
+    problem: Mapping[str, object],
+    state: Mapping[str, object],
+    *,
+    context: _PlanningContext | None = None,
+) -> str | None:
     if state.get("brief_fingerprint") != problem.get("brief_fingerprint") or _canonical(
         state.get("brief")
     ) != _canonical(problem.get("brief")):
@@ -1500,11 +1536,38 @@ def _state_binding_error(problem: Mapping[str, object], state: Mapping[str, obje
     if not isinstance(state_fingerprint, str):
         return "proposal state fingerprint is missing"
     try:
-        actual_fingerprint = semantic_fingerprint(state)
+        actual_fingerprint = (
+            _semantic_fingerprint_with_context(state, context)
+            if context is not None
+            else semantic_fingerprint(state)
+        )
     except (TypeError, ValueError):
         return "proposal state content cannot be fingerprinted"
     if actual_fingerprint != state_fingerprint:
         return "proposal state content does not match its fingerprint"
+    return None
+
+
+def _context_error(
+    problem: Mapping[str, object],
+    state: Mapping[str, object],
+    context: object,
+) -> str | None:
+    if not isinstance(context, _PlanningContext):
+        return "planning execution context is invalid"
+    if (
+        problem.get("problem_id") != context.problem_id
+        or problem.get("input_fingerprint") != context.input_fingerprint
+        or problem.get("brief_fingerprint") != context.brief_fingerprint
+    ):
+        return "planning execution context is stale"
+    for field in _CONTEXT_SHARED_FIELDS:
+        if problem.get(field) is not context.problem_fields.get(field):
+            return f"planning problem {field} changed after context verification"
+        if state.get(field) is not context.state_fields.get(field):
+            return f"proposal state {field} changed after context verification"
+    if state.get("brief") is not context.state_fields.get("brief"):
+        return "proposal state brief changed after context verification"
     return None
 
 
@@ -1758,12 +1821,31 @@ def apply_operation(
     state: Mapping[str, object],
     operation: Mapping[str, object],
 ) -> dict[str, object]:
+    """Apply one operation through the strict public engine boundary."""
+
+    return _apply_operation_with_context(problem, state, operation, context=None)
+
+
+def _apply_operation_with_context(
+    problem: Mapping[str, object],
+    state: Mapping[str, object],
+    operation: Mapping[str, object],
+    *,
+    context: _PlanningContext | None = None,
+) -> dict[str, object]:
     """Apply one explicit planner operation, returning a child or invalid result."""
 
+    context_error = _context_error(problem, state, context) if context is not None else None
     try:
-        problem_error = _problem_binding_error(problem)
+        problem_error = (
+            None
+            if context is not None and context_error is None
+            else _problem_binding_error(problem)
+        )
     except (TypeError, ValueError):
         problem_error = "planning problem identity cannot be validated"
+    if context_error:
+        return _operation_error("context-binding", context_error)
     if problem_error:
         return _operation_error("problem-binding", problem_error)
     if state.get("schema_version") != "proposal-state/v1":
@@ -1771,7 +1853,7 @@ def apply_operation(
     if state.get("parent_problem_id") != problem.get("problem_id"):
         return _operation_error("stale-problem", "proposal state belongs to another problem")
     try:
-        state_error = _state_binding_error(problem, state)
+        state_error = _state_binding_error(problem, state, context=context)
     except (TypeError, ValueError):
         state_error = "proposal state binding cannot be validated"
     if state_error:
@@ -1784,7 +1866,7 @@ def apply_operation(
     kind = str(operation.get("kind", ""))
     payload = operation.get("payload")
     payload = payload if isinstance(payload, Mapping) else operation
-    indexes = _ref_index(problem)
+    indexes = context.indexes if context is not None else _ref_index(problem)
     state_gaps = state.get("planning_gaps", [])
     if not isinstance(state_gaps, list):
         return _operation_error("state-shape", "state field planning_gaps is not a list")
@@ -2187,7 +2269,13 @@ def apply_operation(
     else:
         return _operation_error("operation-kind", f"unsupported operation kind: {kind}")
 
-    child = copy.deepcopy(dict(state))
+    if context is None:
+        child = copy.deepcopy(dict(state))
+    else:
+        child = dict(state)
+        for key, value in state.items():
+            if key not in _CONTEXT_SHARED_FIELDS:
+                child[key] = copy.deepcopy(value)
     values = child[field]
     if not isinstance(values, list):  # pragma: no cover - initial_proposal controls this.
         return _operation_error("state-shape", f"state field {field} is not a list")
@@ -2221,7 +2309,11 @@ def apply_operation(
     if not isinstance(operations, list):
         return _operation_error("state-shape", "state field operations is not a list")
     operations.append(_json_copy(operation))
-    child["state_fingerprint"] = semantic_fingerprint(child)
+    child["state_fingerprint"] = (
+        _semantic_fingerprint_with_context(child, context)
+        if context is not None
+        else semantic_fingerprint(child)
+    )
     child["state_id"] = _stable_id("proposal-state", child["state_fingerprint"])
     if child["state_fingerprint"] == state.get("state_fingerprint"):
         child["status"] = "no-progress"
@@ -2293,8 +2385,104 @@ def _semantic_state(value: Mapping[str, object]) -> dict[str, object]:
     return normalized if isinstance(normalized, dict) else {}
 
 
-def semantic_fingerprint(state: Mapping[str, object]) -> str:
+def _semantic_value_bytes(value: object, field: str | None = None) -> bytes:
+    return json.dumps(
+        _canonical(_semantic_value(value, field)),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+
+
+def _canonical_json_bytes(value: object) -> bytes:
+    return json.dumps(
+        _canonical(value),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+
+
+def _prepare_planning_context(
+    problem: Mapping[str, object], state: Mapping[str, object] | None = None
+) -> _PlanningContext:
+    """Verify one problem and cache its immutable lookup and identity work."""
+
+    diagnostics = _validate_problem_shape(problem)
+    if diagnostics:
+        raise ValueError(json.dumps(diagnostics, sort_keys=True))
+    problem_error = _problem_binding_error(problem)
+    if problem_error:
+        raise ValueError(problem_error)
+    state_values = state if state is not None else problem
+    if state is not None:
+        validation = _validate_proposal_with_context(problem, state, context=None, project=False)
+        validation_details = validation.get("validation", {})
+        validation_diagnostics = (
+            validation_details.get("diagnostics", [])
+            if isinstance(validation_details, Mapping)
+            else []
+        )
+        hard_diagnostics = [
+            item
+            for item in validation_diagnostics
+            if isinstance(item, Mapping) and item.get("code") != "mandatory-source-unaccounted"
+        ]
+        if hard_diagnostics:
+            raise ValueError(json.dumps(hard_diagnostics, sort_keys=True))
+    semantic_field_bytes = {
+        field: _semantic_value_bytes(state_values.get(field), field)
+        for field in _CONTEXT_STATE_FINGERPRINT_FIELDS
+    }
+    state_field_bytes = {
+        field: _canonical_json_bytes(state_values.get(field)) for field in _CONTEXT_SHARED_FIELDS
+    }
+    return _PlanningContext(
+        problem_id=str(problem["problem_id"]),
+        input_fingerprint=str(problem["input_fingerprint"]),
+        brief_fingerprint=str(problem["brief_fingerprint"]),
+        problem_fields={field: problem.get(field) for field in _CONTEXT_SHARED_FIELDS},
+        state_fields={field: state_values.get(field) for field in _CONTEXT_SHARED_FIELDS},
+        indexes={key: frozenset(values) for key, values in _ref_index(problem).items()},
+        semantic_field_bytes=semantic_field_bytes,
+        state_field_bytes=state_field_bytes,
+    )
+
+
+def _bind_planning_context_problem_ref(
+    context: _PlanningContext, problem_ref: str
+) -> _PlanningContext:
+    """Bind a verified run context to its immutable history problem record."""
+
+    return replace(context, problem_ref=problem_ref)
+
+
+def _context_semantic_fingerprint(state: Mapping[str, object], context: _PlanningContext) -> str:
+    fields = {
+        str(key): value
+        for key, value in state.items()
+        if str(key) not in _SEMANTIC_BOOKKEEPING_FIELDS
+    }
+    encoded: list[bytes] = []
+    for key in sorted(fields):
+        key_bytes = json.dumps(key, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+        value_bytes = context.semantic_field_bytes.get(key)
+        if value_bytes is None:
+            value_bytes = _semantic_value_bytes(fields[key], key)
+        encoded.append(key_bytes + b":" + value_bytes)
+    return hashlib.sha256(b"{" + b",".join(encoded) + b"}").hexdigest()
+
+
+def _semantic_fingerprint_with_context(
+    state: Mapping[str, object], context: _PlanningContext
+) -> str:
     """Hash decision meaning while ignoring event and provider identity noise."""
+
+    return _context_semantic_fingerprint(state, context)
+
+
+def semantic_fingerprint(state: Mapping[str, object]) -> str:
+    """Hash decision meaning through the strict public engine boundary."""
 
     return _fingerprint(_semantic_state(state))
 
@@ -2302,15 +2490,33 @@ def semantic_fingerprint(state: Mapping[str, object]) -> str:
 def validate_proposal(
     problem: Mapping[str, object], state: Mapping[str, object]
 ) -> dict[str, object]:
+    """Validate and project a proposal through the strict public boundary."""
+
+    return _validate_proposal_with_context(problem, state, context=None, project=True)
+
+
+def _validate_proposal_with_context(
+    problem: Mapping[str, object],
+    state: Mapping[str, object],
+    *,
+    context: _PlanningContext | None = None,
+    project: bool = True,
+) -> dict[str, object]:
     """Validate bindings and project the proposal into machine-readable output."""
 
     diagnostics = _validate_problem_shape(problem)
-    try:
-        problem_error = _problem_binding_error(problem)
-    except (TypeError, ValueError):
-        problem_error = "planning problem identity cannot be validated"
-    if problem_error:
-        diagnostics.append({"code": "problem-binding", "message": problem_error})
+    effective_context = context
+    context_error = _context_error(problem, state, context) if context is not None else None
+    if context_error:
+        diagnostics.append({"code": "context-binding", "message": context_error})
+        effective_context = None
+    if context is None or context_error:
+        try:
+            problem_error = _problem_binding_error(problem)
+        except (TypeError, ValueError):
+            problem_error = "planning problem identity cannot be validated"
+        if problem_error:
+            diagnostics.append({"code": "problem-binding", "message": problem_error})
     if state.get("schema_version") != "proposal-state/v1":
         diagnostics.append({"code": "state-schema", "message": "unsupported proposal state schema"})
     if state.get("parent_problem_id") != problem.get("problem_id"):
@@ -2322,16 +2528,17 @@ def validate_proposal(
             {"code": "problem-fingerprint", "message": "proposal input fingerprint is stale"}
         )
     try:
-        state_error = _state_binding_error(problem, state)
+        state_error = _state_binding_error(problem, state, context=effective_context)
     except (TypeError, ValueError):
         state_error = "proposal state binding cannot be validated"
     if state_error:
         diagnostics.append({"code": "state-binding", "message": state_error})
-    if state.get("brief_fingerprint") != problem.get("brief_fingerprint") or _canonical(
-        state.get("brief")
-    ) != _canonical(problem.get("brief")):
+    if effective_context is None and (
+        state.get("brief_fingerprint") != problem.get("brief_fingerprint")
+        or _canonical(state.get("brief")) != _canonical(problem.get("brief"))
+    ):
         diagnostics.append({"code": "brief-binding", "message": "proposal brief binding is stale"})
-    indexes = _ref_index(problem)
+    indexes = effective_context.indexes if effective_context is not None else _ref_index(problem)
     state_corridors = state.get("source_corridors", [])
     problem_corridors = problem.get("source_corridors", [])
     if not isinstance(state_corridors, list):
@@ -2341,71 +2548,72 @@ def validate_proposal(
         state_corridors = []
     if not isinstance(problem_corridors, list):
         problem_corridors = []
-    problem_corridor_by_id = {
-        str(item["corridor_id"]): item
-        for item in problem_corridors
-        if isinstance(item, Mapping) and item.get("corridor_id")
-    }
-    state_corridor_by_id = {
-        str(item["corridor_id"]): item
-        for item in state_corridors
-        if isinstance(item, Mapping) and item.get("corridor_id")
-    }
-    missing_inventory = sorted(set(problem_corridor_by_id) - set(state_corridor_by_id))
-    extra_inventory = sorted(set(state_corridor_by_id) - set(problem_corridor_by_id))
-    diagnostics.extend(
-        {"code": "source-inventory-missing", "message": corridor_id}
-        for corridor_id in missing_inventory
-    )
-    diagnostics.extend(
-        {"code": "source-inventory-foreign", "message": corridor_id}
-        for corridor_id in extra_inventory
-    )
-    diagnostics.extend(
-        {
-            "code": "source-inventory-mutated",
-            "message": corridor_id,
+    if effective_context is None:
+        problem_corridor_by_id = {
+            str(item["corridor_id"]): item
+            for item in problem_corridors
+            if isinstance(item, Mapping) and item.get("corridor_id")
         }
-        for corridor_id in sorted(set(problem_corridor_by_id) & set(state_corridor_by_id))
-        if _canonical(problem_corridor_by_id[corridor_id])
-        != _canonical(state_corridor_by_id[corridor_id])
-    )
-    for collection, identifier_key in (
-        ("places", "place_id"),
-        ("obligations", "obligation_id"),
-        ("candidates", "candidate_id"),
-    ):
-        expected_items = problem.get(collection, [])
-        expected_items = expected_items if isinstance(expected_items, list) else []
-        actual_items = state.get(collection, [])
-        if not isinstance(actual_items, list):
-            diagnostics.append(
-                {"code": "state-binding-shape", "message": f"{collection} is not a list"}
+        state_corridor_by_id = {
+            str(item["corridor_id"]): item
+            for item in state_corridors
+            if isinstance(item, Mapping) and item.get("corridor_id")
+        }
+        missing_inventory = sorted(set(problem_corridor_by_id) - set(state_corridor_by_id))
+        extra_inventory = sorted(set(state_corridor_by_id) - set(problem_corridor_by_id))
+        diagnostics.extend(
+            {"code": "source-inventory-missing", "message": corridor_id}
+            for corridor_id in missing_inventory
+        )
+        diagnostics.extend(
+            {"code": "source-inventory-foreign", "message": corridor_id}
+            for corridor_id in extra_inventory
+        )
+        diagnostics.extend(
+            {
+                "code": "source-inventory-mutated",
+                "message": corridor_id,
+            }
+            for corridor_id in sorted(set(problem_corridor_by_id) & set(state_corridor_by_id))
+            if _canonical(problem_corridor_by_id[corridor_id])
+            != _canonical(state_corridor_by_id[corridor_id])
+        )
+        for collection, identifier_key in (
+            ("places", "place_id"),
+            ("obligations", "obligation_id"),
+            ("candidates", "candidate_id"),
+        ):
+            expected_items = problem.get(collection, [])
+            expected_items = expected_items if isinstance(expected_items, list) else []
+            actual_items = state.get(collection, [])
+            if not isinstance(actual_items, list):
+                diagnostics.append(
+                    {"code": "state-binding-shape", "message": f"{collection} is not a list"}
+                )
+                continue
+            expected_by_id = {
+                str(item[identifier_key]): item
+                for item in expected_items
+                if isinstance(item, Mapping) and item.get(identifier_key)
+            }
+            actual_by_id = {
+                str(item[identifier_key]): item
+                for item in actual_items
+                if isinstance(item, Mapping) and item.get(identifier_key)
+            }
+            diagnostics.extend(
+                {"code": "state-binding-missing", "message": f"{collection}:{item_id}"}
+                for item_id in sorted(set(expected_by_id) - set(actual_by_id))
             )
-            continue
-        expected_by_id = {
-            str(item[identifier_key]): item
-            for item in expected_items
-            if isinstance(item, Mapping) and item.get(identifier_key)
-        }
-        actual_by_id = {
-            str(item[identifier_key]): item
-            for item in actual_items
-            if isinstance(item, Mapping) and item.get(identifier_key)
-        }
-        diagnostics.extend(
-            {"code": "state-binding-missing", "message": f"{collection}:{item_id}"}
-            for item_id in sorted(set(expected_by_id) - set(actual_by_id))
-        )
-        diagnostics.extend(
-            {"code": "state-binding-foreign", "message": f"{collection}:{item_id}"}
-            for item_id in sorted(set(actual_by_id) - set(expected_by_id))
-        )
-        diagnostics.extend(
-            {"code": "state-binding-mutated", "message": f"{collection}:{item_id}"}
-            for item_id in sorted(set(expected_by_id) & set(actual_by_id))
-            if _canonical(expected_by_id[item_id]) != _canonical(actual_by_id[item_id])
-        )
+            diagnostics.extend(
+                {"code": "state-binding-foreign", "message": f"{collection}:{item_id}"}
+                for item_id in sorted(set(actual_by_id) - set(expected_by_id))
+            )
+            diagnostics.extend(
+                {"code": "state-binding-mutated", "message": f"{collection}:{item_id}"}
+                for item_id in sorted(set(expected_by_id) & set(actual_by_id))
+                if _canonical(expected_by_id[item_id]) != _canonical(actual_by_id[item_id])
+            )
     candidate_by_id = {
         str(item["candidate_id"]): item
         for item in problem.get("candidates", [])
@@ -2711,6 +2919,14 @@ def validate_proposal(
     output_status = (
         "invalid" if hard_diagnostics else "reviewable-incomplete" if incomplete else "validated"
     )
+    if not project:
+        return {
+            "schema_version": "validated-output/v1",
+            "status": output_status,
+            "proposal_state_ref": state.get("state_id"),
+            "problem_ref": problem.get("problem_id"),
+            "validation": {"diagnostics": diagnostics},
+        }
     corridor_dispositions: list[dict[str, object]] = []
     for corridor in problem_corridors:
         if not isinstance(corridor, Mapping) or not corridor.get("corridor_id"):

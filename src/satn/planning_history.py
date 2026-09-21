@@ -160,6 +160,30 @@ def _record_digest(kind: str, payload: object) -> str:
     return hashlib.sha256(_canonical_bytes({"kind": kind, "payload": payload})).hexdigest()
 
 
+def _record_digest_with_shared_fields(
+    kind: str,
+    shared_fields: Mapping[str, bytes],
+    delta: Mapping[str, JSONValue],
+) -> str:
+    """Hash a logical record while reusing canonical bytes for shared fields."""
+
+    keys = sorted(set(shared_fields) | set(delta))
+    encoded_fields = []
+    for key in keys:
+        value_bytes = shared_fields.get(key)
+        if value_bytes is None:
+            value_bytes = _canonical_bytes(delta[key])
+        encoded_fields.append(
+            json.dumps(str(key), ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+            + b":"
+            + value_bytes
+        )
+    payload_bytes = b"{" + b",".join(encoded_fields) + b"}"
+    envelope_bytes = b'{"kind":' + json.dumps(kind, ensure_ascii=True).encode("utf-8")
+    envelope_bytes += b',"payload":' + payload_bytes + b"}"
+    return hashlib.sha256(envelope_bytes).hexdigest()
+
+
 def _require_digest(value: object, label: str) -> str:
     if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
         raise ValueError(f"{label} must be a lowercase SHA-256 digest")
@@ -277,8 +301,13 @@ class HistoryStore:
         self._load_record(record_id)
         return record_id
 
-    def put_state(self, state: Mapping[str, object], *, problem_ref: str) -> str:
-        """Store a planning state with its admitted problem facts shared by reference."""
+    def put_state(
+        self,
+        state: Mapping[str, object],
+        *,
+        problem_ref: str,
+    ) -> str:
+        """Store a planning state after strict public problem binding checks."""
 
         with self._read_cache_scope():
             if not isinstance(state, Mapping):
@@ -329,6 +358,84 @@ class HistoryStore:
             self._atomic_write(destination, _canonical_bytes(envelope) + b"\n")
             self._load_record(record_id)
             return record_id
+
+    def _put_state_with_context(
+        self,
+        state: Mapping[str, object],
+        problem_ref: str,
+        context: object,
+    ) -> str:
+        """Store a runtime-owned state delta without rewalking immutable facts."""
+
+        if not isinstance(state, Mapping):
+            raise ValueError("planning state must be an object")
+        problem_ref = _require_digest(problem_ref, "planning problem ref")
+        context_fields = getattr(context, "state_fields", None)
+        context_bytes = getattr(context, "state_field_bytes", None)
+        context_problem_ref = getattr(context, "problem_ref", None)
+        problem_id = getattr(context, "problem_id", None)
+        input_fingerprint = getattr(context, "input_fingerprint", None)
+        brief_fingerprint = getattr(context, "brief_fingerprint", None)
+        if (
+            not isinstance(context_fields, Mapping)
+            or not isinstance(context_bytes, Mapping)
+            or context_problem_ref != problem_ref
+            or not isinstance(problem_id, str)
+            or not isinstance(input_fingerprint, str)
+            or not isinstance(brief_fingerprint, str)
+        ):
+            raise ValueError("planning state context is invalid")
+        context_path = self.record_path(problem_ref)
+        if not context_path.exists() or context_path.is_symlink():
+            raise HistoryMissingError(f"planning problem ref is unavailable: {problem_ref}")
+        for field in _STATE_SHARED_FIELDS:
+            expected = context_fields.get(field)
+            if state.get(field) is not expected:
+                raise ValueError(f"planning state {field} changed after context verification")
+        if state.get("parent_problem_id") != problem_id:
+            raise ValueError("planning state parent problem does not match its context")
+        if state.get("problem_fingerprint") != input_fingerprint:
+            raise ValueError("planning state problem fingerprint does not match its context")
+        if state.get("brief_fingerprint") != brief_fingerprint:
+            raise ValueError("planning state brief fingerprint does not match its context")
+        if not isinstance(context_bytes.get("source_corridors"), bytes):
+            raise ValueError("planning state context bytes are invalid")
+        delta = _validate_json(
+            {key: value for key, value in state.items() if key not in _STATE_SHARED_FIELDS},
+            label="planning state delta",
+        )
+        if not isinstance(delta, dict):
+            raise ValueError("planning state delta must be an object")
+        if _canonical_bytes(delta.get("brief")) != context_bytes.get("brief"):
+            raise ValueError("planning state brief does not match its context")
+        shared_bytes = {
+            field: context_bytes[field]
+            for field in _STATE_SHARED_FIELDS
+            if isinstance(context_bytes.get(field), bytes)
+        }
+        if len(shared_bytes) != len(_STATE_SHARED_FIELDS):
+            raise ValueError("planning state context bytes are incomplete")
+        record_id = _record_digest_with_shared_fields("state", shared_bytes, delta)
+        destination = self.record_path(record_id)
+        if destination.exists() or destination.is_symlink():
+            existing_kind, existing = self._load_record(record_id)
+            logical = dict(delta)
+            logical.update({field: context_fields[field] for field in _STATE_SHARED_FIELDS})
+            if existing_kind != "state" or existing != logical:
+                raise HistoryCorruptError(f"immutable record {record_id} changed")
+            return record_id
+        compact_payload = {
+            _STATE_CONTEXT_REF: problem_ref,
+            _STATE_DELTA: delta,
+        }
+        envelope = {
+            "schema": HISTORY_RECORD_SCHEMA,
+            "record_digest": record_id,
+            "kind": "state",
+            "payload": compact_payload,
+        }
+        self._atomic_write(destination, _canonical_bytes(envelope) + b"\n")
+        return record_id
 
     def get(self, record_id: str) -> JSONValue:
         """Read and verify an immutable JSON record."""
@@ -910,8 +1017,13 @@ class HistoryStore:
         kind, stored_value = self._read_record_envelope(record_id)
         value = stored_value
         if kind == "state" and self._is_compact_state(stored_value):
-            value = self._materialize_compact_state(stored_value)
-        if _record_digest(kind, value) != record_id:
+            context_ref, context, delta = self._compact_state_components(stored_value)
+            value = self._materialize_compact_state(stored_value, context=context, delta=delta)
+            shared_bytes = self._context_field_bytes(context_ref, context)
+            actual_digest = _record_digest_with_shared_fields("state", shared_bytes, delta)
+        else:
+            actual_digest = _record_digest(kind, value)
+        if actual_digest != record_id:
             raise HistoryCorruptError(f"record digest does not match payload: {record_id}")
         result = (kind, value)
         if cache is not None:
@@ -956,7 +1068,9 @@ class HistoryStore:
     def _is_compact_state(value: object) -> bool:
         return isinstance(value, Mapping) and set(value) == {_STATE_CONTEXT_REF, _STATE_DELTA}
 
-    def _materialize_compact_state(self, value: Mapping[str, object]) -> dict[str, JSONValue]:
+    def _compact_state_components(
+        self, value: Mapping[str, object]
+    ) -> tuple[str, Mapping[str, JSONValue], dict[str, JSONValue]]:
         context_ref = value.get(_STATE_CONTEXT_REF)
         if not isinstance(context_ref, str):
             raise HistoryCorruptError("compact planning state context ref is invalid")
@@ -966,7 +1080,10 @@ class HistoryStore:
         delta = value.get(_STATE_DELTA)
         if not isinstance(delta, Mapping):
             raise HistoryCorruptError("compact planning state delta is invalid")
-        materialized = dict(_validate_json(delta, label="planning state delta"))
+        normalized_delta = _validate_json(delta, label="planning state delta")
+        if not isinstance(normalized_delta, dict):
+            raise HistoryCorruptError("compact planning state delta is invalid")
+        materialized = dict(normalized_delta)
         if materialized.get("parent_problem_id") != context.get("problem_id"):
             raise HistoryCorruptError("compact planning state parent problem is stale")
         if materialized.get("problem_fingerprint") != context.get("input_fingerprint"):
@@ -975,6 +1092,39 @@ class HistoryStore:
             raise HistoryCorruptError("compact planning state brief fingerprint is stale")
         if _canonical_bytes(materialized.get("brief")) != _canonical_bytes(context.get("brief")):
             raise HistoryCorruptError("compact planning state brief is stale")
+        return context_ref, context, normalized_delta
+
+    def _context_field_bytes(
+        self, context_ref: str, context: Mapping[str, JSONValue]
+    ) -> dict[str, bytes]:
+        cache = self._record_read_cache.get()
+        cache_key = ("planning-context-fields", context_ref)
+        if cache is not None:
+            cached = cache.get(cache_key)
+            if isinstance(cached, dict) and all(
+                isinstance(value, bytes) for value in cached.values()
+            ):
+                return cached
+        fields = {
+            field: _canonical_bytes(context[field])
+            for field in _STATE_SHARED_FIELDS
+            if field in context
+        }
+        if cache is not None:
+            cache[cache_key] = fields
+        return fields
+
+    def _materialize_compact_state(
+        self,
+        value: Mapping[str, object],
+        *,
+        context: Mapping[str, JSONValue] | None = None,
+        delta: Mapping[str, JSONValue] | None = None,
+    ) -> dict[str, JSONValue]:
+        if context is None or delta is None:
+            _, context, normalized_delta = self._compact_state_components(value)
+            delta = normalized_delta
+        materialized = dict(delta)
         for field in _STATE_SHARED_FIELDS:
             if field not in context:
                 raise HistoryCorruptError(f"compact planning state context is missing {field}")

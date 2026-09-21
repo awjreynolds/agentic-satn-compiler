@@ -3,12 +3,15 @@ from __future__ import annotations
 import copy
 
 import geopandas as gpd
+import pytest
 from bath_saltford_fixture import configured_bath_saltford
 from shapely.geometry import LineString, Point, Polygon
 
 from satn.content_identity import canonical_network_geometry_fingerprint, content_fingerprint
 from satn.evidence import empty_context
 from satn.planning_engine import (
+    _prepare_planning_context,
+    _semantic_fingerprint_with_context,
     apply_operation,
     build_planning_problem,
     expand_connection,
@@ -1192,6 +1195,45 @@ def test_semantic_fingerprint_deduplicates_request_content_across_request_ids(tm
 
     assert second["status"] == "no-progress"
     assert second["state_fingerprint"] == first["state_fingerprint"]
+
+
+def test_verified_context_keeps_semantic_fingerprint_byte_exact(tmp_path) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    problem = build_planning_problem(config)
+    state = initial_proposal(problem)
+    context = _prepare_planning_context(problem, state)
+
+    assert _semantic_fingerprint_with_context(state, context) == semantic_fingerprint(state)
+    changed = copy.deepcopy(state)
+    changed["status"] = "provisional"
+    assert _semantic_fingerprint_with_context(changed, context) == semantic_fingerprint(changed)
+
+
+def test_public_engine_boundaries_reject_private_context_arguments(tmp_path) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    problem = build_planning_problem(config)
+    state = initial_proposal(problem)
+    context = _prepare_planning_context(problem, state)
+    operation = {
+        "kind": "request-evidence",
+        "parent_state_fingerprint": state["state_fingerprint"],
+        "payload": {"target_refs": ["saltford"], "claim": "currentness"},
+    }
+
+    with pytest.raises(TypeError):
+        apply_operation(problem, state, operation, context=context)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        validate_proposal(problem, state, context=context)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        semantic_fingerprint(state, context=context)  # type: ignore[call-arg]
+
+    mutated = copy.deepcopy(state)
+    mutated["source_corridors"][0]["name"] = "mutated-public-input"
+    assert semantic_fingerprint(mutated) != semantic_fingerprint(state)
+    assert apply_operation(problem, mutated, operation)["status"] == "invalid"
+    assert validate_proposal(problem, mutated)["status"] == "invalid"
 
 
 def test_selected_disposition_requires_matching_alignment_proof(tmp_path) -> None:
