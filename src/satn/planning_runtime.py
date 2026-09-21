@@ -11,14 +11,17 @@ import hashlib
 import json
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
+from itertools import pairwise
 from pathlib import Path
 from typing import Literal, cast
 
 import geopandas as gpd
 from pyproj import CRS
 from shapely.geometry import shape
+from shapely.ops import linemerge, unary_union
 from shapely.ops import transform as transform_geometry
 
+from satn.content_identity import canonical_network_geometry_fingerprint
 from satn.models import AreaConfig, AreaDefinition
 from satn.planning_engine import (
     apply_operation,
@@ -396,6 +399,43 @@ class PlanningRuntime:
             output = validate_proposal(problem, state)
             if output.get("status") == "validated":
                 break
+            mechanical_operation = self._mechanical_mandatory_operation(problem, state)
+            if mechanical_operation is not None:
+                operation = self._bind_operation(mechanical_operation, state)
+                mechanical_receipt = {
+                    "status": "mechanical",
+                    "provider": "none",
+                    "decision_class": "mechanical",
+                    "reason": mechanical_operation["payload"]["reason"],
+                }
+                advanced = self._apply_and_record(
+                    branch,
+                    problem,
+                    state,
+                    operation,
+                    config=config,
+                    envelope_ref=envelope_ref,
+                    actor_kind="code",
+                    decision_class="mechanical",
+                    mode=mode,
+                    receipt=mechanical_receipt,
+                )
+                event_id = advanced[0]
+                if advanced[2] is not None:
+                    output = self._invalid_output(output, advanced[2])
+                    return self._result(
+                        branch,
+                        mode,
+                        problem,
+                        state,
+                        event_id,
+                        output,
+                        output_root,
+                        termination_reason="invalid-operation",
+                    )
+                problem, state = advanced[3], advanced[1]
+                provider_result = mechanical_receipt
+                continue
             questions, choice_context = self._questions(
                 problem,
                 state,
@@ -1217,6 +1257,174 @@ class PlanningRuntime:
         return self.store.compare(base_branch, branch)
 
     # ---- orchestration helpers --------------------------------------
+
+    def _mechanical_mandatory_operation(
+        self,
+        problem: Mapping[str, object],
+        state: Mapping[str, object],
+    ) -> dict[str, object] | None:
+        policy = self.policy or problem.get("policy")
+        if not isinstance(policy, Mapping) or policy.get("allow_provisional_choices") is not True:
+            return None
+
+        selected_corridors = {
+            str(reference)
+            for selection in state.get("selected_alignments", [])
+            if isinstance(selection, Mapping)
+            for reference in (
+                *selection.get("source_corridor_refs", []),
+                selection.get("obligation_id"),
+            )
+            if reference is not None
+        }
+        candidates = [
+            item
+            for item in problem.get("candidates", [])
+            if isinstance(item, Mapping)
+            and item.get("status") == "admitted"
+            and item.get("obligation_id")
+            and item.get("current_or_future") == "unknown"
+        ]
+        for corridor in sorted(
+            (
+                item
+                for item in problem.get("source_corridors", [])
+                if isinstance(item, Mapping)
+                and item.get("mandatory_planning_corridor") is True
+                and item.get("classification") == "a-road"
+                and item.get("in_scope") is True
+                and item.get("corridor_id")
+                and str(item["corridor_id"]) not in selected_corridors
+            ),
+            key=lambda item: str(item["corridor_id"]),
+        ):
+            corridor_id = str(corridor["corridor_id"])
+            source_geometry_ref = corridor.get("geometry_ref")
+            if not isinstance(source_geometry_ref, Mapping):
+                continue
+            qualifying = [
+                dict(candidate)
+                for candidate in candidates
+                if str(candidate.get("obligation_id")) == corridor_id
+                and [str(reference) for reference in candidate.get("source_corridor_refs", [])]
+                == [corridor_id]
+                and self._candidate_graph_path_is_valid(problem, candidate)
+                and self._same_planning_geometry(
+                    source_geometry_ref,
+                    candidate.get("geometry_ref"),
+                )
+            ]
+            groups = self._candidate_alias_groups(qualifying)
+            if len(groups) != 1:
+                continue
+            candidate = groups[0][0]
+            return {
+                "kind": "select-alignment",
+                "payload": {
+                    "candidate_id": candidate["candidate_id"],
+                    "obligation_id": corridor_id,
+                    "provisional": True,
+                    "reason": (
+                        "Unique admitted alignment exactly covers mandatory A-road source "
+                        f"corridor {corridor_id}; provision, access and continuity remain "
+                        "unresolved."
+                    ),
+                    "uncertainties": [
+                        "current provision remains unresolved",
+                        "cycling access remains unresolved",
+                        "route continuity remains unresolved",
+                    ],
+                },
+            }
+        return None
+
+    @staticmethod
+    def _candidate_graph_path_is_valid(
+        problem: Mapping[str, object], candidate: Mapping[str, object]
+    ) -> bool:
+        graph_evidence = problem.get("graph_evidence")
+        if not isinstance(graph_evidence, Mapping):
+            return False
+        directed_edges = graph_evidence.get("directed_edges")
+        if not isinstance(directed_edges, list):
+            return False
+        by_id = {
+            str(edge["directed_edge_id"]): edge
+            for edge in directed_edges
+            if isinstance(edge, Mapping) and edge.get("directed_edge_id")
+        }
+        graph_path = candidate.get("graph_path")
+        endpoint = candidate.get("endpoint_provenance")
+        if not isinstance(graph_path, Mapping) or not isinstance(endpoint, Mapping):
+            return False
+        directed = [str(item) for item in graph_path.get("directed_edge_ids", [])]
+        source = [str(item) for item in graph_path.get("source_edge_ids", [])]
+        endpoint_directed = [str(item) for item in endpoint.get("directed_edge_ids", [])]
+        endpoint_source = [str(item) for item in endpoint.get("source_edge_ids", [])]
+        if not directed or directed != endpoint_directed or not source or source != endpoint_source:
+            return False
+        edges = [by_id.get(edge_id) for edge_id in directed]
+        if any(edge is None for edge in edges):
+            return False
+        concrete_edges = [edge for edge in edges if isinstance(edge, Mapping)]
+        if len(concrete_edges) != len(edges):
+            return False
+        if source != [str(edge.get("source_edge_id")) for edge in concrete_edges]:
+            return False
+        start_node = endpoint.get("start_node_id")
+        end_node = endpoint.get("end_node_id")
+        if not isinstance(start_node, str) or not isinstance(end_node, str):
+            return False
+        if concrete_edges[0].get("from_node_id") != start_node:
+            return False
+        if concrete_edges[-1].get("to_node_id") != end_node:
+            return False
+        if any(
+            left.get("to_node_id") != right.get("from_node_id")
+            for left, right in pairwise(concrete_edges)
+        ):
+            return False
+        geometry_ref = candidate.get("geometry_ref")
+        graph_crs = graph_evidence.get("crs")
+        if not isinstance(geometry_ref, Mapping) or geometry_ref.get("crs") != graph_crs:
+            return False
+        try:
+            route_lines = [shape(edge["geometry_ref"]["geometry"]) for edge in concrete_edges]
+            route_geometry = unary_union(route_lines)
+            if route_geometry.geom_type != "LineString":
+                route_geometry = linemerge(route_geometry)
+            if route_geometry.geom_type != "LineString":
+                return False
+            route_fingerprint = canonical_network_geometry_fingerprint(route_geometry, graph_crs)
+        except (KeyError, TypeError, ValueError):
+            return False
+        return (
+            geometry_ref.get("content_fingerprint") == route_fingerprint
+            and geometry_ref.get("geometry_id") == f"geometry-{_digest(route_fingerprint)}"
+        )
+
+    @staticmethod
+    def _same_planning_geometry(
+        source_geometry_ref: Mapping[str, object],
+        candidate_geometry_ref: object,
+    ) -> bool:
+        if not isinstance(candidate_geometry_ref, Mapping):
+            return False
+        try:
+            source_geometry = shape(source_geometry_ref["geometry"])
+            candidate_geometry = shape(candidate_geometry_ref["geometry"])
+            source_crs = CRS.from_user_input(source_geometry_ref["crs"])
+            candidate_crs = CRS.from_user_input(candidate_geometry_ref["crs"])
+            if source_crs != candidate_crs:
+                source_geometry = (
+                    gpd.GeoSeries([source_geometry], crs=source_crs).to_crs(candidate_crs).iloc[0]
+                )
+            if candidate_crs.is_geographic:
+                source_geometry = _round_geographic_geometry(source_geometry)
+                candidate_geometry = _round_geographic_geometry(candidate_geometry)
+            return bool(source_geometry.equals(candidate_geometry))
+        except (KeyError, TypeError, ValueError):
+            return False
 
     @staticmethod
     def _load_config(config: AreaConfig | str | Path) -> AreaConfig:

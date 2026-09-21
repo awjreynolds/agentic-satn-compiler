@@ -210,6 +210,7 @@ def test_unavailable_provider_is_recorded_as_incomplete(tmp_path: Path) -> None:
     assert result.status == "reviewable-incomplete"
     assert result.provider_result["status"] == "unavailable"
     assert result.provider_result["model"] == "test-model"
+    assert result.state["selected_alignments"] == []
     assert calls == 1
     assert (tmp_path / "run" / "proposal.json").is_file()
     replay = PlanningRuntime(
@@ -218,6 +219,175 @@ def test_unavailable_provider_is_recorded_as_incomplete(tmp_path: Path) -> None:
     ).replay()
     assert replay["state"] == result.state
     assert HistoryStore(root).verify("main")["valid"] is True
+
+
+@pytest.mark.parametrize("mode", ["live", "deterministic"])
+def test_policy_allows_mechanical_selection_of_unique_exact_mandatory_corridor(
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    calls: list[object] = []
+
+    def provider(*_args: object, **_kwargs: object) -> object:
+        calls.append(True)
+        return {
+            "status": "unavailable",
+            "provider": "test-provider",
+            "model": "test-model",
+            "failure_class": "fixture-stop",
+        }
+
+    result = PlanningRuntime(
+        tmp_path / "history",
+        provider=provider,
+        policy={"allow_provisional_choices": True},
+    ).run(config, output_root=tmp_path / "run", mode=mode)
+
+    mandatory = next(
+        item for item in result.problem["source_corridors"] if item["mandatory_planning_corridor"]
+    )
+    selected = next(
+        item
+        for item in result.state["selected_alignments"]
+        if mandatory["corridor_id"] in item["source_corridor_refs"]
+    )
+    assert calls == ([True] if mode == "live" else [])
+    assert selected["provisional"] is True
+    assert selected["current_or_future"] == "unknown"
+    assert selected["reason"]
+    assert selected["uncertainties"]
+    assert result.decision_trace[0]["decision_class"] == "mechanical"
+    assert any(
+        item.get("decision_class") == "mechanical" and item.get("actor_kind") == "code"
+        for item in result.decision_trace
+    )
+
+
+def _seed_runtime_problem(
+    root: Path,
+    problem: dict[str, object],
+    policy: dict[str, object] | None = None,
+) -> None:
+    state = initial_proposal(problem)
+    store = HistoryStore(root)
+    store.create_branch("main")
+    problem_ref = store.put(problem, kind="planning-problem")
+    state_ref = store.put(state, kind="state")
+    envelope_ref = store.put(
+        {
+            "schema_version": "planning-run/v1",
+            "mode": "live",
+            "problem_ref": problem_ref,
+            "problem_fingerprint": problem["input_fingerprint"],
+            "binding": problem["binding"],
+            "brief": problem["brief"],
+            "policy": policy or {},
+            "connection_options": [],
+        },
+        kind="planning-run",
+    )
+    store.commit(
+        "main",
+        None,
+        {
+            "event_kind": "initialization",
+            "actor_kind": "code",
+            "outcome": "accepted",
+            "state_transition": True,
+            "output_state": state,
+            "operation": {"kind": "initialize", "state_ref": state_ref},
+            "problem_ref": problem_ref,
+            "run_envelope_ref": envelope_ref,
+            "dependency_refs": [problem_ref, envelope_ref],
+        },
+    )
+
+
+def _rebind_problem(problem: dict[str, object]) -> None:
+    problem.pop("input_fingerprint", None)
+    problem.pop("problem_id", None)
+    fingerprint = hashlib.sha256(
+        json.dumps(problem, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+    ).hexdigest()
+    problem["input_fingerprint"] = fingerprint
+    problem["problem_id"] = f"planning-problem-{fingerprint}"
+
+
+@pytest.mark.parametrize("mutation", ["fragment", "touching", "competing"])
+def test_ineligible_mandatory_corridor_keeps_provider_path(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    problem = build_planning_problem(config)
+    corridor = next(
+        item for item in problem["source_corridors"] if item["mandatory_planning_corridor"]
+    )
+    candidates = [
+        item
+        for item in problem["candidates"]
+        if corridor["corridor_id"] in item.get("source_corridor_refs", [])
+    ]
+    source_coordinates = corridor["geometry_ref"]["geometry"]["coordinates"]
+    if mutation == "fragment":
+        corridor["geometry_ref"]["geometry"]["coordinates"] = [
+            source_coordinates[0],
+            [
+                source_coordinates[0][0],
+                (source_coordinates[0][1] + source_coordinates[1][1]) / 2,
+            ],
+        ]
+    elif mutation == "touching":
+        corridor["geometry_ref"]["geometry"]["coordinates"] = [
+            source_coordinates[1],
+            [source_coordinates[1][0] + 0.01, source_coordinates[1][1]],
+        ]
+    else:
+        original_edge_id = candidates[0]["graph_path"]["directed_edge_ids"][0]
+        original_edge = next(
+            item
+            for item in problem["graph_evidence"]["directed_edges"]
+            if item["directed_edge_id"] == original_edge_id
+        )
+        competing_edge = copy.deepcopy(original_edge)
+        competing_edge["directed_edge_id"] = "competing-directed-edge"
+        competing_edge["source_edge_id"] = "competing-source-edge"
+        problem["graph_evidence"]["directed_edges"].append(competing_edge)
+        candidates[0]["graph_path"] = {
+            **candidates[0]["graph_path"],
+            "directed_edge_ids": ["competing-directed-edge"],
+            "source_edge_ids": ["competing-source-edge"],
+        }
+        candidates[0]["endpoint_provenance"] = {
+            **candidates[0]["endpoint_provenance"],
+            "directed_edge_ids": ["competing-directed-edge"],
+            "source_edge_ids": ["competing-source-edge"],
+        }
+    _rebind_problem(problem)
+    root = tmp_path / "history"
+    _seed_runtime_problem(root, problem, {"allow_provisional_choices": True})
+    calls: list[object] = []
+
+    def provider(*_args: object, **_kwargs: object) -> dict[str, object]:
+        calls.append(True)
+        return {
+            "status": "unavailable",
+            "provider": "test-provider",
+            "model": "test-model",
+            "failure_class": "fixture-stop",
+        }
+
+    result = PlanningRuntime(root, provider=provider).run(
+        config,
+        output_root=tmp_path / "run",
+        mode="live",
+    )
+
+    assert calls == [True]
+    assert result.state["selected_alignments"] == []
 
 
 @pytest.mark.parametrize("provider_status", ["invalid", "servicefailed"])

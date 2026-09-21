@@ -351,13 +351,22 @@ def test_public_cli_runs_configured_jev_then_codex_and_replays_offline(
         item for item in payload["output"]["selected_alignments"] if item.get("provisional") is True
     ]
     assert provisional
-    assert provisional[0]["reason"].startswith("The admitted candidate")
-    assert provisional[0]["uncertainties"] == ["Whether continuous access can be confirmed."]
     assert any(item.get("decision_class") == "agent" for item in payload["decision_trace"])
     event = HistoryStore(history).get(payload["history_event_id"])
     assert event["decision_class"] == "agent"
     assert event["outcome"] == "accepted"
-    receipt = HistoryStore(history).get(event["receipt_ref"])
+    store = HistoryStore(history)
+    operation = event.get("operation")
+    if not isinstance(operation, dict) and isinstance(event.get("operation_ref"), str):
+        operation = store.get(event["operation_ref"])
+    assert isinstance(operation, dict)
+    agent_candidate_id = operation["payload"]["candidate_id"]
+    agent_selection = next(
+        item for item in provisional if item["candidate_id"] == agent_candidate_id
+    )
+    assert agent_selection["reason"].startswith("The admitted candidate")
+    assert agent_selection["uncertainties"] == ["Whether continuous access can be confirmed."]
+    receipt = store.get(event["receipt_ref"])
     assert receipt["capability_id"] == "codex-specialist"
     assert receipt["provider"] == "codex-exec"
     assert receipt["requested_model"] == "gpt-5.6-luna"
@@ -370,7 +379,14 @@ def test_public_cli_runs_configured_jev_then_codex_and_replays_offline(
             encoding="utf-8"
         )
     )
-    assert any(item.get("provisional") is True for item in published["selected_alignments"])
+    published_selection = next(
+        item
+        for item in published["selected_alignments"]
+        if item["candidate_id"] == agent_candidate_id
+    )
+    assert published_selection["provisional"] is True
+    assert published_selection["reason"] == agent_selection["reason"]
+    assert published_selection["uncertainties"] == agent_selection["uncertainties"]
 
     def provider_must_not_run(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("replay dispatched a provider")
@@ -382,9 +398,14 @@ def test_public_cli_runs_configured_jev_then_codex_and_replays_offline(
     assert replay.exit_code == 0, replay.output
     replay_payload = json.loads(replay.stdout)
     assert replay_payload["state"] == payload["state"]
-    assert any(
-        item.get("provisional") is True for item in replay_payload["output"]["selected_alignments"]
+    replay_selection = next(
+        item
+        for item in replay_payload["output"]["selected_alignments"]
+        if item["candidate_id"] == agent_candidate_id
     )
+    assert replay_selection["provisional"] is True
+    assert replay_selection["reason"] == agent_selection["reason"]
+    assert replay_selection["uncertainties"] == agent_selection["uncertainties"]
 
 
 def test_public_cli_persists_failed_codex_receipt(tmp_path: Path, monkeypatch) -> None:
