@@ -27,6 +27,34 @@ def _emit(value: object) -> None:
     typer.echo(json.dumps(value, sort_keys=True, indent=2, default=str))
 
 
+def _emit_progress(event: Mapping[str, object]) -> None:
+    """Write compact observational progress to stderr.
+
+    The final command result remains the only stdout payload, so callers can
+    continue to parse it as JSON while a human can follow a running job.
+    """
+
+    parts = [f"[satn] {event.get('stage')} {event.get('status')}"]
+    elapsed = event.get("elapsed_seconds")
+    if isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool):
+        parts.append(f"elapsed={float(elapsed):.3f}s")
+    for field in (
+        "history_head",
+        "committed_count",
+        "operation_kind",
+        "decision_class",
+        "provider",
+        "result_status",
+        "publication_status",
+        "event_kind",
+        "error_class",
+    ):
+        value = event.get(field)
+        if value is not None:
+            parts.append(f"{field}={value}")
+    typer.echo(" ".join(parts), err=True)
+
+
 @plan_app.command("run")
 def run_command(
     config: Path,
@@ -97,6 +125,7 @@ def run_command(
         "output_root": output_root,
         "branch": branch,
         "mode": mode,
+        "progress": _emit_progress,
     }
     if options:
         kwargs["connection_options"] = options

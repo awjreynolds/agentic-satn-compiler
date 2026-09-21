@@ -275,6 +275,111 @@ def test_public_run_reuses_source_and_graph_for_prepared_expansions(
     assert len(graph_calls) == 1
 
 
+def test_run_progress_callback_reports_history_and_completion_before_return(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config = configured_bath_saltford(tmp_path)
+    monkeypatch.setattr(
+        "satn.planning_engine.load_snapshot", lambda _config: _urban_runtime_source()
+    )
+    events: list[dict[str, object]] = []
+
+    result = PlanningRuntime(tmp_path / "history").run(
+        config,
+        output_root=tmp_path / "run",
+        mode="deterministic",
+        progress=events.append,
+    )
+
+    assert events[0]["stage"] == "preparation"
+    assert events[0]["status"] == "started"
+    assert any(item.get("stage") == "history" for item in events)
+    assert events[-1]["stage"] == "completed"
+    assert events[-1]["history_head"] == result.history_event_id
+    assert all(isinstance(item.get("elapsed_seconds"), float) for item in events)
+
+
+def test_run_progress_reports_classifier_wait_before_provider_returns(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config = configured_bath_saltford(tmp_path)
+    monkeypatch.setattr(
+        "satn.planning_engine.load_snapshot", lambda _config: _urban_runtime_source()
+    )
+    observations: list[tuple[str, object]] = []
+
+    def progress(event: dict[str, object]) -> None:
+        observations.append(("progress", event))
+
+    def provider(_packet: object, _questions: object) -> dict[str, object]:
+        observations.append(("provider", "entered"))
+        return {
+            "status": "unavailable",
+            "provider": "test-provider",
+            "failure_class": "fixture-stop",
+        }
+
+    PlanningRuntime(tmp_path / "history", provider=provider).run(
+        config,
+        output_root=tmp_path / "run",
+        mode="live",
+        progress=progress,
+    )
+
+    wait_index = next(
+        index
+        for index, item in enumerate(observations)
+        if item[0] == "progress"
+        and isinstance(item[1], dict)
+        and item[1].get("stage") == "classifier-wait"
+    )
+    provider_index = next(index for index, item in enumerate(observations) if item[0] == "provider")
+    assert wait_index < provider_index
+
+
+def test_run_progress_reports_failure_before_raising(tmp_path: Path) -> None:
+    events: list[dict[str, object]] = []
+
+    with pytest.raises(ValueError, match="mode must be deterministic or live"):
+        PlanningRuntime(tmp_path / "history").run(
+            tmp_path / "missing-area.yaml",
+            output_root=tmp_path / "run",
+            mode="unsupported",  # type: ignore[arg-type]
+            progress=events.append,
+        )
+
+    assert events[-1]["stage"] == "failed"
+    assert events[-1]["status"] == "failed"
+    assert events[-1]["error_class"] == "ValueError"
+
+
+def test_run_progress_failure_keeps_preparation_checkpoint(monkeypatch, tmp_path: Path) -> None:
+    config = configured_bath_saltford(tmp_path)
+    monkeypatch.setattr(
+        "satn.planning_engine.load_snapshot", lambda _config: _urban_runtime_source()
+    )
+
+    def fail_validation(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise RuntimeError("fixture validation failure")
+
+    monkeypatch.setattr(planning_runtime_module, "_validate_proposal_with_context", fail_validation)
+    events: list[dict[str, object]] = []
+
+    with pytest.raises(RuntimeError, match="fixture validation failure"):
+        PlanningRuntime(tmp_path / "history").run(
+            config,
+            output_root=tmp_path / "run",
+            mode="deterministic",
+            connection_options=({"connection_id": "explicit-connection"},),
+            progress=events.append,
+        )
+
+    ready = next(item for item in events if item.get("status") == "ready")
+    failed = events[-1]
+    assert isinstance(ready.get("history_head"), str)
+    assert failed["history_head"] == ready["history_head"]
+
+
 def test_runtime_defers_full_validation_projection_until_final_result(
     monkeypatch, tmp_path: Path
 ) -> None:

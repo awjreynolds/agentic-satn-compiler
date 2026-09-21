@@ -84,11 +84,67 @@ def test_plan_run_uses_explicit_roots_and_branch(tmp_path: Path, monkeypatch) ->
     payload = json.loads(response.stdout)
     assert payload["branch_id"] == "case-bath-keynsham"
     assert observed["root"] == tmp_path / "history"
-    assert observed["run"] == {
-        "output_root": tmp_path / "output",
-        "branch": "case-bath-keynsham",
-        "mode": "deterministic",
+    assert observed["run"]["output_root"] == tmp_path / "output"
+    assert observed["run"]["branch"] == "case-bath-keynsham"
+    assert observed["run"]["mode"] == "deterministic"
+    assert observed["run"]["progress"] is planning_cli._emit_progress
+
+
+def test_plan_run_keeps_json_stdout_and_writes_progress_to_stderr(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class StubRuntime:
+        def __init__(self, _root: Path, **_kwargs: object) -> None:
+            pass
+
+        def run(self, _config: object, **kwargs: object) -> SimpleNamespace:
+            progress = kwargs["progress"]
+            assert callable(progress)
+            progress(
+                {
+                    "stage": "preparation",
+                    "status": "started",
+                    "elapsed_seconds": 0.01,
+                    "history_head": "head-1",
+                }
+            )
+            progress(
+                {
+                    "stage": "completed",
+                    "status": "reviewable-incomplete",
+                    "elapsed_seconds": 0.02,
+                    "history_head": "head-1",
+                }
+            )
+            return SimpleNamespace(
+                as_dict=lambda: {
+                    "status": "reviewable-incomplete",
+                    "history_event_id": "head-1",
+                }
+            )
+
+    monkeypatch.setattr(planning_cli, "PlanningRuntime", StubRuntime)
+    response = CliRunner().invoke(
+        cli.app,
+        [
+            "plan",
+            "run",
+            str(_config(tmp_path / "area.yaml")),
+            "--root",
+            str(tmp_path / "history"),
+            "--output-root",
+            str(tmp_path / "output"),
+        ],
+    )
+
+    assert response.exit_code == 0, response.output
+    assert json.loads(response.stdout) == {
+        "status": "reviewable-incomplete",
+        "history_event_id": "head-1",
     }
+    assert "[satn] preparation started" in response.stderr
+    assert "[satn] completed reviewable-incomplete" in response.stderr
+    assert "head-1" in response.stderr
 
 
 def test_plan_run_forwards_json_policy_to_runtime(tmp_path: Path, monkeypatch) -> None:
