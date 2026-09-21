@@ -41,7 +41,13 @@ reason limited to the decision basis in the frozen task.
 
 Use these existing operation payload contracts. Include only fields needed for
 the selected operation and copy every identifier from the frozen task:
-- `select-alignment`: `candidate_id`; optional `obligation_id`.
+- `select-alignment`: `candidate_id`; optional `obligation_id`, `provisional`,
+  `reason`, and `uncertainties`. Use provisional only when the frozen task policy
+  explicitly permits it with `allow_provisional_choices: true` and the
+  admitted candidate is supported despite a stated unresolved judgment. If it
+  is used, set `provisional` to true and include a nonblank reason plus a
+  nonempty list of unresolved-judgment uncertainties; do not invent
+  observations, access, provision, or adoption.
 - `propose-connection` or `revise-connection`: `origin_place_id`,
   `destination_place_id`, `corridor_refs`, and `current_or_future` (`current`,
   `future`, or `unknown`); optional `connection_id`, `status`, `reason`.
@@ -57,7 +63,9 @@ the selected operation and copy every identifier from the frozen task:
 - `record-gap`: `target_refs`, optional `gap_id` and `reason`.
 The runtime performs the final typed scope and payload validation. If the task
 does not support a safe operation, return the permitted unresolved operation
-with identifiers and a concise reason rather than inventing facts.
+with identifiers and a concise reason rather than inventing facts. When the
+policy is absent or false, preserve an unresolved outcome instead of
+encouraging a best guess.
 
 Frozen planning task:
 """

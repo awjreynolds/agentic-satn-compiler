@@ -31,6 +31,51 @@ def _task() -> DecisionTask:
     )
 
 
+def test_codex_adapter_guides_owner_authorized_provisional_selection() -> None:
+    calls: list[dict[str, object]] = []
+    response = {
+        "proposal": {
+            "operation": {
+                "kind": "select-alignment",
+                "payload": {
+                    "candidate_id": "candidate-1",
+                    "provisional": True,
+                    "reason": (
+                        "The admitted candidate is supported while one judgment remains unresolved."
+                    ),
+                    "uncertainties": ["Whether continuous access can be confirmed."],
+                },
+            }
+        }
+    }
+
+    def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append({"command": command, **kwargs})
+        output_path = Path(command[command.index("--output-last-message") + 1])
+        output_path.write_text(json.dumps(response), encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    task = replace(
+        _task(),
+        input_state={
+            **_task().input_state,
+            "policy": {"allow_provisional_choices": True},
+        },
+    )
+    result = CodexSpecialistAdapter(
+        model="gpt-5.6-luna",
+        reasoning_effort="max",
+        runner=runner,
+    ).propose(task)
+
+    assert result["status"] == "answered"
+    assert result["proposal"]["operation"]["payload"]["provisional"] is True
+    prompt = " ".join(str(calls[0]["input"]).split())
+    assert '"allow_provisional_choices": true' in prompt
+    assert "only when the frozen task policy explicitly permits it" in prompt
+    assert "do not invent observations, access, provision, or adoption" in prompt
+
+
 def test_codex_adapter_sends_frozen_task_and_retains_structured_response(tmp_path: Path) -> None:
     calls: list[dict[str, object]] = []
 
