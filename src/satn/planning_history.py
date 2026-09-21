@@ -978,7 +978,9 @@ class HistoryStore:
         for field in _STATE_SHARED_FIELDS:
             if field not in context:
                 raise HistoryCorruptError(f"compact planning state context is missing {field}")
-            materialized[field] = _copy_json(context[field])
+            # The scoped cache only serves verified immutable records. Public
+            # accessors still copy the complete materialized state.
+            materialized[field] = context[field]
         return materialized
 
     def _read_artifact(self, artifact_id: str) -> bytes:
