@@ -1225,6 +1225,10 @@ _Avoid_: model prompt, selected network, mutable evidence pool
 A versioned proposed network containing connection intents, selected alignments, corridor departures and unresolved planning facts under one Planning Problem. It is the authority for what the proposal selects, distinct from the complete source inventory.
 _Avoid_: rendered map, source inventory, adopted network
 
+**Provisional Planning Choice**:
+A planning choice retained for review despite stated unresolved judgment, with its provisional status, rationale and uncertainty visible. It does not establish current provision, access, delivery or authoritative adoption.
+_Avoid_: confirmed alignment, inferred provision, hidden best guess
+
 **Planning Decision History**:
 The retained evidence, requests, responses and validated transitions that explain a Proposal State and permit its recorded decisions to be replayed without new judgments. A branch starts before a chosen decision and preserves the original continuation; shared ancestry alone does not establish causation.
 _Avoid_: model transcript, causal proof, mutable undo log

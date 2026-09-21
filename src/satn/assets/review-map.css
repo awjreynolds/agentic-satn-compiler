@@ -346,6 +346,7 @@ body.planning-mode #planning-downloads { display: flex !important; }
 .map-key.line.planning-current { border-top: 5px solid #1b5e20; }
 .map-key.line.planning-future { border-top: 5px dashed #1565c0; }
 .map-key.line.planning-unknown { border-top: 5px dotted #6a1b9a; }
+.map-key.line.planning-provisional { border-top: 5px dashed #ef6c00; }
 .map-key.line.planning-source { border-top: 3px solid #455a64; opacity: .7; }
 body.planning-mode #map-legend { display: block; }
 
