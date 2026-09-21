@@ -1380,6 +1380,27 @@ def _as_ref_list(value: object) -> list[str]:
     return []
 
 
+def _provisional_choice_error(metadata: Mapping[str, object]) -> str | None:
+    provisional = metadata.get("provisional")
+    if "provisional" in metadata and not isinstance(provisional, bool):
+        return "provisional selection flag must be boolean"
+    reason = metadata.get("reason")
+    if "reason" in metadata and (not isinstance(reason, str) or not reason.strip()):
+        return "provisional selection reason must be non-blank text"
+    uncertainties = metadata.get("uncertainties")
+    if "uncertainties" in metadata and (
+        not isinstance(uncertainties, list)
+        or any(not isinstance(item, str) or not item.strip() for item in uncertainties)
+    ):
+        return "provisional selection uncertainties must be a list of non-blank text"
+    if provisional is True:
+        if not isinstance(reason, str) or not reason.strip():
+            return "provisional selection requires a non-blank reason"
+        if not isinstance(uncertainties, list) or not uncertainties:
+            return "provisional selection requires at least one stated uncertainty"
+    return None
+
+
 def _geometry_identity_matches(value: Mapping[str, object]) -> bool:
     try:
         geometry = shape(value["geometry"])
@@ -1692,6 +1713,14 @@ def apply_operation(
             return _operation_error(
                 "candidate-binding", "selected candidate is not bound to the requested obligation"
             )
+        provisional_metadata = {
+            key: payload[key]
+            for key in ("provisional", "reason", "uncertainties")
+            if key in payload
+        }
+        provisional_error = _provisional_choice_error(provisional_metadata)
+        if provisional_error:
+            return _operation_error("provisional-choice", provisional_error)
         connection = {
             "selection_id": _stable_id("selection", (candidate_id, obligation_id)),
             "candidate_id": candidate_id,
@@ -1701,6 +1730,7 @@ def apply_operation(
             "graph_path": _json_copy(candidate.get("graph_path")),
             "endpoint_provenance": _json_copy(candidate.get("endpoint_provenance")),
             "current_or_future": candidate.get("current_or_future"),
+            **_json_copy(provisional_metadata),
         }
         record = connection
         field = "selected_alignments"
@@ -2254,6 +2284,9 @@ def validate_proposal(
         if candidate is None:
             diagnostics.append({"code": "unknown-candidate", "message": str(candidate_id)})
             continue
+        provisional_error = _provisional_choice_error(selection)
+        if provisional_error:
+            diagnostics.append({"code": "provisional-choice", "message": provisional_error})
         for field in (
             "source_corridor_refs",
             "geometry_ref",

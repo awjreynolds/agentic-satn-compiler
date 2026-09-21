@@ -31,11 +31,34 @@
       binding.textContent =
         `Proposal state: ${proposal} · state fingerprint: ${state} · branch: ${branchRef} · history: ${historyRef}`;
     }
+    const provisionalList = document.querySelector("#planning-provisional-selections");
+    const provisionalSelections = (Array.isArray(output.selected_alignments)
+      ? output.selected_alignments
+      : []).filter((selection) => selection && selection.provisional === true);
+    if (provisionalList) {
+      provisionalSelections.forEach((selection) => {
+        const item = document.createElement("li");
+        const candidate = selection.candidate_id || selection.alignment_id || "unidentified";
+        const uncertainties = Array.isArray(selection.uncertainties)
+          ? selection.uncertainties.join("; ")
+          : "uncertainty unavailable";
+        item.textContent = `Provisional selection — best guess · ${candidate} · ` +
+          `Reason: ${selection.reason || "reason unavailable"} · ` +
+          `Unresolved uncertainty: ${uncertainties}`;
+        provisionalList.appendChild(item);
+      });
+      if (!provisionalSelections.length) {
+        const item = document.createElement("li");
+        item.textContent = "No provisional selections were supplied.";
+        provisionalList.appendChild(item);
+      }
+    }
     [
       "planning-legend-departure",
       "planning-legend-current",
       "planning-legend-future",
       "planning-legend-unknown",
+      "planning-legend-provisional",
       "planning-legend-source",
     ].forEach((id) => {
       const element = document.getElementById(id);
@@ -183,6 +206,23 @@
         filter: lineFilter("planning-selected-unknown"),
         layout: { visibility: "visible", "line-cap": "round" },
         paint: { "line-color": "#6a1b9a", "line-width": 5, "line-dasharray": [0.5, 1.5], "line-opacity": .92 }
+      });
+      map.addLayer({
+        id: "planning-selected-provisional",
+        type: "line",
+        source: "planning-output",
+        filter: [
+          "all",
+          ["==", ["get", "provisional"], true],
+          ["match", ["get", "feature_type"], [
+            "planning-selected-current",
+            "planning-selected-future",
+            "planning-selected-unknown"
+          ], true, false],
+          ["match", ["geometry-type"], ["LineString", "MultiLineString"], true, false]
+        ],
+        layout: { visibility: "visible", "line-cap": "round" },
+        paint: { "line-color": "#ef6c00", "line-width": 7, "line-dasharray": [1, 1], "line-opacity": .98 }
       });
       map.addLayer({
         id: "planning-departures",

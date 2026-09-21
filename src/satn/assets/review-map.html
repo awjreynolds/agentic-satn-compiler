@@ -69,6 +69,10 @@
         <p id="planning-status" class="rail-status" role="status" aria-live="polite"></p>
         <p id="planning-binding" class="rail-status"></p>
         <details open>
+          <summary>Provisional selections</summary>
+          <ul id="planning-provisional-selections" class="planning-details-list"></ul>
+        </details>
+        <details open>
           <summary>Departure decisions</summary>
           <ul id="planning-departures" class="planning-details-list"></ul>
         </details>
@@ -151,6 +155,7 @@
             <li id="planning-legend-current" class="planning-only" hidden><span class="map-key line planning-current" aria-hidden="true"></span>Selected current alignment</li>
             <li id="planning-legend-future" class="planning-only" hidden><span class="map-key line planning-future" aria-hidden="true"></span>Selected future alignment</li>
             <li id="planning-legend-unknown" class="planning-only" hidden><span class="map-key line planning-unknown" aria-hidden="true"></span>Selected alignment — current/future status unknown</li>
+            <li id="planning-legend-provisional" class="planning-only" hidden><span class="map-key line planning-provisional" aria-hidden="true"></span>Provisional selection — best guess</li>
             <li id="planning-legend-source" class="planning-only" hidden><span class="map-key line planning-source" aria-hidden="true"></span>Source corridor inventory</li>
             <li class="legend-heading">Optional alignment review — intervention state</li>
             <li><span class="map-key line core-existing" aria-hidden="true"></span>Existing provision — solid green</li>
