@@ -47,6 +47,13 @@ def run_command(
             help="JSON list of admitted named-place connection choices for this run.",
         ),
     ] = None,
+    policy: Annotated[
+        Path | None,
+        typer.Option(
+            "--policy",
+            help="JSON object with explicit planning policy for this run.",
+        ),
+    ] = None,
     specialist_model: Annotated[
         str | None,
         typer.Option(
@@ -73,6 +80,15 @@ def run_command(
         if not isinstance(payload, list) or any(not isinstance(item, Mapping) for item in payload):
             raise typer.BadParameter("connection options must be a JSON list of objects")
         options = [dict(item) for item in payload]
+    policy_payload: Mapping[str, object] | None = None
+    if policy is not None:
+        try:
+            raw_policy = json.loads(policy.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise typer.BadParameter(f"policy must be a JSON object: {error}") from error
+        if not isinstance(raw_policy, Mapping):
+            raise typer.BadParameter("policy must be a JSON object")
+        policy_payload = dict(raw_policy)
     if (specialist_model is None) != (specialist_reasoning_effort is None):
         raise typer.BadParameter(
             "--specialist-model and --specialist-reasoning-effort must be supplied together"
@@ -85,6 +101,8 @@ def run_command(
     if options:
         kwargs["connection_options"] = options
     runtime_kwargs: dict[str, object] = {}
+    if policy_payload is not None:
+        runtime_kwargs["policy"] = policy_payload
     if mode == "live" and specialist_model is not None and specialist_reasoning_effort is not None:
         runtime_kwargs["router"] = StaticCapabilityRouter(
             (

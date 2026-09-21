@@ -91,6 +91,106 @@ def test_plan_run_uses_explicit_roots_and_branch(tmp_path: Path, monkeypatch) ->
     }
 
 
+def test_plan_run_forwards_json_policy_to_runtime(tmp_path: Path, monkeypatch) -> None:
+    policy = {"allow_provisional_choices": True, "owner": "planning-review"}
+    policy_path = tmp_path / "policy.json"
+    policy_path.write_text(json.dumps(policy), encoding="utf-8")
+    observed: dict[str, object] = {}
+
+    class StubRuntime:
+        def __init__(self, root: Path, **kwargs: object) -> None:
+            observed["root"] = root
+            observed["constructor"] = kwargs
+
+        def run(self, _config: object, **_kwargs: object) -> SimpleNamespace:
+            return SimpleNamespace(as_dict=lambda: {"status": "reviewable-incomplete"})
+
+    monkeypatch.setattr(planning_cli, "PlanningRuntime", StubRuntime)
+    response = CliRunner().invoke(
+        cli.app,
+        [
+            "plan",
+            "run",
+            str(_config(tmp_path / "area.yaml")),
+            "--root",
+            str(tmp_path / "history"),
+            "--output-root",
+            str(tmp_path / "output"),
+            "--policy",
+            str(policy_path),
+        ],
+    )
+
+    assert response.exit_code == 0, response.output
+    assert observed["constructor"]["policy"] == policy
+
+
+def test_plan_run_rejects_non_object_policy(tmp_path: Path) -> None:
+    policy_path = tmp_path / "policy.json"
+    policy_path.write_text("[]", encoding="utf-8")
+
+    response = CliRunner().invoke(
+        cli.app,
+        [
+            "plan",
+            "run",
+            str(_config(tmp_path / "area.yaml")),
+            "--root",
+            str(tmp_path / "history"),
+            "--output-root",
+            str(tmp_path / "output"),
+            "--policy",
+            str(policy_path),
+        ],
+    )
+
+    assert response.exit_code != 0
+    assert "policy must be a JSON object" in response.output
+
+
+def test_plan_run_rejects_malformed_policy(tmp_path: Path) -> None:
+    policy_path = tmp_path / "policy.json"
+    policy_path.write_text("{", encoding="utf-8")
+
+    response = CliRunner().invoke(
+        cli.app,
+        [
+            "plan",
+            "run",
+            str(_config(tmp_path / "area.yaml")),
+            "--root",
+            str(tmp_path / "history"),
+            "--output-root",
+            str(tmp_path / "output"),
+            "--policy",
+            str(policy_path),
+        ],
+    )
+
+    assert response.exit_code != 0
+    assert "policy must be a JSON object" in response.output
+
+
+def test_plan_run_rejects_missing_policy(tmp_path: Path) -> None:
+    response = CliRunner().invoke(
+        cli.app,
+        [
+            "plan",
+            "run",
+            str(_config(tmp_path / "area.yaml")),
+            "--root",
+            str(tmp_path / "history"),
+            "--output-root",
+            str(tmp_path / "output"),
+            "--policy",
+            str(tmp_path / "missing-policy.json"),
+        ],
+    )
+
+    assert response.exit_code != 0
+    assert "policy must be a JSON object" in response.output
+
+
 def test_plan_run_explicitly_wires_jev_and_codex_specialist(tmp_path: Path, monkeypatch) -> None:
     observed: dict[str, object] = {}
 
@@ -143,6 +243,9 @@ def test_public_cli_runs_configured_jev_then_codex_and_replays_offline(
     config = configured_bath_saltford(tmp_path)
     snapshot(config)
     config_path = _write_cli_config(config, tmp_path / "area.yaml")
+    policy = {"allow_provisional_choices": True}
+    policy_path = tmp_path / "policy.json"
+    policy_path.write_text(json.dumps(policy), encoding="utf-8")
     calls = {"jev": 0, "codex": 0}
     codex_tasks: list[str] = []
     response_body = json.dumps(
@@ -174,13 +277,22 @@ def test_public_cli_runs_configured_jev_then_codex_and_replays_offline(
         calls["codex"] += 1
         prompt = str(kwargs["input"])
         packet = json.loads(prompt.split("Frozen planning task:\n", 1)[1])
+        assert packet["policy"] == policy
         codex_tasks.append(str(packet["task_id"]))
         candidate_id = packet["scope"]["selection_candidate_refs"][0]
         response = {
             "proposal": {
                 "operation": {
                     "kind": "select-alignment",
-                    "payload": {"candidate_id": candidate_id},
+                    "payload": {
+                        "candidate_id": candidate_id,
+                        "provisional": True,
+                        "reason": (
+                            "The admitted candidate is supported while one judgment "
+                            "remains unresolved."
+                        ),
+                        "uncertainties": ["Whether continuous access can be confirmed."],
+                    },
                 }
             }
         }
@@ -221,6 +333,8 @@ def test_public_cli_runs_configured_jev_then_codex_and_replays_offline(
             "gpt-5.6-luna",
             "--specialist-reasoning-effort",
             "max",
+            "--policy",
+            str(policy_path),
         ],
     )
 
@@ -233,6 +347,12 @@ def test_public_cli_runs_configured_jev_then_codex_and_replays_offline(
     assert payload["provider"] == "codex-exec"
     assert payload["model"] == "gpt-5.6-luna"
     assert payload["output"]["status"] != "invalid"
+    provisional = [
+        item for item in payload["output"]["selected_alignments"] if item.get("provisional") is True
+    ]
+    assert provisional
+    assert provisional[0]["reason"].startswith("The admitted candidate")
+    assert provisional[0]["uncertainties"] == ["Whether continuous access can be confirmed."]
     assert any(item.get("decision_class") == "agent" for item in payload["decision_trace"])
     event = HistoryStore(history).get(payload["history_event_id"])
     assert event["decision_class"] == "agent"
@@ -243,7 +363,14 @@ def test_public_cli_runs_configured_jev_then_codex_and_replays_offline(
     assert receipt["requested_model"] == "gpt-5.6-luna"
     assert receipt["observed_model"] == "gpt-5.6-luna"
     assert receipt["request"]["prompt"] == receipt["request_receipt"]["body"]
+    assert receipt["request"]["task_packet"]["policy"] == policy
     assert receipt["response_receipt"]["body"] == response_body
+    published = json.loads(
+        (Path(payload["publication"]["publication_dir"]) / "planning-output.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert any(item.get("provisional") is True for item in published["selected_alignments"])
 
     def provider_must_not_run(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("replay dispatched a provider")
@@ -255,6 +382,9 @@ def test_public_cli_runs_configured_jev_then_codex_and_replays_offline(
     assert replay.exit_code == 0, replay.output
     replay_payload = json.loads(replay.stdout)
     assert replay_payload["state"] == payload["state"]
+    assert any(
+        item.get("provisional") is True for item in replay_payload["output"]["selected_alignments"]
+    )
 
 
 def test_public_cli_persists_failed_codex_receipt(tmp_path: Path, monkeypatch) -> None:

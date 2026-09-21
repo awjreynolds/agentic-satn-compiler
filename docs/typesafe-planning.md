@@ -69,8 +69,22 @@ To opt into one-shot Codex reasoning for an unresolved, scoped judgment, provide
 
 ```text
 satn plan run CONFIG --root HISTORY --output-root OUTPUT --mode live \
-  --specialist-model gpt-5.6-luna --specialist-reasoning-effort max
+  --specialist-model gpt-5.6-luna --specialist-reasoning-effort max \
+  --policy provisional-policy.json
 ```
+
+The optional policy file is a JSON object. An owner can explicitly permit a
+supported best guess for an unresolved judgment with:
+
+```json
+{"allow_provisional_choices": true}
+```
+
+This permission only allows the specialist to return a `select-alignment`
+operation with `provisional: true`, a nonblank `reason`, and a nonempty
+`uncertainties` list. It does not add observations, access, provision, or
+adoption facts. Without the policy, or with the flag set to `false`, the
+specialist keeps the unresolved outcome.
 
 The run registers the existing Jev classifier and a `codex exec` specialist in the static capability router. Codex receives the frozen task through stdin and must return one strict JSON proposal; the existing planning operation validator checks its scope and payload before applying it. The process is invoked once with read-only sandboxing, an ephemeral session, and no repository check. The exact task and final JSON response are retained as receipts, with requested and observed model identity kept separate. Deterministic runs and runs without both specialist options keep their existing behavior.
 
