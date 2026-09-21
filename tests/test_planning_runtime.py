@@ -779,6 +779,238 @@ def test_unrelated_townpair_feedback_does_not_escalate_source_corridor(
     )
 
 
+def test_specialist_request_evidence_progress_does_not_reconsider_without_new_evidence(
+    tmp_path: Path,
+) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    calls = {"jev": 0, "specialist": 0}
+    specialist_requests: list[dict[str, object]] = []
+    connection_id = "bath-edge-to-saltford"
+    second_connection_id = "bath-edge-to-saltford-2"
+    connection_contexts: list[str] = []
+    alignment_contexts: list[set[str]] = []
+
+    def jev(task: DecisionTask) -> dict[str, object]:
+        calls["jev"] += 1
+        if task.input_state["question_kind"] == "connection":
+            connection_contexts.append(
+                str(task.input_state["connection_options"][0]["connection_id"])
+            )
+            choice = (
+                connection_id
+                if connection_id not in connection_contexts[:-1]
+                else second_connection_id
+            )
+        elif calls["jev"] == 2:
+            alignment_contexts.append(
+                {
+                    str(item.get("connection_id"))
+                    for item in task.input_state["candidates"]
+                    if isinstance(item, dict) and item.get("connection_id")
+                }
+            )
+            choice = "__needs_evidence__"
+        else:
+            alignment_contexts.append(
+                {
+                    str(item.get("connection_id"))
+                    for item in task.input_state["candidates"]
+                    if isinstance(item, dict) and item.get("connection_id")
+                }
+            )
+            if connection_id in alignment_contexts[-1]:
+                raise AssertionError("unchanged blocked alignment was dispatched")
+            return {
+                "status": "unavailable",
+                "provider": "configured-jev",
+                "model": "jev-model",
+                "failure_class": "observation-stop",
+            }
+        return {
+            "status": "answered",
+            "provider": "configured-jev",
+            "model": "jev-model",
+            "answers": {"decision": {"type": "choice", "choice": choice}},
+            "response_receipt": {"body_sha256": f"jev-response-{calls['jev']}"},
+        }
+
+    def specialist(task: DecisionTask) -> dict[str, object]:
+        calls["specialist"] += 1
+        candidate = next(item for item in task.candidates if isinstance(item, dict))
+        request = {
+            "kind": "request-evidence",
+            "payload": {
+                "target_refs": [candidate["candidate_id"], candidate["obligation_id"]],
+                "claim": "specialist claim for this admitted corridor",
+                "reason": "specialist reason for this admitted corridor",
+            },
+        }
+        specialist_requests.append(request)
+        return {
+            "status": "answered",
+            "provider": "configured-specialist",
+            "model": "specialist-model",
+            "proposal": {"operation": request},
+            "response_receipt": {"body_sha256": "specialist-response"},
+        }
+
+    router = StaticCapabilityRouter(
+        (
+            CapabilityRecord(
+                capability_id="jev",
+                kind=CapabilityKind.JEV,
+                judgment_forms=("choice",),
+                provider="configured-jev",
+                adapter=jev,
+            ),
+            CapabilityRecord(
+                capability_id="specialist",
+                kind=CapabilityKind.SPECIALIST,
+                operations=("request-evidence",),
+                judgment_forms=("structured-proposal",),
+                operation_scopes=("request-evidence",),
+                provider="configured-specialist",
+                adapter=specialist,
+            ),
+        )
+    )
+    root = tmp_path / "history"
+    result = PlanningRuntime(root, router=router).run(
+        config,
+        output_root=tmp_path / "run",
+        mode="live",
+        connection_options=[
+            {
+                "connection_id": connection_id,
+                "origin_place_id": "bath-edge",
+                "destination_place_id": "saltford",
+                "current_or_future": "unknown",
+            },
+            {
+                "connection_id": second_connection_id,
+                "origin_place_id": "bath-edge",
+                "destination_place_id": "saltford",
+                "current_or_future": "unknown",
+            },
+        ],
+    )
+
+    assert calls == {"jev": 4, "specialist": 1}
+    assert connection_contexts == [connection_id, second_connection_id]
+    assert alignment_contexts == [{connection_id}, {second_connection_id}]
+    assert len(specialist_requests) == 1
+    assert result.termination_reason == "provider-unavailable"
+    request = specialist_requests[0]["payload"]
+    assert isinstance(request, dict)
+    assert request["claim"] == "specialist claim for this admitted corridor"
+    assert request["reason"] == "specialist reason for this admitted corridor"
+    assert not result.state["selected_alignments"]
+    assert any(
+        item.get("connection_id") == second_connection_id
+        for item in result.state["connection_intents"]
+        if isinstance(item, dict)
+    )
+    assert any(
+        isinstance(item, dict)
+        and item.get("claim") == request["claim"]
+        and item.get("reason") == request["reason"]
+        for item in result.state["unknown_facts"]
+    )
+
+
+def test_persisted_specialist_evidence_scopes_are_not_redispatched_on_resume(
+    tmp_path: Path,
+) -> None:
+    config = configured_bath_saltford(tmp_path)
+    snapshot(config)
+    first_calls = {"jev": 0, "specialist": 0}
+
+    def first_jev(_task: DecisionTask) -> dict[str, object]:
+        first_calls["jev"] += 1
+        return {
+            "status": "answered",
+            "provider": "configured-jev",
+            "model": "jev-model",
+            "answers": {"decision": {"type": "choice", "choice": "__needs_evidence__"}},
+            "response_receipt": {"body_sha256": f"jev-response-{first_calls['jev']}"},
+        }
+
+    def first_specialist(task: DecisionTask) -> dict[str, object]:
+        first_calls["specialist"] += 1
+        candidate = next(item for item in task.candidates if isinstance(item, dict))
+        operation = {
+            "kind": "request-evidence",
+            "payload": {
+                "target_refs": [candidate["candidate_id"], candidate["obligation_id"]],
+                "claim": "same retained corridor claim",
+                "reason": "same retained corridor reason",
+            },
+        }
+        return {
+            "status": "answered",
+            "provider": "configured-specialist",
+            "model": "specialist-model",
+            "proposal": {"operation": operation},
+            "response_receipt": {"body_sha256": "specialist-response"},
+        }
+
+    def router_for(
+        jev: object,
+        specialist: object,
+    ) -> StaticCapabilityRouter:
+        return StaticCapabilityRouter(
+            (
+                CapabilityRecord(
+                    capability_id="jev",
+                    kind=CapabilityKind.JEV,
+                    judgment_forms=("choice",),
+                    provider="configured-jev",
+                    adapter=jev,
+                ),
+                CapabilityRecord(
+                    capability_id="specialist",
+                    kind=CapabilityKind.SPECIALIST,
+                    operations=("request-evidence",),
+                    judgment_forms=("structured-proposal",),
+                    operation_scopes=("request-evidence",),
+                    provider="configured-specialist",
+                    adapter=specialist,
+                ),
+            )
+        )
+
+    root = tmp_path / "history"
+    first = PlanningRuntime(root, router=router_for(first_jev, first_specialist)).run(
+        config,
+        output_root=tmp_path / "first-run",
+        mode="live",
+    )
+    assert first.termination_reason == "semantic-no-progress"
+    assert first_calls["jev"] == first_calls["specialist"]
+    assert first_calls["jev"] > 0
+
+    second_calls = {"jev": 0, "specialist": 0}
+
+    def raising_jev(_task: DecisionTask) -> dict[str, object]:
+        second_calls["jev"] += 1
+        raise AssertionError("resume redispatched an already resolved scope")
+
+    def raising_specialist(_task: DecisionTask) -> dict[str, object]:
+        second_calls["specialist"] += 1
+        raise AssertionError("resume redispatched a specialist scope")
+
+    resumed = PlanningRuntime(root, router=router_for(raising_jev, raising_specialist)).run(
+        config,
+        output_root=tmp_path / "second-run",
+        mode="live",
+    )
+
+    assert second_calls == {"jev": 0, "specialist": 0}
+    assert resumed.termination_reason == "semantic-no-progress"
+    assert resumed.state == first.state
+
+
 def test_requested_connection_options_schedule_each_intent_before_remaining_work(
     tmp_path: Path,
 ) -> None:

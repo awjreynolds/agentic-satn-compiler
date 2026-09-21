@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, cast
@@ -219,6 +219,27 @@ _UNORDERED_REFERENCE_FIELDS = frozenset(
     }
 )
 
+_SPECIALIST_PROGRESS_FIELDS = (
+    "question_kind",
+    "brief",
+    "policy",
+    "input_binding",
+    "scope",
+    "named_endpoints",
+    "connection_options",
+    "candidates",
+    "candidate_provenance",
+    "facts",
+    "source_evidence",
+    "prior_decisions",
+    "questions",
+)
+_SPECIALIST_PROGRESS_UNKNOWN_FIELDS = (
+    "evidence_refs",
+    "evidence_id",
+    "evidence_judgment",
+)
+
 
 def _canonical_semantic(value: object) -> object:
     """Normalize known reference collections without changing route sequences."""
@@ -370,11 +391,56 @@ class PlanningRuntime:
 
         termination_reason: str | None = None
         provider_result: dict[str, object] | None = None
+        blocked_scope_refs: set[str] = set()
         while True:
             output = validate_proposal(problem, state)
             if output.get("status") == "validated":
                 break
-            questions, choice_context = self._questions(problem, state)
+            questions, choice_context = self._questions(
+                problem,
+                state,
+                blocked_scope_refs=blocked_scope_refs,
+            )
+            if mode == "live" and self.router is not None:
+                skip_without_provider = False
+                while True:
+                    task_packet = self._task_packet(
+                        problem,
+                        state,
+                        questions,
+                        mode,
+                        choice_context,
+                        branch,
+                    )
+                    if not self._specialist_progress_seen(branch, task_packet):
+                        break
+                    current_scope_refs = {
+                        str(reference)
+                        for reference in choice_context.get("scope_refs", [])
+                        if reference is not None
+                    }
+                    new_scope_refs = current_scope_refs - blocked_scope_refs
+                    if not new_scope_refs:
+                        termination_reason = "semantic-no-progress"
+                        skip_without_provider = True
+                        break
+                    blocked_scope_refs.update(new_scope_refs)
+                    questions, choice_context = self._questions(
+                        problem,
+                        state,
+                        blocked_scope_refs=blocked_scope_refs,
+                    )
+                    has_scope = (
+                        bool(choice_context.get("connections"))
+                        if choice_context.get("question_kind") == "connection"
+                        else bool(choice_context.get("candidates"))
+                    )
+                    if not has_scope:
+                        termination_reason = "semantic-no-progress"
+                        skip_without_provider = True
+                        break
+                if skip_without_provider:
+                    break
             if not choice_context.get("dispatchable", True):
                 request = self._request(problem, state, questions, mode, choice_context, branch)
                 self._commit(
@@ -1636,8 +1702,13 @@ class PlanningRuntime:
         return operation
 
     def _questions(
-        self, problem: Mapping[str, object], state: Mapping[str, object]
+        self,
+        problem: Mapping[str, object],
+        state: Mapping[str, object],
+        *,
+        blocked_scope_refs: Collection[str] = (),
     ) -> tuple[dict[str, ChoiceQuestion], dict[str, object]]:
+        blocked_refs = {str(reference) for reference in blocked_scope_refs}
         reserved = {
             _UNKNOWN: "record an unknown and continue review",
             _EVIDENCE: "request evidence before selecting an alignment",
@@ -1654,7 +1725,9 @@ class PlanningRuntime:
         intents = [
             item
             for item in state.get("connection_intents", [])
-            if isinstance(item, Mapping) and item.get("connection_id")
+            if isinstance(item, Mapping)
+            and item.get("connection_id")
+            and str(item.get("connection_id")) not in blocked_refs
         ]
         intent_ids = {str(item["connection_id"]) for item in intents}
         selected_connection_ids = {
@@ -1667,7 +1740,7 @@ class PlanningRuntime:
         pending_connections = {
             connection_id: connection
             for connection_id, connection in configured_connections.items()
-            if connection_id not in intent_ids
+            if connection_id not in intent_ids and connection_id not in blocked_refs
         }
         if pending_connections and not active_connection_ids:
             connections = pending_connections
@@ -1732,7 +1805,15 @@ class PlanningRuntime:
         all_candidates = [
             item
             for item in problem.get("candidates", [])
-            if isinstance(item, Mapping) and isinstance(item.get("candidate_id"), str)
+            if isinstance(item, Mapping)
+            and isinstance(item.get("candidate_id"), str)
+            and not blocked_refs.intersection(
+                {
+                    str(item.get("candidate_id")),
+                    str(item.get("obligation_id")),
+                    str(item.get("connection_id")),
+                }
+            )
         ]
         all_candidates.sort(key=lambda item: str(item.get("candidate_id", "")))
         if active_connection_ids:
@@ -2658,7 +2739,7 @@ class PlanningRuntime:
             if self.router is not None:
                 task = DecisionTask(
                     task_id=f"planning-judgment-{_digest(request)[:24]}",
-                    required_capabilities=self._router_requirements(task_packet),
+                    required_capabilities=self._router_requirements(task_packet, branch),
                     branch_id=branch,
                     input_state=task_packet,
                     state=task_packet,
@@ -2780,8 +2861,79 @@ class PlanningRuntime:
             return None
         return None
 
+    @staticmethod
+    def _specialist_progress_identity(task_packet: Mapping[str, object]) -> str:
+        """Identify admitted specialist context while ignoring request prose."""
+
+        semantic = {
+            field: task_packet[field]
+            for field in _SPECIALIST_PROGRESS_FIELDS
+            if field in task_packet
+        }
+        feedback_progress: list[dict[str, object]] = []
+        feedback_unknowns = task_packet.get("feedback_unknowns")
+        if isinstance(feedback_unknowns, list):
+            for unknown in feedback_unknowns:
+                if not isinstance(unknown, Mapping):
+                    continue
+                progress = {
+                    field: unknown[field]
+                    for field in _SPECIALIST_PROGRESS_UNKNOWN_FIELDS
+                    if field in unknown
+                }
+                judgment = progress.get("evidence_judgment")
+                if isinstance(judgment, Mapping):
+                    progress["evidence_judgment"] = {
+                        key: value
+                        for key, value in judgment.items()
+                        if key not in {"claim", "reason"}
+                    }
+                if progress:
+                    feedback_progress.append(progress)
+        unique_feedback_progress = {_canonical_sort_key(item): item for item in feedback_progress}
+        semantic["feedback_progress"] = [
+            unique_feedback_progress[key] for key in sorted(unique_feedback_progress)
+        ]
+        return _digest(_canonical_semantic(semantic))
+
+    def _specialist_progress_seen(
+        self,
+        branch: str,
+        task_packet: Mapping[str, object],
+    ) -> bool:
+        """Return whether this admitted context already has an accepted specialist result."""
+
+        identity = self._specialist_progress_identity(task_packet)
+        current = self.store.head(branch).head_event_id
+        seen: set[str] = set()
+        while isinstance(current, str):
+            if current in seen:
+                raise HistoryReplayError("history event cycle detected")
+            seen.add(current)
+            event = self.store.get(current)
+            if (
+                isinstance(event, Mapping)
+                and event.get("event_kind") == "decision"
+                and event.get("decision_class") == "agent"
+                and event.get("outcome") in {"accepted", "reused"}
+            ):
+                request = event.get("request")
+                if not isinstance(request, Mapping) and isinstance(event.get("request_ref"), str):
+                    request_value = self.store.get(event["request_ref"])
+                    request = request_value if isinstance(request_value, Mapping) else None
+                prior_packet = request.get("task_packet") if isinstance(request, Mapping) else None
+                if isinstance(prior_packet, Mapping) and (
+                    self._specialist_progress_identity(prior_packet) == identity
+                ):
+                    return True
+            parent = event.get("timeline_parent_id") if isinstance(event, Mapping) else None
+            current = parent if isinstance(parent, str) else None
+        return False
+
     def _router_requirements(
-        self, task_packet: Mapping[str, object] | None = None
+        self,
+        task_packet: Mapping[str, object] | None = None,
+        branch: str | None = None,
     ) -> CapabilityRequirements:
         """Select a configured proposal contract without inventing authority.
 
@@ -2796,6 +2948,13 @@ class PlanningRuntime:
         feedback_unknowns = (
             task_packet.get("feedback_unknowns") if isinstance(task_packet, Mapping) else None
         )
+        specialist_progress_seen = (
+            branch is not None
+            and isinstance(task_packet, Mapping)
+            and self._specialist_progress_seen(branch, task_packet)
+        )
+        if specialist_progress_seen:
+            return CapabilityRequirements(judgment_forms=("choice",))
         unresolved_focused_task = isinstance(feedback_unknowns, list) and bool(feedback_unknowns)
         configured = [
             capability
