@@ -676,7 +676,7 @@ def _validate_native_publication_shape(
     counts = publication.get("counts")
     if not isinstance(counts, dict):
         raise ValueError("native publication counts must be an object")
-    expected_count_fields = {
+    legacy_count_fields = {
         "source_baseline",
         "prepared_connections",
         "pending_connections",
@@ -691,7 +691,16 @@ def _validate_native_publication_shape(
         "access_obligations",
         "unresolved_access",
     }
-    if set(counts) != expected_count_fields:
+    current_count_fields = legacy_count_fields | {
+        "community_access",
+        "community_gaps",
+    }
+    count_fields = set(counts)
+    if count_fields == legacy_count_fields:
+        expected_count_fields = legacy_count_fields
+    elif count_fields == current_count_fields:
+        expected_count_fields = current_count_fields
+    else:
         raise ValueError("native publication counts must match DecisionMapCounts")
     declared_counts = {
         field: _native_nonnegative_int(counts, field) for field in expected_count_fields
