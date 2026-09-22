@@ -118,6 +118,13 @@ pub struct Candidate {
     pub topology_status: String,
     pub provision_status: String,
     pub path_edge_ids: Vec<String>,
+    /// Geometry for each graph edge in `path_edge_ids`, in the same order.
+    ///
+    /// This is intentionally compact per-candidate evidence used by the
+    /// publication layer to identify actual source sections.  It is not a
+    /// copy of the whole graph and old reports remain readable.
+    #[serde(default)]
+    pub path_edge_geometries: Vec<Vec<[f64; 2]>>,
     pub geometry: Vec<[f64; 2]>,
 }
 
@@ -1042,6 +1049,7 @@ fn build_connections_and_candidates(
                     connection_id.clone(),
                     role,
                     route,
+                    graph,
                 );
                 connection_candidates.push(candidate);
             }
@@ -1223,7 +1231,19 @@ fn classify_edge(edge: &GraphEdge) -> BTreeSet<String> {
     classes
 }
 
-fn candidate_from_route(id: String, connection_id: String, role: &str, route: Route) -> Candidate {
+fn candidate_from_route(
+    id: String,
+    connection_id: String,
+    role: &str,
+    route: Route,
+    graph: &Graph,
+) -> Candidate {
+    let path_edge_geometries = route
+        .edge_ids
+        .iter()
+        .filter_map(|edge_id| graph.edges.iter().find(|edge| edge.id == *edge_id))
+        .map(|edge| edge.geometry.clone())
+        .collect();
     let measured_length = route.length_m;
     Candidate {
         id,
@@ -1248,6 +1268,7 @@ fn candidate_from_route(id: String, connection_id: String, role: &str, route: Ro
         topology_status: "graph-supported".to_string(),
         provision_status: "unknown".to_string(),
         path_edge_ids: route.edge_ids,
+        path_edge_geometries,
         geometry: route.geometry,
     }
 }

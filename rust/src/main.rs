@@ -3,7 +3,10 @@ use std::path::PathBuf;
 use clap::Parser;
 use satn_rs::judgment::{CodexConfig, TypeSafeConfig};
 use satn_rs::midend::{MidendConfig, MidendProgress, ProviderSet, replay, run as run_midend};
-use satn_rs::{CompileOptions, ProgressEvent, compile_with_progress};
+use satn_rs::{
+    CompileOptions, ProgressEvent, compile_with_progress, load_retained_report,
+    publish_decision_map,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "satn-rs", about = "Native SATN mechanical compiler")]
@@ -85,6 +88,8 @@ fn run() -> satn_rs::Result<()> {
         };
         let result = replay(&history, &cli.branch, &mut emit)
             .map_err(|error| satn_rs::SatnError::InvalidInput(error.to_string()))?;
+        let report = load_retained_report(&history)?;
+        publish_decision_map(&cli.output, &report, &result)?;
         std::fs::create_dir_all(&cli.output)?;
         std::fs::write(
             cli.output.join("planning.json"),
@@ -103,6 +108,7 @@ fn run() -> satn_rs::Result<()> {
         &mut progress,
     )?;
     if cli.mode == "live" {
+        let publication_report = report.clone();
         let mut classifier = TypeSafeConfig::from_env(cli.jev_model.clone())
             .map_err(|error| satn_rs::SatnError::InvalidInput(error.to_string()))?;
         let mut specialist = match (
@@ -141,6 +147,7 @@ fn run() -> satn_rs::Result<()> {
             &mut emit,
         )
         .map_err(|error| satn_rs::SatnError::InvalidInput(error.to_string()))?;
+        publish_decision_map(&cli.output, &publication_report, &result)?;
         std::fs::create_dir_all(&cli.output)?;
         std::fs::write(
             cli.output.join("planning.json"),

@@ -145,6 +145,7 @@ fn candidate_for(id: &str, connection_id: &str, length_m: f64) -> Candidate {
         topology_status: "graph-supported".to_string(),
         provision_status: "unknown".to_string(),
         path_edge_ids: vec![format!("edge-{id}")],
+        path_edge_geometries: Vec::new(),
         geometry: vec![[0.0, 0.0], [1.0, 0.0]],
     }
 }
