@@ -442,6 +442,8 @@ fn report_fixture() -> CompileReport {
             attachment_depth: Some(0),
             new_link_length_m: Some(120.0),
             full_access_length_m: Some(120.0),
+            new_link_topography: None,
+            full_access_topography: None,
             joined_spine_id: Some("source:a-road".to_string()),
             access_length_m: Some(120.0),
             path_edge_ids: vec!["edge-access".to_string()],
