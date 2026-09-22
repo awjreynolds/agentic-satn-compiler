@@ -829,6 +829,30 @@ def _native_public_files(source: Path, entry: DeploymentEntry) -> set[Path]:
     return paths
 
 
+def _native_cache_transition_worker(deployment_id: str) -> str:
+    """Take over a legacy cache-first worker for one native deployment."""
+    legacy_prefix = json.dumps(f"satn-{deployment_id}-run-")
+    return f"""const LEGACY_CACHE_PREFIX = {legacy_prefix};
+self.addEventListener("install", event => {{
+  self.skipWaiting();
+}});
+self.addEventListener("activate", event => {{
+  event.waitUntil((async () => {{
+    await self.clients.claim();
+    const keys = await caches.keys();
+    await Promise.all(keys
+      .filter(key => key.startsWith(LEGACY_CACHE_PREFIX))
+      .map(key => caches.delete(key)));
+  }})());
+}});
+self.addEventListener("fetch", event => {{
+  if (event.request.method !== "GET" ||
+      new URL(event.request.url).origin !== location.origin) return;
+  event.respondWith(fetch(event.request));
+}});
+"""
+
+
 def _copy_deployments(
     catalogue: DeploymentCatalogue,
     deployments_root: Path,
@@ -852,6 +876,10 @@ def _copy_deployments(
                 destination = target / relative
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source / relative, destination)
+            (target / "service-worker.js").write_text(
+                _native_cache_transition_worker(entry.deployment_id),
+                encoding="utf-8",
+            )
         else:
             shutil.copytree(
                 source,
