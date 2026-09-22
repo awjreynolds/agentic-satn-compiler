@@ -12,7 +12,7 @@ use crate::geojson::{
     Feature, Geometry, canonical_tag_values, read_feature_collection, string_property,
 };
 use crate::geometry::enrich_network_edges;
-use crate::graph::{EdgeAttachment, Graph, GraphEdge, Route};
+use crate::graph::{EdgeAttachment, FrontierEdgeTarget, FrontierTarget, Graph, GraphEdge, Route};
 use crate::output::write_bundle;
 
 #[derive(Debug, Clone, Default)]
@@ -95,10 +95,38 @@ pub struct CommunityAccess {
     pub attachment_edge_id: Option<String>,
     #[serde(default)]
     pub attachment_point: Option<[f64; 2]>,
+    #[serde(default)]
+    pub attachment_fraction: Option<f64>,
     pub attachment_distance_m: Option<f64>,
+    #[serde(default)]
+    pub parent_community_id: Option<String>,
+    #[serde(default)]
+    pub parent_community_name: Option<String>,
+    #[serde(default)]
+    pub parent_junction_node: Option<String>,
+    #[serde(default)]
+    pub parent_junction_edge_id: Option<String>,
+    #[serde(default)]
+    pub parent_junction_fraction: Option<f64>,
+    #[serde(default)]
+    pub parent_junction_remaining_m: Option<f64>,
+    #[serde(default)]
+    pub root_spine_id: Option<String>,
+    #[serde(default)]
+    pub admission_order: Option<usize>,
+    #[serde(default)]
+    pub attachment_depth: Option<usize>,
+    #[serde(default)]
+    pub new_link_length_m: Option<f64>,
+    #[serde(default)]
+    pub full_access_length_m: Option<f64>,
     pub joined_spine_id: Option<String>,
     pub access_length_m: Option<f64>,
     pub path_edge_ids: Vec<String>,
+    #[serde(default)]
+    pub path_start_fraction: Option<f64>,
+    #[serde(default)]
+    pub path_end_fraction: Option<f64>,
     #[serde(default)]
     pub path_geometry: Vec<[f64; 2]>,
     #[serde(default)]
@@ -259,6 +287,20 @@ struct DistanceEntry {
     node: String,
 }
 
+#[derive(Debug, Clone)]
+struct PendingCommunity {
+    place: NetworkPlace,
+    attachment: Option<EdgeAttachment>,
+}
+
+#[derive(Debug, Clone)]
+struct FrontierCandidate {
+    community_id: String,
+    attachment: EdgeAttachment,
+    route: Route,
+    target: FrontierTarget,
+}
+
 const ROUTE_ROLES: [&str; 4] = ["direct", "strategic-spine", "ncn-informed", "low-traffic"];
 
 impl PartialEq for DistanceEntry {
@@ -388,7 +430,7 @@ pub fn compile_with_progress(
         0,
     );
     let community_access =
-        build_community_access(&network_places, &places, &network.graph, &source_inventory);
+        build_community_access(&network_places, &network.graph, &source_inventory);
     emit(
         progress,
         &started,
@@ -912,158 +954,189 @@ fn admit_school_context(features: &[Feature]) -> Vec<SchoolContext> {
 
 fn build_community_access(
     network_places: &[NetworkPlace],
-    destinations: &[Place],
     graph: &Graph,
     source_inventory: &[SourceCorridor],
 ) -> Vec<CommunityAccess> {
     let (target_nodes, target_edges) = strategic_spine_targets(graph, source_inventory);
-    let mut records = Vec::new();
-    for place in network_places
+    let mut pending = network_places
         .iter()
         .filter(|place| is_rural_community(place))
-    {
-        let Some(attachment) = graph.nearest_edge_attachment(place.geometry) else {
-            records.push(community_access_gap(
-                place,
-                None,
-                "No graph edge is available for the inferred community attachment.",
-            ));
-            continue;
+        .map(|place| {
+            (
+                place.id.clone(),
+                PendingCommunity {
+                    place: place.clone(),
+                    attachment: graph.nearest_edge_attachment(place.geometry),
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut primary_records = BTreeMap::new();
+    let mut records = Vec::new();
+    let mut admission_order = 1;
+
+    while !pending.is_empty() {
+        let (frontier_nodes, partial_targets) =
+            frontier_targets(&target_nodes, &primary_records, graph);
+        let search = graph.frontier_search(&frontier_nodes, &partial_targets);
+        let mut best: Option<FrontierCandidate> = None;
+        for (community_id, candidate) in &pending {
+            let Some(attachment) = candidate.attachment.as_ref() else {
+                continue;
+            };
+            let routed =
+                accepted_interval_route(attachment, &primary_records, graph).or_else(|| {
+                    graph.route_from_attachment_to_frontier(attachment, &search, &target_edges)
+                });
+            let Some((route, target)) = routed else {
+                continue;
+            };
+            let replace = best.as_ref().is_none_or(|current| {
+                (route.length_m, community_id, &target.key, &route.edge_ids)
+                    < (
+                        current.route.length_m,
+                        &current.community_id,
+                        &current.target.key,
+                        &current.route.edge_ids,
+                    )
+            });
+            if replace {
+                best = Some(FrontierCandidate {
+                    community_id: community_id.clone(),
+                    attachment: attachment.clone(),
+                    route,
+                    target,
+                });
+            }
+        }
+
+        let Some(candidate) = best else {
+            break;
         };
-        let Some((primary_route, joined_spine_id)) =
-            graph.route_from_attachment_to_targets(&attachment, &target_nodes, &target_edges)
-        else {
-            records.push(community_access_gap(
-                place,
-                Some(&attachment),
-                "No reachable admitted strategic spine exists after explicit bicycle/access restrictions.",
-            ));
-            continue;
-        };
-        let entry_node = primary_route.nodes.last().cloned().unwrap_or_default();
-        let status = if primary_route.edge_ids.is_empty() {
+        let pending_community = pending
+            .remove(&candidate.community_id)
+            .expect("frontier candidate remains pending");
+        let parent_community_id = candidate.target.community_id.clone();
+        let parent = parent_community_id
+            .as_ref()
+            .and_then(|id| primary_records.get(id));
+        let root_spine_id = candidate.target.spine_id.clone();
+        let attachment_depth = parent
+            .and_then(|record| record.attachment_depth)
+            .map_or(0, |depth| depth + 1);
+        let full_access_length_m =
+            Some(candidate.route.length_m + candidate.target.remaining_access_length_m);
+        let status = if parent_community_id.is_none() && candidate.route.edge_ids.is_empty() {
             "on-spine"
         } else {
             "served"
         };
-        records.push(CommunityAccess {
-            community_id: place.id.clone(),
-            source_id: place.source_id.clone(),
-            name: place.name.clone(),
-            geometry: place.geometry,
+        let reason = if let Some(parent_id) = &parent_community_id {
+            let parent_name = parent
+                .map(|record| record.name.as_str())
+                .unwrap_or(parent_id.as_str());
+            format!(
+                "Shortest measured new link reaches the accepted {parent_name} branch junction; its root spine remains reachable through the accepted branch."
+            )
+        } else if status == "on-spine" {
+            "The inferred community attachment is already on an admitted strategic spine; no access route is generated.".to_string()
+        } else {
+            "Shortest measured new link reaches the admitted strategic spine frontier.".to_string()
+        };
+        let path_start_fraction = candidate.route.edge_ids.first().map(|edge_id| {
+            if candidate.attachment.node.is_some() {
+                0.0
+            } else {
+                graph
+                    .normalize_edge_fraction(
+                        &candidate.attachment.edge_id,
+                        candidate.attachment.fraction,
+                        edge_id,
+                    )
+                    .unwrap_or(candidate.attachment.fraction)
+            }
+        });
+        let path_end_fraction = candidate.route.edge_ids.last().map(|edge_id| {
+            frontier_edge_fraction(&candidate.target.junction_node, edge_id).unwrap_or(1.0)
+        });
+        let primary = CommunityAccess {
+            community_id: pending_community.place.id.clone(),
+            source_id: pending_community.place.source_id.clone(),
+            name: pending_community.place.name.clone(),
+            geometry: pending_community.place.geometry,
             status: status.to_string(),
             decision_class: "mechanical".to_string(),
             is_primary: true,
-            attachment_node: attachment.node.clone(),
-            attachment_edge_id: Some(attachment.edge_id.clone()),
-            attachment_point: Some(attachment.point),
-            attachment_distance_m: Some(attachment.distance_m),
-            joined_spine_id: Some(joined_spine_id.clone()),
-            access_length_m: Some(primary_route.length_m),
-            path_edge_ids: primary_route.edge_ids.clone(),
-            path_geometry: primary_route.geometry.clone(),
+            attachment_node: candidate.attachment.node.clone(),
+            attachment_edge_id: Some(candidate.attachment.edge_id.clone()),
+            attachment_point: Some(candidate.attachment.point),
+            attachment_fraction: Some(candidate.attachment.fraction),
+            attachment_distance_m: Some(candidate.attachment.distance_m),
+            parent_community_id,
+            parent_community_name: candidate
+                .target
+                .community_id
+                .as_ref()
+                .and_then(|id| primary_records.get(id))
+                .map(|record| record.name.clone()),
+            parent_junction_node: candidate.target.community_id.as_ref().and_then(|_| {
+                (!candidate.target.junction_node.starts_with("edge:"))
+                    .then(|| candidate.target.junction_node.clone())
+            }),
+            parent_junction_edge_id: candidate.target.community_id.as_ref().and_then(|_| {
+                candidate
+                    .target
+                    .junction_node
+                    .strip_prefix("edge:")
+                    .and_then(|value| value.split('@').next())
+                    .map(str::to_string)
+            }),
+            parent_junction_fraction: candidate.target.community_id.as_ref().and_then(|_| {
+                candidate
+                    .target
+                    .junction_node
+                    .split('@')
+                    .nth(1)
+                    .and_then(|value| value.parse().ok())
+            }),
+            parent_junction_remaining_m: candidate
+                .target
+                .community_id
+                .as_ref()
+                .map(|_| candidate.target.remaining_access_length_m),
+            root_spine_id: Some(root_spine_id.clone()),
+            admission_order: Some(admission_order),
+            attachment_depth: Some(attachment_depth),
+            new_link_length_m: Some(candidate.route.length_m),
+            full_access_length_m,
+            joined_spine_id: Some(root_spine_id.clone()),
+            access_length_m: Some(candidate.route.length_m),
+            path_edge_ids: candidate.route.edge_ids.clone(),
+            path_start_fraction,
+            path_end_fraction,
+            path_geometry: candidate.route.geometry.clone(),
             onward_destinations: Vec::new(),
             onward_benefits: Vec::new(),
-            joined_spine_reference: joined_spine_reference(
-                &joined_spine_id,
-                source_inventory,
-            ),
+            joined_spine_reference: joined_spine_reference(&root_spine_id, source_inventory),
             provision_status: "unknown".to_string(),
-            reason: if status == "on-spine" {
-                "The inferred community attachment is already on an admitted strategic spine; no access route is generated.".to_string()
-            } else {
-                "Shortest measured-length cycling path reaches the admitted strategic spine.".to_string()
-            },
-        });
+            reason,
+        };
+        primary_records.insert(candidate.community_id, primary.clone());
+        records.push(primary);
+        admission_order += 1;
+    }
 
-        if primary_route.edge_ids.is_empty() {
-            continue;
-        }
-        let mut alternatives: BTreeMap<
-            (String, Vec<String>),
-            (Route, Vec<CommunityAccessBenefit>),
-        > = BTreeMap::new();
-        for destination in destinations {
-            if destination.id == place.id {
-                continue;
-            }
-            let Some(destination_node) = graph.nearest_node(destination.point) else {
-                continue;
-            };
-            let Some(full_route) =
-                graph.cycling_route_from_attachment(&attachment, &destination_node)
-            else {
-                continue;
-            };
-            let Some((prefix, alternate_spine_id, alternate_entry_node)) =
-                first_spine_prefix(graph, &full_route, &target_nodes)
-            else {
-                continue;
-            };
-            if alternate_entry_node == entry_node || prefix.edge_ids.is_empty() {
-                continue;
-            }
-            let onward_from_primary = graph
-                .cycling_route(&entry_node, &destination_node)
-                .map(|route| route.length_m);
-            let primary_access_plus_onward =
-                onward_from_primary.map(|length| primary_route.length_m + length);
-            if primary_access_plus_onward.is_some_and(|length| full_route.length_m >= length) {
-                continue;
-            }
-            let key = (alternate_spine_id, prefix.edge_ids.clone());
-            let entry = alternatives
-                .entry(key)
-                .or_insert_with(|| (prefix.clone(), Vec::new()));
-            if !entry
-                .1
-                .iter()
-                .any(|benefit| benefit.destination_name == destination.name)
-            {
-                entry.1.push(CommunityAccessBenefit {
-                    destination_name: destination.name.clone(),
-                    full_route_length_m: full_route.length_m,
-                    primary_access_plus_onward_m: primary_access_plus_onward,
-                });
-                entry
-                    .1
-                    .sort_by(|left, right| left.destination_name.cmp(&right.destination_name));
-            }
-        }
-        for ((joined_spine_id, _), (route, onward_benefits)) in alternatives {
-            let onward_destinations = onward_benefits
-                .iter()
-                .map(|benefit| benefit.destination_name.clone())
-                .collect::<Vec<_>>();
-            let destination_label = onward_destinations.join(", ");
-            records.push(CommunityAccess {
-                community_id: place.id.clone(),
-                source_id: place.source_id.clone(),
-                name: place.name.clone(),
-                geometry: place.geometry,
-                status: "served".to_string(),
-                decision_class: "mechanical".to_string(),
-                is_primary: false,
-                attachment_node: attachment.node.clone(),
-                attachment_edge_id: Some(attachment.edge_id.clone()),
-                attachment_point: Some(attachment.point),
-                attachment_distance_m: Some(attachment.distance_m),
-                joined_spine_id: Some(joined_spine_id.clone()),
-                access_length_m: Some(route.length_m),
-                path_edge_ids: route.edge_ids,
-                path_geometry: route.geometry,
-                onward_destinations,
-                onward_benefits,
-                joined_spine_reference: joined_spine_reference(
-                    &joined_spine_id,
-                    source_inventory,
-                ),
-                provision_status: "unknown".to_string(),
-                reason: format!(
-                    "A shorter measured route toward {destination_label} reaches a different strategic spine entry."
-                ),
-            });
-        }
+    for pending_community in pending.into_values() {
+        let reason = if pending_community.attachment.is_some() {
+            "No reachable admitted strategic spine or accepted branch exists after explicit bicycle/access restrictions."
+        } else {
+            "No graph edge is available for the inferred community attachment."
+        };
+        records.push(community_access_gap(
+            &pending_community.place,
+            pending_community.attachment.as_ref(),
+            reason,
+        ));
     }
     records.sort_by(|left, right| {
         left.community_id
@@ -1072,6 +1145,296 @@ fn build_community_access(
             .then_with(|| left.path_edge_ids.cmp(&right.path_edge_ids))
     });
     records
+}
+
+fn frontier_targets(
+    spine_nodes: &HashMap<String, String>,
+    primary_records: &BTreeMap<String, CommunityAccess>,
+    graph: &Graph,
+) -> (HashMap<String, FrontierTarget>, Vec<FrontierEdgeTarget>) {
+    let mut targets = HashMap::new();
+    let mut partial_targets = Vec::new();
+    for (node, spine_id) in spine_nodes {
+        let target = FrontierTarget {
+            key: format!("spine:{spine_id}:{node}"),
+            spine_id: spine_id.clone(),
+            community_id: None,
+            junction_node: node.clone(),
+            remaining_access_length_m: 0.0,
+        };
+        insert_frontier_target(&mut targets, node.clone(), target);
+    }
+    for access in primary_records.values() {
+        let Some(root_spine_id) = access
+            .root_spine_id
+            .as_ref()
+            .or(access.joined_spine_id.as_ref())
+        else {
+            continue;
+        };
+        if let (Some(edge_id), Some(fraction), Some(point), Some(remaining)) = (
+            access.path_edge_ids.first(),
+            access.path_start_fraction,
+            access.attachment_point,
+            access.full_access_length_m.or(access.access_length_m),
+        ) {
+            if fraction > 0.0 {
+                partial_targets.push(FrontierEdgeTarget {
+                    edge_id: edge_id.clone(),
+                    fraction,
+                    point,
+                    target: FrontierTarget {
+                        key: format!(
+                            "community:{}:edge:{}@{fraction:.12}",
+                            access.community_id, edge_id
+                        ),
+                        spine_id: root_spine_id.clone(),
+                        community_id: Some(access.community_id.clone()),
+                        junction_node: format!("edge:{edge_id}@{fraction:.12}"),
+                        remaining_access_length_m: remaining,
+                    },
+                });
+            }
+        }
+        for (node, remaining_access_length_m) in access_frontier_targets(access, graph) {
+            insert_frontier_target(
+                &mut targets,
+                node.clone(),
+                FrontierTarget {
+                    key: format!("community:{}:{node}", access.community_id),
+                    spine_id: root_spine_id.clone(),
+                    community_id: Some(access.community_id.clone()),
+                    junction_node: node.clone(),
+                    remaining_access_length_m,
+                },
+            );
+        }
+    }
+    (targets, partial_targets)
+}
+
+fn insert_frontier_target(
+    targets: &mut HashMap<String, FrontierTarget>,
+    node: String,
+    target: FrontierTarget,
+) {
+    if targets
+        .get(&node)
+        .is_none_or(|current| target.key < current.key)
+    {
+        targets.insert(node, target);
+    }
+}
+
+fn frontier_edge_fraction(junction_node: &str, edge_id: &str) -> Option<f64> {
+    let value = junction_node.strip_prefix("edge:")?;
+    let (junction_edge_id, fraction) = value.rsplit_once('@')?;
+    (junction_edge_id == edge_id).then(|| fraction.parse().ok())?
+}
+
+fn accepted_interval_route(
+    attachment: &EdgeAttachment,
+    primary_records: &BTreeMap<String, CommunityAccess>,
+    graph: &Graph,
+) -> Option<(Route, FrontierTarget)> {
+    let mut best: Option<(Route, FrontierTarget)> = None;
+    for access in primary_records.values() {
+        let Some(root_spine_id) = access
+            .root_spine_id
+            .as_ref()
+            .or(access.joined_spine_id.as_ref())
+        else {
+            continue;
+        };
+        let ancestor_length = access
+            .full_access_length_m
+            .or(access.access_length_m)
+            .unwrap_or_default()
+            - access
+                .new_link_length_m
+                .or(access.access_length_m)
+                .unwrap_or_default();
+        let edge_lengths = access
+            .path_edge_ids
+            .iter()
+            .map(|edge_id| graph.edge_by_id(edge_id).map_or(0.0, |edge| edge.length_m))
+            .collect::<Vec<_>>();
+        let path_start_fraction = access
+            .path_start_fraction
+            .or_else(|| {
+                access
+                    .attachment_edge_id
+                    .as_deref()
+                    .zip(access.attachment_fraction)
+                    .zip(access.path_edge_ids.first())
+                    .and_then(|((attachment_edge_id, fraction), edge_id)| {
+                        graph.normalize_edge_fraction(attachment_edge_id, fraction, edge_id)
+                    })
+            })
+            .unwrap_or_else(|| {
+                if access.attachment_node.is_some() {
+                    0.0
+                } else {
+                    access.attachment_fraction.unwrap_or_default()
+                }
+            });
+        let path_end_fraction = access.path_end_fraction.unwrap_or(1.0);
+        let effective_edge_lengths = edge_lengths
+            .iter()
+            .enumerate()
+            .map(|(index, length)| {
+                let start = (index == 0).then_some(path_start_fraction).unwrap_or(0.0);
+                let end = (index + 1 == edge_lengths.len())
+                    .then_some(path_end_fraction)
+                    .unwrap_or(1.0);
+                (end - start) * length
+            })
+            .collect::<Vec<_>>();
+        for (index, edge_id) in access.path_edge_ids.iter().enumerate() {
+            let Some(attachment_fraction) = graph.attachment_fraction_on_edge(attachment, edge_id)
+            else {
+                continue;
+            };
+            let start_fraction = if index == 0 && access.attachment_node.is_none() {
+                path_start_fraction
+            } else {
+                0.0
+            };
+            let end_fraction = if index + 1 == access.path_edge_ids.len() {
+                access.path_end_fraction.unwrap_or(1.0)
+            } else {
+                1.0
+            };
+            let Some(edge) = graph.edge_by_id(edge_id) else {
+                continue;
+            };
+            if attachment_fraction > end_fraction {
+                continue;
+            }
+            let (route, junction_fraction, remaining) = if attachment_fraction < start_fraction {
+                let parent_point = access.attachment_point?;
+                let route = graph.partial_edge_route(
+                    edge_id,
+                    attachment_fraction,
+                    start_fraction,
+                    attachment.point,
+                    parent_point,
+                )?;
+                (
+                    route,
+                    start_fraction,
+                    access
+                        .full_access_length_m
+                        .or(access.access_length_m)
+                        .unwrap_or_default(),
+                )
+            } else {
+                (
+                    graph.empty_route(),
+                    attachment_fraction,
+                    (end_fraction - attachment_fraction) * edge.length_m
+                        + effective_edge_lengths[index + 1..].iter().sum::<f64>()
+                        + ancestor_length,
+                )
+            };
+            let target = FrontierTarget {
+                key: format!(
+                    "community:{}:edge:{}@{:.12}",
+                    access.community_id, edge.id, junction_fraction
+                ),
+                spine_id: root_spine_id.clone(),
+                community_id: Some(access.community_id.clone()),
+                junction_node: format!("edge:{}@{:.12}", edge.id, junction_fraction),
+                remaining_access_length_m: remaining,
+            };
+            let candidate = (route, target);
+            if best
+                .as_ref()
+                .is_none_or(|(_, current)| candidate.1.key < current.key)
+            {
+                best = Some(candidate);
+            }
+        }
+    }
+    best
+}
+
+fn access_frontier_targets(access: &CommunityAccess, graph: &Graph) -> BTreeMap<String, f64> {
+    let mut nodes = BTreeMap::new();
+    let ancestor_length = access
+        .full_access_length_m
+        .or(access.access_length_m)
+        .unwrap_or_default()
+        - access
+            .new_link_length_m
+            .or(access.access_length_m)
+            .unwrap_or_default();
+    let link_length = access
+        .new_link_length_m
+        .or(access.access_length_m)
+        .unwrap_or_default();
+    if let Some(node) = &access.attachment_node {
+        nodes.insert(node.clone(), link_length + ancestor_length);
+    }
+    let edge_lengths = access
+        .path_edge_ids
+        .iter()
+        .map(|edge_id| graph.edge_by_id(edge_id).map_or(0.0, |edge| edge.length_m))
+        .collect::<Vec<_>>();
+    let path_start_fraction = access
+        .path_start_fraction
+        .or_else(|| {
+            access
+                .attachment_edge_id
+                .as_deref()
+                .zip(access.attachment_fraction)
+                .zip(access.path_edge_ids.first())
+                .and_then(|((attachment_edge_id, fraction), edge_id)| {
+                    graph.normalize_edge_fraction(attachment_edge_id, fraction, edge_id)
+                })
+        })
+        .unwrap_or_else(|| {
+            if access.attachment_node.is_some() {
+                0.0
+            } else {
+                access.attachment_fraction.unwrap_or_default()
+            }
+        });
+    let path_end_fraction = access.path_end_fraction.unwrap_or(1.0);
+    let effective_edge_lengths = edge_lengths
+        .iter()
+        .enumerate()
+        .map(|(index, length)| {
+            let start = (index == 0).then_some(path_start_fraction).unwrap_or(0.0);
+            let end = (index + 1 == edge_lengths.len())
+                .then_some(path_end_fraction)
+                .unwrap_or(1.0);
+            (end - start) * length
+        })
+        .collect::<Vec<_>>();
+    for (index, edge_id) in access.path_edge_ids.iter().enumerate() {
+        let Some(edge) = graph.edge_by_id(edge_id) else {
+            continue;
+        };
+        let start_fraction = if index == 0 { path_start_fraction } else { 0.0 };
+        let end_fraction = if index + 1 == access.path_edge_ids.len() {
+            path_end_fraction
+        } else {
+            1.0
+        };
+        if start_fraction == 0.0 {
+            let remaining = effective_edge_lengths[index]
+                + effective_edge_lengths[index + 1..].iter().sum::<f64>()
+                + ancestor_length;
+            nodes.entry(edge.from.clone()).or_insert(remaining);
+        }
+        if end_fraction == 1.0 {
+            let remaining =
+                effective_edge_lengths[index + 1..].iter().sum::<f64>() + ancestor_length;
+            nodes.entry(edge.to.clone()).or_insert(remaining);
+        }
+    }
+    nodes
 }
 
 fn community_access_gap(
@@ -1090,10 +1453,24 @@ fn community_access_gap(
         attachment_node: attachment.and_then(|value| value.node.clone()),
         attachment_edge_id: attachment.map(|value| value.edge_id.clone()),
         attachment_point: attachment.map(|value| value.point),
+        attachment_fraction: attachment.map(|value| value.fraction),
         attachment_distance_m: attachment.map(|value| value.distance_m),
+        parent_community_id: None,
+        parent_community_name: None,
+        parent_junction_node: None,
+        parent_junction_edge_id: None,
+        parent_junction_fraction: None,
+        parent_junction_remaining_m: None,
+        root_spine_id: None,
+        admission_order: None,
+        attachment_depth: None,
+        new_link_length_m: None,
+        full_access_length_m: None,
         joined_spine_id: None,
         access_length_m: None,
         path_edge_ids: Vec::new(),
+        path_start_fraction: None,
+        path_end_fraction: None,
         path_geometry: Vec::new(),
         onward_destinations: Vec::new(),
         onward_benefits: Vec::new(),
@@ -1166,25 +1543,6 @@ fn strategic_spine_targets(
         .map(|(node, spines)| (node, spines.into_iter().collect::<Vec<_>>().join("+")))
         .collect();
     (node_spines, edge_spines)
-}
-
-fn first_spine_prefix(
-    graph: &Graph,
-    route: &Route,
-    target_nodes: &HashMap<String, String>,
-) -> Option<(Route, String, String)> {
-    route
-        .nodes
-        .iter()
-        .enumerate()
-        .find_map(|(node_index, node)| {
-            let spine_id = target_nodes.get(node)?;
-            Some((
-                graph.prefix_route(route, node_index),
-                spine_id.clone(),
-                node.clone(),
-            ))
-        })
 }
 
 fn build_access_obligations(
