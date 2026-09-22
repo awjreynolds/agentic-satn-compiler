@@ -668,6 +668,239 @@ fn rural_access_grows_a_shared_frontier_with_unique_child_links() {
 }
 
 #[test]
+fn complete_journey_comparison_reuses_selected_branch_and_direct_baseline() {
+    let root = tempfile_root("satn-rs-complete-journey");
+    let snapshot = root.join("snapshot");
+    fs::create_dir_all(&snapshot).expect("snapshot directory");
+    let elevation = root.join("elevation.geojson");
+    fs::write(
+        &elevation,
+        serde_json::to_string(&json!({
+            "type": "FeatureCollection",
+            "features": [
+                {"type":"Feature","properties":{"evidence_id":"child","source_id":"dtm","elevation_m":0.0},"geometry":{"type":"Point","coordinates":[0.0,0.002]}},
+                {"type":"Feature","properties":{"evidence_id":"parent","source_id":"dtm","elevation_m":100.0},"geometry":{"type":"Point","coordinates":[0.0,0.001]}},
+                {"type":"Feature","properties":{"evidence_id":"spine-entry","source_id":"dtm","elevation_m":0.0},"geometry":{"type":"Point","coordinates":[0.002,0.0]}},
+                {"type":"Feature","properties":{"evidence_id":"spine-end","source_id":"dtm","elevation_m":0.0},"geometry":{"type":"Point","coordinates":[0.003,0.0]}},
+                {"type":"Feature","properties":{"evidence_id":"alternate-entry","source_id":"dtm","elevation_m":0.0},"geometry":{"type":"Point","coordinates":[0.004,0.002]}},
+                {"type":"Feature","properties":{"evidence_id":"alternate-spine","source_id":"dtm","elevation_m":0.0},"geometry":{"type":"Point","coordinates":[0.005,0.002]}},
+                {"type":"Feature","properties":{"evidence_id":"alternate-mid-1","source_id":"dtm","elevation_m":0.0},"geometry":{"type":"Point","coordinates":[0.002,0.002]}},
+                {"type":"Feature","properties":{"evidence_id":"alternate-mid-2","source_id":"dtm","elevation_m":0.0},"geometry":{"type":"Point","coordinates":[0.003,0.002]}},
+                {"type":"Feature","properties":{"evidence_id":"direct-mid-1","source_id":"dtm","elevation_m":100.0},"geometry":{"type":"Point","coordinates":[0.001,0.0015]}},
+                {"type":"Feature","properties":{"evidence_id":"direct-mid-2","source_id":"dtm","elevation_m":0.0},"geometry":{"type":"Point","coordinates":[0.002,0.001]}},
+                {"type":"Feature","properties":{"evidence_id":"direct-mid-3","source_id":"dtm","elevation_m":100.0},"geometry":{"type":"Point","coordinates":[0.003,0.0005]}},
+                {"type":"Feature","properties":{"evidence_id":"a1-onward","source_id":"dtm","elevation_m":0.0},"geometry":{"type":"Point","coordinates":[0.0035,0.0]}},
+                {"type":"Feature","properties":{"evidence_id":"a2-onward","source_id":"dtm","elevation_m":0.0},"geometry":{"type":"Point","coordinates":[0.0045,0.002]}},
+                {"type":"Feature","properties":{"evidence_id":"radstock","source_id":"dtm","elevation_m":0.0},"geometry":{"type":"Point","coordinates":[0.004,0.0]}}
+            ]
+        }))
+        .expect("elevation fixture"),
+    )
+    .expect("write elevation fixture");
+    fs::write(
+        root.join("area.yaml"),
+        format!(
+            "area_id: fixture\narea_name: Fixture\nsource:\n  snapshot_dir: {}\n  snapshot_id: snapshot\n  community_place_types: [village]\n  national_elevation:\n    path: {}\ncompilation:\n  max_connection_km: 15\n",
+            root.display(),
+            elevation.display()
+        ),
+    )
+    .expect("area config");
+
+    let mut edges = Vec::new();
+    add_bidirectional(
+        &mut edges,
+        "parent",
+        "spine-entry",
+        [0.0, 0.001],
+        [0.002, 0.0],
+        20.0,
+        "residential",
+        None,
+        None,
+    );
+    add_bidirectional(
+        &mut edges,
+        "spine-entry",
+        "spine-end",
+        [0.002, 0.0],
+        [0.003, 0.0],
+        10.0,
+        "primary",
+        Some("A1"),
+        None,
+    );
+    add_bidirectional(
+        &mut edges,
+        "child",
+        "parent",
+        [0.0, 0.002],
+        [0.0, 0.001],
+        5.0,
+        "residential",
+        None,
+        None,
+    );
+    add_bidirectional(
+        &mut edges,
+        "child",
+        "alternate-entry",
+        [0.0, 0.002],
+        [0.004, 0.002],
+        50.0,
+        "residential",
+        None,
+        None,
+    );
+    add_bidirectional(
+        &mut edges,
+        "alternate-entry",
+        "alternate-spine",
+        [0.004, 0.002],
+        [0.005, 0.002],
+        10.0,
+        "primary",
+        Some("A2"),
+        None,
+    );
+    add_bidirectional(
+        &mut edges,
+        "spine-end",
+        "a1-onward",
+        [0.003, 0.0],
+        [0.0035, 0.0],
+        30.0,
+        "primary",
+        None,
+        None,
+    );
+    add_bidirectional(
+        &mut edges,
+        "a1-onward",
+        "radstock",
+        [0.0035, 0.0],
+        [0.004, 0.0],
+        0.0,
+        "residential",
+        None,
+        None,
+    );
+    add_bidirectional(
+        &mut edges,
+        "alternate-spine",
+        "a2-onward",
+        [0.005, 0.002],
+        [0.0045, 0.002],
+        80.0,
+        "primary",
+        None,
+        None,
+    );
+    add_bidirectional(
+        &mut edges,
+        "a2-onward",
+        "radstock",
+        [0.0045, 0.002],
+        [0.004, 0.0],
+        0.0,
+        "residential",
+        None,
+        None,
+    );
+    add_bidirectional(
+        &mut edges,
+        "child",
+        "radstock",
+        [0.0, 0.002],
+        [0.004, 0.0],
+        40.0,
+        "residential",
+        None,
+        None,
+    );
+    write_collection(&snapshot.join("network.geojson"), edges);
+    write_collection(
+        &snapshot.join("places.geojson"),
+        vec![
+            place("parent", "Parent", "village", [0.0, 0.001]),
+            place("child", "Child", "village", [0.0, 0.002]),
+            place("radstock", "Radstock", "town", [0.004, 0.0]),
+        ],
+    );
+
+    let prepared = prepare_with_progress(
+        &root.join("area.yaml"),
+        CompileOptions::default(),
+        &mut |_| {},
+    )
+    .expect("prepared complete-journey fixture");
+    let mut planner = prepared.rural_planner();
+    let parent_offer = planner
+        .offer_next()
+        .expect("parent offer result")
+        .expect("parent offer");
+    let parent_candidate = parent_offer
+        .candidates
+        .iter()
+        .find(|candidate| candidate.criterion == "shortest-new-link")
+        .expect("parent shortest candidate");
+    planner.accept(&parent_candidate.id).expect("accept parent");
+    let child_offer = planner
+        .offer_next()
+        .expect("child offer result")
+        .expect("child offer");
+    let shortest = child_offer
+        .candidates
+        .iter()
+        .find(|candidate| candidate.criterion == "shortest-new-link")
+        .expect("child shortest candidate");
+    let retained_alternative = child_offer
+        .candidates
+        .iter()
+        .find(|candidate| candidate.criterion == "least-climbing-detour")
+        .expect("child retained alternative");
+    let alternative_access = retained_alternative.access.clone();
+    let selected_access = planner.accept(&shortest.id).expect("accept child");
+    let accepted = planner.into_records();
+
+    let comparison = prepared
+        .compare_complete_journey(
+            &accepted,
+            &selected_access,
+            Some(&alternative_access),
+            "Radstock",
+        )
+        .expect("complete journey comparison");
+    assert_eq!(comparison.destination.name, "Radstock");
+    assert_eq!(comparison.selected.length_m, 65.0);
+    assert_eq!(
+        comparison
+            .retained_alternative
+            .as_ref()
+            .expect("retained alternative path")
+            .length_m,
+        140.0
+    );
+    assert_eq!(comparison.direct.length_m, 40.0);
+    assert_eq!(
+        comparison.selected.network_status,
+        "selected-feeder-plus-source-graph-onward"
+    );
+    assert_eq!(comparison.direct.network_status, "source-graph-alternative");
+    assert_eq!(
+        comparison.to_geojson()["features"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    assert_eq!(
+        comparison.to_geojson()["features"][0]["geometry"]["type"],
+        "LineString"
+    );
+}
+
+#[test]
 fn rural_access_attaches_to_nearest_edge_interior_with_measured_partial_length() {
     let root = tempfile_root("satn-rs-rural-edge-attachment");
     let snapshot = root.join("snapshot");
@@ -726,6 +959,17 @@ fn rural_access_attaches_to_nearest_edge_interior_with_measured_partial_length()
         None,
         None,
     );
+    add_bidirectional(
+        &mut edges,
+        "spine",
+        "destination",
+        [0.02, 0.0],
+        [0.03, 0.0],
+        50.0,
+        "residential",
+        None,
+        None,
+    );
     write_collection(&snapshot.join("network.geojson"), edges);
     write_collection(
         &snapshot.join("places.geojson"),
@@ -744,6 +988,7 @@ fn rural_access_attaches_to_nearest_edge_interior_with_measured_partial_length()
             ),
             place("late", "Late", "village", [0.01, -0.01]),
             place("upstream", "Upstream", "village", [0.0, 0.0]),
+            place("destination", "Destination", "town", [0.03, 0.0]),
         ],
     );
 
@@ -839,6 +1084,20 @@ fn rural_access_attaches_to_nearest_edge_interior_with_measured_partial_length()
             .full_access_length_m
             .is_some_and(|length| (length - 1_000.0).abs() < 1e-9)
     );
+
+    let prepared = prepare_with_progress(
+        &root.join("area.yaml"),
+        CompileOptions::default(),
+        &mut |_| {},
+    )
+    .expect("prepared partial journey fixture");
+    let comparison = prepared
+        .compare_complete_journey(&report.community_access, access, None, "Destination")
+        .expect("partial journey comparison");
+    assert_eq!(comparison.selected.length_m, 560.0);
+    assert_eq!(comparison.direct.length_m, 560.0);
+    assert_eq!(comparison.selected.feeder_length_m, Some(500.0));
+    assert_eq!(comparison.selected.onward_length_m, Some(60.0));
 }
 
 fn place(id: &str, name: &str, class: &str, point: [f64; 2]) -> Value {

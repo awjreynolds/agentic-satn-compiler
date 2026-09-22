@@ -4,7 +4,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::config::AreaConfig;
 use crate::error::{Result, SatnError};
@@ -144,6 +144,87 @@ pub struct CommunityAccess {
     pub new_link_topography: Option<RouteTopographyProfile>,
     #[serde(default)]
     pub full_access_topography: Option<RouteTopographyProfile>,
+}
+
+/// An admitted city or town that can be used as an explicit onward journey
+/// destination for offline comparison.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct JourneyDestination {
+    pub id: String,
+    pub name: String,
+    pub geometry: [f64; 2],
+    pub node: String,
+}
+
+/// One measured, directed path in a complete journey comparison.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct JourneyPath {
+    pub kind: String,
+    pub length_m: f64,
+    pub new_link_length_m: Option<f64>,
+    pub feeder_length_m: Option<f64>,
+    pub shared_suffix_length_m: Option<f64>,
+    pub onward_length_m: Option<f64>,
+    pub path_edge_ids: Vec<String>,
+    pub geometry: Vec<[f64; 2]>,
+    pub topography: RouteTopographyProfile,
+    pub network_status: String,
+}
+
+/// An offline comparison between the accepted network, a retained candidate,
+/// and the direct source-graph baseline for one admitted destination.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct JourneyComparison {
+    pub community_id: String,
+    pub community_name: String,
+    pub destination: JourneyDestination,
+    pub selected: JourneyPath,
+    pub retained_alternative: Option<JourneyPath>,
+    pub direct: JourneyPath,
+}
+
+impl JourneyComparison {
+    /// Return one inspectable GeoJSON line feature per compared path.
+    pub fn to_geojson(&self) -> Value {
+        let paths = std::iter::once((&self.selected, "selected"))
+            .chain(
+                self.retained_alternative
+                    .as_ref()
+                    .map(|path| (path, "retained-alternative")),
+            )
+            .chain(std::iter::once((&self.direct, "direct")));
+        let features = paths
+            .map(|(path, label)| {
+                json!({
+                    "type": "Feature",
+                    "properties": {
+                        "kind": label,
+                        "path_kind": path.kind,
+                        "community_id": self.community_id,
+                        "community_name": self.community_name,
+                        "destination_id": self.destination.id,
+                        "destination_name": self.destination.name,
+                        "length_m": path.length_m,
+                        "new_link_length_m": path.new_link_length_m,
+                        "feeder_length_m": path.feeder_length_m,
+                        "shared_suffix_length_m": path.shared_suffix_length_m,
+                        "onward_length_m": path.onward_length_m,
+                        "network_status": path.network_status,
+                        "topography": path.topography,
+                    },
+                    "geometry": {
+                        "type": if path.geometry.len() >= 2 { "LineString" } else { "Point" },
+                        "coordinates": if path.geometry.len() >= 2 {
+                            json!(path.geometry)
+                        } else {
+                            json!(path.geometry.first().copied().unwrap_or(self.destination.geometry))
+                        },
+                    },
+                })
+            })
+            .collect::<Vec<_>>();
+        json!({"type": "FeatureCollection", "features": features})
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -397,6 +478,7 @@ pub struct PreparedCompilation {
     graph: Graph,
     source_inventory: Vec<SourceCorridor>,
     network_places: Vec<NetworkPlace>,
+    destinations: Vec<JourneyDestination>,
     elevation: Option<ElevationEvidenceIndex>,
     elevation_file: String,
 }
@@ -445,6 +527,22 @@ pub fn prepare_with_progress(
         boundary_scope.as_ref(),
         &config.source.community_place_types,
     );
+    let destinations = places
+        .iter()
+        .filter_map(|place| {
+            let node = left_node(
+                place,
+                &network.graph,
+                config.source.urban_scope_buffer_km * 1000.0,
+            );
+            (!node.is_empty()).then(|| JourneyDestination {
+                id: place.id.clone(),
+                name: place.name.clone(),
+                geometry: place.point,
+                node,
+            })
+        })
+        .collect::<Vec<_>>();
     let source_inventory = admit_source_inventory(
         &network.features,
         &network.graph,
@@ -561,6 +659,7 @@ pub fn prepare_with_progress(
         graph: network.graph,
         source_inventory,
         network_places,
+        destinations,
         elevation,
         elevation_file,
     })
@@ -575,6 +674,478 @@ impl PreparedCompilation {
             self.elevation.as_ref(),
             &self.elevation_file,
         )
+    }
+
+    /// Compare one accepted rural path, an already-retained alternative, and
+    /// the direct source-graph route to an admitted city or town.  This is an
+    /// offline evaluation seam: it does not change planning records or call a
+    /// provider.
+    pub fn compare_complete_journey(
+        &self,
+        accepted: &[CommunityAccess],
+        selected: &CommunityAccess,
+        retained_alternative: Option<&CommunityAccess>,
+        destination_name: &str,
+    ) -> Result<JourneyComparison> {
+        let destination = self.destination(destination_name)?.clone();
+        let records = accepted_records(accepted, selected, retained_alternative);
+        let selected_to_spine = self.access_to_root(selected, &records)?;
+        let selected_root = root_access(selected, &records)?;
+        let selected_onward = self.root_onward_route(selected_root, &destination)?;
+        let selected_route = combine_routes(&selected_to_spine, &selected_onward);
+        let selected_path = self.journey_path(
+            "selected",
+            selected,
+            &selected_route,
+            selected_to_spine.length_m,
+            "selected-feeder-plus-source-graph-onward",
+        );
+
+        let retained_path = retained_alternative.map(|alternative| {
+            self.complete_path("retained-alternative", alternative, &records, &destination)
+        });
+        let retained_path = retained_path.transpose()?;
+
+        let direct_route = self.direct_route(selected, &destination)?;
+        let direct_path = self.journey_path(
+            "direct",
+            selected,
+            &direct_route,
+            0.0,
+            "source-graph-alternative",
+        );
+
+        Ok(JourneyComparison {
+            community_id: selected.community_id.clone(),
+            community_name: selected.name.clone(),
+            destination,
+            selected: selected_path,
+            retained_alternative: retained_path,
+            direct: direct_path,
+        })
+    }
+
+    fn destination(&self, name_or_id: &str) -> Result<&JourneyDestination> {
+        let matches = self
+            .destinations
+            .iter()
+            .filter(|destination| destination.id == name_or_id || destination.name == name_or_id)
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [destination] => Ok(destination),
+            [] => Err(SatnError::InvalidInput(format!(
+                "admitted journey destination {name_or_id:?} was not found"
+            ))),
+            _ => Err(SatnError::InvalidInput(format!(
+                "journey destination {name_or_id:?} is ambiguous"
+            ))),
+        }
+    }
+
+    fn complete_path(
+        &self,
+        kind: &str,
+        access: &CommunityAccess,
+        records: &BTreeMap<String, CommunityAccess>,
+        destination: &JourneyDestination,
+    ) -> Result<JourneyPath> {
+        let to_spine = self.access_to_root(access, records)?;
+        let root = root_access(access, records)?;
+        let onward = self.root_onward_route(root, destination)?;
+        let route = combine_routes(&to_spine, &onward);
+        Ok(self.journey_path(
+            kind,
+            access,
+            &route,
+            to_spine.length_m,
+            "retained-alternative",
+        ))
+    }
+
+    fn access_to_root(
+        &self,
+        access: &CommunityAccess,
+        records: &BTreeMap<String, CommunityAccess>,
+    ) -> Result<Route> {
+        let mut route = self.access_path_route(access)?;
+        if let Some(parent_id) = &access.parent_community_id {
+            let parent = records.get(parent_id).ok_or_else(|| {
+                SatnError::InvalidInput(format!(
+                    "complete journey is missing accepted parent community {parent_id:?}"
+                ))
+            })?;
+            let suffix = self.rootward_suffix(parent, access, records, &mut BTreeSet::new())?;
+            route = combine_routes(&route, &suffix);
+        }
+        Ok(route)
+    }
+
+    fn rootward_suffix(
+        &self,
+        parent: &CommunityAccess,
+        child: &CommunityAccess,
+        records: &BTreeMap<String, CommunityAccess>,
+        visiting: &mut BTreeSet<String>,
+    ) -> Result<Route> {
+        if !visiting.insert(parent.community_id.clone()) {
+            return Err(SatnError::InvalidInput(format!(
+                "complete journey parent chain cycles at {}",
+                parent.community_id
+            )));
+        }
+        let mut suffix = self.path_suffix_from_junction(parent, child)?;
+        if let Some(grandparent_id) = &parent.parent_community_id {
+            let grandparent = records.get(grandparent_id).ok_or_else(|| {
+                SatnError::InvalidInput(format!(
+                    "complete journey is missing accepted parent community {grandparent_id:?}"
+                ))
+            })?;
+            let ancestor_suffix = self.rootward_suffix(grandparent, parent, records, visiting)?;
+            suffix = combine_routes(&suffix, &ancestor_suffix);
+        }
+        visiting.remove(&parent.community_id);
+        Ok(suffix)
+    }
+
+    fn path_suffix_from_junction(
+        &self,
+        parent: &CommunityAccess,
+        child: &CommunityAccess,
+    ) -> Result<Route> {
+        let (start_index, start_fraction) = if let Some(edge_id) =
+            child.parent_junction_edge_id.as_deref()
+        {
+            let fraction = child.parent_junction_fraction.ok_or_else(|| {
+                SatnError::InvalidInput(format!("parent junction edge {} has no fraction", edge_id))
+            })?;
+            parent
+                .path_edge_ids
+                .iter()
+                .enumerate()
+                .find_map(|(index, parent_edge_id)| {
+                    self.graph
+                        .normalize_edge_fraction(edge_id, fraction, parent_edge_id)
+                        .map(|fraction| (index, fraction))
+                })
+                .ok_or_else(|| {
+                    SatnError::InvalidInput(format!(
+                        "parent junction edge {edge_id} is absent from accepted parent {}",
+                        parent.community_id
+                    ))
+                })?
+        } else if let Some(node) = child.parent_junction_node.as_deref() {
+            let index = parent
+                .path_edge_ids
+                .iter()
+                .enumerate()
+                .find_map(|(index, edge_id)| {
+                    let edge = self.graph.edge_by_id(edge_id)?;
+                    (edge.from == node).then_some(index)
+                })
+                .or_else(|| {
+                    parent
+                        .path_edge_ids
+                        .iter()
+                        .enumerate()
+                        .find_map(|(index, edge_id)| {
+                            let edge = self.graph.edge_by_id(edge_id)?;
+                            (edge.to == node).then_some(index + 1)
+                        })
+                })
+                .unwrap_or(parent.path_edge_ids.len());
+            (index, 0.0)
+        } else {
+            return Err(SatnError::InvalidInput(format!(
+                "accepted child {} has no parent junction",
+                child.community_id
+            )));
+        };
+        self.access_path_route_from(parent, start_index, start_fraction)
+    }
+
+    fn access_path_route(&self, access: &CommunityAccess) -> Result<Route> {
+        let start_fraction = access
+            .path_start_fraction
+            .or_else(|| {
+                access
+                    .attachment_edge_id
+                    .as_deref()
+                    .zip(access.attachment_fraction)
+                    .zip(access.path_edge_ids.first())
+                    .and_then(|((source_edge, fraction), target_edge)| {
+                        self.graph
+                            .normalize_edge_fraction(source_edge, fraction, target_edge)
+                    })
+            })
+            .unwrap_or_else(|| {
+                if access.attachment_node.is_some() {
+                    0.0
+                } else {
+                    access.attachment_fraction.unwrap_or(0.0)
+                }
+            });
+        self.access_path_route_from(access, 0, start_fraction)
+    }
+
+    fn access_path_route_from(
+        &self,
+        access: &CommunityAccess,
+        start_index: usize,
+        start_fraction: f64,
+    ) -> Result<Route> {
+        if start_index >= access.path_edge_ids.len() {
+            return Ok(self.graph.empty_route());
+        }
+        let mut route = self.graph.empty_route();
+        for (offset, edge_id) in access.path_edge_ids[start_index..].iter().enumerate() {
+            let index = start_index + offset;
+            let begin = if index == start_index {
+                start_fraction
+            } else {
+                0.0
+            };
+            let end = if index + 1 == access.path_edge_ids.len() {
+                access.path_end_fraction.unwrap_or(1.0)
+            } else {
+                1.0
+            };
+            let start_point = self
+                .graph
+                .edge_point_at_fraction(edge_id, begin)
+                .ok_or_else(|| {
+                    SatnError::InvalidInput(format!("accepted path edge {edge_id} has no geometry"))
+                })?;
+            let end_point = self
+                .graph
+                .edge_point_at_fraction(edge_id, end)
+                .ok_or_else(|| {
+                    SatnError::InvalidInput(format!("accepted path edge {edge_id} has no geometry"))
+                })?;
+            let segment = self
+                .graph
+                .partial_edge_route(edge_id, begin, end, start_point, end_point)
+                .ok_or_else(|| {
+                    SatnError::InvalidInput(format!(
+                        "accepted path edge {edge_id} cannot be traversed in its recorded direction"
+                    ))
+                })?;
+            route = combine_routes(&route, &segment);
+        }
+        Ok(route)
+    }
+
+    fn root_onward_route(
+        &self,
+        root: &CommunityAccess,
+        destination: &JourneyDestination,
+    ) -> Result<Route> {
+        if let Some(edge_id) = root.path_edge_ids.last() {
+            let fraction = root.path_end_fraction.unwrap_or(1.0);
+            let onward = if fraction <= 0.0 {
+                self.graph
+                    .edge_by_id(edge_id)
+                    .and_then(|edge| self.graph.cycling_route(&edge.from, &destination.node))
+            } else if fraction >= 1.0 {
+                self.graph
+                    .edge_by_id(edge_id)
+                    .and_then(|edge| self.graph.cycling_route(&edge.to, &destination.node))
+            } else {
+                let point = self.graph.edge_point_at_fraction(edge_id, fraction);
+                point.and_then(|point| {
+                    let attachment = self.graph.nearest_edge_attachment(point)?;
+                    self.graph
+                        .normalize_edge_fraction(edge_id, fraction, &attachment.edge_id)?;
+                    self.graph
+                        .cycling_route_from_attachment(&attachment, &destination.node)
+                })
+            };
+            onward.ok_or_else(|| {
+                SatnError::InvalidInput(format!(
+                    "no directed onward route from accepted spine for destination {}",
+                    destination.name
+                ))
+            })
+        } else if let Some(node) = &root.attachment_node {
+            self.graph
+                .cycling_route(node, &destination.node)
+                .ok_or_else(|| {
+                    SatnError::InvalidInput(format!(
+                        "no directed onward route from accepted attachment for destination {}",
+                        destination.name
+                    ))
+                })
+        } else if let Some(point) = root.attachment_point {
+            let attachment = self.graph.nearest_edge_attachment(point).ok_or_else(|| {
+                SatnError::InvalidInput(format!(
+                    "accepted root {} has no graph attachment",
+                    root.community_id
+                ))
+            })?;
+            self.graph
+                .cycling_route_from_attachment(&attachment, &destination.node)
+                .ok_or_else(|| {
+                    SatnError::InvalidInput(format!(
+                        "no directed onward route from accepted attachment for destination {}",
+                        destination.name
+                    ))
+                })
+        } else {
+            Err(SatnError::InvalidInput(format!(
+                "accepted root {} has no route endpoint",
+                root.community_id
+            )))
+        }
+    }
+
+    fn direct_route(
+        &self,
+        access: &CommunityAccess,
+        destination: &JourneyDestination,
+    ) -> Result<Route> {
+        let point = access.attachment_point.unwrap_or(access.geometry);
+        let attachment = self.graph.nearest_edge_attachment(point).ok_or_else(|| {
+            SatnError::InvalidInput(format!(
+                "community {} has no graph attachment for direct comparison",
+                access.community_id
+            ))
+        })?;
+        self.graph
+            .cycling_route_from_attachment(&attachment, &destination.node)
+            .ok_or_else(|| {
+                SatnError::InvalidInput(format!(
+                    "no directed source-graph route from {} to destination {}",
+                    access.community_id, destination.name
+                ))
+            })
+    }
+
+    fn journey_path(
+        &self,
+        kind: &str,
+        access: &CommunityAccess,
+        route: &Route,
+        feeder_length_m: f64,
+        network_status: &str,
+    ) -> JourneyPath {
+        JourneyPath {
+            kind: kind.to_string(),
+            length_m: route.length_m,
+            new_link_length_m: (kind != "direct").then_some(
+                access
+                    .new_link_length_m
+                    .or(access.access_length_m)
+                    .unwrap_or_default(),
+            ),
+            feeder_length_m: (kind != "direct").then_some(feeder_length_m),
+            shared_suffix_length_m: (kind != "direct").then_some(
+                feeder_length_m
+                    - access
+                        .new_link_length_m
+                        .or(access.access_length_m)
+                        .unwrap_or_default(),
+            ),
+            onward_length_m: Some(route.length_m - feeder_length_m),
+            path_edge_ids: route.edge_ids.clone(),
+            geometry: route.geometry.clone(),
+            topography: self.profile_for_route(
+                &route.geometry,
+                route.length_m,
+                "No governed elevation profile is available for this complete journey.",
+            ),
+            network_status: network_status.to_string(),
+        }
+    }
+
+    fn profile_for_route(
+        &self,
+        geometry: &[[f64; 2]],
+        length_m: f64,
+        reason: &str,
+    ) -> RouteTopographyProfile {
+        if let Some(index) = &self.elevation {
+            return index
+                .enrich_route(geometry)
+                .unwrap_or_else(|_| index.unknown_route_profile(length_m, reason));
+        }
+        unknown_route_profile(length_m, reason, &self.elevation_file)
+    }
+}
+
+fn accepted_records(
+    accepted: &[CommunityAccess],
+    selected: &CommunityAccess,
+    retained_alternative: Option<&CommunityAccess>,
+) -> BTreeMap<String, CommunityAccess> {
+    let mut records = accepted
+        .iter()
+        .filter(|access| access.is_primary)
+        .map(|access| (access.community_id.clone(), access.clone()))
+        .collect::<BTreeMap<_, _>>();
+    records.insert(selected.community_id.clone(), selected.clone());
+    if let Some(alternative) = retained_alternative {
+        records
+            .entry(alternative.community_id.clone())
+            .or_insert_with(|| alternative.clone());
+    }
+    records
+}
+
+fn root_access<'a>(
+    access: &'a CommunityAccess,
+    records: &'a BTreeMap<String, CommunityAccess>,
+) -> Result<&'a CommunityAccess> {
+    let mut current = access;
+    let mut visiting = BTreeSet::new();
+    loop {
+        if !visiting.insert(current.community_id.clone()) {
+            return Err(SatnError::InvalidInput(format!(
+                "complete journey parent chain cycles at {}",
+                current.community_id
+            )));
+        }
+        let Some(parent_id) = current.parent_community_id.as_ref() else {
+            return Ok(current);
+        };
+        current = records.get(parent_id).ok_or_else(|| {
+            SatnError::InvalidInput(format!(
+                "complete journey is missing accepted parent community {parent_id:?}"
+            ))
+        })?;
+    }
+}
+
+fn combine_routes(first: &Route, second: &Route) -> Route {
+    let mut edge_ids = first.edge_ids.clone();
+    edge_ids.extend(second.edge_ids.iter().cloned());
+    let mut edge_geometries = first.edge_geometries.clone();
+    edge_geometries.extend(second.edge_geometries.iter().cloned());
+    let mut edge_lengths_m = first.edge_lengths_m.clone();
+    edge_lengths_m.extend(second.edge_lengths_m.iter().copied());
+    let mut edge_indices = first.edge_indices.clone();
+    edge_indices.extend(second.edge_indices.iter().copied());
+    let mut nodes = first.nodes.clone();
+    if nodes.is_empty() {
+        nodes.extend(second.nodes.iter().cloned());
+    } else {
+        nodes.extend(second.nodes.iter().skip(1).cloned());
+    }
+    let mut geometry = first.geometry.clone();
+    append_geometry(&mut geometry, second.geometry.clone());
+    let mut cycle_alignment_bases = BTreeSet::new();
+    cycle_alignment_bases.extend(first.cycle_alignment_bases.iter().cloned());
+    cycle_alignment_bases.extend(second.cycle_alignment_bases.iter().cloned());
+    Route {
+        edge_ids,
+        edge_geometries,
+        edge_lengths_m,
+        length_m: first.length_m + second.length_m,
+        search_cost_m: first.search_cost_m + second.search_cost_m,
+        a_road_length_m: first.a_road_length_m + second.a_road_length_m,
+        ncn_length_m: first.ncn_length_m + second.ncn_length_m,
+        cycle_alignment_bases: cycle_alignment_bases.into_iter().collect(),
+        geometry,
+        edge_indices,
+        nodes,
     }
 }
 
