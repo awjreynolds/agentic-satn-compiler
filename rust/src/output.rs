@@ -2,7 +2,7 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 
-use crate::compiler::{Candidate, CompileReport};
+use crate::compiler::{AccessObligation, Candidate, CompileReport, NetworkPlace};
 use crate::error::Result;
 
 pub(crate) fn write_bundle(output_dir: &Path, report: &CompileReport) -> Result<()> {
@@ -40,19 +40,63 @@ fn network_geojson(report: &CompileReport) -> Value {
                     "kind": "source-baseline",
                     "source_kind": source.source_kind,
                     "source_corridor_ref": source.reference,
-                    "source_id": source.source_id,
-                    "scope": source.scope,
-                    "topology_status": source.topology_status,
-                    "attachment_status": source.attachment_status
+                "source_id": source.source_id,
+                "scope": source.scope,
+                    "baseline_role": source.baseline_role,
+                    "source_edge_ids": source.source_edge_ids,
+                    "graph_edge_ids": source.graph_edge_ids,
+                "topology_status": source.topology_status,
+                    "attachment_status": source.attachment_status,
+                    "provision_status": source.provision_status
                 },
                 "geometry": {"type": "LineString", "coordinates": coordinates}
             }));
+        }
+    }
+    for place in &report.network_places {
+        features.push(network_place_feature(place));
+    }
+    for obligation in &report.access_obligations {
+        if obligation.geometry.is_some() {
+            features.push(access_obligation_feature(obligation));
         }
     }
     for candidate in &report.candidates {
         features.push(candidate_feature(candidate));
     }
     json!({"type":"FeatureCollection","features":features})
+}
+
+fn network_place_feature(place: &NetworkPlace) -> Value {
+    json!({
+        "type": "Feature",
+        "properties": {
+            "kind": "network-place",
+            "place_id": place.id,
+            "name": place.name,
+            "place_class": place.place_class,
+            "source_id": place.source_id
+        },
+        "geometry": {"type": "Point", "coordinates": place.geometry}
+    })
+}
+
+fn access_obligation_feature(obligation: &AccessObligation) -> Value {
+    json!({
+        "type": "Feature",
+        "properties": {
+            "kind": "access-obligation",
+            "obligation_id": obligation.id,
+            "obligation_kind": obligation.kind,
+            "source_id": obligation.source_id,
+            "name": obligation.name,
+            "disposition": obligation.disposition,
+            "access_point_status": obligation.access_point_status,
+            "access_point_source_id": obligation.access_point_source_id,
+            "reason": obligation.reason
+        },
+        "geometry": {"type": "Point", "coordinates": obligation.geometry}
+    })
 }
 
 fn candidate_feature(candidate: &Candidate) -> Value {
@@ -91,15 +135,18 @@ svg{{width:100%;height:65vh;min-height:24rem;background:#f6f8fa;border:1px solid
 .boundary{{fill:#dbeafe;stroke:#2563eb;stroke-width:1;opacity:.35}}
 .source{{fill:none;stroke:#4b5563;stroke-width:1.8;opacity:.72}}
 .candidate{{fill:none;stroke:#16803c;stroke-width:3}}
+.place{{fill:#7c3aed;stroke:#fff;stroke-width:1.5}}
+.obligation{{fill:#dc2626;stroke:#fff;stroke-width:1.5}}
 .key{{display:flex;gap:1rem;list-style:none;padding:0;flex-wrap:wrap}}
 .swatch{{display:inline-block;width:2rem;height:.35rem;vertical-align:middle;margin-right:.35rem}}
-.boundary-key{{background:#2563eb}} .source-key{{background:#4b5563}} .candidate-key{{background:#16803c}}
+.boundary-key{{background:#2563eb}} .source-key{{background:#4b5563}} .candidate-key{{background:#16803c}} .place-key{{background:#7c3aed}} .obligation-key{{background:#dc2626}}
 pre{{max-height:20rem;overflow:auto;background:#f6f8fa;padding:1rem}}
 </style></head>
 <body><h1>{title}</h1>
-<p>Mechanical baseline and source-supported candidates. Provision, safety, access and adoption remain explicit unknowns until separately evidenced.</p>
-<ul class="key"><li><span class="swatch boundary-key"></span>Governed boundary</li><li><span class="swatch source-key"></span>Source A-road inventory</li><li><span class="swatch candidate-key"></span>Mechanical candidate</li></ul>
+<p>Mechanical source baseline and graph-supported candidates. Provision, safety, access and adoption remain explicit unknowns until separately evidenced.</p>
+<ul class="key"><li><span class="swatch boundary-key"></span>Governed boundary</li><li><span class="swatch source-key"></span>Governed source baseline</li><li><span class="swatch candidate-key"></span>Mechanical candidate</li><li><span class="swatch place-key"></span>Network place</li><li><span class="swatch obligation-key"></span>Access obligation</li></ul>
 <p>{source_count} source corridors · {connection_count} prepared connections · {candidate_count} generated candidates · {unknown_count} unresolved facts</p>
+<p>Accounting: {accounting_status} · {network_place_count} network places · {obligation_count} access obligations · destination profile: {destination_profile}</p>
 {svg}
 <details><summary>Compact mechanical report</summary><pre id="summary"></pre></details>
 <script>const report={summary};document.querySelector('#summary').textContent=JSON.stringify(report,null,2);</script>
@@ -109,6 +156,10 @@ pre{{max-height:20rem;overflow:auto;background:#f6f8fa;padding:1rem}}
         connection_count = report.connection_count,
         candidate_count = report.candidate_count,
         unknown_count = report.unknown_fact_count,
+        accounting_status = html_escape(&report.accounting.status),
+        network_place_count = report.network_places.len(),
+        obligation_count = report.access_obligations.len(),
+        destination_profile = html_escape(&report.destination_profile),
         svg = svg,
         summary = summary,
     )
@@ -124,6 +175,14 @@ fn render_svg(report: &CompileReport) -> String {
     }
     for candidate in &report.candidates {
         coordinates.extend(candidate.geometry.iter().copied());
+    }
+    for place in &report.network_places {
+        coordinates.push(place.geometry);
+    }
+    for obligation in &report.access_obligations {
+        if let Some(point) = obligation.geometry {
+            coordinates.push(point);
+        }
     }
     if coordinates.is_empty() {
         return "<svg viewBox=\"0 0 1000 600\" role=\"img\" aria-label=\"Empty planning map\"><text x=\"20\" y=\"40\">No geometry admitted</text></svg>".to_string();
@@ -186,6 +245,28 @@ fn render_svg(report: &CompileReport) -> String {
                 .collect::<Vec<_>>()
                 .join(" "),
             html_escape(&candidate.id)
+        ));
+    }
+    for place in &report.network_places {
+        let point = project(place.geometry);
+        elements.push(format!(
+            "<circle class=\"place\" cx=\"{}\" cy=\"{}\" r=\"5\" aria-label=\"Network place {}\" />",
+            point.split_once(',').map(|(x, _)| x).unwrap_or("0"),
+            point.split_once(',').map(|(_, y)| y).unwrap_or("0"),
+            html_escape(&place.name)
+        ));
+    }
+    for obligation in &report.access_obligations {
+        let Some(point) = obligation.geometry else {
+            continue;
+        };
+        let projected = project(point);
+        elements.push(format!(
+            "<circle class=\"obligation\" cx=\"{}\" cy=\"{}\" r=\"4\" aria-label=\"Access obligation {} {}\" />",
+            projected.split_once(',').map(|(x, _)| x).unwrap_or("0"),
+            projected.split_once(',').map(|(_, y)| y).unwrap_or("0"),
+            html_escape(&obligation.kind),
+            html_escape(&obligation.disposition)
         ));
     }
     format!(
