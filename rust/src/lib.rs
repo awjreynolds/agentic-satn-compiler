@@ -3,6 +3,7 @@ mod config;
 mod error;
 mod geojson;
 mod graph;
+pub mod judgment;
 mod output;
 
 pub use compiler::{
