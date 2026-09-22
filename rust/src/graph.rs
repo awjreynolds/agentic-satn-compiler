@@ -358,6 +358,15 @@ impl Graph {
         target_nodes: &HashMap<String, FrontierTarget>,
         partial_targets: &[FrontierEdgeTarget],
     ) -> FrontierSearch {
+        self.frontier_search_excluding(target_nodes, partial_targets, None)
+    }
+
+    pub(crate) fn frontier_search_excluding(
+        &self,
+        target_nodes: &HashMap<String, FrontierTarget>,
+        partial_targets: &[FrontierEdgeTarget],
+        excluded_edge_id: Option<&str>,
+    ) -> FrontierSearch {
         let mut search = FrontierSearch {
             targets: target_nodes.clone(),
             frontier_nodes: target_nodes.keys().cloned().collect(),
@@ -372,6 +381,9 @@ impl Graph {
             });
         }
         for partial_target in partial_targets {
+            if excluded_edge_id.is_some_and(|edge_id| edge_id == partial_target.edge_id) {
+                continue;
+            }
             let Some(edge) = self.edge_by_id(&partial_target.edge_id) else {
                 continue;
             };
@@ -409,6 +421,9 @@ impl Graph {
             };
             for edge_index in self.incoming.get(&node).into_iter().flatten() {
                 let edge = &self.edges[*edge_index];
+                if excluded_edge_id.is_some_and(|edge_id| edge_id == edge.id) {
+                    continue;
+                }
                 if !edge.cycling_allowed() {
                     continue;
                 }
@@ -446,6 +461,19 @@ impl Graph {
         search: &FrontierSearch,
         target_edges: &HashMap<String, String>,
     ) -> Option<(Route, FrontierTarget)> {
+        self.route_from_attachment_to_frontier_excluding(attachment, search, target_edges, None)
+    }
+
+    pub(crate) fn route_from_attachment_to_frontier_excluding(
+        &self,
+        attachment: &EdgeAttachment,
+        search: &FrontierSearch,
+        target_edges: &HashMap<String, String>,
+        excluded_edge_id: Option<&str>,
+    ) -> Option<(Route, FrontierTarget)> {
+        if excluded_edge_id.is_some_and(|edge_id| edge_id == attachment.edge_id) {
+            return None;
+        }
         if let Some(spine_id) = target_edges.get(&attachment.edge_id) {
             return Some((
                 self.empty_route(),
@@ -714,6 +742,44 @@ impl Graph {
         self.edge_indexes
             .get(edge_id)
             .and_then(|index| self.edges.get(*index))
+    }
+
+    pub(crate) fn edge_point_at_fraction(&self, edge_id: &str, fraction: f64) -> Option<[f64; 2]> {
+        let edge = self.edge_by_id(edge_id)?;
+        let first = *edge.geometry.first()?;
+        let last = *edge.geometry.last()?;
+        if fraction <= 0.0 {
+            return Some(first);
+        }
+        if fraction >= 1.0 {
+            return Some(last);
+        }
+        let total = edge
+            .geometry
+            .windows(2)
+            .map(|pair| haversine_m(pair[0], pair[1]))
+            .sum::<f64>();
+        if total <= 0.0 {
+            return Some(first);
+        }
+        let target = fraction * total;
+        let mut travelled = 0.0;
+        for pair in edge.geometry.windows(2) {
+            let segment = haversine_m(pair[0], pair[1]);
+            if travelled + segment >= target {
+                let local = if segment <= 0.0 {
+                    0.0
+                } else {
+                    (target - travelled) / segment
+                };
+                return Some([
+                    pair[0][0] + (pair[1][0] - pair[0][0]) * local,
+                    pair[0][1] + (pair[1][1] - pair[0][1]) * local,
+                ]);
+            }
+            travelled += segment;
+        }
+        Some(last)
     }
 
     pub(crate) fn attachment_fraction_on_edge(

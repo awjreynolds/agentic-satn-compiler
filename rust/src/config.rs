@@ -22,6 +22,14 @@ pub(crate) struct SourceConfig {
     pub community_place_types: Vec<String>,
     #[serde(default = "default_urban_scope_buffer_km")]
     pub urban_scope_buffer_km: f64,
+    #[serde(default)]
+    pub national_elevation: Option<NationalElevationConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct NationalElevationConfig {
+    #[serde(default)]
+    pub path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -96,6 +104,32 @@ impl AreaConfig {
                 .join(&self.source.snapshot_dir)
         };
         snapshot_dir.join(&self.source.snapshot_id)
+    }
+
+    pub(crate) fn elevation_path(
+        &self,
+        config_path: &Path,
+        snapshot_path: &Path,
+    ) -> Option<PathBuf> {
+        let configured = self
+            .source
+            .national_elevation
+            .as_ref()
+            .and_then(|elevation| elevation.path.as_ref())
+            .map(|path| {
+                if path.is_absolute() {
+                    path.clone()
+                } else {
+                    config_path
+                        .parent()
+                        .unwrap_or_else(|| Path::new("."))
+                        .join(path)
+                }
+            });
+        configured.filter(|path| path.is_file()).or_else(|| {
+            let fallback = snapshot_path.join("elevation-evidence.geojson");
+            fallback.is_file().then_some(fallback)
+        })
     }
 
     pub(crate) fn title(&self) -> String {

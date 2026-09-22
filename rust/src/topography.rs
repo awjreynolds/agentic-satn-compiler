@@ -179,6 +179,14 @@ impl ElevationEvidenceIndex {
         self.enrich_projected_route(&projected)
     }
 
+    pub(crate) fn unknown_route_profile(
+        &self,
+        route_length_m: f64,
+        reason: &str,
+    ) -> RouteTopographyProfile {
+        unknown_profile(route_length_m, reason, &self.evidence_file)
+    }
+
     /// Enrich multipart route input, preserving the explicit unknown state for
     /// disconnected geometry rather than joining pieces with invented linework.
     pub fn enrich_route_parts(&self, route: &[Vec<[f64; 2]>]) -> Result<RouteTopographyProfile> {
@@ -334,6 +342,14 @@ impl ElevationEvidenceIndex {
             vertical_accuracy_m: metadata(&samples, |sample| sample.vertical_accuracy_m),
         })
     }
+}
+
+pub(crate) fn unknown_route_profile(
+    route_length_m: f64,
+    reason: &str,
+    evidence_file: &str,
+) -> RouteTopographyProfile {
+    unknown_profile(route_length_m, reason, evidence_file)
 }
 
 #[derive(Debug, Clone)]

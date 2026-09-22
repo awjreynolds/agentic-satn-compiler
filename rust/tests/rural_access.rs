@@ -1,7 +1,191 @@
 use std::fs;
 
-use satn_rs::{CompileOptions, compile};
+use satn_rs::topography::TopographyAvailability;
+use satn_rs::{CompileOptions, compile, prepare_with_progress};
 use serde_json::{Value, json};
+
+#[test]
+fn prepared_rural_planner_caches_offer_and_accepts_only_offered_path() {
+    let root = tempfile_root("satn-rs-rural-planner-seam");
+    let snapshot = root.join("snapshot");
+    fs::create_dir_all(&snapshot).expect("snapshot directory");
+    fs::write(
+        root.join("elevation.geojson"),
+        serde_json::to_string(&json!({
+            "type": "FeatureCollection",
+            "features": [
+                {"type":"Feature","properties":{"evidence_id":"e1","source_id":"dtm","elevation_m":0.0},"geometry":{"type":"Point","coordinates":[0.0,0.0]}},
+                {"type":"Feature","properties":{"evidence_id":"e2","source_id":"dtm","elevation_m":20.0},"geometry":{"type":"Point","coordinates":[0.001,0.0]}},
+                {"type":"Feature","properties":{"evidence_id":"e3","source_id":"dtm","elevation_m":0.0},"geometry":{"type":"Point","coordinates":[0.002,0.0]}},
+                {"type":"Feature","properties":{"evidence_id":"e4","source_id":"dtm","elevation_m":1.0},"geometry":{"type":"Point","coordinates":[0.0,0.001]}},
+                {"type":"Feature","properties":{"evidence_id":"e5","source_id":"dtm","elevation_m":2.0},"geometry":{"type":"Point","coordinates":[0.001,0.0005]}},
+                {"type":"Feature","properties":{"evidence_id":"e6","source_id":"dtm","elevation_m":3.0},"geometry":{"type":"Point","coordinates":[0.002,0.0]}}
+            ]
+        }))
+        .expect("elevation fixture"),
+    )
+    .expect("write elevation fixture");
+    fs::write(
+        root.join("area.yaml"),
+        format!(
+            "area_id: fixture\narea_name: Fixture\nsource:\n  snapshot_dir: {}\n  snapshot_id: snapshot\n  community_place_types: [village]\n  national_elevation:\n    path: {}\ncompilation:\n  max_connection_km: 15\n",
+            root.display(),
+            root.join("elevation.geojson").display()
+        ),
+    )
+    .expect("area config");
+    let mut edges = Vec::new();
+    add_bidirectional(
+        &mut edges,
+        "village",
+        "short",
+        [0.0, 0.0],
+        [0.001, 0.0],
+        10.0,
+        "residential",
+        None,
+        None,
+    );
+    add_bidirectional(
+        &mut edges,
+        "short",
+        "spine",
+        [0.001, 0.0],
+        [0.002, 0.0],
+        10.0,
+        "primary",
+        Some("A1"),
+        None,
+    );
+    add_bidirectional(
+        &mut edges,
+        "village",
+        "flat",
+        [0.0, 0.0],
+        [0.0, 0.001],
+        15.0,
+        "residential",
+        None,
+        None,
+    );
+    add_bidirectional(
+        &mut edges,
+        "flat",
+        "spine",
+        [0.0, 0.001],
+        [0.002, 0.0],
+        15.0,
+        "residential",
+        None,
+        None,
+    );
+    write_collection(&snapshot.join("network.geojson"), edges);
+    write_collection(
+        &snapshot.join("places.geojson"),
+        vec![place("village", "Village", "village", [0.0, 0.0])],
+    );
+
+    let mut progress = Vec::new();
+    let prepared = prepare_with_progress(
+        &root.join("area.yaml"),
+        CompileOptions::default(),
+        &mut |event| progress.push(event.stage.clone()),
+    )
+    .expect("prepared compilation");
+    let mut planner = prepared.rural_planner();
+    let first = planner
+        .offer_next()
+        .expect("offer result")
+        .expect("rural offer");
+    let second = planner
+        .offer_next()
+        .expect("cached offer result")
+        .expect("cached rural offer");
+    assert_eq!(
+        serde_json::to_value(&first).unwrap(),
+        serde_json::to_value(&second).unwrap()
+    );
+    assert_eq!(first.community_id, "village");
+    assert!(
+        first
+            .candidates
+            .iter()
+            .any(|candidate| candidate.criterion == "shortest-new-link")
+    );
+    assert!(
+        first
+            .candidates
+            .iter()
+            .any(|candidate| candidate.criterion == "low-climbing")
+    );
+    let chosen = first
+        .candidates
+        .iter()
+        .find(|candidate| candidate.criterion == "low-climbing")
+        .expect("supported flatter candidate");
+    let shortest = first
+        .candidates
+        .iter()
+        .find(|candidate| candidate.criterion == "shortest-new-link")
+        .expect("shortest candidate");
+    assert_eq!(
+        shortest
+            .access
+            .full_access_topography
+            .as_ref()
+            .expect("shortest terrain profile")
+            .availability,
+        TopographyAvailability::Available
+    );
+    assert_eq!(
+        shortest
+            .access
+            .full_access_topography
+            .as_ref()
+            .and_then(|profile| profile.cumulative_elevation_variation_m),
+        Some(20.0)
+    );
+    assert_eq!(
+        chosen
+            .access
+            .full_access_topography
+            .as_ref()
+            .and_then(|profile| profile.cumulative_elevation_variation_m),
+        Some(4.0)
+    );
+    let accepted = planner.accept(&chosen.id).expect("accept cached candidate");
+    assert_eq!(accepted.path_edge_ids, chosen.access.path_edge_ids);
+    assert!(planner.accept("rural:village:shortest").is_err());
+
+    let mut rejected_planner = prepared.rural_planner();
+    let rejected_offer = rejected_planner
+        .offer_next()
+        .expect("rejection offer")
+        .expect("rejection candidate");
+    rejected_planner
+        .reject("terrain evidence needs review")
+        .expect("reject offered candidate");
+    let rejected_records = rejected_planner.into_records();
+    let rejected = rejected_records
+        .into_iter()
+        .find(|record| record.community_id == rejected_offer.community_id)
+        .expect("retained rejected community");
+    assert_eq!(rejected.status, "unresolved");
+    assert_eq!(rejected.reason, "terrain evidence needs review");
+    let rejected_report = prepared
+        .report
+        .clone()
+        .with_community_access(vec![rejected.clone()]);
+    let rejected_obligation = rejected_report
+        .access_obligations
+        .iter()
+        .find(|obligation| obligation.id == "obligation:community:village")
+        .expect("materialized unresolved community obligation");
+    assert_eq!(rejected_obligation.disposition, "unresolved");
+    assert_eq!(rejected_report.accounting.network_gap_count, 0);
+    assert!(rejected_report.accounting.unresolved_count > 0);
+    assert!(progress.iter().any(|stage| stage == "preparation"));
+}
 
 #[test]
 fn rural_access_uses_measured_graph_paths_and_exposes_gaps_without_routing_schools() {
@@ -347,6 +531,70 @@ fn rural_access_grows_a_shared_frontier_with_unique_child_links() {
             place("parent", "Parent", "village", [0.0, 0.01]),
             place("child", "Child", "village", [0.0, 0.02]),
         ],
+    );
+
+    let prepared = prepare_with_progress(
+        &root.join("area.yaml"),
+        CompileOptions::default(),
+        &mut |_| {},
+    )
+    .expect("prepared shared-frontier compilation");
+    let mut planner = prepared.rural_planner();
+    let first_offer = planner
+        .offer_next()
+        .expect("first rural offer")
+        .expect("parent offer");
+    assert_eq!(first_offer.community_id, "parent");
+    let parent_candidate = first_offer
+        .candidates
+        .iter()
+        .find(|candidate| candidate.criterion == "shortest-new-link")
+        .expect("parent shortest candidate");
+    let parent_access = planner
+        .accept(&parent_candidate.id)
+        .expect("accept parent candidate");
+    assert_eq!(parent_access.parent_community_id, None);
+
+    let second_offer = planner
+        .offer_next()
+        .expect("second rural offer")
+        .expect("child offer");
+    assert_eq!(second_offer.community_id, "child");
+    let child_candidate = second_offer
+        .candidates
+        .iter()
+        .find(|candidate| candidate.criterion == "shortest-new-link")
+        .expect("child shortest candidate");
+    assert_eq!(
+        child_candidate.access.parent_community_id.as_deref(),
+        Some("parent")
+    );
+    assert_eq!(child_candidate.access.new_link_length_m, Some(5.0));
+    assert_eq!(child_candidate.access.full_access_length_m, Some(25.0));
+    assert_eq!(
+        child_candidate
+            .access
+            .full_access_topography
+            .as_ref()
+            .expect("unknown child terrain profile")
+            .availability,
+        TopographyAvailability::Unknown
+    );
+    assert!(
+        child_candidate
+            .access
+            .full_access_topography
+            .as_ref()
+            .expect("unknown child terrain profile")
+            .cumulative_elevation_variation_m
+            .is_none()
+    );
+    let child_access = planner
+        .accept(&child_candidate.id)
+        .expect("accept child candidate");
+    assert_eq!(
+        child_access.path_edge_ids,
+        child_candidate.access.path_edge_ids
     );
 
     let report = compile(
