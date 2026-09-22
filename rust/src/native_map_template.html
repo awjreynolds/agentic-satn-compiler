@@ -152,6 +152,30 @@ code { font-size: .9em; }
       return (item.destination_name || 'Destination') + ': ' + comparison;
     }).filter(Boolean).join('; ');
   };
+  const formatTopography = value => {
+    const profile = normalizedValue(value);
+    if (!profile || typeof profile !== 'object' || Array.isArray(profile)) return '';
+    const facts = [];
+    if (profile.availability) facts.push(String(profile.availability));
+    const coverage = profile.coverage && typeof profile.coverage === 'object'
+      ? profile.coverage : null;
+    if (coverage && Number.isFinite(Number(coverage.sample_count))) {
+      facts.push(coverage.sample_count + ' samples');
+    }
+    const variation = Number(profile.cumulative_elevation_variation_m);
+    if (Number.isFinite(variation)) facts.push('variation ' + Math.round(variation) + ' m');
+    const ascent = Number(profile.forward_ascent_m);
+    const descent = Number(profile.forward_descent_m);
+    if (Number.isFinite(ascent) || Number.isFinite(descent)) {
+      facts.push('ascent ' + (Number.isFinite(ascent) ? Math.round(ascent) + ' m' : 'unknown') +
+        ', descent ' + (Number.isFinite(descent) ? Math.round(descent) + ' m' : 'unknown'));
+    }
+    const sustained = profile.sustained_gradient && typeof profile.sustained_gradient === 'object'
+      ? Number(profile.sustained_gradient.absolute_gradient_pct) : NaN;
+    if (Number.isFinite(sustained)) facts.push('sustained grade ' + sustained.toFixed(1) + '%');
+    if (profile.reason) facts.push(String(profile.reason));
+    return facts.join('; ');
+  };
   const readableRows = props => {
     const rows = [];
     const add = (label, value) => {
@@ -175,6 +199,15 @@ code { font-size: .9em; }
       add('Complete access distance', formatDistance(props.full_access_length_m));
       add('Onward destination', props.onward_destinations);
       add('Onward comparison', formatBenefits(props.onward_benefits));
+    }
+    if (props.community_id) {
+      add('Community', props.community_name || props.community_id);
+      add('Parent community', props.parent_community_name || props.parent_community_id);
+      add('Root spine', props.root_spine_reference || props.root_spine_id);
+      add('New link distance', formatDistance(props.new_link_length_m));
+      add('Complete access distance', formatDistance(props.full_access_length_m));
+      add('New link elevation', formatTopography(props.new_link_topography));
+      add('Full journey elevation', formatTopography(props.full_access_topography));
     }
     add('Source kind', props.source_kind);
     add('Place class', props.place_class);

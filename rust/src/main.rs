@@ -2,10 +2,10 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use satn_rs::judgment::{CodexConfig, TypeSafeConfig};
-use satn_rs::midend::{MidendConfig, MidendProgress, ProviderSet, replay, run as run_midend};
+use satn_rs::midend::{MidendConfig, MidendProgress, ProviderSet, replay, run_prepared};
 use satn_rs::{
     CompileOptions, ProgressEvent, compile_with_progress, load_retained_report,
-    publish_decision_map,
+    prepare_with_progress, publish_decision_map,
 };
 
 #[derive(Debug, Parser)]
@@ -98,17 +98,15 @@ fn run() -> satn_rs::Result<()> {
         println!("{}", serde_json::to_string(&result)?);
         return Ok(());
     }
-    let report = compile_with_progress(
-        &cli.config,
-        &cli.output,
-        CompileOptions {
-            origin: cli.origin,
-            destination: cli.destination,
-        },
-        &mut progress,
-    )?;
     if cli.mode == "live" {
-        let publication_report = report.clone();
+        let prepared = prepare_with_progress(
+            &cli.config,
+            CompileOptions {
+                origin: cli.origin.clone(),
+                destination: cli.destination.clone(),
+            },
+            &mut progress,
+        )?;
         let mut classifier = TypeSafeConfig::from_env(cli.jev_model.clone())
             .map_err(|error| satn_rs::SatnError::InvalidInput(error.to_string()))?;
         let mut specialist = match (
@@ -132,9 +130,9 @@ fn run() -> satn_rs::Result<()> {
                 event.elapsed_ms,
             );
         };
-        let result = run_midend(
+        let result = run_prepared(
             &history,
-            report,
+            &prepared,
             MidendConfig::live(cli.allow_provisional)
                 .with_branch(cli.branch)
                 .with_jev_model(cli.jev_model),
@@ -152,10 +150,27 @@ fn run() -> satn_rs::Result<()> {
             cli.output.join("planning.json"),
             serde_json::to_string_pretty(&result)?,
         )?;
+        let publication_report = if result.community_access.is_empty() {
+            prepared.report.clone()
+        } else {
+            prepared
+                .report
+                .clone()
+                .with_community_access(result.community_access.clone())
+        };
         publish_decision_map(&cli.output, &publication_report, &result)?;
         println!("{}", serde_json::to_string(&result)?);
         return Ok(());
     }
+    let report = compile_with_progress(
+        &cli.config,
+        &cli.output,
+        CompileOptions {
+            origin: cli.origin,
+            destination: cli.destination,
+        },
+        &mut progress,
+    )?;
     println!("{}", serde_json::to_string(&report)?);
     Ok(())
 }

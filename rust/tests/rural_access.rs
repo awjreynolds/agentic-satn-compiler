@@ -92,6 +92,13 @@ fn prepared_rural_planner_caches_offer_and_accepts_only_offered_path() {
         &mut |event| progress.push(event.stage.clone()),
     )
     .expect("prepared compilation");
+    assert!(prepared.report.accounting.obligation_count > 0);
+    assert_eq!(prepared.report.access_obligations.len(), 1);
+    let pending_obligation = &prepared.report.access_obligations[0];
+    assert_eq!(pending_obligation.id, "obligation:community:village");
+    assert_eq!(pending_obligation.disposition, "unresolved");
+    assert_eq!(prepared.report.accounting.network_gap_count, 0);
+    assert!(prepared.report.accounting.unresolved_count > 0);
     let mut planner = prepared.rural_planner();
     let first = planner
         .offer_next()
@@ -116,12 +123,12 @@ fn prepared_rural_planner_caches_offer_and_accepts_only_offered_path() {
         first
             .candidates
             .iter()
-            .any(|candidate| candidate.criterion == "low-climbing")
+            .any(|candidate| candidate.criterion == "least-climbing-detour")
     );
     let chosen = first
         .candidates
         .iter()
-        .find(|candidate| candidate.criterion == "low-climbing")
+        .find(|candidate| candidate.criterion == "least-climbing-detour")
         .expect("supported flatter candidate");
     let shortest = first
         .candidates
