@@ -108,10 +108,12 @@ code { font-size: .9em; }
   const normalizedValue = value => {
     if (typeof value !== 'string') return value;
     const text = value.trim();
-    if (!text.startsWith('[') || !text.endsWith(']')) return value;
+    const container = (text.startsWith('[') && text.endsWith(']')) ||
+      (text.startsWith('{') && text.endsWith('}'));
+    if (!container) return value;
     try {
       const parsed = JSON.parse(text);
-      return Array.isArray(parsed) ? parsed : value;
+      return parsed && typeof parsed === 'object' ? parsed : value;
     } catch (_) {
       return value;
     }
@@ -156,22 +158,24 @@ code { font-size: .9em; }
     const profile = normalizedValue(value);
     if (!profile || typeof profile !== 'object' || Array.isArray(profile)) return '';
     const facts = [];
+    const numeric = candidate => candidate === null || candidate === undefined || candidate === ''
+      ? NaN : Number(candidate);
     if (profile.availability) facts.push(String(profile.availability));
     const coverage = profile.coverage && typeof profile.coverage === 'object'
       ? profile.coverage : null;
-    if (coverage && Number.isFinite(Number(coverage.sample_count))) {
+    if (coverage && Number.isFinite(numeric(coverage.sample_count))) {
       facts.push(coverage.sample_count + ' samples');
     }
-    const variation = Number(profile.cumulative_elevation_variation_m);
+    const variation = numeric(profile.cumulative_elevation_variation_m);
     if (Number.isFinite(variation)) facts.push('variation ' + Math.round(variation) + ' m');
-    const ascent = Number(profile.forward_ascent_m);
-    const descent = Number(profile.forward_descent_m);
+    const ascent = numeric(profile.forward_ascent_m);
+    const descent = numeric(profile.forward_descent_m);
     if (Number.isFinite(ascent) || Number.isFinite(descent)) {
       facts.push('ascent ' + (Number.isFinite(ascent) ? Math.round(ascent) + ' m' : 'unknown') +
         ', descent ' + (Number.isFinite(descent) ? Math.round(descent) + ' m' : 'unknown'));
     }
     const sustained = profile.sustained_gradient && typeof profile.sustained_gradient === 'object'
-      ? Number(profile.sustained_gradient.absolute_gradient_pct) : NaN;
+      ? numeric(profile.sustained_gradient.absolute_gradient_pct) : NaN;
     if (Number.isFinite(sustained)) facts.push('sustained grade ' + sustained.toFixed(1) + '%');
     if (profile.reason) facts.push(String(profile.reason));
     return facts.join('; ');
@@ -197,10 +201,12 @@ code { font-size: .9em; }
       add('Parent community', props.parent_community_name || props.parent_community_id);
       add('New link distance', formatDistance(props.new_link_length_m || props.access_length_m));
       add('Complete access distance', formatDistance(props.full_access_length_m));
+      add('New link elevation', formatTopography(props.new_link_topography));
+      add('Full journey elevation', formatTopography(props.full_access_topography));
       add('Onward destination', props.onward_destinations);
       add('Onward comparison', formatBenefits(props.onward_benefits));
     }
-    if (props.community_id) {
+    if (props.community_id && props.kind !== 'community-access') {
       add('Community', props.community_name || props.community_id);
       add('Parent community', props.parent_community_name || props.parent_community_id);
       add('Root spine', props.root_spine_reference || props.root_spine_id);
