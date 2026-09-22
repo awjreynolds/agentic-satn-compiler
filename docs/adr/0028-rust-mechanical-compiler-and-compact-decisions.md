@@ -30,5 +30,31 @@ Previously accepted decisions and unresolved facts are available to subsequent
 tasks. This needs local references and typed operations, not per-step hashes of
 the entire network or versioned caller input shapes.
 
+For the British POC, preserve the existing NCN evidence rule in
+`evidence.mark_ncn_edges`: a 20 m metric corridor buffer and at least 50% edge
+overlap. Use pure-Rust geometry and an explicit gridless WGS84-to-British-National-
+Grid Helmert transformation, checked against the currently available reference
+transformation. The local reference has no OSTN15 grid; this choice does not claim
+OSTN15 accuracy. Preserve current, reclassified and greenway evidence separately.
+Existing route-role search weights generate alternatives; they do not establish
+current provision or become model-confidence acceptance thresholds.
+
 The implementation and evidence are tracked in
 [Build the Rust agentic SATN compiler from the ground up](https://github.com/awjreynolds/agentic-satn-compiler/issues/538).
+
+Rust does not require wire compatibility with the experimental Python history.
+For a focused semantic choice, an explicit unresolved classifier outcome can
+escalate the same task to the configured reasoning model. A transport or malformed
+response remains a failed classifier attempt, even if reasoning subsequently
+resolves the task. Neither model can supply missing observations. Keep an
+unresolved decision when the available evidence cannot support a selection.
+The owner's provisional-choice permission is explicit run policy: a supported
+best guess needs a reason and retained uncertainty. Provision remains unknown
+unless independently sourced. The old routing preference cutoffs do not become
+selection or confidence gates in this implementation.
+
+A strategic POC also accounts for current/former cycle-network sources and
+existing cycleways, plus governed community and school access obligations.
+Town-pair choices are only one part of that network. Missing access or attachment
+is a visible gap, and an unconfigured destination profile remains explicit.
+Do not claim complete access coverage from successful urban route generation.

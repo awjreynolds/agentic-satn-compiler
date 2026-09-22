@@ -2,7 +2,10 @@ use std::cmp::Ordering;
 use std::collections::{BTreeSet, BinaryHeap, HashMap};
 
 use crate::error::{Result, SatnError};
-use crate::geojson::{Feature, Geometry, number_property, property_text, string_property};
+use crate::geojson::{
+    Feature, Geometry, canonical_tag_values, number_property, property_text, string_property,
+};
+use crate::geometry::EdgeEvidence;
 
 #[derive(Debug, Clone)]
 pub(crate) struct GraphEdge {
@@ -12,6 +15,10 @@ pub(crate) struct GraphEdge {
     pub length_m: f64,
     pub highway: Option<String>,
     pub reference: Option<String>,
+    pub highways: Vec<String>,
+    pub references: Vec<String>,
+    pub ncn: bool,
+    pub cycle_alignment_bases: Vec<String>,
     pub geometry: Vec<[f64; 2]>,
 }
 
@@ -19,6 +26,10 @@ pub(crate) struct GraphEdge {
 pub(crate) struct Route {
     pub edge_ids: Vec<String>,
     pub length_m: f64,
+    pub search_cost_m: f64,
+    pub a_road_length_m: f64,
+    pub ncn_length_m: f64,
+    pub cycle_alignment_bases: Vec<String>,
     pub geometry: Vec<[f64; 2]>,
 }
 
@@ -61,7 +72,7 @@ impl PartialOrd for QueueEntry {
 }
 
 impl Graph {
-    pub(crate) fn from_features(features: &[Feature]) -> Result<Self> {
+    pub(crate) fn from_features(features: &[Feature], evidence: &[EdgeEvidence]) -> Result<Self> {
         let mut edges = Vec::with_capacity(features.len());
         for (index, feature) in features.iter().enumerate() {
             let Geometry::LineString(geometry) = &feature.geometry else {
@@ -87,6 +98,9 @@ impl Graph {
             let key = property_text(&feature.properties, "key");
             let osmid = string_property(&feature.properties, "osmid").unwrap_or_default();
             let id = format!("edge:{from}:{to}:{key}:{index}");
+            let highways = canonical_tag_values(&feature.properties, "highway");
+            let references = canonical_tag_values(&feature.properties, "ref");
+            let edge_evidence = evidence.get(index).cloned().unwrap_or_default();
             edges.push(GraphEdge {
                 id: if osmid.is_empty() {
                     id
@@ -96,8 +110,12 @@ impl Graph {
                 from,
                 to,
                 length_m,
-                highway: string_property(&feature.properties, "highway"),
-                reference: string_property(&feature.properties, "ref"),
+                highway: highways.first().cloned(),
+                reference: references.first().cloned(),
+                highways,
+                references,
+                ncn: edge_evidence.ncn,
+                cycle_alignment_bases: edge_evidence.cycle_alignment_bases,
                 geometry: geometry.clone(),
             });
         }
@@ -125,7 +143,7 @@ impl Graph {
         })
     }
 
-    pub(crate) fn route(&self, start: &str, end: &str) -> Option<Route> {
+    pub(crate) fn route(&self, start: &str, end: &str, role: &str) -> Option<Route> {
         let mut distances: HashMap<&str, f64> = HashMap::new();
         let mut previous: HashMap<&str, (String, usize)> = HashMap::new();
         let mut queue = BinaryHeap::new();
@@ -144,7 +162,7 @@ impl Graph {
             }
             for edge_index in self.outgoing.get(&node).into_iter().flatten() {
                 let edge = &self.edges[*edge_index];
-                let next_distance = distance + edge.length_m;
+                let next_distance = distance + route_weight(edge, role);
                 if next_distance < *distances.get(edge.to.as_str()).unwrap_or(&f64::INFINITY) {
                     distances.insert(&edge.to, next_distance);
                     previous.insert(&edge.to, (node.clone(), *edge_index));
@@ -170,7 +188,30 @@ impl Graph {
         let edge_ids = edge_indices
             .iter()
             .map(|index| self.edges[*index].id.clone())
-            .collect();
+            .collect::<Vec<_>>();
+        let length_m = edge_indices
+            .iter()
+            .map(|index| self.edges[*index].length_m)
+            .sum::<f64>();
+        let a_road_length_m = edge_indices
+            .iter()
+            .filter(|index| {
+                self.edges[**index]
+                    .references
+                    .iter()
+                    .any(|value| has_a_road_reference(value))
+            })
+            .map(|index| self.edges[*index].length_m)
+            .sum::<f64>();
+        let ncn_length_m = edge_indices
+            .iter()
+            .filter(|index| self.edges[**index].ncn)
+            .map(|index| self.edges[*index].length_m)
+            .sum::<f64>();
+        let mut cycle_alignment_bases = BTreeSet::new();
+        for index in &edge_indices {
+            cycle_alignment_bases.extend(self.edges[*index].cycle_alignment_bases.iter().cloned());
+        }
         let mut geometry = Vec::new();
         for (position, edge_index) in edge_indices.iter().enumerate() {
             let edge_geometry = &self.edges[*edge_index].geometry;
@@ -182,7 +223,11 @@ impl Graph {
         }
         Some(Route {
             edge_ids,
-            length_m: *distances.get(end).unwrap_or(&0.0),
+            length_m,
+            search_cost_m: *distances.get(end).unwrap_or(&0.0),
+            a_road_length_m,
+            ncn_length_m,
+            cycle_alignment_bases: cycle_alignment_bases.into_iter().collect(),
             geometry,
         })
     }
@@ -250,6 +295,51 @@ fn squared_distance(left: [f64; 2], right: [f64; 2]) -> f64 {
     let longitude = left[0] - right[0];
     let latitude = left[1] - right[1];
     longitude * longitude + latitude * latitude
+}
+
+fn route_weight(edge: &GraphEdge, role: &str) -> f64 {
+    let length = edge.length_m;
+    match role {
+        "strategic-spine" => {
+            length
+                * if edge
+                    .references
+                    .iter()
+                    .any(|value| has_a_road_reference(value))
+                {
+                    0.35
+                } else {
+                    1.6
+                }
+        }
+        "ncn-informed" => length * if edge.ncn { 0.4 } else { 1.3 },
+        "low-traffic" => {
+            length
+                * if edge.highways.iter().any(|value| is_low_traffic(value)) {
+                    0.75
+                } else {
+                    4.0
+                }
+        }
+        _ => length,
+    }
+}
+
+fn has_a_road_reference(value: &str) -> bool {
+    value.trim().to_ascii_uppercase().starts_with('A')
+}
+
+fn is_low_traffic(value: &str) -> bool {
+    matches!(
+        value,
+        "living_street"
+            | "residential"
+            | "unclassified"
+            | "service"
+            | "track"
+            | "path"
+            | "cycleway"
+    )
 }
 
 fn haversine_m(left: [f64; 2], right: [f64; 2]) -> f64 {

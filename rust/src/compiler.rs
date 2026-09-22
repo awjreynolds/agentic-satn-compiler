@@ -8,6 +8,7 @@ use serde::Serialize;
 use crate::config::AreaConfig;
 use crate::error::Result;
 use crate::geojson::{Feature, Geometry, read_feature_collection, string_property};
+use crate::geometry::enrich_network_edges;
 use crate::graph::{Graph, GraphEdge, Route};
 use crate::output::write_bundle;
 
@@ -65,7 +66,15 @@ pub struct Candidate {
     pub connection_id: String,
     pub status: String,
     pub decision_class: String,
+    pub role: String,
+    pub role_aliases: Vec<String>,
     pub length_m: f64,
+    pub search_cost_m: f64,
+    pub a_road_share: f64,
+    pub ncn_share: f64,
+    pub cycle_alignment_bases: Vec<String>,
+    pub topology_status: String,
+    pub provision_status: String,
     pub path_edge_ids: Vec<String>,
     pub geometry: Vec<[f64; 2]>,
 }
@@ -135,6 +144,8 @@ struct DistanceEntry {
     node: String,
 }
 
+const ROUTE_ROLES: [&str; 4] = ["direct", "strategic-spine", "ncn-informed", "low-traffic"];
+
 impl PartialEq for DistanceEntry {
     fn eq(&self, other: &Self) -> bool {
         self.distance == other.distance && self.node == other.node
@@ -189,12 +200,13 @@ pub fn compile_with_progress(
     let network_path = snapshot_path.join("network.geojson");
     let places_path = snapshot_path.join("places.geojson");
     let network_features = read_feature_collection(&network_path)?;
+    let context_features = read_optional_features(&snapshot_path.join("context.geojson"))?;
+    let edge_evidence = enrich_network_edges(&network_features, &context_features)?;
     let network = LoadedNetwork {
-        graph: Graph::from_features(&network_features)?,
+        graph: Graph::from_features(&network_features, &edge_evidence)?,
         features: network_features,
     };
     let places_features = read_feature_collection(&places_path)?;
-    let context_features = read_optional_features(&snapshot_path.join("context.geojson"))?;
     let official_features =
         read_optional_features(&snapshot_path.join("official-road-classification.geojson"))?;
     let boundary_features = read_optional_features(&snapshot_path.join("boundary.geojson"))?;
@@ -636,32 +648,57 @@ fn build_connections_and_candidates(
         let connection_id = format!("prepared-urban-journey:{}:{}", left.id, right.id);
         let left_routing_node = left_node(left, graph, attachment_extent_m);
         let right_routing_node = left_node(right, graph, attachment_extent_m);
-        let (origin, destination, route) =
-            match graph.route(&left_routing_node, &right_routing_node) {
+        let (origin, destination, direct_route) =
+            match graph.route(&left_routing_node, &right_routing_node, "direct") {
                 Some(route) => (left, right, Some(route)),
-                None => match graph.route(&right_routing_node, &left_routing_node) {
+                None => match graph.route(&right_routing_node, &left_routing_node, "direct") {
                     Some(route) => (right, left, Some(route)),
                     None => (left, right, None),
                 },
             };
+        let origin_node = left_node(origin, graph, attachment_extent_m);
+        let destination_node = left_node(destination, graph, attachment_extent_m);
         connections.push(Connection {
             id: connection_id.clone(),
             origin_place_id: origin.id.clone(),
             origin_name: origin.name.clone(),
             destination_place_id: destination.id.clone(),
             destination_name: destination.name.clone(),
-            origin_node: left_node(origin, graph, attachment_extent_m),
-            destination_node: left_node(destination, graph, attachment_extent_m),
+            origin_node: origin_node.clone(),
+            destination_node: destination_node.clone(),
             cross_region_edge_ids: adjacency.edge_ids,
             road_classes: adjacency.road_classes,
             preferred_classes: adjacency.preferred_classes,
         });
-        if let Some(route) = route {
-            candidates.push(candidate_from_route(
-                format!("candidate:{connection_id}"),
-                connection_id.clone(),
-                route,
-            ));
+        if let Some(route) = direct_route {
+            let mut connection_candidates = Vec::new();
+            for role in ROUTE_ROLES {
+                let route = if role == "direct" {
+                    Some(route.clone())
+                } else {
+                    graph.route(&origin_node, &destination_node, role)
+                };
+                let Some(route) = route else {
+                    continue;
+                };
+                if let Some(existing) = connection_candidates
+                    .iter_mut()
+                    .find(|candidate: &&mut Candidate| candidate.path_edge_ids == route.edge_ids)
+                {
+                    if !existing.role_aliases.iter().any(|alias| alias == role) {
+                        existing.role_aliases.push(role.to_string());
+                    }
+                    continue;
+                }
+                let candidate = candidate_from_route(
+                    format!("candidate:{connection_id}:{role}"),
+                    connection_id.clone(),
+                    role,
+                    route,
+                );
+                connection_candidates.push(candidate);
+            }
+            candidates.extend(connection_candidates);
         }
         emit(
             progress,
@@ -794,17 +831,20 @@ fn prepare_adjacencies(
 
 fn classify_edge(edge: &GraphEdge) -> BTreeSet<String> {
     let mut classes = BTreeSet::new();
-    if edge.reference.as_deref().is_some_and(is_a_reference) {
+    if edge.references.iter().any(|value| is_a_reference(value)) {
         classes.insert("a-road-reference".to_string());
     }
-    if edge.highway.as_deref().is_some_and(|highway| {
-        matches!(highway, "trunk" | "primary" | "trunk_link" | "primary_link")
+    if edge.highways.iter().any(|highway| {
+        matches!(
+            highway.as_str(),
+            "trunk" | "primary" | "trunk_link" | "primary_link"
+        )
     }) {
         classes.insert("a-road-highway".to_string());
     }
-    if edge.highway.as_deref().is_some_and(|highway| {
+    if edge.highways.iter().any(|highway| {
         matches!(
-            highway,
+            highway.as_str(),
             "cycleway"
                 | "cycle_track"
                 | "cycle-track"
@@ -815,7 +855,7 @@ fn classify_edge(edge: &GraphEdge) -> BTreeSet<String> {
     }) {
         classes.insert("cycleway".to_string());
     }
-    if edge.reference.as_deref().is_some_and(|reference| {
+    if edge.references.iter().any(|reference| {
         reference
             .trim()
             .to_ascii_uppercase()
@@ -836,13 +876,30 @@ fn classify_edge(edge: &GraphEdge) -> BTreeSet<String> {
     classes
 }
 
-fn candidate_from_route(id: String, connection_id: String, route: Route) -> Candidate {
+fn candidate_from_route(id: String, connection_id: String, role: &str, route: Route) -> Candidate {
+    let measured_length = route.length_m;
     Candidate {
         id,
         connection_id,
         status: "mechanical-candidate".to_string(),
         decision_class: "mechanical".to_string(),
-        length_m: route.length_m,
+        role: role.to_string(),
+        role_aliases: Vec::new(),
+        length_m: measured_length,
+        search_cost_m: route.search_cost_m,
+        a_road_share: if measured_length == 0.0 {
+            0.0
+        } else {
+            route.a_road_length_m / measured_length
+        },
+        ncn_share: if measured_length == 0.0 {
+            0.0
+        } else {
+            route.ncn_length_m / measured_length
+        },
+        cycle_alignment_bases: route.cycle_alignment_bases,
+        topology_status: "graph-supported".to_string(),
+        provision_status: "unknown".to_string(),
         path_edge_ids: route.edge_ids,
         geometry: route.geometry,
     }

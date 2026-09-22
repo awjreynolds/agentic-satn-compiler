@@ -63,7 +63,15 @@ fn candidate_feature(candidate: &Candidate) -> Value {
             "decision_class": candidate.decision_class,
             "candidate_id": candidate.id,
             "connection_id": candidate.connection_id,
-            "length_m": candidate.length_m
+            "role": candidate.role,
+            "role_aliases": candidate.role_aliases,
+            "length_m": candidate.length_m,
+            "search_cost_m": candidate.search_cost_m,
+            "a_road_share": candidate.a_road_share,
+            "ncn_share": candidate.ncn_share,
+            "cycle_alignment_bases": candidate.cycle_alignment_bases,
+            "topology_status": candidate.topology_status,
+            "provision_status": candidate.provision_status
         },
         "geometry": {"type": "LineString", "coordinates": candidate.geometry}
     })
