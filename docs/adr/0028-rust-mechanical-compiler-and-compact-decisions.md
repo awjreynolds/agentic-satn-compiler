@@ -54,7 +54,9 @@ unless independently sourced. The old routing preference cutoffs do not become
 selection or confidence gates in this implementation.
 
 A strategic POC also accounts for current/former cycle-network sources and
-existing cycleways, plus governed community and school access obligations.
+existing cycleways, plus governed community access obligations. The owner's
+2026-09-22 scope clarification makes schools informational map points rather
+than strategic access obligations; school-route planning is a separate scope.
 Town-pair choices are only one part of that network. Missing access or attachment
 is a visible gap, and an unconfigured destination profile remains explicit.
 Do not claim complete access coverage from successful urban route generation.

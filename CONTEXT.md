@@ -37,8 +37,8 @@ Qualitative present, absent or unknown facts about everyday services in a Commun
 _Avoid_: destination list, demand score, required access
 
 **School**:
-A primary, secondary, all-through or special education site admitted as a School Access Obligation. A college or university remains contextual evidence unless its physical campus is admitted by the active Strategic Destination Profile.
-_Avoid_: education site, college, university
+A source-evidenced education site shown as information on the strategic network map. School locations do not themselves require strategic access routes; a separate school-access planning scope is needed to assess those local journeys.
+_Avoid_: automatic School Access Obligation, strategic route endpoint, inferred safe route
 
 **School Access Point**:
 The usable School entrance used to assess network access and School Street plausibility, recorded as mapped, inferred or unresolved. An inferred point may be proposed from boundaries, gates, paths and adjoining streets but remains unverified and cannot alone support a Green or Red assessment.
@@ -89,11 +89,11 @@ A declaration of scope-specific main-network spacing guidance. The initial profi
 _Avoid_: parallel-candidate proximity, Access Support spacing, binding Dutch standard
 
 **Access Support**:
-Governed Community, School and Strategic Destination connections that reach the Strategic Main Network without counting as main-route mesh coverage. Access Support remains fingerprinted and inspectable and exposes an unresolved connection as a Network Gap.
+Community connections that reach the Strategic Main Network without counting as main-route mesh coverage. Rural access follows the shortest connected route to the spine; an additional connection must serve a useful onward urban journey. School locations are informational and do not generate Access Support in the strategic planning scope. Unsupported or disconnected access remains an inspectable Network Gap.
 _Avoid_: Strategic Main Network, hidden feeder, discarded access route
 
 **Strategic Network Visualization**:
-A deliberately bounded, informative and inspectable layered picture whose initial route view is the Strategic Main Network, with Access Support, Gradient Sections, School Access Obligations and Candidate Low-Traffic Areas separately inspectable. It explains a prioritised strategy without claiming that every displayed corridor is already complete or designed.
+A deliberately bounded, informative and inspectable layered picture whose initial route view is the Strategic Main Network, with community Access Support and informational School locations separately inspectable where available. Further layers need a concrete planning use and supporting data. It explains a prioritised strategy without claiming that every displayed corridor is already complete or designed.
 _Avoid_: final scheme map, cycle-route inventory, undifferentiated linework
 
 **Strategic Network Route Layer**:
@@ -133,7 +133,7 @@ The iterative formation of a Backbone-and-Access Network from all Strategic Spin
 _Avoid_: one-spine-at-a-time build, global pairwise routing, order-dependent catchment
 
 **Access Obligation**:
-A Community, School or Strategic Destination Site that must be served by bounded Access Support into the Strategic Main Network without requiring a peer-to-peer main route. A degree-one Access Obligation is valid once its applicable access rule is satisfied.
+A Community that must be served by Access Support into the Strategic Main Network without requiring a peer-to-peer main route. A degree-one Access Obligation is valid once its applicable access rule is satisfied. School and other destination obligations belong to separately declared planning scopes, not the current strategic community-access scope.
 _Avoid_: peer network node, redundancy requirement, direct journey pair
 
 **Network Place**:

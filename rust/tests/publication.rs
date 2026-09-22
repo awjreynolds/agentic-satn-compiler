@@ -3,7 +3,7 @@ use std::fs;
 use satn_rs::midend::{MidendRun, PlanningBase, TypedOperation};
 use satn_rs::{
     AccessObligation, AccountingSummary, Candidate, CompileReport, Connection, NetworkPlace,
-    SourceCorridor, UnknownFact, load_retained_report, publish_decision_map,
+    SchoolContext, SourceCorridor, UnknownFact, load_retained_report, publish_decision_map,
 };
 use serde_json::Value;
 
@@ -108,6 +108,13 @@ fn publishes_compact_decision_map_with_real_departure_sections() {
         feature["properties"]["kind"] == "source-departure"
             && feature["properties"]["source_corridor_id"] == "source:cycleway"
     }));
+    let school = features
+        .iter()
+        .find(|feature| feature["properties"]["kind"] == "school-context")
+        .expect("school context feature");
+    assert_eq!(school["properties"]["source_id"], "school-source-1");
+    assert_eq!(school["properties"]["name"], "Alpha School");
+    assert_eq!(school["geometry"]["type"], "Point");
     assert!(!features.iter().any(|feature| {
         feature["properties"]["kind"] == "a-road-departure"
             && feature["properties"]["source_corridor_id"] == "source:unattached"
@@ -156,6 +163,8 @@ fn publishes_compact_decision_map_with_real_departure_sections() {
     assert!(html.contains("native-selected"));
     assert!(html.contains("native-a-road-departure"));
     assert!(html.contains("native-source-departure"));
+    assert!(html.contains("data-layer-toggle=\"school-context\""));
+    assert!(html.contains("native-school-context"));
     assert!(html.contains("native-feature-details"));
     assert!(!html.contains("data-native-decision-kind"));
     assert!(!html.contains("data-native-departure=\""));
@@ -233,6 +242,19 @@ fn retained_base_reader_supports_offline_projection_without_private_history() {
     assert_eq!(loaded.area_id, report.area_id);
     assert_eq!(loaded.snapshot_id, report.snapshot_id);
     assert_eq!(loaded.candidates.len(), report.candidates.len());
+}
+
+#[test]
+fn legacy_report_without_school_context_defaults_to_empty() {
+    let report = report_fixture();
+    let mut legacy = serde_json::to_value(report).expect("serialize report");
+    legacy
+        .as_object_mut()
+        .expect("report object")
+        .remove("school_context");
+
+    let loaded: CompileReport = serde_json::from_value(legacy).expect("read legacy report");
+    assert!(loaded.school_context.is_empty());
 }
 
 #[test]
@@ -351,6 +373,13 @@ fn report_fixture() -> CompileReport {
             source_id: "alpha".to_string(),
             place_class: "town".to_string(),
             geometry: [0.0, 0.0],
+        }],
+        school_context: vec![SchoolContext {
+            id: "school-1".to_string(),
+            source_id: "school-source-1".to_string(),
+            name: "Alpha School".to_string(),
+            school_obligation_eligible: false,
+            geometry: [0.5, 0.0],
         }],
         access_obligations: vec![AccessObligation {
             id: "obligation:community:alpha".to_string(),

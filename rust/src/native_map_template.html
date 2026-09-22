@@ -59,6 +59,7 @@ code { font-size: .9em; }
       <li><label><input type="checkbox" data-layer-toggle="a-road-departure" checked> <span class="swatch departure-key"></span>A-road departure <span data-layer-count></span></label></li>
       <li><label><input type="checkbox" data-layer-toggle="source-departure" checked> <span class="swatch departure-key"></span>Source departure <span data-layer-count></span></label></li>
       <li><label><input type="checkbox" data-layer-toggle="network-place" checked> Network places <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="school-context" checked> Schools <span data-layer-count></span></label></li>
       <li><label><input type="checkbox" data-layer-toggle="access-obligation" checked> Access obligations and gaps <span data-layer-count></span></label></li>
     </ul></fieldset>
     <section class="native-details" id="native-feature-details" aria-live="polite"><h3>Evidence</h3><p>Hover or select a rendered map feature to inspect its public evidence.</p></section>
@@ -78,7 +79,7 @@ code { font-size: .9em; }
   const interactiveLayers = [
     'native-selected', 'native-provisional', 'native-unresolved', 'native-alternative',
     'native-a-road-departure', 'native-source-departure', 'native-source-strategic',
-    'native-source-context', 'native-network-place', 'native-access-obligation'
+    'native-source-context', 'native-network-place', 'native-school-context', 'native-access-obligation'
   ];
   const layerGroups = {
     'source-strategic': ['native-source-strategic'],
@@ -90,6 +91,7 @@ code { font-size: .9em; }
     'a-road-departure': ['native-a-road-departure'],
     'source-departure': ['native-source-departure'],
     'network-place': ['native-network-place'],
+    'school-context': ['native-school-context'],
     'access-obligation': ['native-access-obligation']
   };
   const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({
@@ -133,7 +135,8 @@ code { font-size: .9em; }
     if (props.length_m !== undefined) add('Distance', formatDistance(props.length_m));
     add('Connection', props.connection_label);
     add('Source', props.source_reference);
-    add('Place', props.name);
+    if (props.kind === 'school-context') add('School', props.name);
+    else add('Place', props.name);
     add('Source kind', props.source_kind);
     add('Place class', props.place_class);
     add('Obligation', props.obligation_kind);
@@ -206,6 +209,7 @@ code { font-size: .9em; }
       'a-road-departure': network.features.filter(feature => feature.properties?.kind === 'a-road-departure').length,
       'source-departure': network.features.filter(feature => feature.properties?.kind === 'source-departure').length,
       'network-place': network.features.filter(feature => feature.properties?.kind === 'network-place').length,
+      'school-context': network.features.filter(feature => feature.properties?.kind === 'school-context').length,
       'access-obligation': network.features.filter(feature => feature.properties?.kind === 'access-obligation').length
     };
     document.querySelectorAll('[data-layer-toggle]').forEach(toggle => {
@@ -296,6 +300,7 @@ code { font-size: .9em; }
       line('native-a-road-departure', ['==', ['get', 'kind'], 'a-road-departure'], '#dc2626', 6, [10, 5]);
       line('native-source-departure', ['==', ['get', 'kind'], 'source-departure'], '#be123c', 5, [8, 5]);
       map.addLayer({ id: 'native-network-place', type: 'circle', source: 'native-network', filter: ['==', ['get', 'kind'], 'network-place'], paint: { 'circle-radius': 5, 'circle-color': '#2563eb', 'circle-stroke-color': '#fff', 'circle-stroke-width': 1 } });
+      map.addLayer({ id: 'native-school-context', type: 'circle', source: 'native-network', filter: ['==', ['get', 'kind'], 'school-context'], paint: { 'circle-radius': 6, 'circle-color': '#9333ea', 'circle-stroke-color': '#fff', 'circle-stroke-width': 1 } });
       map.addLayer({ id: 'native-access-obligation', type: 'circle', source: 'native-network', filter: ['==', ['get', 'kind'], 'access-obligation'], paint: { 'circle-radius': 6, 'circle-color': '#dc2626', 'circle-stroke-color': '#fff', 'circle-stroke-width': 1 } });
       map.addLayer({ id: 'native-highlight-line', type: 'line', source: 'native-highlight', filter: ['==', ['geometry-type'], 'LineString'], paint: { 'line-color': '#f59e0b', 'line-width': 8, 'line-opacity': 0.8 } });
       map.addLayer({ id: 'native-highlight-point', type: 'circle', source: 'native-highlight', filter: ['==', ['geometry-type'], 'Point'], paint: { 'circle-radius': 9, 'circle-color': '#f59e0b', 'circle-stroke-color': '#fff', 'circle-stroke-width': 2 } });

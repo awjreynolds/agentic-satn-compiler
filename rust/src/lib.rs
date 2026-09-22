@@ -11,7 +11,7 @@ pub mod publication;
 
 pub use compiler::{
     AccessObligation, AccountingSummary, Candidate, CompileOptions, CompileReport, Connection,
-    NetworkPlace, Operation, ProgressEvent, SourceCorridor, UnknownFact, compile,
+    NetworkPlace, Operation, ProgressEvent, SchoolContext, SourceCorridor, UnknownFact, compile,
     compile_with_progress,
 };
 pub use error::{Result, SatnError};
