@@ -804,6 +804,7 @@ fn rural_decision_feature(
             "provisional": provisional,
             "parent_community_id": access.parent_community_id,
             "parent_community_name": access.parent_community_name,
+            "access_status": access.status,
             "root_spine_id": access.root_spine_id,
             "root_spine_reference": access.joined_spine_reference,
             "new_link_length_m": access.new_link_length_m,

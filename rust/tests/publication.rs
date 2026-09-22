@@ -307,6 +307,7 @@ fn publication_uses_accepted_rural_path_with_compact_elevation_evidence() {
         .find(|feature| feature["properties"]["kind"] == "provisional-alignment")
         .expect("provisional rural decision");
     assert_eq!(selected["properties"]["community_id"], "village-1");
+    assert_eq!(selected["properties"]["access_status"], "served");
     assert_eq!(selected["properties"]["full_access_length_m"], 240.0);
     assert_eq!(
         selected["properties"]["full_access_topography"]["availability"],

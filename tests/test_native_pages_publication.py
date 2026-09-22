@@ -240,6 +240,119 @@ def _write_native_bundle(
     )
 
 
+def _make_on_spine_decision_point(bundle: Path, *, include_access: bool) -> None:
+    network_path = bundle / "decision-map.geojson"
+    network = json.loads(network_path.read_text(encoding="utf-8"))
+    selected = next(
+        feature
+        for feature in network["features"]
+        if feature["properties"].get("kind") == "selected-alignment"
+    )
+    point = [-1.95, 51.05]
+    selected["geometry"] = {"type": "Point", "coordinates": point}
+    selected["properties"].update(
+        {
+            "community_id": "community:on-spine",
+            "root_spine_id": "source:spine",
+            "new_link_length_m": -0.0,
+            "full_access_length_m": 0.0,
+        }
+    )
+    if include_access:
+        selected["properties"]["access_status"] = "on-spine"
+        network["features"].append(
+            {
+                "type": "Feature",
+                "properties": {
+                    "kind": "community-access",
+                    "community_id": "community:on-spine",
+                    "status": "on-spine",
+                    "root_spine_id": "source:spine",
+                    "joined_spine_id": "source:spine",
+                    "new_link_length_m": -0.0,
+                    "full_access_length_m": 0.0,
+                },
+                "geometry": {"type": "Point", "coordinates": point},
+            }
+        )
+    network_path.write_text(json.dumps(network), encoding="utf-8")
+    for filename in ("decision-map.json", "publication.json"):
+        path = bundle / filename
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["counts"]["community_access"] = int(include_access)
+        path.write_text(json.dumps(document), encoding="utf-8")
+
+
+def test_package_pages_accepts_a_valid_zero_length_on_spine_decision_point(
+    tmp_path: Path,
+) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    _write_native_catalogue(catalogue)
+    _write_native_bundle(bundles)
+    _make_on_spine_decision_point(bundles / "native-area", include_access=True)
+
+    result = package_pages(
+        catalogue,
+        bundles,
+        tmp_path / "pages",
+        tmp_path / "satn-pages.zip",
+    )
+
+    network = json.loads(
+        (result.pages_directory / "deployments" / "native-area" / "decision-map.geojson").read_text(
+            encoding="utf-8"
+        )
+    )
+    point = next(
+        feature
+        for feature in network["features"]
+        if feature["properties"].get("community_id") == "community:on-spine"
+        and feature["properties"].get("kind") == "selected-alignment"
+    )
+    assert point["geometry"] == {"type": "Point", "coordinates": [-1.95, 51.05]}
+
+
+def test_package_pages_rejects_an_unproven_zero_length_decision_point(
+    tmp_path: Path,
+) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    _write_native_catalogue(catalogue)
+    _write_native_bundle(bundles)
+    _make_on_spine_decision_point(bundles / "native-area", include_access=False)
+
+    with pytest.raises(ValueError, match="on-spine decision point"):
+        package_pages(
+            catalogue,
+            bundles,
+            tmp_path / "pages",
+            tmp_path / "satn-pages.zip",
+        )
+
+
+@pytest.mark.browser
+def test_native_rendering_gate_accepts_a_valid_on_spine_decision_point(
+    tmp_path: Path,
+) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    _write_native_catalogue(catalogue)
+    _write_native_bundle(bundles)
+    _make_on_spine_decision_point(bundles / "native-area", include_access=True)
+    result = package_pages(
+        catalogue,
+        bundles,
+        tmp_path / "pages",
+        tmp_path / "satn-pages.zip",
+    )
+
+    validated = VALIDATOR.validate_pages_rendering(result.pages_directory)
+
+    assert validated[0].strategic_spines == 2
+    assert validated[0].rendered_strategic_spines == 3
+
+
 def test_package_pages_accepts_the_explicit_native_agentic_publication(tmp_path: Path) -> None:
     catalogue = tmp_path / "catalogue.yaml"
     bundles = tmp_path / "bundles"

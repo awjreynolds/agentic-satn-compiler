@@ -202,6 +202,22 @@ def _inspect_native_agentic(
                 geometryType(feature)
               ) && Array.isArray(feature?.geometry?.coordinates) &&
                 feature.geometry.coordinates.length > 0;
+              const zeroLength = value => typeof value === 'number' &&
+                Number.isFinite(value) && value === 0;
+              const onSpinePoint = feature => {
+                const props = properties(feature);
+                const point = feature?.geometry?.coordinates;
+                if (!['selected-alignment', 'provisional-alignment'].includes(kind(feature)) ||
+                    geometryType(feature) !== 'Point' || !Array.isArray(point) ||
+                    point.length !== 2 || typeof point[0] !== 'number' ||
+                    typeof point[1] !== 'number' || typeof props.community_id !== 'string' ||
+                    !props.community_id.trim() || props.access_status !== 'on-spine' ||
+                    !zeroLength(props.new_link_length_m) ||
+                    !zeroLength(props.full_access_length_m)) return false;
+                return true;
+              };
+              const renderableDecisionGeometry = feature =>
+                lineGeometry(feature) || onSpinePoint(feature);
               const failures = [];
               const renderedFor = layers => layers
                 .filter(layer => map && map.getLayer(layer))
@@ -216,7 +232,8 @@ def _inspect_native_agentic(
                 });
               };
               const renderedStrategic = uniqueRendered([
-                'native-selected', 'native-provisional', 'native-unresolved', 'native-alternative'
+                'native-selected', 'native-selected-point', 'native-provisional',
+                'native-provisional-point', 'native-unresolved', 'native-alternative'
               ]);
               const renderedSource = uniqueRendered([
                 'native-source-strategic', 'native-source-context'
@@ -281,7 +298,7 @@ def _inspect_native_agentic(
                 .filter(feature => strategicKinds.includes(kind(feature)) ||
                   kind(feature) === 'candidate-alternative' ||
                   departureKinds.includes(kind(feature)) || kind(feature) === 'source-baseline')
-                .filter(feature => !lineGeometry(feature))
+                .filter(feature => !renderableDecisionGeometry(feature))
                 .map(feature => feature.id || kind(feature));
               if (invalidGeometry.length) {
                 failures.push(`native line geometry is invalid: ${invalidGeometry.join(', ')}`);

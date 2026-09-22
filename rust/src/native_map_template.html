@@ -79,7 +79,8 @@ code { font-size: .9em; }
   const failure = document.getElementById('native-loading-failure');
   const detail = document.getElementById('native-feature-details');
   const interactiveLayers = [
-    'native-selected', 'native-provisional', 'native-unresolved', 'native-alternative',
+    'native-selected', 'native-selected-point', 'native-provisional', 'native-provisional-point',
+    'native-unresolved', 'native-alternative',
     'native-a-road-departure', 'native-source-departure', 'native-source-strategic',
     'native-source-context', 'native-network-place', 'native-school-context',
     'native-community-access', 'native-community-access-point', 'native-community-access-gap', 'native-access-obligation'
@@ -87,8 +88,8 @@ code { font-size: .9em; }
   const layerGroups = {
     'source-strategic': ['native-source-strategic'],
     'source-context': ['native-source-context'],
-    'selected-alignment': ['native-selected'],
-    'provisional-alignment': ['native-provisional'],
+    'selected-alignment': ['native-selected', 'native-selected-point'],
+    'provisional-alignment': ['native-provisional', 'native-provisional-point'],
     'unresolved-decision': ['native-unresolved'],
     'candidate-alternative': ['native-alternative'],
     'a-road-departure': ['native-a-road-departure'],
@@ -381,6 +382,8 @@ code { font-size: .9em; }
       line('native-unresolved', ['==', ['get', 'kind'], 'unresolved-decision'], '#7c3aed', 4, [2, 4]);
       line('native-a-road-departure', ['==', ['get', 'kind'], 'a-road-departure'], '#dc2626', 6, [10, 5]);
       line('native-source-departure', ['==', ['get', 'kind'], 'source-departure'], '#be123c', 5, [8, 5]);
+      map.addLayer({ id: 'native-selected-point', type: 'circle', source: 'native-network', filter: ['all', ['==', ['get', 'kind'], 'selected-alignment'], ['==', ['geometry-type'], 'Point']], paint: { 'circle-radius': 7, 'circle-color': '#15803d', 'circle-stroke-color': '#fff', 'circle-stroke-width': 1 } });
+      map.addLayer({ id: 'native-provisional-point', type: 'circle', source: 'native-network', filter: ['all', ['==', ['get', 'kind'], 'provisional-alignment'], ['==', ['geometry-type'], 'Point']], paint: { 'circle-radius': 7, 'circle-color': '#d97706', 'circle-stroke-color': '#fff', 'circle-stroke-width': 1 } });
       map.addLayer({ id: 'native-network-place', type: 'circle', source: 'native-network', filter: ['==', ['get', 'kind'], 'network-place'], paint: { 'circle-radius': 5, 'circle-color': '#2563eb', 'circle-stroke-color': '#fff', 'circle-stroke-width': 1 } });
       map.addLayer({ id: 'native-school-context', type: 'circle', source: 'native-network', filter: ['==', ['get', 'kind'], 'school-context'], paint: { 'circle-radius': 6, 'circle-color': '#9333ea', 'circle-stroke-color': '#fff', 'circle-stroke-width': 1 } });
       map.addLayer({ id: 'native-community-access', type: 'line', source: 'native-network', filter: ['all', ['==', ['get', 'kind'], 'community-access'], ['==', ['geometry-type'], 'LineString']], paint: { 'line-color': '#0891b2', 'line-width': 4 } });

@@ -178,6 +178,29 @@ def _coordinates(geometry: object) -> list[tuple[float, float]]:
     return values
 
 
+def _is_zero_length(value: object) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value == 0
+    )
+
+
+def _valid_on_spine_decision_point(feature: dict[str, object]) -> bool:
+    properties = feature.get("properties")
+    if not isinstance(properties, dict):
+        return False
+    community_id = properties.get("community_id")
+    return (
+        isinstance(community_id, str)
+        and bool(community_id.strip())
+        and properties.get("access_status") == "on-spine"
+        and _is_zero_length(properties.get("new_link_length_m"))
+        and _is_zero_length(properties.get("full_access_length_m"))
+    )
+
+
 def _validate_wgs84_map_artifacts(deployment: Path) -> None:
     """Reject map coordinates that cannot be handed safely to MapLibre."""
     for artifact in _files(deployment):
@@ -762,6 +785,17 @@ def _validate_native_publication_shape(
         kind = properties.get("kind") if isinstance(properties, dict) else None
         if kind in strategic_kinds or kind == "source-baseline":
             geometry = feature.get("geometry")
+            if (
+                kind in selected_kinds
+                and isinstance(geometry, dict)
+                and geometry.get("type") == "Point"
+            ):
+                if _valid_on_spine_decision_point(feature) and _coordinates(geometry):
+                    continue
+                raise ValueError(
+                    f"native {kind} feature must contain a valid on-spine decision point "
+                    "or non-empty line geometry"
+                )
             if (
                 not isinstance(geometry, dict)
                 or geometry.get("type")
