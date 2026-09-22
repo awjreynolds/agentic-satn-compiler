@@ -2,7 +2,9 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 
-use crate::compiler::{AccessObligation, Candidate, CompileReport, NetworkPlace, SchoolContext};
+use crate::compiler::{
+    AccessObligation, Candidate, CommunityAccess, CompileReport, NetworkPlace, SchoolContext,
+};
 use crate::error::Result;
 
 pub(crate) fn write_bundle(output_dir: &Path, report: &CompileReport) -> Result<()> {
@@ -59,8 +61,13 @@ fn network_geojson(report: &CompileReport) -> Value {
     for school in &report.school_context {
         features.push(school_context_feature(school));
     }
+    for access in &report.community_access {
+        features.push(community_access_feature(access));
+    }
     for obligation in &report.access_obligations {
-        if obligation.geometry.is_some() {
+        if obligation.geometry.is_some()
+            && !community_access_represents_obligation(obligation, &report.community_access)
+        {
             features.push(access_obligation_feature(obligation));
         }
     }
@@ -98,6 +105,37 @@ fn school_context_feature(school: &SchoolContext) -> Value {
     })
 }
 
+fn community_access_feature(access: &CommunityAccess) -> Value {
+    let geometry = if access.path_geometry.len() >= 2 {
+        json!({"type": "LineString", "coordinates": access.path_geometry})
+    } else {
+        json!({"type": "Point", "coordinates": access.geometry})
+    };
+    json!({
+        "type": "Feature",
+        "properties": {
+            "kind": "community-access",
+            "community_id": access.community_id,
+            "source_id": access.source_id,
+            "name": access.name,
+            "status": access.status,
+            "decision_class": access.decision_class,
+            "is_primary": access.is_primary,
+            "attachment_node": access.attachment_node,
+            "attachment_distance_m": access.attachment_distance_m,
+            "joined_spine_id": access.joined_spine_id,
+            "joined_spine_reference": access.joined_spine_reference,
+            "access_length_m": access.access_length_m,
+            "path_edge_count": access.path_edge_ids.len(),
+            "onward_destinations": access.onward_destinations,
+            "onward_benefits": access.onward_benefits,
+            "provision_status": access.provision_status,
+            "reason": access.reason
+        },
+        "geometry": geometry
+    })
+}
+
 fn access_obligation_feature(obligation: &AccessObligation) -> Value {
     json!({
         "type": "Feature",
@@ -114,6 +152,17 @@ fn access_obligation_feature(obligation: &AccessObligation) -> Value {
         },
         "geometry": {"type": "Point", "coordinates": obligation.geometry}
     })
+}
+
+fn community_access_represents_obligation(
+    obligation: &AccessObligation,
+    community_access: &[CommunityAccess],
+) -> bool {
+    !community_access.is_empty()
+        && community_access.iter().any(|access| {
+            access.is_primary
+                && obligation.id == format!("obligation:community:{}", access.community_id)
+        })
 }
 
 fn candidate_feature(candidate: &Candidate) -> Value {
@@ -153,16 +202,18 @@ svg{{width:100%;height:65vh;min-height:24rem;background:#f6f8fa;border:1px solid
 .candidate{{fill:none;stroke:#16803c;stroke-width:3}}
 .place{{fill:#7c3aed;stroke:#fff;stroke-width:1.5}}
 .school-context{{fill:#9333ea;stroke:#fff;stroke-width:1.5}}
+.community-access{{fill:none;stroke:#0891b2;stroke-width:3}}
+.community-gap{{fill:#b91c1c;stroke:#fff;stroke-width:1.5}}
 .obligation{{fill:#dc2626;stroke:#fff;stroke-width:1.5}}
 .key{{display:flex;gap:1rem;list-style:none;padding:0;flex-wrap:wrap}}
 .swatch{{display:inline-block;width:2rem;height:.35rem;vertical-align:middle;margin-right:.35rem}}
-.boundary-key{{background:#2563eb}} .source-key{{background:#4b5563}} .candidate-key{{background:#16803c}} .place-key{{background:#7c3aed}} .school-key{{background:#9333ea}} .obligation-key{{background:#dc2626}}
+.boundary-key{{background:#2563eb}} .source-key{{background:#4b5563}} .candidate-key{{background:#16803c}} .place-key{{background:#7c3aed}} .school-key{{background:#9333ea}} .community-key{{background:#0891b2}} .obligation-key{{background:#dc2626}}
 pre{{max-height:20rem;overflow:auto;background:#f6f8fa;padding:1rem}}
 </style></head>
 <body><h1>{title}</h1>
 <p>Mechanical source baseline and graph-supported candidates. Provision, safety, access and adoption remain explicit unknowns until separately evidenced.</p>
-<ul class="key"><li><span class="swatch boundary-key"></span>Governed boundary</li><li><span class="swatch source-key"></span>Governed source baseline</li><li><span class="swatch candidate-key"></span>Mechanical candidate</li><li><span class="swatch place-key"></span>Network place</li><li><span class="swatch school-key"></span>School context</li><li><span class="swatch obligation-key"></span>Access obligation</li></ul>
-<p>{source_count} source corridors · {connection_count} prepared connections · {candidate_count} generated candidates · {unknown_count} unresolved facts · {school_count} school context features</p>
+<ul class="key"><li><span class="swatch boundary-key"></span>Governed boundary</li><li><span class="swatch source-key"></span>Governed source baseline</li><li><span class="swatch candidate-key"></span>Mechanical candidate</li><li><span class="swatch place-key"></span>Network place</li><li><span class="swatch school-key"></span>School context</li><li><span class="swatch community-key"></span>Community access</li><li><span class="swatch obligation-key"></span>Access obligation</li></ul>
+<p>{source_count} source corridors · {connection_count} prepared connections · {candidate_count} generated candidates · {unknown_count} unresolved facts · {school_count} school context features · {community_access_count} community access records</p>
 <p>Accounting: {accounting_status} · {network_place_count} network places · {obligation_count} access obligations · destination profile: {destination_profile}</p>
 {svg}
 <p><a href="summary.json">Download the mechanical summary</a> · <a href="network.geojson">Download the mechanical GeoJSON</a></p>
@@ -173,6 +224,7 @@ pre{{max-height:20rem;overflow:auto;background:#f6f8fa;padding:1rem}}
         candidate_count = report.candidate_count,
         unknown_count = report.unknown_fact_count,
         school_count = report.school_context.len(),
+        community_access_count = report.community_access.len(),
         accounting_status = html_escape(&report.accounting.status),
         network_place_count = report.network_places.len(),
         obligation_count = report.access_obligations.len(),
@@ -198,8 +250,17 @@ fn render_svg(report: &CompileReport) -> String {
     for school in &report.school_context {
         coordinates.push(school.geometry);
     }
+    for access in &report.community_access {
+        coordinates.extend(access.path_geometry.iter().copied());
+        if access.path_geometry.is_empty() {
+            coordinates.push(access.geometry);
+        }
+    }
     for obligation in &report.access_obligations {
         if let Some(point) = obligation.geometry {
+            if community_access_represents_obligation(obligation, &report.community_access) {
+                continue;
+            }
             coordinates.push(point);
         }
     }
@@ -284,7 +345,40 @@ fn render_svg(report: &CompileReport) -> String {
             html_escape(&school.name)
         ));
     }
+    for access in &report.community_access {
+        if access.path_geometry.len() >= 2 {
+            elements.push(format!(
+                "<polyline class=\"community-access\" points=\"{}\" aria-label=\"Community access {} to {}\" />",
+                access
+                    .path_geometry
+                    .iter()
+                    .copied()
+                    .map(project)
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                html_escape(&access.name),
+                html_escape(access.joined_spine_reference.as_deref().unwrap_or("strategic spine"))
+            ));
+        } else {
+            let point = project(access.geometry);
+            elements.push(format!(
+                "<circle class=\"{}\" cx=\"{}\" cy=\"{}\" r=\"5\" aria-label=\"Community access {} {}\" />",
+                if access.status == "network-gap" {
+                    "community-gap"
+                } else {
+                    "community-access"
+                },
+                point.split_once(',').map(|(x, _)| x).unwrap_or("0"),
+                point.split_once(',').map(|(_, y)| y).unwrap_or("0"),
+                html_escape(&access.name),
+                html_escape(&access.status)
+            ));
+        }
+    }
     for obligation in &report.access_obligations {
+        if community_access_represents_obligation(obligation, &report.community_access) {
+            continue;
+        }
         let Some(point) = obligation.geometry else {
             continue;
         };

@@ -153,7 +153,7 @@ fn accounts_strategic_baseline_places_and_school_gaps() {
     assert_eq!(school.source_id, "school-source-1");
     assert_eq!(school.name, "Alpha School");
     assert!(!school.school_obligation_eligible);
-    assert_eq!(report.access_obligations.len(), 3);
+    assert_eq!(report.access_obligations.len(), 1);
     assert_eq!(
         report
             .access_obligations
@@ -166,7 +166,13 @@ fn accounts_strategic_baseline_places_and_school_gaps() {
         report
             .access_obligations
             .iter()
-            .any(|obligation| { obligation.id == "obligation:community:community-c" })
+            .any(|obligation| obligation.id == "obligation:community:community-c")
+    );
+    assert!(
+        !report
+            .access_obligations
+            .iter()
+            .any(|obligation| obligation.id == "obligation:community:community-a")
     );
     assert_eq!(report.destination_profile, "unconfigured");
     assert_eq!(report.attribution, "OSM and NCN attribution");
@@ -182,18 +188,27 @@ fn accounts_strategic_baseline_places_and_school_gaps() {
     assert!(network.contains("source-baseline"));
     assert!(network.contains("source_geometry_part"));
     assert!(!network.contains("source_edge_ids"));
-    assert!(network.contains("access-obligation"));
+    assert!(network.contains("community-access"));
+    assert!(!network.contains("access-obligation"));
     assert!(network.contains("school-context"));
     assert!(network.contains("network-place"));
     let network_json: Value = serde_json::from_str(&network).expect("valid GeoJSON");
-    let access_feature = network_json["features"]
+    let community_feature = network_json["features"]
         .as_array()
         .expect("features")
         .iter()
-        .find(|feature| feature["properties"]["kind"] == "access-obligation")
-        .expect("access obligation feature");
-    assert_eq!(access_feature["geometry"]["type"], "Point");
-    assert!(access_feature["geometry"]["coordinates"].is_array());
+        .find(|feature| feature["properties"]["kind"] == "community-access")
+        .expect("community access feature");
+    assert_eq!(community_feature["properties"]["status"], "on-spine");
+    assert_eq!(community_feature["geometry"]["type"], "Point");
+    assert!(community_feature["geometry"]["coordinates"].is_array());
+    assert!(
+        !network_json["features"]
+            .as_array()
+            .expect("features")
+            .iter()
+            .any(|feature| feature["properties"]["kind"] == "access-obligation")
+    );
     let school_feature = network_json["features"]
         .as_array()
         .expect("features")
@@ -209,7 +224,7 @@ fn accounts_strategic_baseline_places_and_school_gaps() {
     assert!(map.contains("Access obligation"));
     assert!(map.contains("School context"));
     assert!(map.contains("class=\"place\""));
-    assert!(map.contains("class=\"obligation\""));
+    assert!(map.contains("class=\"community-access\""));
 }
 
 fn edge(

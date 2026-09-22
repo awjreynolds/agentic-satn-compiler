@@ -17,9 +17,25 @@ pub(crate) struct GraphEdge {
     pub reference: Option<String>,
     pub highways: Vec<String>,
     pub references: Vec<String>,
+    pub bicycle: Option<String>,
+    pub access: Option<String>,
     pub ncn: bool,
     pub cycle_alignment_bases: Vec<String>,
     pub geometry: Vec<[f64; 2]>,
+}
+
+impl GraphEdge {
+    pub(crate) fn cycling_allowed(&self) -> bool {
+        if let Some(bicycle) = &self.bicycle {
+            if explicitly_denied(bicycle) {
+                return false;
+            }
+            if explicitly_permitted(bicycle) {
+                return true;
+            }
+        }
+        !self.access.as_deref().is_some_and(explicitly_denied)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -32,6 +48,8 @@ pub(crate) struct Route {
     pub ncn_length_m: f64,
     pub cycle_alignment_bases: Vec<String>,
     pub geometry: Vec<[f64; 2]>,
+    pub(crate) edge_indices: Vec<usize>,
+    pub(crate) nodes: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -115,6 +133,8 @@ impl Graph {
                 reference: references.first().cloned(),
                 highways,
                 references,
+                bicycle: string_property(&feature.properties, "bicycle"),
+                access: string_property(&feature.properties, "access"),
                 ncn: edge_evidence.ncn,
                 cycle_alignment_bases: edge_evidence.cycle_alignment_bases,
                 geometry: geometry.clone(),
@@ -145,10 +165,24 @@ impl Graph {
     }
 
     pub(crate) fn route(&self, start: &str, end: &str, role: &str) -> Option<Route> {
-        let mut distances: HashMap<&str, f64> = HashMap::new();
-        let mut previous: HashMap<&str, (String, usize)> = HashMap::new();
+        self.route_internal(start, end, role, false)
+    }
+
+    pub(crate) fn cycling_route(&self, start: &str, end: &str) -> Option<Route> {
+        self.route_internal(start, end, "direct", true)
+    }
+
+    fn route_internal(
+        &self,
+        start: &str,
+        end: &str,
+        role: &str,
+        respect_access: bool,
+    ) -> Option<Route> {
+        let mut distances: HashMap<String, f64> = HashMap::new();
+        let mut previous: HashMap<String, (String, usize)> = HashMap::new();
         let mut queue = BinaryHeap::new();
-        distances.insert(start, 0.0);
+        distances.insert(start.to_string(), 0.0);
         queue.push(QueueEntry {
             distance: 0.0,
             node: start.to_string(),
@@ -163,10 +197,13 @@ impl Graph {
             }
             for edge_index in self.outgoing.get(&node).into_iter().flatten() {
                 let edge = &self.edges[*edge_index];
+                if respect_access && !edge.cycling_allowed() {
+                    continue;
+                }
                 let next_distance = distance + route_weight(edge, role);
-                if next_distance < *distances.get(edge.to.as_str()).unwrap_or(&f64::INFINITY) {
-                    distances.insert(&edge.to, next_distance);
-                    previous.insert(&edge.to, (node.clone(), *edge_index));
+                if next_distance < *distances.get(&edge.to).unwrap_or(&f64::INFINITY) {
+                    distances.insert(edge.to.clone(), next_distance);
+                    previous.insert(edge.to.clone(), (node.clone(), *edge_index));
                     queue.push(QueueEntry {
                         distance: next_distance,
                         node: edge.to.clone(),
@@ -175,17 +212,107 @@ impl Graph {
             }
         }
 
+        self.route_from_search(start, end, &distances, &previous)
+    }
+
+    /// Return the shortest measured-length route from `start` to the first node
+    /// belonging to an admitted strategic spine.  The search stops at the
+    /// node, so the returned geometry never draws a synthetic or spine-edge
+    /// segment as part of the access connection.
+    pub(crate) fn route_to_targets(
+        &self,
+        start: &str,
+        target_nodes: &HashMap<String, String>,
+    ) -> Option<(Route, String)> {
+        let mut distances: HashMap<String, f64> = HashMap::new();
+        let mut previous: HashMap<String, (String, usize)> = HashMap::new();
+        let mut queue = BinaryHeap::new();
+        distances.insert(start.to_string(), 0.0);
+        queue.push(QueueEntry {
+            distance: 0.0,
+            node: start.to_string(),
+        });
+
+        while let Some(QueueEntry { distance, node }) = queue.pop() {
+            if distance > *distances.get(&node).unwrap_or(&f64::INFINITY) {
+                continue;
+            }
+            if let Some(spine_id) = target_nodes.get(&node) {
+                let route = self.route_from_search(start, &node, &distances, &previous)?;
+                return Some((route, spine_id.clone()));
+            }
+            for edge_index in self.outgoing.get(&node).into_iter().flatten() {
+                let edge = &self.edges[*edge_index];
+                if !edge.cycling_allowed() {
+                    continue;
+                }
+                let next_distance = distance + edge.length_m;
+                if next_distance < *distances.get(&edge.to).unwrap_or(&f64::INFINITY) {
+                    distances.insert(edge.to.clone(), next_distance);
+                    previous.insert(edge.to.clone(), (node.clone(), *edge_index));
+                    queue.push(QueueEntry {
+                        distance: next_distance,
+                        node: edge.to.clone(),
+                    });
+                }
+            }
+        }
+        None
+    }
+
+    pub(crate) fn prefix_route(&self, route: &Route, edge_count: usize) -> Route {
+        let edge_count = edge_count.min(route.edge_indices.len());
+        let indices = route.edge_indices[..edge_count].to_vec();
+        let nodes = route.nodes[..=edge_count].to_vec();
+        let search_cost_m = indices
+            .iter()
+            .map(|index| self.edges[*index].length_m)
+            .sum();
+        self.route_from_indices(&indices, search_cost_m, nodes)
+    }
+
+    pub(crate) fn nearest_node_with_distance(&self, point: [f64; 2]) -> Option<(String, f64)> {
+        self.node_points
+            .iter()
+            .map(|(id, node_point)| (id.clone(), haversine_m(*node_point, point)))
+            .min_by(|(left_id, left_distance), (right_id, right_distance)| {
+                left_distance
+                    .partial_cmp(right_distance)
+                    .unwrap_or(Ordering::Equal)
+                    .then_with(|| left_id.cmp(right_id))
+            })
+    }
+
+    fn route_from_search(
+        &self,
+        start: &str,
+        end: &str,
+        distances: &HashMap<String, f64>,
+        previous: &HashMap<String, (String, usize)>,
+    ) -> Option<Route> {
         if !distances.contains_key(end) {
             return None;
         }
         let mut edge_indices = Vec::new();
         let mut cursor = end.to_string();
+        let mut nodes = vec![cursor.clone()];
         while cursor != start {
             let (previous_node, edge_index) = previous.get(cursor.as_str())?.clone();
             edge_indices.push(edge_index);
             cursor = previous_node;
+            nodes.push(cursor.clone());
         }
         edge_indices.reverse();
+        nodes.reverse();
+        Some(self.route_from_indices(&edge_indices, *distances.get(end).unwrap_or(&0.0), nodes))
+    }
+
+    fn route_from_indices(
+        &self,
+        edge_indices: &[usize],
+        search_cost_m: f64,
+        nodes: Vec<String>,
+    ) -> Route {
         let edge_ids = edge_indices
             .iter()
             .map(|index| self.edges[*index].id.clone())
@@ -214,7 +341,7 @@ impl Graph {
             .map(|index| self.edges[*index].length_m)
             .sum::<f64>();
         let mut cycle_alignment_bases = BTreeSet::new();
-        for index in &edge_indices {
+        for index in edge_indices {
             cycle_alignment_bases.extend(self.edges[*index].cycle_alignment_bases.iter().cloned());
         }
         let mut geometry = Vec::new();
@@ -226,16 +353,18 @@ impl Graph {
                 geometry.extend(edge_geometry.iter().skip(1).copied());
             }
         }
-        Some(Route {
+        Route {
             edge_ids,
             edge_geometries,
             length_m,
-            search_cost_m: *distances.get(end).unwrap_or(&0.0),
+            search_cost_m,
             a_road_length_m,
             ncn_length_m,
             cycle_alignment_bases: cycle_alignment_bases.into_iter().collect(),
             geometry,
-        })
+            edge_indices: edge_indices.to_vec(),
+            nodes,
+        }
     }
 
     pub(crate) fn nearest_node(&self, point: [f64; 2]) -> Option<String> {
@@ -333,6 +462,17 @@ fn route_weight(edge: &GraphEdge, role: &str) -> f64 {
 
 fn has_a_road_reference(value: &str) -> bool {
     value.trim().to_ascii_uppercase().starts_with('A')
+}
+
+fn explicitly_denied(value: &str) -> bool {
+    matches!(value.trim().to_ascii_lowercase().as_str(), "no" | "private")
+}
+
+fn explicitly_permitted(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "yes" | "designated" | "permissive" | "destination"
+    )
 }
 
 fn is_low_traffic(value: &str) -> bool {
