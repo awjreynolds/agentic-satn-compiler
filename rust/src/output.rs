@@ -123,6 +123,8 @@ fn community_access_feature(access: &CommunityAccess) -> Value {
             "is_primary": access.is_primary,
             "attachment_node": access.attachment_node,
             "attachment_distance_m": access.attachment_distance_m,
+            "attachment_edge_id": access.attachment_edge_id,
+            "attachment_point": access.attachment_point,
             "joined_spine_id": access.joined_spine_id,
             "joined_spine_reference": access.joined_spine_reference,
             "access_length_m": access.access_length_m,

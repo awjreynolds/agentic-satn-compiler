@@ -69,6 +69,9 @@ journey to a named urban destination is shorter than going through the primary
 entry; retain that comparison and deduplicate shared access paths. Do not impose
 two connections, cardinal directions, guessed travel speeds or new route weights.
 The onward graph journey may leave the spine, so it is not a claim of continuous
-spine-only provision. A community reference-point attachment is explicitly inferred
-and retains its offset; no synthetic segment or observed entrance is invented.
-Unreachable access stays a gap, and current provision remains unknown.
+spine-only provision. Attach a community reference point to the closest source-edge
+geometry, including edge interiors, and retain the inferred position and offset.
+Continue along permitted directed edges with their partial measured lengths; do
+not substitute a farther edge merely because it reaches the spine. No synthetic
+point-to-road segment or observed entrance is invented. Unreachable access stays
+a gap, and current provision remains unknown.

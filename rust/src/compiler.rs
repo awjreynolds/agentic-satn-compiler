@@ -12,7 +12,7 @@ use crate::geojson::{
     Feature, Geometry, canonical_tag_values, read_feature_collection, string_property,
 };
 use crate::geometry::enrich_network_edges;
-use crate::graph::{Graph, GraphEdge, Route};
+use crate::graph::{EdgeAttachment, Graph, GraphEdge, Route};
 use crate::output::write_bundle;
 
 #[derive(Debug, Clone, Default)]
@@ -91,6 +91,10 @@ pub struct CommunityAccess {
     pub decision_class: String,
     pub is_primary: bool,
     pub attachment_node: Option<String>,
+    #[serde(default)]
+    pub attachment_edge_id: Option<String>,
+    #[serde(default)]
+    pub attachment_point: Option<[f64; 2]>,
     pub attachment_distance_m: Option<f64>,
     pub joined_spine_id: Option<String>,
     pub access_length_m: Option<f64>,
@@ -912,39 +916,31 @@ fn build_community_access(
     graph: &Graph,
     source_inventory: &[SourceCorridor],
 ) -> Vec<CommunityAccess> {
-    let target_nodes = strategic_spine_target_nodes(graph, source_inventory);
+    let (target_nodes, target_edges) = strategic_spine_targets(graph, source_inventory);
     let mut records = Vec::new();
     for place in network_places
         .iter()
         .filter(|place| is_rural_community(place))
     {
-        let Some((attachment_node, attachment_distance_m)) =
-            graph.nearest_node_with_distance(place.geometry)
-        else {
+        let Some(attachment) = graph.nearest_edge_attachment(place.geometry) else {
             records.push(community_access_gap(
                 place,
                 None,
-                None,
-                "No graph node is available for the inferred community attachment.",
+                "No graph edge is available for the inferred community attachment.",
             ));
             continue;
         };
         let Some((primary_route, joined_spine_id)) =
-            graph.route_to_targets(&attachment_node, &target_nodes)
+            graph.route_from_attachment_to_targets(&attachment, &target_nodes, &target_edges)
         else {
             records.push(community_access_gap(
                 place,
-                Some(attachment_node),
-                Some(attachment_distance_m),
+                Some(&attachment),
                 "No reachable admitted strategic spine exists after explicit bicycle/access restrictions.",
             ));
             continue;
         };
-        let entry_node = primary_route
-            .nodes
-            .last()
-            .cloned()
-            .unwrap_or_else(|| attachment_node.clone());
+        let entry_node = primary_route.nodes.last().cloned().unwrap_or_default();
         let status = if primary_route.edge_ids.is_empty() {
             "on-spine"
         } else {
@@ -958,8 +954,10 @@ fn build_community_access(
             status: status.to_string(),
             decision_class: "mechanical".to_string(),
             is_primary: true,
-            attachment_node: Some(attachment_node.clone()),
-            attachment_distance_m: Some(attachment_distance_m),
+            attachment_node: attachment.node.clone(),
+            attachment_edge_id: Some(attachment.edge_id.clone()),
+            attachment_point: Some(attachment.point),
+            attachment_distance_m: Some(attachment.distance_m),
             joined_spine_id: Some(joined_spine_id.clone()),
             access_length_m: Some(primary_route.length_m),
             path_edge_ids: primary_route.edge_ids.clone(),
@@ -992,7 +990,9 @@ fn build_community_access(
             let Some(destination_node) = graph.nearest_node(destination.point) else {
                 continue;
             };
-            let Some(full_route) = graph.cycling_route(&attachment_node, &destination_node) else {
+            let Some(full_route) =
+                graph.cycling_route_from_attachment(&attachment, &destination_node)
+            else {
                 continue;
             };
             let Some((prefix, alternate_spine_id, alternate_entry_node)) =
@@ -1044,8 +1044,10 @@ fn build_community_access(
                 status: "served".to_string(),
                 decision_class: "mechanical".to_string(),
                 is_primary: false,
-                attachment_node: Some(attachment_node.clone()),
-                attachment_distance_m: Some(attachment_distance_m),
+                attachment_node: attachment.node.clone(),
+                attachment_edge_id: Some(attachment.edge_id.clone()),
+                attachment_point: Some(attachment.point),
+                attachment_distance_m: Some(attachment.distance_m),
                 joined_spine_id: Some(joined_spine_id.clone()),
                 access_length_m: Some(route.length_m),
                 path_edge_ids: route.edge_ids,
@@ -1074,8 +1076,7 @@ fn build_community_access(
 
 fn community_access_gap(
     place: &NetworkPlace,
-    attachment_node: Option<String>,
-    attachment_distance_m: Option<f64>,
+    attachment: Option<&EdgeAttachment>,
     reason: &str,
 ) -> CommunityAccess {
     CommunityAccess {
@@ -1086,8 +1087,10 @@ fn community_access_gap(
         status: "network-gap".to_string(),
         decision_class: "mechanical".to_string(),
         is_primary: true,
-        attachment_node,
-        attachment_distance_m,
+        attachment_node: attachment.and_then(|value| value.node.clone()),
+        attachment_edge_id: attachment.map(|value| value.edge_id.clone()),
+        attachment_point: attachment.map(|value| value.point),
+        attachment_distance_m: attachment.map(|value| value.distance_m),
         joined_spine_id: None,
         access_length_m: None,
         path_edge_ids: Vec::new(),
@@ -1116,10 +1119,10 @@ fn is_rural_community(place: &NetworkPlace) -> bool {
     matches!(place.place_class.as_str(), "village" | "hamlet")
 }
 
-fn strategic_spine_target_nodes(
+fn strategic_spine_targets(
     graph: &Graph,
     source_inventory: &[SourceCorridor],
-) -> HashMap<String, String> {
+) -> (HashMap<String, String>, HashMap<String, String>) {
     let mut edge_spines: HashMap<String, BTreeSet<String>> = HashMap::new();
     for source in source_inventory.iter().filter(|source| {
         matches!(
@@ -1138,24 +1141,31 @@ fn strategic_spine_target_nodes(
                 .insert(source.id.clone());
         }
     }
+    let edge_spines = edge_spines
+        .into_iter()
+        .map(|(edge_id, spines)| (edge_id, spines.into_iter().collect::<Vec<_>>().join("+")))
+        .collect::<HashMap<_, _>>();
     let mut node_spines: HashMap<String, BTreeSet<String>> = HashMap::new();
     for edge in &graph.edges {
         let Some(spines) = edge_spines.get(&edge.id) else {
             continue;
         };
-        node_spines
-            .entry(edge.from.clone())
-            .or_default()
-            .extend(spines.iter().cloned());
-        node_spines
-            .entry(edge.to.clone())
-            .or_default()
-            .extend(spines.iter().cloned());
+        for spine in spines.split('+') {
+            node_spines
+                .entry(edge.from.clone())
+                .or_default()
+                .insert(spine.to_string());
+            node_spines
+                .entry(edge.to.clone())
+                .or_default()
+                .insert(spine.to_string());
+        }
     }
-    node_spines
+    let node_spines = node_spines
         .into_iter()
         .map(|(node, spines)| (node, spines.into_iter().collect::<Vec<_>>().join("+")))
-        .collect()
+        .collect();
+    (node_spines, edge_spines)
 }
 
 fn first_spine_prefix(

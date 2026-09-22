@@ -128,6 +128,12 @@ code { font-size: .9em; }
     if (!Number.isFinite(metres)) return '';
     return metres >= 1000 ? (metres / 1000).toFixed(1) + ' km' : Math.round(metres) + ' m';
   };
+  const formatSaving = value => {
+    if (value === null || value === undefined || value === '') return '';
+    const metres = Number(value);
+    if (!Number.isFinite(metres)) return '';
+    return metres >= 1000 ? (metres / 1000).toFixed(2) + ' km' : metres.toFixed(2) + ' m';
+  };
   const formatBenefits = value => {
     const normalized = normalizedValue(value);
     if (!Array.isArray(normalized)) return '';
@@ -135,8 +141,13 @@ code { font-size: .9em; }
       if (!item || typeof item !== 'object') return String(item ?? '');
       const full = formatDistance(item.full_route_length_m);
       const primary = formatDistance(item.primary_access_plus_onward_m);
+      const primaryMetres = Number(item.primary_access_plus_onward_m);
+      const fullMetres = Number(item.full_route_length_m);
+      const saving = Number.isFinite(primaryMetres) && Number.isFinite(fullMetres)
+        ? formatSaving(primaryMetres - fullMetres)
+        : '';
       const comparison = primary
-        ? 'complete ' + full + '; primary + onward ' + primary
+        ? 'complete ' + full + '; primary + onward ' + primary + (saving ? '; saving ' + saving : '')
         : 'complete ' + full + '; primary onward unavailable';
       return (item.destination_name || 'Destination') + ': ' + comparison;
     }).filter(Boolean).join('; ');
@@ -159,6 +170,7 @@ code { font-size: .9em; }
       add('Access status', props.status);
       add('Access role', props.is_primary ? 'Primary spine access' : 'Additional destination access');
       add('Joined spine', props.joined_spine_reference || props.joined_spine_id);
+      add('Attachment edge', props.attachment_edge_id);
       add('Attachment offset', formatDistance(props.attachment_distance_m));
       add('Access distance', formatDistance(props.access_length_m));
       add('Onward destination', props.onward_destinations);

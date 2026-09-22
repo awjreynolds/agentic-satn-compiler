@@ -122,6 +122,14 @@ fn publishes_compact_decision_map_with_real_departure_sections() {
         community_access["properties"]["decision_class"],
         "mechanical"
     );
+    assert_eq!(
+        community_access["properties"]["attachment_edge_id"],
+        "edge-access"
+    );
+    assert_eq!(
+        community_access["properties"]["attachment_point"],
+        serde_json::json!([0.0, 0.0])
+    );
     assert_eq!(community_access["geometry"]["type"], "LineString");
     let school = features
         .iter()
@@ -407,6 +415,8 @@ fn report_fixture() -> CompileReport {
             decision_class: "mechanical".to_string(),
             is_primary: true,
             attachment_node: Some("node-village".to_string()),
+            attachment_edge_id: Some("edge-access".to_string()),
+            attachment_point: Some([0.0, 0.0]),
             attachment_distance_m: Some(12.0),
             joined_spine_id: Some("source:a-road".to_string()),
             access_length_m: Some(120.0),

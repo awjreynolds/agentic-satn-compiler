@@ -287,6 +287,91 @@ fn rural_access_uses_measured_graph_paths_and_exposes_gaps_without_routing_schoo
     );
 }
 
+#[test]
+fn rural_access_attaches_to_nearest_edge_interior_with_measured_partial_length() {
+    let root = tempfile_root("satn-rs-rural-edge-attachment");
+    let snapshot = root.join("snapshot");
+    fs::create_dir_all(&snapshot).expect("snapshot directory");
+    fs::write(
+        root.join("area.yaml"),
+        format!(
+            "area_id: fixture\narea_name: Fixture\nsource:\n  snapshot_dir: {}\n  snapshot_id: snapshot\n  community_place_types: [village, town]\ncompilation:\n  max_connection_km: 15\n",
+            root.display()
+        ),
+    )
+    .expect("area config");
+
+    let mut edges = Vec::new();
+    add_bidirectional(
+        &mut edges,
+        "west",
+        "east",
+        [0.0, 0.0],
+        [0.01, 0.0],
+        1_000.0,
+        "residential",
+        None,
+        None,
+    );
+    add_bidirectional(
+        &mut edges,
+        "east",
+        "spine",
+        [0.01, 0.0],
+        [0.02, 0.0],
+        10.0,
+        "primary",
+        Some("A4"),
+        None,
+    );
+    add_bidirectional(
+        &mut edges,
+        "spur",
+        "spur-end",
+        [0.0055, 0.00048],
+        [0.0056, 0.00048],
+        4.0,
+        "service",
+        None,
+        None,
+    );
+    write_collection(&snapshot.join("network.geojson"), edges);
+    write_collection(
+        &snapshot.join("places.geojson"),
+        vec![place(
+            "edge-community",
+            "Edge Community",
+            "village",
+            [0.005, 0.00048],
+        )],
+    );
+
+    let report = compile(
+        &root.join("area.yaml"),
+        &root.join("output"),
+        CompileOptions::default(),
+    )
+    .expect("edge attachment fixture compiles");
+    let access = report
+        .community_access
+        .iter()
+        .find(|access| access.community_id == "edge-community" && access.is_primary)
+        .expect("primary edge attachment");
+
+    assert_eq!(access.status, "served");
+    assert_eq!(access.access_length_m, Some(500.0));
+    assert!(
+        access
+            .attachment_distance_m
+            .is_some_and(|distance| distance < 56.0)
+    );
+    assert_eq!(access.attachment_point, Some([0.005, 0.0]));
+    assert_eq!(access.path_geometry.first(), Some(&[0.005, 0.0]));
+    assert_ne!(access.path_geometry.first(), Some(&[0.005, 0.00048]));
+    assert!(access.attachment_edge_id.is_some());
+    assert_eq!(access.attachment_node, None);
+}
+
 fn place(id: &str, name: &str, class: &str, point: [f64; 2]) -> Value {
     json!({
         "type":"Feature",
