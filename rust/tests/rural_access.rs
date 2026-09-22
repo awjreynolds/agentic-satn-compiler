@@ -116,12 +116,12 @@ fn prepared_rural_planner_caches_offer_and_accepts_only_offered_path() {
         first
             .candidates
             .iter()
-            .any(|candidate| candidate.criterion == "low-climbing")
+            .any(|candidate| candidate.criterion == "least-climbing-detour")
     );
     let chosen = first
         .candidates
         .iter()
-        .find(|candidate| candidate.criterion == "low-climbing")
+        .find(|candidate| candidate.criterion == "least-climbing-detour")
         .expect("supported flatter candidate");
     let shortest = first
         .candidates

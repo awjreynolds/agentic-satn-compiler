@@ -1208,8 +1208,8 @@ impl<'a> RuralAccessPlanner<'a> {
                 let planned = self.plan_candidate(
                     &alternate,
                     &pending.place,
-                    "low-climbing",
-                    "Supported edge-exclusion alternative has the least measured full-journey elevation variation among the distinct edge-exclusion paths offered in this turn.",
+                    "least-climbing-detour",
+                    "Best generated edge-exclusion detour by measured full-journey elevation variation; the shortest baseline is reported separately.",
                 );
                 if planned
                     .access

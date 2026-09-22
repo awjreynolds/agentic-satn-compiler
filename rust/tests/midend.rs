@@ -774,6 +774,11 @@ impl ChoiceProvider for RuralChoiceJev {
                 .as_str()
                 .is_some_and(|brief| brief.contains("rural community access"))
         );
+        let brief = request.instructions.as_str().expect("rural policy brief");
+        assert!(brief.contains("minimise unnecessary added feeder network"));
+        assert!(brief.contains("comfortable complete child-to-spine journey"));
+        assert!(brief.contains("missing numeric weights alone do not require abstention"));
+        assert!(brief.contains("unsupported"));
         for marker in ["__unknown__", "__needs_evidence__", "__none__"] {
             assert!(request.options.contains_key(marker));
         }
@@ -848,6 +853,9 @@ impl SpecialistProvider for RuralSpecialist {
         assert!(prompt.contains("select-community-access"));
         assert!(!prompt.contains("\"offer\""));
         assert!(!prompt.contains("\"prior_decisions\""));
+        assert!(prompt.contains("minimise unnecessary added feeder network"));
+        assert!(prompt.contains("missing numeric weights alone do not require abstention"));
+        assert!(prompt.contains("material uncertainties"));
         SpecialistAttempt {
             response: Some(self.response.clone()),
             receipt: receipt("codex-exec", "gpt-5.6-luna", &self.response.to_string()),
