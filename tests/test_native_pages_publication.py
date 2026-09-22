@@ -150,6 +150,8 @@ def _write_native_bundle(
                     "unresolved_facts": 0,
                     "access_obligations": 0,
                     "unresolved_access": 0,
+                    "community_access": 0,
+                    "community_gaps": 0,
                 },
                 "files": {
                     "geojson": "decision-map.geojson",
@@ -214,6 +216,8 @@ def _write_native_bundle(
                     "unresolved_facts": 0,
                     "access_obligations": 0,
                     "unresolved_access": 0,
+                    "community_access": 0,
+                    "community_gaps": 0,
                 },
                 "files": {
                     "geojson": "decision-map.geojson",
@@ -267,6 +271,29 @@ def test_package_pages_accepts_the_explicit_native_agentic_publication(tmp_path:
     entry = public_catalogue["deployments"][0]
     assert entry["publication_kind"] == "native-agentic"
     assert entry["artifacts"]["network_geojson"].endswith("decision-map.geojson")
+
+
+def test_package_pages_accepts_legacy_native_decision_counts(tmp_path: Path) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    _write_native_catalogue(catalogue)
+    _write_native_bundle(bundles)
+    bundle = bundles / "native-area"
+    for filename in ("publication.json", "decision-map.json"):
+        path = bundle / filename
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["counts"].pop("community_access")
+        document["counts"].pop("community_gaps")
+        path.write_text(json.dumps(document), encoding="utf-8")
+
+    result = package_pages(
+        catalogue,
+        bundles,
+        tmp_path / "pages",
+        tmp_path / "satn-pages.zip",
+    )
+
+    assert (result.pages_directory / "deployments" / "native-area" / "publication.json").is_file()
 
 
 @pytest.mark.browser
