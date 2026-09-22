@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 from satn.deployment import DEFERRED_GROUPS
 
 if TYPE_CHECKING:
-    from satn.deployment_catalogue import DeploymentCatalogue
+    from satn.deployment_catalogue import DeploymentCatalogue, DeploymentEntry
 
 GITHUB_PAGES_LIMIT_BYTES = 1_000_000_000
 DEFAULT_MAXIMUM_BYTES = 950_000_000
@@ -558,6 +558,277 @@ def _validate_publication_shape(
     _validate_progressive_manifests(deployment, publication)
 
 
+def _native_nonnegative_int(publication: dict[str, Any], field: str) -> int:
+    value = publication.get(field)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ValueError(f"native publication {field} must be a non-negative integer")
+    return value
+
+
+def _validate_native_publication_shape(
+    deployment: Path,
+    deployment_id: str,
+    *,
+    expected_area_id: str,
+) -> None:
+    """Validate the compact public contract emitted by the native Rust map."""
+
+    publication_path = deployment / "publication.json"
+    if not publication_path.is_file():
+        raise ValueError(f"generated deployment {deployment_id} is missing publication.json")
+    publication = _json_object(publication_path, "native deployment publication")
+    required_publication_fields = {
+        "schema",
+        "publication_kind",
+        "deployment_id",
+        "area_id",
+        "snapshot_id",
+        "branch",
+        "base_id",
+        "status",
+        "run_status",
+        "accounting_status",
+        "disclaimer",
+        "counts",
+        "files",
+    }
+    if not required_publication_fields <= set(publication):
+        raise ValueError("native publication fields must match the shared public contract")
+    if {
+        "decision_count",
+        "selected_count",
+        "provisional_count",
+        "unresolved_count",
+        "departure_count",
+    }.intersection(publication):
+        raise ValueError("native publication must keep counts nested under counts")
+    if publication.get("schema") != "satn-rust-publication/v1":
+        raise ValueError(f"native publication schema is invalid: {publication_path}")
+    if publication.get("publication_kind") != "native-agentic":
+        raise ValueError(f"native publication kind is invalid: {publication_path}")
+    if publication.get("deployment_id") != deployment_id:
+        raise ValueError(
+            "native deployment publication identity does not match catalogue deployment_id: "
+            f"{publication_path}"
+        )
+    area_id = _nonblank_text(publication.get("area_id"), "native publication area_id")
+    if area_id != expected_area_id:
+        raise ValueError(
+            "native deployment publication area_id does not match catalogue area_id: "
+            f"{publication_path}"
+        )
+    _nonblank_text(publication.get("status"), "native publication status")
+    _nonblank_text(publication.get("branch"), "native publication branch")
+    _nonblank_text(publication.get("snapshot_id"), "native publication snapshot_id")
+    _nonblank_text(publication.get("base_id"), "native publication base_id")
+    _nonblank_text(publication.get("run_status"), "native publication run_status")
+    _nonblank_text(publication.get("accounting_status"), "native publication accounting_status")
+    if publication.get("disclaimer") != DISCLAIMER:
+        raise ValueError(
+            f"native deployment publication disclaimer does not match: {publication_path}"
+        )
+    files = publication.get("files")
+    if not isinstance(files, dict):
+        raise ValueError("native publication files must be an object")
+    expected_file_fields = {"geojson", "details", "html", "publication"}
+    if set(files) != expected_file_fields:
+        raise ValueError("native publication files must contain exactly the public four-file set")
+    for field in expected_file_fields:
+        if field not in files or files[field] is None:
+            raise ValueError(f"native publication files.{field} is required")
+    declared_paths: dict[str, Path] = {}
+    for field, value in files.items():
+        if value is None:
+            continue
+        declared_paths[field] = _relative_file_path(value, f"native publication files.{field}")
+        path = deployment / declared_paths[field]
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"native deployment {deployment_id} is missing {field}: {path}")
+    network_url = declared_paths["geojson"]
+    summary_url = declared_paths["details"]
+    html_url = declared_paths["html"]
+    if {
+        "geojson": network_url,
+        "details": summary_url,
+        "html": html_url,
+        "publication": declared_paths["publication"],
+    } != {
+        "geojson": Path("decision-map.geojson"),
+        "details": Path("decision-map.json"),
+        "html": Path("index.html"),
+        "publication": Path("publication.json"),
+    }:
+        raise ValueError("native publication files must use the canonical public filenames")
+    network_path = deployment / network_url
+    summary_path = deployment / summary_url
+    if network_path.suffix.lower() != ".geojson":
+        raise ValueError("native publication files.geojson must name a GeoJSON file")
+    features = _feature_collection(network_path, "native decision map")
+    summary = _json_object(summary_path, "native decision summary")
+    if summary.get("schema") != "satn-rust-decision-map/v1":
+        raise ValueError("native decision summary schema is unsupported")
+    branch = _nonblank_text(publication.get("branch"), "native publication branch")
+    if summary.get("branch") != branch:
+        raise ValueError("native decision summary branch does not match publication")
+    if any(field in summary for field in ("history", "raw_history", "receipt")):
+        raise ValueError("native decision summary must not expose raw history")
+
+    counts = publication.get("counts")
+    if not isinstance(counts, dict):
+        raise ValueError("native publication counts must be an object")
+    expected_count_fields = {
+        "source_baseline",
+        "prepared_connections",
+        "pending_connections",
+        "connections",
+        "candidates",
+        "decisions",
+        "selected",
+        "provisional",
+        "unresolved",
+        "departures",
+        "unresolved_facts",
+        "access_obligations",
+        "unresolved_access",
+    }
+    if set(counts) != expected_count_fields:
+        raise ValueError("native publication counts must match DecisionMapCounts")
+    declared_counts = {
+        field: _native_nonnegative_int(counts, field) for field in expected_count_fields
+    }
+    kinds = {
+        str(feature.get("properties", {}).get("kind"))
+        for feature in features
+        if isinstance(feature.get("properties"), dict)
+    }
+    selected_kinds = {"selected-alignment", "provisional-alignment"}
+    departure_kinds = {"a-road-departure", "source-departure"}
+    strategic_kinds = (
+        selected_kinds
+        | {
+            "unresolved-decision",
+            "candidate-alternative",
+        }
+        | departure_kinds
+    )
+    selected_count = sum(
+        1
+        for feature in features
+        if isinstance(feature.get("properties"), dict)
+        and feature["properties"].get("kind") in selected_kinds
+    )
+    provisional_count = sum(
+        1
+        for feature in features
+        if isinstance(feature.get("properties"), dict)
+        and feature["properties"].get("kind") == "provisional-alignment"
+    )
+    unresolved_count = sum(
+        1
+        for feature in features
+        if isinstance(feature.get("properties"), dict)
+        and feature["properties"].get("kind") == "unresolved-decision"
+    )
+    departure_count = sum(
+        1
+        for feature in features
+        if isinstance(feature.get("properties"), dict)
+        and feature["properties"].get("kind") in departure_kinds
+    )
+    source_baselines = [
+        feature
+        for feature in features
+        if isinstance(feature.get("properties"), dict)
+        and feature["properties"].get("kind") == "source-baseline"
+    ]
+    retained_a_roads = [
+        feature
+        for feature in source_baselines
+        if feature["properties"].get("baseline_role") == "a-road"
+    ]
+    if not retained_a_roads:
+        raise ValueError("native decision map contains no retained A-road source baseline")
+    for feature in features:
+        properties = feature.get("properties")
+        kind = properties.get("kind") if isinstance(properties, dict) else None
+        if kind in strategic_kinds or kind == "source-baseline":
+            geometry = feature.get("geometry")
+            if (
+                not isinstance(geometry, dict)
+                or geometry.get("type")
+                not in {
+                    "LineString",
+                    "MultiLineString",
+                }
+                or not _coordinates(geometry)
+            ):
+                raise ValueError(f"native {kind} feature must contain non-empty line geometry")
+
+    if declared_counts["decisions"] != selected_count + unresolved_count:
+        raise ValueError("native publication decisions does not match decision-map features")
+    if declared_counts["selected"] != selected_count:
+        raise ValueError("native publication selected does not match decision-map features")
+    if declared_counts["provisional"] != provisional_count:
+        raise ValueError("native publication provisional does not match decision-map features")
+    if declared_counts["unresolved"] != unresolved_count:
+        raise ValueError("native publication unresolved does not match decision-map features")
+    if declared_counts["departures"] != departure_count:
+        raise ValueError("native publication departures does not match decision-map features")
+
+    summary_counts = summary.get("counts")
+    if not isinstance(summary_counts, dict):
+        raise ValueError("native decision summary counts must be an object")
+    if set(summary_counts) != expected_count_fields:
+        raise ValueError("native decision summary counts must match DecisionMapCounts")
+    summary_files = summary.get("files")
+    if not isinstance(summary_files, dict):
+        raise ValueError("native decision summary files must be an object")
+    if set(summary_files) != expected_file_fields:
+        raise ValueError("native decision summary files must match the public four-file set")
+    for field, path in declared_paths.items():
+        if field in summary_files and summary_files[field] != path.name:
+            raise ValueError(f"native decision summary {field} file does not match publication")
+    for field, expected in declared_counts.items():
+        if summary_counts.get(field) != expected:
+            raise ValueError(f"native decision summary {field} does not match publication")
+    if kinds and not (kinds & (selected_kinds | {"unresolved-decision"})):
+        raise ValueError("native decision map contains no decision geometry")
+
+
+def _native_public_files(source: Path, entry: DeploymentEntry) -> set[Path]:
+    """Return the manifest-declared public closure for a native deployment."""
+    publication = _json_object(source / "publication.json", "native deployment publication")
+    files = publication.get("files")
+    expected_fields = {"geojson", "details", "html", "publication"}
+    if not isinstance(files, dict) or set(files) != expected_fields:
+        raise ValueError("native publication files must contain exactly the public four-file set")
+    expected_paths = {
+        "geojson": _relative_file_path(
+            entry.artifacts["network_geojson"], "catalogue artifact network_geojson"
+        ),
+        "html": _relative_file_path(entry.artifacts["review_map"], "catalogue artifact review_map"),
+        "details": Path("decision-map.json"),
+        "publication": Path("publication.json"),
+    }
+    paths = {Path("publication.json")}
+    for field, value in files.items():
+        relative = _relative_file_path(value, f"native publication files.{field}")
+        if relative != expected_paths[field]:
+            raise ValueError(
+                f"native publication files.{field} must use {expected_paths[field].as_posix()}"
+            )
+        paths.add(relative)
+    for name, artifact in entry.artifacts.items():
+        if name == "review_map_zip":
+            continue
+        paths.add(_relative_file_path(artifact, f"catalogue artifact {name}"))
+    for relative in paths:
+        item = source / relative
+        if item.is_symlink() or not item.is_file():
+            raise ValueError(f"native public file is missing: {item}")
+    return paths
+
+
 def _copy_deployments(
     catalogue: DeploymentCatalogue,
     deployments_root: Path,
@@ -575,12 +846,20 @@ def _copy_deployments(
         if not source.is_dir():
             raise ValueError(f"missing generated deployment for {entry.deployment_id}: {source}")
         _files(source)
-        shutil.copytree(
-            source,
-            target,
-            ignore=shutil.ignore_patterns("review-map.zip", "strategic-network.json"),
-        )
-        _canonicalize_runtime_data(target / "data.js")
+        if entry.publication_kind == "native-agentic":
+            target.mkdir(parents=True, exist_ok=True)
+            for relative in _native_public_files(source, entry):
+                destination = target / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source / relative, destination)
+        else:
+            shutil.copytree(
+                source,
+                target,
+                ignore=shutil.ignore_patterns("review-map.zip", "strategic-network.json"),
+            )
+        if entry.publication_kind != "native-agentic":
+            _canonicalize_runtime_data(target / "data.js")
         _validate_wgs84_map_artifacts(target)
 
         for name, artifact in entry.artifacts.items():
@@ -618,7 +897,8 @@ def _validate_pages_directory(
         raise ValueError("Pages catalogue must contain deployments")
 
     seen_ids: set[str] = set()
-    expected_ids = {entry.deployment_id for entry in catalogue.deployments}
+    expected_entries = {entry.deployment_id: entry for entry in catalogue.deployments}
+    expected_ids = set(expected_entries)
     for entry in entries:
         if not isinstance(entry, dict):
             raise ValueError("each Pages catalogue deployment must be an object")
@@ -626,6 +906,15 @@ def _validate_pages_directory(
         if deployment_id in seen_ids:
             raise ValueError("Pages catalogue deployment_ids must be unique")
         seen_ids.add(deployment_id)
+        expected_entry = expected_entries.get(deployment_id)
+        if expected_entry is None:
+            raise ValueError("Pages catalogue contains an unknown deployment")
+        publication_kind = entry.get("publication_kind", "standard")
+        if publication_kind != expected_entry.publication_kind:
+            raise ValueError(
+                "Pages catalogue publication_kind does not match tracked catalogue: "
+                f"{deployment_id}"
+            )
         deployment_path = _nonblank_text(entry.get("deployment_path"), "catalogue deployment_path")
         expected_directory = _deployment_destination(deployment_id)
         if deployment_path != f"{expected_directory.as_posix()}/":
@@ -644,15 +933,27 @@ def _validate_pages_directory(
         deployment = pages / expected_directory
         if deployment.is_symlink() or not deployment.is_dir():
             raise ValueError(f"Pages catalogue deployment is missing: {deployment}")
-        _validate_publication_shape(
-            deployment,
-            deployment_id,
-            expected_area_id=area_id,
-        )
+        if publication_kind == "native-agentic":
+            _validate_native_publication_shape(
+                deployment,
+                deployment_id,
+                expected_area_id=area_id,
+            )
+        else:
+            _validate_publication_shape(
+                deployment,
+                deployment_id,
+                expected_area_id=area_id,
+            )
         artifacts = entry.get("artifacts")
         if not isinstance(artifacts, dict):
             raise ValueError("catalogue deployment artifacts must be an object")
-        for name in ("review_map", "network_map_pdf"):
+        expected_artifacts = {name for name in expected_entry.artifacts if name != "review_map_zip"}
+        if set(artifacts) != expected_artifacts:
+            raise ValueError(
+                f"catalogue artifacts do not match tracked publication kind: {deployment_id}"
+            )
+        for name in expected_artifacts:
             artifact_path = _relative_file_path(artifacts.get(name), f"catalogue artifacts.{name}")
             try:
                 artifact_path.relative_to(expected_directory)

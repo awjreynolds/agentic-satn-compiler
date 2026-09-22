@@ -17,6 +17,8 @@ from satn.models import AreaDefinition
 SCHEMA_VERSION = "satn-deployment-catalogue/v1"
 _AREA_ID = re.compile(r"^[a-z][a-z0-9-]*$")
 _ARTIFACTS = ("review_map", "network_map_pdf", "review_map_zip")
+_NATIVE_ARTIFACTS = ("review_map", "network_geojson")
+_PUBLICATION_KINDS = {"standard", "source-baseline", "native-agentic"}
 
 
 @dataclass(frozen=True)
@@ -38,6 +40,7 @@ class DeploymentEntry:
     title: str
     scope: dict[str, str]
     evidence_provenance: dict[str, object]
+    publication_kind: str = "standard"
 
     def publication_links(self) -> dict[str, str]:
         return {name: f"{self.deployment_path}{path}" for name, path in self.artifacts.items()}
@@ -49,28 +52,31 @@ class DeploymentCatalogue:
     deployments: tuple[DeploymentEntry, ...]
 
     def as_publication(self) -> dict[str, Any]:
+        def public_entry(entry: DeploymentEntry) -> dict[str, Any]:
+            publication = {
+                "deployment_id": entry.deployment_id,
+                "area_id": entry.area_id,
+                "area_name": entry.area_name,
+                "area_definition": entry.area_definition,
+                "area_definition_sha256": entry.area_definition_sha256,
+                "deployment_path": entry.deployment_path,
+                "artifacts": {
+                    name: link
+                    for name, link in entry.publication_links().items()
+                    if name != "review_map_zip"
+                },
+                "title": entry.title,
+                "scope": entry.scope,
+                "evidence_provenance": entry.evidence_provenance,
+            }
+            if entry.publication_kind != "standard":
+                publication["publication_kind"] = entry.publication_kind
+            return publication
+
         return {
             "schema_version": SCHEMA_VERSION,
             "title": self.title,
-            "deployments": [
-                {
-                    "deployment_id": entry.deployment_id,
-                    "area_id": entry.area_id,
-                    "area_name": entry.area_name,
-                    "area_definition": entry.area_definition,
-                    "area_definition_sha256": entry.area_definition_sha256,
-                    "deployment_path": entry.deployment_path,
-                    "artifacts": {
-                        name: link
-                        for name, link in entry.publication_links().items()
-                        if name != "review_map_zip"
-                    },
-                    "title": entry.title,
-                    "scope": entry.scope,
-                    "evidence_provenance": entry.evidence_provenance,
-                }
-                for entry in self.deployments
-            ],
+            "deployments": [public_entry(entry) for entry in self.deployments],
         }
 
 
@@ -130,11 +136,17 @@ def load_deployment_catalogue(path: str | Path) -> DeploymentCatalogue:
             raise ValueError("deployment_path must be rooted at deployments/")
         if deployment_path in seen_paths:
             raise ValueError("deployment catalogue deployment_paths must be unique")
+        publication_kind = raw_entry.get("publication_kind", "standard")
+        if publication_kind not in _PUBLICATION_KINDS:
+            allowed = ", ".join(sorted(_PUBLICATION_KINDS))
+            raise ValueError(f"publication_kind must be one of: {allowed}")
+        artifact_names = _NATIVE_ARTIFACTS if publication_kind == "native-agentic" else _ARTIFACTS
         raw_artifacts = raw_entry.get("artifacts")
-        if not isinstance(raw_artifacts, dict) or set(raw_artifacts) != set(_ARTIFACTS):
-            raise ValueError(f"artifacts must contain exactly: {', '.join(_ARTIFACTS)}")
+        if not isinstance(raw_artifacts, dict) or set(raw_artifacts) != set(artifact_names):
+            raise ValueError(f"artifacts must contain exactly: {', '.join(artifact_names)}")
         artifacts = {
-            name: _relative_path(raw_artifacts[name], f"artifacts.{name}") for name in _ARTIFACTS
+            name: _relative_path(raw_artifacts[name], f"artifacts.{name}")
+            for name in artifact_names
         }
         area_id = _text(raw_entry.get("area_id"), "area_id")
         if not _AREA_ID.fullmatch(area_id):
@@ -192,6 +204,7 @@ def load_deployment_catalogue(path: str | Path) -> DeploymentCatalogue:
                         "model": definition.compilation.agent.model,
                     },
                 },
+                publication_kind=publication_kind,
             )
         )
         seen_ids.add(deployment_id)
@@ -202,18 +215,34 @@ def load_deployment_catalogue(path: str | Path) -> DeploymentCatalogue:
 
 
 def _html(catalogue: DeploymentCatalogue) -> str:
-    rows = "\n".join(
-        """      <li>
+    rows: list[str] = []
+    for entry in catalogue.deployments:
+        links = entry.publication_links()
+        if entry.publication_kind == "native-agentic":
+            rows.append(
+                """      <li>
         <h2>{name}</h2>
-        <p><a href=\"{map}\">Open interactive review map</a></p>
-        <p><a href=\"{pdf}\" download>Download strategic overview PDF</a></p>
+        <p><a href="{map}">Open native planning publication</a></p>
+        <p><a href="{network}" download>Download native decision GeoJSON</a></p>
       </li>""".format(
-            name=html.escape(entry.area_name),
-            map=html.escape(entry.publication_links()["review_map"], quote=True),
-            pdf=html.escape(entry.publication_links()["network_map_pdf"], quote=True),
-        )
-        for entry in catalogue.deployments
-    )
+                    name=html.escape(entry.area_name),
+                    map=html.escape(links["review_map"], quote=True),
+                    network=html.escape(links["network_geojson"], quote=True),
+                )
+            )
+        else:
+            rows.append(
+                """      <li>
+        <h2>{name}</h2>
+        <p><a href="{map}">Open interactive review map</a></p>
+        <p><a href="{pdf}" download>Download strategic overview PDF</a></p>
+      </li>""".format(
+                    name=html.escape(entry.area_name),
+                    map=html.escape(links["review_map"], quote=True),
+                    pdf=html.escape(links["network_map_pdf"], quote=True),
+                )
+            )
+    rows_text = "\n".join(rows)
     return f"""<!doctype html>
 <html lang=\"en\">
   <head>
@@ -226,7 +255,7 @@ def _html(catalogue: DeploymentCatalogue) -> str:
       <h1>{html.escape(catalogue.title)}</h1>
       <p>Select an independently reproducible Area Deployment.</p>
       <ul>
-{rows}
+{rows_text}
       </ul>
     </main>
   </body>
