@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>__TITLE__ decision map</title>
+<link rel="stylesheet" href="assets/maplibre-gl.css">
+<style>
+:root { color-scheme: light; font: 16px system-ui,sans-serif; color: #17202a; background: #f8fafc; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+header { padding: 1rem 1.25rem .75rem; background: #fff; border-bottom: 1px solid #cbd5e1; }
+header h1 { margin: 0 0 .35rem; font-size: 1.35rem; }
+header p { margin: .2rem 0; }
+.disclaimer { color: #92400e; font-weight: 600; }
+.native-shell { display: grid; grid-template-columns: minmax(18rem, 24rem) minmax(0, 1fr); min-height: 68vh; }
+.native-panel { padding: .9rem 1rem; background: #fff; overflow: auto; max-height: 75vh; }
+.native-map-wrap { position: relative; min-height: 32rem; border-left: 1px solid #cbd5e1; }
+#native-map { position: absolute; inset: 0; min-height: 32rem; }
+.map-actions { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: .75rem; }
+button { padding: .4rem .65rem; border: 1px solid #64748b; border-radius: .25rem; background: #fff; cursor: pointer; }
+button:focus-visible, input:focus-visible { outline: 3px solid #2563eb; outline-offset: 2px; }
+.key { list-style: none; margin: .5rem 0 1rem; padding: 0; }
+.key li { margin: .4rem 0; }
+.swatch { display: inline-block; width: 1.8rem; height: .35rem; vertical-align: middle; margin: 0 .25rem; }
+.source-key { background: #475569; } .context-key { background: #94a3b8; }
+.selected-key { background: #15803d; } .provisional-key { background: #d97706; }
+.unresolved-key { background: #7c3aed; } .departure-key { background: #dc2626; }
+.native-details { border: 1px solid #cbd5e1; border-radius: .3rem; padding: .6rem; background: #f8fafc; min-height: 5rem; }
+.native-details h3 { margin: 0 0 .35rem; font-size: 1rem; }
+.native-details dl { margin: 0; }
+.native-details dt { font-weight: 700; }
+.native-details dd { margin: 0 0 .25rem; overflow-wrap: anywhere; }
+.maplibregl-popup-content { max-height: calc(100dvh - 1rem); overflow-y: auto; }
+small { display: block; color: #475569; margin-top: .15rem; }
+code { font-size: .9em; }
+#native-loading-failure { color: #b91c1c; font-weight: 700; }
+@media (max-width: 720px) {
+  header { padding: .75rem; }
+  .native-shell { display: flex; flex-direction: column; min-height: 0; }
+  .native-panel { order: 2; max-height: none; }
+  .native-map-wrap { order: 1; min-height: 55vh; border-left: 0; border-bottom: 1px solid #cbd5e1; }
+  #native-map { min-height: 55vh; }
+}
+</style></head>
+<body data-native-publication="native-agentic" data-network-url="decision-map.geojson" data-native-deployment="__DEPLOYMENT__" data-branch="__BRANCH__" data-base-id="__BASE_ID__">
+<header><h1>__TITLE__ decision map</h1>
+<p class="disclaimer">Experimental SATN POC — not an adopted plan.</p>
+<details class="run-details"><summary>Run details</summary><p data-native-branch>Deployment <code>__DEPLOYMENT__</code> · Branch <code>__BRANCH__</code> · base <code>__BASE_ID__</code> · accounting <strong>__ACCOUNTING__</strong> · run status <strong>__STATUS__</strong></p></details>
+<p>Source baseline remains visible as the proposed strategic structure. Selected alignments are decision overlays; source provision, safety, access and adoption remain explicit unknowns where evidence is absent.</p>
+<p class="source-attribution">Source attribution: __ATTRIBUTION__ __SOURCE_ATTRIBUTIONS__</p></header>
+<main class="native-shell">
+  <aside class="native-panel" aria-label="Decision map controls and evidence">
+    <div class="map-actions"><button type="button" data-native-reset>Reset to network</button><button type="button" data-native-clear>Clear inspection</button></div>
+    <fieldset><legend>Layers</legend><ul class="key">
+      <li><label><input type="checkbox" data-layer-toggle="source-strategic" checked> <span class="swatch source-key"></span>Strategic source baseline <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="source-context"> <span class="swatch context-key"></span>Context sources <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="selected-alignment" checked> <span class="swatch selected-key"></span>Selected alignment <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="provisional-alignment" checked> <span class="swatch provisional-key"></span>Provisional alignment <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="unresolved-decision" checked> <span class="swatch unresolved-key"></span>Unresolved decision <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="candidate-alternative" checked> Candidate alternatives <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="a-road-departure" checked> <span class="swatch departure-key"></span>A-road departure <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="source-departure" checked> <span class="swatch departure-key"></span>Source departure <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="network-place" checked> Network places <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="access-obligation" checked> Access obligations and gaps <span data-layer-count></span></label></li>
+    </ul></fieldset>
+    <section class="native-details" id="native-feature-details" aria-live="polite"><h3>Evidence</h3><p>Hover or select a rendered map feature to inspect its public evidence.</p></section>
+    <p>__SOURCE_COUNT__ source baseline sections · __PREPARED_CONNECTIONS__ prepared connections · __PENDING_CONNECTIONS__ pending connections · __CANDIDATE_COUNT__ generated candidates · __DECISION_COUNT__ decisions · __UNRESOLVED_FACTS__ unresolved facts · __UNRESOLVED_ACCESS__ unresolved access obligations</p>
+    <p id="native-loading-failure" role="alert" hidden>Unable to load public network data.</p>
+    <p><a href="decision-map.json">Compact decision manifest</a> · <a href="decision-map.geojson">GeoJSON download</a> · <a href="publication.json">Public publication manifest</a></p>
+  </aside>
+  <section class="native-map-wrap" aria-label="Interactive public planning map"><div id="native-map"></div></section>
+</main>
+<script src="assets/maplibre-gl.js"></script>
+<script>
+(function () {
+  const root = document.documentElement;
+  const networkUrl = document.body.dataset.networkUrl;
+  const failure = document.getElementById('native-loading-failure');
+  const detail = document.getElementById('native-feature-details');
+  const interactiveLayers = [
+    'native-selected', 'native-provisional', 'native-unresolved', 'native-alternative',
+    'native-a-road-departure', 'native-source-departure', 'native-source-strategic',
+    'native-source-context', 'native-network-place', 'native-access-obligation'
+  ];
+  const layerGroups = {
+    'source-strategic': ['native-source-strategic'],
+    'source-context': ['native-source-context'],
+    'selected-alignment': ['native-selected'],
+    'provisional-alignment': ['native-provisional'],
+    'unresolved-decision': ['native-unresolved'],
+    'candidate-alternative': ['native-alternative'],
+    'a-road-departure': ['native-a-road-departure'],
+    'source-departure': ['native-source-departure'],
+    'network-place': ['native-network-place'],
+    'access-obligation': ['native-access-obligation']
+  };
+  const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[character]));
+  const featureLabel = feature => {
+    const props = feature && feature.properties ? feature.properties : {};
+    return props.connection_label || props.source_reference || props.name || props.label || props.kind || 'Public feature';
+  };
+  const normalizedValue = value => {
+    if (typeof value !== 'string') return value;
+    const text = value.trim();
+    if (!text.startsWith('[') || !text.endsWith(']')) return value;
+    try {
+      const parsed = JSON.parse(text);
+      return Array.isArray(parsed) ? parsed : value;
+    } catch (_) {
+      return value;
+    }
+  };
+  const valueText = value => {
+    const normalized = normalizedValue(value);
+    return Array.isArray(normalized)
+      ? normalized.filter(item => item !== null && item !== undefined && String(item).trim()).join('; ')
+      : String(normalized ?? '');
+  };
+  const formatDistance = value => {
+    const metres = Number(value);
+    if (!Number.isFinite(metres)) return '';
+    return metres >= 1000 ? (metres / 1000).toFixed(1) + ' km' : Math.round(metres) + ' m';
+  };
+  const readableRows = props => {
+    const rows = [];
+    const add = (label, value) => {
+      const text = valueText(value).trim();
+      if (text) rows.push([label, text]);
+    };
+    add('Decision class', props.decision_class);
+    if (props.provisional !== undefined) add('Status', props.provisional ? 'Provisional' : 'Selected');
+    add('Role', props.role);
+    if (props.length_m !== undefined) add('Distance', formatDistance(props.length_m));
+    add('Connection', props.connection_label);
+    add('Source', props.source_reference);
+    add('Place', props.name);
+    add('Source kind', props.source_kind);
+    add('Place class', props.place_class);
+    add('Obligation', props.obligation_kind);
+    add('Disposition', props.disposition);
+    add('Topology', props.topology_status);
+    add('Attachment', props.attachment_status);
+    add('Provision', props.provision_status);
+    add('Reason', props.reason);
+    add('Uncertainty', props.uncertainties);
+    return rows;
+  };
+  const rowsHtml = rows => rows.map(([label, value]) =>
+    '<dt>' + escapeHtml(label) + '</dt><dd>' + escapeHtml(value) + '</dd>').join('');
+  const technicalRows = props => {
+    const technicalKeys = new Set([
+      'kind', 'decision_id', 'connection_id', 'candidate_id', 'source_corridor_id', 'source_id',
+      'place_id', 'obligation_id', 'graph_edge_id', 'alternative_candidate_id', 'evidence_refs',
+      'branch', 'base_id', 'source_geometry_part'
+    ]);
+    return Object.keys(props).filter(key => technicalKeys.has(key) && valueText(props[key]).trim())
+      .map(key => [key.replaceAll('_', ' '), valueText(props[key])]);
+  };
+  const showFeature = feature => {
+    const props = feature && feature.properties ? feature.properties : {};
+    const publicRows = readableRows(props);
+    const technical = technicalRows(props);
+    const technicalHtml = technical.length
+      ? '<details><summary>Technical details</summary><dl>' + rowsHtml(technical) + '</dl></details>'
+      : '';
+    detail.innerHTML = '<h3>' + escapeHtml(featureLabel(feature)) + '</h3>' +
+      (publicRows.length ? '<dl>' + rowsHtml(publicRows) + '</dl>' : '<p>No additional public evidence.</p>') +
+      technicalHtml;
+  };
+  const popupHtml = feature => {
+    const props = feature && feature.properties ? feature.properties : {};
+    const rows = readableRows(props);
+    return '<strong>' + escapeHtml(featureLabel(feature)) + '</strong>' +
+      (rows.length ? '<dl>' + rowsHtml(rows) + '</dl>' : '<p>Public map evidence</p>');
+  };
+  const highlight = (map, feature) => {
+    const source = map.getSource('native-highlight');
+    if (source) source.setData(feature ? { type: 'FeatureCollection', features: [feature] } : { type: 'FeatureCollection', features: [] });
+  };
+  const coordinates = (value, points) => {
+    if (!Array.isArray(value)) return;
+    if (value.length >= 2 && typeof value[0] === 'number' && typeof value[1] === 'number') {
+      points.push([value[0], value[1]]); return;
+    }
+    value.forEach(item => coordinates(item, points));
+  };
+  const boundsFor = network => {
+    const points = [];
+    (network.features || []).forEach(feature => coordinates(feature.geometry && feature.geometry.coordinates, points));
+    if (!points.length) return null;
+    const bounds = new maplibregl.LngLatBounds(points[0], points[0]);
+    points.slice(1).forEach(point => bounds.extend(point));
+    return bounds;
+  };
+  const setVisibility = (map, name, checked) => (layerGroups[name] || []).forEach(layer => {
+    if (map.getLayer(layer)) map.setLayoutProperty(layer, 'visibility', checked ? 'visible' : 'none');
+  });
+  const installControls = (map, bounds, network) => {
+    const featureCounts = {
+      'source-strategic': network.features.filter(feature => feature.properties?.kind === 'source-baseline' && feature.properties?.baseline_layer !== 'source-context').length,
+      'source-context': network.features.filter(feature => feature.properties?.kind === 'source-baseline' && feature.properties?.baseline_layer === 'source-context').length,
+      'selected-alignment': network.features.filter(feature => feature.properties?.kind === 'selected-alignment').length,
+      'provisional-alignment': network.features.filter(feature => feature.properties?.kind === 'provisional-alignment').length,
+      'unresolved-decision': network.features.filter(feature => feature.properties?.kind === 'unresolved-decision').length,
+      'candidate-alternative': network.features.filter(feature => feature.properties?.kind === 'candidate-alternative').length,
+      'a-road-departure': network.features.filter(feature => feature.properties?.kind === 'a-road-departure').length,
+      'source-departure': network.features.filter(feature => feature.properties?.kind === 'source-departure').length,
+      'network-place': network.features.filter(feature => feature.properties?.kind === 'network-place').length,
+      'access-obligation': network.features.filter(feature => feature.properties?.kind === 'access-obligation').length
+    };
+    document.querySelectorAll('[data-layer-toggle]').forEach(toggle => {
+      toggle.addEventListener('change', () => {
+        setVisibility(map, toggle.dataset.layerToggle, toggle.checked);
+        const selectedLayerIds = layerGroups[toggle.dataset.layerToggle] || [];
+        if (!toggle.checked && pinnedFeature && selectedLayerIds.includes(pinnedFeature.layer?.id)) {
+          clearInspection(map);
+        }
+      });
+      const count = featureCounts[toggle.dataset.layerToggle] || 0;
+      const item = toggle.closest('li');
+      if (item) item.hidden = count === 0;
+      const countLabel = toggle.parentElement.querySelector('[data-layer-count]');
+      if (countLabel) countLabel.textContent = ' (' + count + ')';
+      setVisibility(map, toggle.dataset.layerToggle, toggle.checked);
+    });
+    document.querySelector('[data-native-reset]').addEventListener('click', () => {
+      if (bounds) map.fitBounds(bounds, { padding: 40, duration: 0 });
+      clearInspection(map);
+    });
+    document.querySelector('[data-native-clear]').addEventListener('click', () => clearInspection(map));
+  };
+  let pinnedFeature = null;
+  let activePopup = null;
+  const clearInspection = map => {
+    pinnedFeature = null;
+    if (activePopup) { activePopup.remove(); activePopup = null; }
+    highlight(map, null);
+    detail.innerHTML = '<h3>Evidence</h3><p>Hover or select a rendered map feature to inspect its public evidence.</p>';
+  };
+  const inspect = (map, event, openPopup) => {
+    const layers = interactiveLayers.filter(layer => map.getLayer(layer));
+    const found = map.queryRenderedFeatures(event.point, { layers });
+    const feature = found[0];
+    map.getCanvas().style.cursor = feature ? 'pointer' : '';
+    if (openPopup && feature) {
+      pinnedFeature = feature;
+      highlight(map, feature);
+    } else if (!pinnedFeature) highlight(map, feature);
+    if (feature && (!pinnedFeature || openPopup)) {
+      showFeature(feature);
+      if (openPopup) {
+        if (activePopup) activePopup.remove();
+        activePopup = new maplibregl.Popup({ closeButton: true, closeOnClick: true })
+          .setLngLat(event.lngLat).setHTML(popupHtml(feature)).addTo(map);
+      }
+    }
+  };
+  root.dataset.nativeReady = 'false';
+  fetch(networkUrl).then(response => {
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    return response.json();
+  }).then(network => {
+    if (!network || network.type !== 'FeatureCollection' || !Array.isArray(network.features)) {
+      throw new Error('public network data is not a FeatureCollection');
+    }
+    window.SATN_NATIVE_NETWORK = network;
+    root.dataset.nativeNetworkLoaded = 'true';
+    const map = new maplibregl.Map({
+      container: 'native-map',
+      style: {
+        version: 8,
+        sources: { osm: { type: 'raster', tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'], tileSize: 256, attribution: '&copy; OpenStreetMap contributors' } },
+        layers: [{ id: 'osm', type: 'raster', source: 'osm' }]
+      },
+      center: [0, 0], zoom: 1,
+      attributionControl: true
+    });
+    window.SATN_NATIVE_MAP = map;
+    map.addControl(new maplibregl.NavigationControl(), 'top-right');
+    map.on('load', () => {
+      map.addSource('native-network', { type: 'geojson', data: network });
+      map.addSource('native-highlight', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      const line = (id, filter, color, width, dash) => {
+        const layer = { id, type: 'line', source: 'native-network', filter, paint: { 'line-color': color, 'line-width': width } };
+        if (dash) layer.paint['line-dasharray'] = dash;
+        map.addLayer(layer);
+      };
+      map.addLayer({ id: 'native-boundary-fill', type: 'fill', source: 'native-network', filter: ['==', ['get', 'kind'], 'boundary-scope'], paint: { 'fill-color': '#93c5fd', 'fill-opacity': 0.14 } });
+      map.addLayer({ id: 'native-boundary-line', type: 'line', source: 'native-network', filter: ['==', ['get', 'kind'], 'boundary-scope'], paint: { 'line-color': '#2563eb', 'line-width': 2 } });
+      line('native-source-context', ['all', ['==', ['get', 'kind'], 'source-baseline'], ['==', ['get', 'baseline_layer'], 'source-context']], '#94a3b8', 2, [3, 3]);
+      line('native-source-strategic', ['all', ['==', ['get', 'kind'], 'source-baseline'], ['!=', ['get', 'baseline_layer'], 'source-context']], '#475569', 3);
+      line('native-alternative', ['==', ['get', 'kind'], 'candidate-alternative'], '#64748b', 2, [5, 4]);
+      line('native-selected', ['==', ['get', 'kind'], 'selected-alignment'], '#15803d', 5);
+      line('native-provisional', ['==', ['get', 'kind'], 'provisional-alignment'], '#d97706', 5, [8, 5]);
+      line('native-unresolved', ['==', ['get', 'kind'], 'unresolved-decision'], '#7c3aed', 4, [2, 4]);
+      line('native-a-road-departure', ['==', ['get', 'kind'], 'a-road-departure'], '#dc2626', 6, [10, 5]);
+      line('native-source-departure', ['==', ['get', 'kind'], 'source-departure'], '#be123c', 5, [8, 5]);
+      map.addLayer({ id: 'native-network-place', type: 'circle', source: 'native-network', filter: ['==', ['get', 'kind'], 'network-place'], paint: { 'circle-radius': 5, 'circle-color': '#2563eb', 'circle-stroke-color': '#fff', 'circle-stroke-width': 1 } });
+      map.addLayer({ id: 'native-access-obligation', type: 'circle', source: 'native-network', filter: ['==', ['get', 'kind'], 'access-obligation'], paint: { 'circle-radius': 6, 'circle-color': '#dc2626', 'circle-stroke-color': '#fff', 'circle-stroke-width': 1 } });
+      map.addLayer({ id: 'native-highlight-line', type: 'line', source: 'native-highlight', filter: ['==', ['geometry-type'], 'LineString'], paint: { 'line-color': '#f59e0b', 'line-width': 8, 'line-opacity': 0.8 } });
+      map.addLayer({ id: 'native-highlight-point', type: 'circle', source: 'native-highlight', filter: ['==', ['geometry-type'], 'Point'], paint: { 'circle-radius': 9, 'circle-color': '#f59e0b', 'circle-stroke-color': '#fff', 'circle-stroke-width': 2 } });
+      const bounds = boundsFor(network);
+      if (bounds) map.fitBounds(bounds, { padding: 40, duration: 0 });
+      installControls(map, bounds, network);
+      map.on('mousemove', event => inspect(map, event, false));
+      map.on('click', event => inspect(map, event, true));
+      map.once('idle', () => { root.dataset.nativeReady = 'true'; });
+    });
+  }).catch(error => {
+    failure.hidden = false;
+    failure.textContent = 'Unable to load public network data: ' + error.message;
+    root.dataset.nativeReady = 'false';
+  });
+}());
+</script>
+</body></html>

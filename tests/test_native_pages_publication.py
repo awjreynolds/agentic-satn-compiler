@@ -83,6 +83,9 @@ def _write_native_bundle(
                     "kind": "selected-alignment",
                     "decision_id": "decision:selected",
                     "candidate_id": "candidate:selected",
+                    "reason": "Selected public evidence alignment",
+                    "uncertainties": [],
+                    "evidence_refs": ["candidate:selected"],
                 },
                 "geometry": {"type": "LineString", "coordinates": [[-2, 51], [-1.9, 51.1]]},
             },
@@ -92,6 +95,9 @@ def _write_native_bundle(
                     "kind": "provisional-alignment",
                     "decision_id": "decision:provisional",
                     "candidate_id": "candidate:provisional",
+                    "reason": "Provisional public evidence alignment",
+                    "uncertainties": ["Access remains unknown"],
+                    "evidence_refs": ["candidate:provisional"],
                 },
                 "geometry": {"type": "LineString", "coordinates": [[-1.9, 51.1], [-1.8, 51.2]]},
             },
@@ -100,6 +106,9 @@ def _write_native_bundle(
                 "properties": {
                     "kind": "unresolved-decision",
                     "decision_id": "decision:unresolved",
+                    "reason": "Specialist review remains unresolved",
+                    "uncertainties": ["No admitted choice"],
+                    "evidence_refs": ["decision:unresolved"],
                 },
                 "geometry": {"type": "LineString", "coordinates": [[-1.8, 51.2], [-1.7, 51.3]]},
             },
@@ -109,8 +118,10 @@ def _write_native_bundle(
                     "kind": "a-road-departure",
                     "decision_id": "decision:selected",
                     "alternative_candidate_id": "candidate:strategic",
+                    "reason": "Selected alignment departs the A-road baseline",
+                    "evidence_refs": ["candidate:strategic"],
                 },
-                "geometry": {"type": "LineString", "coordinates": [[-2, 51], [-1.8, 51.2]]},
+                "geometry": {"type": "LineString", "coordinates": [[-1.7, 51.3], [-1.6, 51.35]]},
             },
         ],
     }
@@ -150,63 +161,30 @@ def _write_native_bundle(
         ),
         encoding="utf-8",
     )
-    source_geometry = (
-        ""
-        if omit_source_geometry
-        else """
-    <polyline class="source-baseline source-strategic" data-map-layer="source-strategic"
-      points="0,100 100,100" aria-label="A-road source baseline"></polyline>
-"""
-    )
-    departure_geometry = (
-        ""
-        if omit_departure_geometry
-        else """
-    <polyline class="a-road-departure" data-native-departure-geometry
-      data-map-layer="a-road-departure"
-      points="120,0 120,80" aria-label="A-road departure"></polyline>
-"""
-    )
-    html = (
-        """<!doctype html>
-<html data-native-ready="false"><body data-native-publication="native-agentic"
-  data-network-url="decision-map.geojson" data-branch="review-branch" data-base-id="base-1">
-<main>
-  <p data-native-branch>review-branch</p>
-  <svg aria-label="Strategic geometry">
-    """
-        + source_geometry
-        + """
-    <polyline class="selected-alignment" data-map-layer="selected-alignment"
-      points="0,0 100,100" aria-label="selected-alignment"></polyline>
-    <polyline class="provisional-alignment" data-map-layer="provisional-alignment"
-      points="100,100 200,200" aria-label="provisional-alignment"></polyline>
-    <polyline class="unresolved-decision" data-map-layer="unresolved-decision"
-      points="200,200 300,300" aria-label="unresolved-decision"></polyline>
-    """
-        + departure_geometry
-        + """
-  </svg>
-  <ul>
-    <li data-native-source-baseline>A-road source baseline</li>
-    <li data-native-decision-kind="selected-alignment">Selected alignment</li>
-    <li data-native-decision-kind="provisional-alignment">Provisional alignment</li>
-    <li data-native-decision-kind="unresolved-decision">Unresolved decision</li>
-    <li data-native-departure>A-road departure</li>
-  </ul>
-</main>
-<script>
-fetch("decision-map.geojson").then(response => response.json()).then(network => {
-  window.SATN_NATIVE_NETWORK = network;
-  document.documentElement.dataset.nativeNetworkLoaded = "true";
-  document.documentElement.dataset.nativeReady = "true";
-}).catch(() => {
-  document.body.textContent = "Native map failed to load its public GeoJSON.";
-});
-</script>
-</body></html>
-"""
-    )
+    assets = bundle / "assets"
+    assets.mkdir()
+    for name in ("maplibre-gl.js", "maplibre-gl.css", "MAPLIBRE-LICENSE.txt"):
+        shutil.copy2(PROJECT / "src" / "satn" / "assets" / name, assets / name)
+    template = (PROJECT / "rust" / "src" / "native_map_template.html").read_text(encoding="utf-8")
+    html = template
+    for placeholder, value in {
+        "__TITLE__": "Native area deployment",
+        "__DEPLOYMENT__": "native-area",
+        "__BRANCH__": "review-branch",
+        "__BASE_ID__": "base-1",
+        "__ACCOUNTING__": "reviewable-with-gaps",
+        "__STATUS__": "complete",
+        "__ATTRIBUTION__": "Fixture attribution",
+        "__SOURCE_ATTRIBUTIONS__": "Fixture official attribution",
+        "__SOURCE_COUNT__": "1",
+        "__PREPARED_CONNECTIONS__": "3",
+        "__PENDING_CONNECTIONS__": "0",
+        "__CANDIDATE_COUNT__": "3",
+        "__DECISION_COUNT__": "3",
+        "__UNRESOLVED_FACTS__": "0",
+        "__UNRESOLVED_ACCESS__": "0",
+    }.items():
+        html = html.replace(placeholder, value)
     (bundle / "index.html").write_text(html, encoding="utf-8")
     (bundle / "publication.json").write_text(
         json.dumps(
@@ -434,6 +412,120 @@ def test_native_rendering_gate_uses_the_loaded_map_and_public_decision_sections(
 
 
 @pytest.mark.browser
+def test_native_map_supports_public_feature_inspection_reset_and_layer_toggle(
+    tmp_path: Path,
+) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    _write_native_catalogue(catalogue)
+    _write_native_bundle(bundles)
+    result = package_pages(
+        catalogue,
+        bundles,
+        tmp_path / "pages",
+        tmp_path / "satn-pages.zip",
+    )
+
+    with (
+        VALIDATOR._serve(result.pages_directory) as origin,
+        VALIDATOR.sync_playwright() as playwright,
+    ):
+        executable = os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE")
+        browser = playwright.chromium.launch(headless=True, executable_path=executable)
+        try:
+            for viewport in ({"width": 1280, "height": 900}, {"width": 390, "height": 844}):
+                context = browser.new_context(viewport=viewport)
+                page = context.new_page()
+                page.goto(
+                    f"{origin}/deployments/native-area/index.html", wait_until="domcontentloaded"
+                )
+                page.wait_for_function(
+                    "() => document.documentElement.dataset.nativeReady === 'true' && "
+                    "window.SATN_NATIVE_MAP?.isStyleLoaded()"
+                )
+                assert not page.locator(
+                    "input[data-layer-toggle='candidate-alternative']"
+                ).is_visible()
+
+                initial = page.evaluate(
+                    "() => ({center: window.SATN_NATIVE_MAP.getCenter().toArray(), "
+                    "zoom: window.SATN_NATIVE_MAP.getZoom()})"
+                )
+                page.evaluate(
+                    "() => window.SATN_NATIVE_MAP.jumpTo({center: [-1.7, 51.3], zoom: 12})"
+                )
+                moved = page.evaluate(
+                    "() => ({center: window.SATN_NATIVE_MAP.getCenter().toArray(), "
+                    "zoom: window.SATN_NATIVE_MAP.getZoom()})"
+                )
+                assert moved != initial
+                page.locator("[data-native-reset]").click()
+                page.wait_for_function("() => window.SATN_NATIVE_MAP.getZoom() !== 12")
+                page.wait_for_function(
+                    "() => window.SATN_NATIVE_MAP.queryRenderedFeatures({layers: "
+                    "['native-selected']}).length > 0"
+                )
+                assert page.locator(".decision-list, .departure-list").count() == 0
+                assert page.locator("[data-native-decision-kind]").count() == 0
+
+                point = page.evaluate(
+                    """() => {
+                      const map = window.SATN_NATIVE_MAP;
+                      const feature = map.queryRenderedFeatures({layers: ['native-selected']})[0];
+                      if (!feature) return null;
+                      const coordinates = feature.geometry.coordinates;
+                      const coordinate = coordinates[0];
+                      const screen = map.project(coordinate);
+                      const rect = map.getContainer().getBoundingClientRect();
+                      return {x: screen.x + rect.left, y: screen.y + rect.top};
+                    }"""
+                )
+                assert point is not None
+                page.mouse.click(point["x"], point["y"])
+                page.wait_for_selector(".maplibregl-popup")
+                assert "selected-alignment" in page.locator("#native-feature-details").inner_text()
+                assert page.locator(".maplibregl-popup").count() == 1
+                page.locator("#native-feature-details summary").click()
+                detail_text = page.locator("#native-feature-details").inner_text()
+                popup_text = page.locator(".maplibregl-popup-content").inner_text()
+                assert "candidate:selected" in detail_text
+                assert "[]" not in detail_text
+                assert "[]" not in popup_text
+                assert "[" not in popup_text
+                map_box = page.locator("#native-map").bounding_box()
+                assert map_box and map_box["width"] > 0 and map_box["height"] > 0
+                page.mouse.move(
+                    map_box["x"] + map_box["width"] - 8, map_box["y"] + map_box["height"] - 8
+                )
+                assert "selected-alignment" in page.locator("#native-feature-details").inner_text()
+                if viewport["width"] < 720:
+                    panel_box = page.locator(".native-panel").bounding_box()
+                    map_wrap_box = page.locator(".native-map-wrap").bounding_box()
+                    assert panel_box and map_wrap_box and map_wrap_box["y"] < panel_box["y"]
+
+                page.locator("input[data-layer-toggle='selected-alignment']").uncheck()
+                page.wait_for_function(
+                    "() => window.SATN_NATIVE_MAP.getLayoutProperty('native-selected', "
+                    "'visibility') === 'none'"
+                )
+                page.wait_for_function(
+                    "() => window.SATN_NATIVE_MAP.queryRenderedFeatures({layers: "
+                    "['native-selected']}).length === 0"
+                )
+                assert (
+                    page.evaluate(
+                        "() => window.SATN_NATIVE_MAP.queryRenderedFeatures({layers: "
+                        "['native-selected']}).length"
+                    )
+                    == 0
+                )
+                page.close()
+                context.close()
+        finally:
+            browser.close()
+
+
+@pytest.mark.browser
 @pytest.mark.parametrize(
     ("omit_source_geometry", "omit_departure_geometry", "message"),
     [
@@ -461,6 +553,21 @@ def test_native_rendering_gate_rejects_text_only_source_or_departure_sections(
         tmp_path / "pages",
         tmp_path / "satn-pages.zip",
     )
+    network_path = result.pages_directory / "deployments" / "native-area" / "decision-map.geojson"
+    network = json.loads(network_path.read_text(encoding="utf-8"))
+    if omit_source_geometry:
+        network["features"] = [
+            feature
+            for feature in network["features"]
+            if feature["properties"].get("kind") != "source-baseline"
+        ]
+    if omit_departure_geometry:
+        network["features"] = [
+            feature
+            for feature in network["features"]
+            if feature["properties"].get("kind") != "a-road-departure"
+        ]
+    network_path.write_text(json.dumps(network), encoding="utf-8")
 
     with pytest.raises(ValueError, match=message):
         VALIDATOR.validate_pages_rendering(result.pages_directory)

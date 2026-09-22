@@ -822,6 +822,13 @@ def _native_public_files(source: Path, entry: DeploymentEntry) -> set[Path]:
         if name == "review_map_zip":
             continue
         paths.add(_relative_file_path(artifact, f"catalogue artifact {name}"))
+    paths.update(
+        {
+            Path("assets/maplibre-gl.js"),
+            Path("assets/maplibre-gl.css"),
+            Path("assets/MAPLIBRE-LICENSE.txt"),
+        }
+    )
     for relative in paths:
         item = source / relative
         if item.is_symlink() or not item.is_file():
