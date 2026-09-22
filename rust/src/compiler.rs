@@ -858,18 +858,50 @@ fn derive_accounting(
 }
 
 fn admit_boundary_scope(features: &[Feature]) -> Option<BoundaryScope> {
-    let feature = features.first()?;
-    let geometry = match &feature.geometry {
-        Geometry::Polygon(rings) => vec![rings.clone()],
-        Geometry::MultiPolygon(polygons) => polygons.clone(),
-        _ => return None,
-    };
-    Some(BoundaryScope {
-        id: string_property(&feature.properties, "osm_id")
+    let mut geometry = Vec::new();
+    let mut ids = Vec::new();
+    let mut names = Vec::new();
+    let mut feature_count = 0;
+    for feature in features {
+        match &feature.geometry {
+            Geometry::Polygon(rings) => geometry.push(rings.clone()),
+            Geometry::MultiPolygon(polygons) => geometry.extend(polygons.clone()),
+            _ => continue,
+        }
+        feature_count += 1;
+        if let Some(id) = string_property(&feature.properties, "boundary_id")
+            .or_else(|| string_property(&feature.properties, "osm_id"))
             .or_else(|| string_property(&feature.properties, "place_id"))
-            .unwrap_or_else(|| "boundary".to_string()),
-        name: string_property(&feature.properties, "name")
-            .unwrap_or_else(|| "governed boundary".to_string()),
+        {
+            ids.push(id);
+        }
+        if let Some(name) = string_property(&feature.properties, "name") {
+            names.push(name);
+        }
+    }
+    if geometry.is_empty() {
+        return None;
+    }
+    let combined = feature_count > 1;
+    Some(BoundaryScope {
+        id: if !combined && ids.len() == 1 {
+            ids[0].clone()
+        } else if combined && ids.len() == feature_count {
+            ids.join("+")
+        } else if combined {
+            "boundary:combined".to_string()
+        } else {
+            "boundary".to_string()
+        },
+        name: if !combined && names.len() == 1 {
+            names[0].clone()
+        } else if combined && names.len() == feature_count {
+            names.join(" + ")
+        } else if combined {
+            "governed boundary (combined)".to_string()
+        } else {
+            "governed boundary".to_string()
+        },
         geometry,
     })
 }

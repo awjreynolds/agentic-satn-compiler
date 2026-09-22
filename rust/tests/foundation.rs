@@ -113,6 +113,69 @@ fn compiles_fixture_area_to_small_review_bundle() {
     assert!(!summary.contains("select-alignment"));
 }
 
+#[test]
+fn compiles_all_authority_boundary_features_and_places() {
+    let root = tempfile_root("satn-rs-multi-authority-boundary");
+    let snapshot = root.join("snapshot");
+    fs::create_dir_all(&snapshot).expect("snapshot directory");
+    fs::write(
+        root.join("area.yaml"),
+        format!(
+            "area_id: multi-authority\narea_name: Multi Authority\ndeployment_id: fixture\nsource:\n  snapshot_dir: {}\n  snapshot_id: snapshot\n  network_type: bike\n  urban_place_types: [town]\ncompilation:\n  max_connection_km: 15\n",
+            root.display()
+        ),
+    )
+    .expect("area config");
+    fs::write(
+        snapshot.join("network.geojson"),
+        r#"{"type":"FeatureCollection","features":[
+          {"type":"Feature","properties":{"u":"a","v":"b","key":0,"length":3000.0,"ref":"A1"},"geometry":{"type":"LineString","coordinates":[[0.0,0.0],[3.0,0.0]]}},
+          {"type":"Feature","properties":{"u":"b","v":"a","key":0,"length":3000.0,"ref":"A1"},"geometry":{"type":"LineString","coordinates":[[3.0,0.0],[0.0,0.0]]}}
+        ]}"#,
+    )
+    .expect("network");
+    fs::write(
+        snapshot.join("places.geojson"),
+        r#"{"type":"FeatureCollection","features":[
+          {"type":"Feature","properties":{"place_id":"alpha","name":"Alpha","place_class":"town"},"geometry":{"type":"Point","coordinates":[0.0,0.0]}},
+          {"type":"Feature","properties":{"place_id":"beta","name":"Beta","place_class":"town"},"geometry":{"type":"Point","coordinates":[3.0,0.0]}}
+        ]}"#,
+    )
+    .expect("places");
+    fs::write(
+        snapshot.join("boundary.geojson"),
+        r#"{"type":"FeatureCollection","features":[
+          {"type":"Feature","properties":{"boundary_id":"authority-a","name":"Authority A"},"geometry":{"type":"Polygon","coordinates":[[[ -1.0,-1.0],[1.0,-1.0],[1.0,1.0],[-1.0,1.0],[-1.0,-1.0]],[[ -0.5,-0.5],[0.0,-0.5],[0.0,0.0],[-0.5,0.0],[-0.5,-0.5]]]}},
+          {"type":"Feature","properties":{"boundary_id":"authority-b","name":"Authority B"},"geometry":{"type":"MultiPolygon","coordinates":[[[[2.0,-1.0],[4.0,-1.0],[4.0,1.0],[2.0,1.0],[2.0,-1.0]],[[2.2,-0.2],[2.5,-0.2],[2.5,0.2],[2.2,0.2],[2.2,-0.2]]],[[[5.0,-1.0],[6.0,-1.0],[6.0,1.0],[5.0,1.0],[5.0,-1.0]]]]}}
+        ]}"#,
+    )
+    .expect("boundary");
+
+    let report = compile_with_progress(
+        &root.join("area.yaml"),
+        &root.join("output"),
+        CompileOptions::default(),
+        &mut |_event| {},
+    )
+    .expect("fixture compiles");
+
+    let boundary = report.boundary_scope.expect("combined boundary");
+    assert_eq!(boundary.id, "authority-a+authority-b");
+    assert_eq!(boundary.name, "Authority A + Authority B");
+    assert_eq!(boundary.geometry.len(), 3);
+    assert_eq!(boundary.geometry[0].len(), 2);
+    assert_eq!(boundary.geometry[1].len(), 2);
+    assert_eq!(boundary.geometry[2].len(), 1);
+    assert_eq!(
+        report
+            .network_places
+            .iter()
+            .map(|place| place.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["alpha", "beta"]
+    );
+}
+
 fn tempfile_root(label: &str) -> std::path::PathBuf {
     let root = std::env::temp_dir().join(format!("{label}-{}", std::process::id()));
     if root.exists() {
