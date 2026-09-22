@@ -58,3 +58,34 @@ cargo test --manifest-path rust/Cargo.toml --test foundation
 
 The remaining integrated classifier, reasoning, replay and publication work is
 tracked in [the Rust compiler roadmap](https://github.com/awjreynolds/agentic-satn-compiler/issues/538).
+
+To run the compact live decision mid-end, keep the history directory separate
+from the rendered bundle and opt into the one-shot specialist explicitly:
+
+```sh
+TYPESAFE_API_KEY=... \
+./rust/target/release/satn-rs \
+  --config deployments/banes/area.yaml \
+  --output build/rust-banes-live \
+  --history build/rust-banes-history \
+  --mode live \
+  --specialist-model gpt-5.6-luna \
+  --specialist-reasoning-effort max \
+  --allow-provisional
+```
+
+The live run writes `planning.json` and append-only `history/` records. Jev is
+asked first for each admitted connection; an explicit unresolved Jev outcome
+can invoke the configured Codex process once for a typed provisional proposal.
+Replay reads those retained operations without launching either provider:
+
+```sh
+./rust/target/release/satn-rs \
+  --config deployments/banes/area.yaml \
+  --output build/rust-banes-replay \
+  --history build/rust-banes-history \
+  --mode replay
+```
+
+`--allow-provisional` is required for a specialist proposal to select an
+alignment; otherwise the typed result remains unresolved.

@@ -20,7 +20,7 @@ pub struct CompileOptions {
     pub destination: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceCorridor {
     pub id: String,
     pub reference: String,
@@ -39,14 +39,14 @@ pub struct SourceCorridor {
     pub provision_status: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BoundaryScope {
     pub id: String,
     pub name: String,
     pub geometry: Vec<Vec<Vec<[f64; 2]>>>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnknownFact {
     pub id: String,
     pub subject: String,
@@ -88,7 +88,7 @@ pub struct AccountingSummary {
     pub network_gap_count: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Connection {
     pub id: String,
     pub origin_place_id: String,
@@ -102,7 +102,7 @@ pub struct Connection {
     pub preferred_classes: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Candidate {
     pub id: String,
     pub connection_id: String,
@@ -121,7 +121,7 @@ pub struct Candidate {
     pub geometry: Vec<[f64; 2]>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Operation {
     pub id: String,
     pub kind: String,
@@ -130,7 +130,7 @@ pub struct Operation {
     pub reason: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompileReport {
     pub area_id: String,
     pub title: String,
