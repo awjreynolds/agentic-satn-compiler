@@ -125,7 +125,10 @@ def _inspect_native_agentic(
                 """() => document.documentElement.dataset.nativeReady === 'true' &&
                   document.documentElement.dataset.nativeNetworkLoaded === 'true' &&
                   Boolean(document.querySelector('[data-native-publication="native-agentic"]')) &&
-                  window.SATN_NATIVE_NETWORK?.type === 'FeatureCollection'"""
+                  window.SATN_NATIVE_NETWORK?.type === 'FeatureCollection' &&
+                  Boolean(window.SATN_NATIVE_MAP) &&
+                  window.SATN_NATIVE_MAP.isStyleLoaded() &&
+                  Boolean(document.querySelector('.maplibregl-canvas'))"""
             )
         except PlaywrightTimeoutError as error:
             details = page.evaluate(
@@ -136,6 +139,7 @@ def _inspect_native_agentic(
                     document.querySelector('[data-native-publication="native-agentic"]')
                   ),
                   network: window.SATN_NATIVE_NETWORK?.type,
+                  map: Boolean(window.SATN_NATIVE_MAP),
                 })"""
             )
             browser_errors = "; ".join(f"browser error: {message}" for message in page_errors)
@@ -144,14 +148,30 @@ def _inspect_native_agentic(
                 f"{deployment_id} native map did not load its GeoJSON: {details}{suffix}"
             ) from error
 
+        decision_summary = page.evaluate(
+            """async () => {
+              const response = await fetch('decision-map.json');
+              if (!response.ok) throw new Error('HTTP ' + response.status);
+              return response.json();
+            }"""
+        )
+        summary_counts = (
+            decision_summary.get("counts") if isinstance(decision_summary, dict) else None
+        )
+        expected_departures = (
+            summary_counts.get("departures") if isinstance(summary_counts, dict) else None
+        )
+        if not isinstance(expected_departures, int) or isinstance(expected_departures, bool):
+            raise ValueError(f"{deployment_id} native decision summary has invalid departure count")
+
         inspection = page.evaluate(
-            """() => {
+            """expectedDepartures => {
               const root = document.querySelector('[data-native-publication="native-agentic"]');
               const network = window.SATN_NATIVE_NETWORK;
               const features = network?.features || [];
+              const map = window.SATN_NATIVE_MAP;
               const properties = feature => feature?.properties || {};
               const kind = feature => properties(feature).kind;
-              const count = value => features.filter(feature => kind(feature) === value).length;
               const strategicKinds = ['selected-alignment', 'provisional-alignment'];
               const strategic = features.filter(feature => strategicKinds.includes(kind(feature)));
               const decisionGeometryKinds = [...strategicKinds, 'unresolved-decision'];
@@ -183,31 +203,65 @@ def _inspect_native_agentic(
               ) && Array.isArray(feature?.geometry?.coordinates) &&
                 feature.geometry.coordinates.length > 0;
               const failures = [];
+              const renderedFor = layers => layers
+                .filter(layer => map && map.getLayer(layer))
+                .flatMap(layer => map.queryRenderedFeatures({layers: [layer]}));
+              const uniqueRendered = layers => {
+                const seen = new Set();
+                return renderedFor(layers).filter(feature => {
+                  const key = String(feature.id ?? JSON.stringify(feature.properties || {}));
+                  if (seen.has(key)) return false;
+                  seen.add(key);
+                  return true;
+                });
+              };
+              const renderedStrategic = uniqueRendered([
+                'native-selected', 'native-provisional', 'native-unresolved', 'native-alternative'
+              ]);
+              const renderedSource = uniqueRendered([
+                'native-source-strategic', 'native-source-context'
+              ]);
+              const renderedDepartures = uniqueRendered([
+                'native-a-road-departure', 'native-source-departure'
+              ]);
+              const renderedGaps = uniqueRendered(['native-access-obligation']);
               if (!root) failures.push('native publication root is missing');
-              if (!sourceBaseline.length) failures.push('native map contains no source baseline');
+              if (!document.querySelector('#native-feature-details')) {
+                failures.push('native feature evidence panel is missing');
+              }
+              if (!sourceBaseline.length) {
+                failures.push('native source baseline geometry is not visible');
+              }
               if (!sourceBaseline.some(feature => properties(feature).baseline_role === 'a-road')) {
                 failures.push('native map contains no retained A-road source baseline');
               }
               if (!decisionGeometry.length) {
                 failures.push('native map contains no strategic geometry');
               }
-              const visibleStrategic = [...document.querySelectorAll(
-                '[data-native-strategic-geometry], svg .selected-alignment,' +
-                ' svg .provisional-alignment, svg .unresolved-decision'
-              )].filter(visible).length;
-              if (!visibleStrategic) failures.push('native strategic geometry is not visible');
-              const visibleSource = [...document.querySelectorAll(
-                '[data-native-source-geometry], svg .source-baseline'
-              )].filter(visible).length;
-              if (sourceBaseline.length && !visibleSource) {
+              if (!renderedStrategic.length) {
+                failures.push('native strategic geometry is not visible');
+              }
+              if (renderedStrategic.length && !renderedStrategic.some(feature => {
+                const props = properties(feature);
+                return props.reason || props.uncertainties || props.evidence_refs;
+              })) {
+                failures.push('native mapped decision evidence is unavailable');
+              }
+              if (sourceBaseline.length && !renderedSource.length) {
                 failures.push('native source baseline geometry is not visible');
               }
-              const visibleDepartures = [...document.querySelectorAll(
-                '[data-native-departure-geometry], svg .a-road-departure,' +
-                ' svg .corridor-departure, svg .source-departure'
-              )].filter(visible).length;
-              if (departures.length && strategic.length && !visibleDepartures) {
+              if (expectedDepartures > 0 && strategic.length && !departures.length) {
                 failures.push('native departure geometry is not visible');
+              }
+              if (expectedDepartures > 0 && strategic.length && !renderedDepartures.length) {
+                failures.push('native departure geometry is not visible');
+              }
+              if (expectedDepartures > 0 && renderedDepartures.length && !renderedDepartures.some(
+                feature => {
+                const props = properties(feature);
+                return props.reason || props.evidence_refs;
+              })) {
+                failures.push('native mapped departure evidence is unavailable');
               }
               const branch = root?.matches('[data-native-branch]')
                 ? root
@@ -215,36 +269,12 @@ def _inspect_native_agentic(
               const featureBranch = features.map(feature => properties(feature).branch)
                 .find(value => typeof value === 'string' && value.trim());
               const branchVisible = branch
-                ? visible(branch) && Boolean(branch.textContent?.trim())
+                ? Boolean(branch.textContent?.trim())
                 : Boolean(featureBranch && document.body.innerText.includes(featureBranch));
               if (!branchVisible) {
                 failures.push('native branch identity is not visible');
               }
-              for (const decisionKind of [
-                'selected-alignment', 'provisional-alignment', 'unresolved-decision'
-              ]) {
-                const explicit = [...document.querySelectorAll(
-                  `[data-native-decision-kind="${decisionKind}"]`
-                )];
-                const labelled = [...document.querySelectorAll('strong')]
-                  .filter(element => element.textContent?.trim() === decisionKind);
-                if (count(decisionKind) && ![...explicit, ...labelled].some(visible)) {
-                  failures.push(`native ${decisionKind} is not displayed`);
-                }
-              }
-              const explicitDepartures = [...document.querySelectorAll('[data-native-departure]')];
-              const labelledDepartures = [...document.querySelectorAll('strong')]
-                .filter(element => ['A-road departure', 'Source corridor departure']
-                  .includes(element.textContent?.trim()));
-              if (departures.length && strategic.length && ![
-                ...explicitDepartures, ...labelledDepartures,
-              ].some(visible)) {
-                failures.push('native departures are not displayed');
-              }
-              const visibleGaps = [...document.querySelectorAll(
-                '[data-native-gap], svg .access-obligation'
-              )].filter(visible);
-              if (gaps.length && !visibleGaps.length) {
+              if (gaps.length && !renderedGaps.length) {
                 failures.push('native network gaps are not displayed');
               }
               const invalidGeometry = features
@@ -263,9 +293,10 @@ def _inspect_native_agentic(
                 accessConnections: gaps.length,
                 departures: departures.length,
                 unresolved: unresolved.length,
-                rendered: visibleStrategic,
+                rendered: renderedStrategic.length,
               };
-            }"""
+            }""",
+            expected_departures,
         )
         failures = list(inspection["failures"])
         failures.extend(f"browser error: {message}" for message in page_errors)

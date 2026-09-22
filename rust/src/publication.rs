@@ -2,7 +2,7 @@
 //!
 //! The planning history contains provider attempts and receipts for replay, so
 //! it is deliberately not copied into this projection.  This module emits the
-//! small public decision manifest plus a GeoJSON/SVG view over the admitted
+//! small public decision manifest plus a GeoJSON/MapLibre view over the admitted
 //! source baseline, candidate paths, and operation outcomes.
 
 use std::collections::BTreeSet;
@@ -15,6 +15,10 @@ use serde_json::{Value, json};
 use crate::compiler::{Candidate, CompileReport};
 use crate::error::{Result, SatnError};
 use crate::midend::{MidendRun, TypedOperation};
+
+const MAPLIBRE_JS: &[u8] = include_bytes!("../../src/satn/assets/maplibre-gl.js");
+const MAPLIBRE_CSS: &[u8] = include_bytes!("../../src/satn/assets/maplibre-gl.css");
+const MAPLIBRE_LICENSE: &[u8] = include_bytes!("../../src/satn/assets/MAPLIBRE-LICENSE.txt");
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DecisionMapPublication {
@@ -150,6 +154,7 @@ pub fn publish_decision_map(
     run: &MidendRun,
 ) -> Result<DecisionMapPublication> {
     fs::create_dir_all(output_dir)?;
+    write_viewer_assets(output_dir)?;
     let files = decision_map_files();
 
     let mut features = baseline_features(report);
@@ -413,7 +418,7 @@ pub fn publish_decision_map(
     )?;
     fs::write(
         output_dir.join(files.html),
-        render_html(
+        render_interactive_html(
             report,
             run,
             &features,
@@ -465,6 +470,15 @@ pub fn publish_decision_map(
         html_file: "index.html".to_string(),
         publication_file: "publication.json".to_string(),
     })
+}
+
+fn write_viewer_assets(output_dir: &Path) -> Result<()> {
+    let assets = output_dir.join("assets");
+    fs::create_dir_all(&assets)?;
+    fs::write(assets.join("maplibre-gl.js"), MAPLIBRE_JS)?;
+    fs::write(assets.join("maplibre-gl.css"), MAPLIBRE_CSS)?;
+    fs::write(assets.join("MAPLIBRE-LICENSE.txt"), MAPLIBRE_LICENSE)?;
+    Ok(())
 }
 
 /// Read only the retained mechanical base needed to publish a replayed branch.
@@ -786,71 +800,16 @@ fn feature_json(feature: &MapFeature) -> Value {
     })
 }
 
-fn render_html(
+fn render_interactive_html(
     report: &CompileReport,
     run: &MidendRun,
-    features: &[MapFeature],
-    decisions: &[PublicDecision],
-    departures: &[PublicDeparture],
+    _features: &[MapFeature],
+    _decisions: &[PublicDecision],
+    _departures: &[PublicDeparture],
     counts: &DecisionMapCounts,
     accounting_status: &str,
     files: &DecisionMapFiles,
 ) -> String {
-    let mut coordinates = Vec::new();
-    if let Some(boundary) = &report.boundary_scope {
-        coordinates.extend(boundary.geometry.iter().flatten().flatten().copied());
-    }
-    for feature in features {
-        match &feature.geometry {
-            Some(MapGeometry::Line(line)) => coordinates.extend(line.iter().copied()),
-            Some(MapGeometry::Point(point)) => coordinates.push(*point),
-            None => {}
-        }
-    }
-    let svg = render_svg(report, features, &coordinates);
-    let decisions_html = decisions
-        .iter()
-        .map(|decision| {
-            let uncertainty = if decision.uncertainties.is_empty() {
-                "No additional unresolved judgment recorded.".to_string()
-            } else {
-                format!(
-                    "Uncertainty: {}",
-                    html_escape(&decision.uncertainties.join("; "))
-                )
-            };
-            format!(
-                "<li data-native-decision-kind=\"{}\"><strong>{}</strong> <b>{}</b> <code>{}</code>: {} <span>{}</span><small>Road context: {}</small></li>",
-                html_escape(&decision.kind),
-                html_escape(&decision.kind),
-                html_escape(&decision.connection_label),
-                html_escape(&decision.connection_id),
-                html_escape(&decision.reason),
-                uncertainty,
-                html_escape(&decision.road_classes.join(", ")),
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("");
-    let departures_html = departures
-        .iter()
-        .map(|departure| {
-            format!(
-                "<li data-native-departure=\"{}\"><strong>{}</strong> <b>{}</b> <code>{}</code>: {} <span>Evidence: {}</span></li>",
-                html_escape(&departure.kind),
-                html_escape(if departure.kind == "a-road-departure" {
-                    "A-road departure"
-                } else {
-                    "Source corridor departure"
-                }),
-                html_escape(&departure.source_reference),
-                html_escape(&departure.graph_edge_id),
-                html_escape(&departure.reason),
-                html_escape(&departure.evidence_refs.join(", ")),
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("");
     let title = html_escape(&report.title);
     let branch = html_escape(&run.branch);
     let base_id = html_escape(&run.base_id);
@@ -861,237 +820,33 @@ fn render_html(
     });
     let attribution = html_escape(&report.attribution);
     let source_attributions = html_escape(&report.source_attributions.join("; "));
-    format!(
-        r##"<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{title} decision map</title>
-<style>
-body{{font:16px system-ui,sans-serif;margin:1.5rem;max-width:96rem;color:#17202a}}
-svg{{width:100%;height:65vh;min-height:24rem;background:#f6f8fa;border:1px solid #c9d1d9}}
-.boundary{{fill:#dbeafe;stroke:#2563eb;stroke-width:1;opacity:.35}}
-.source-baseline{{fill:none;stroke:#475569;stroke-width:1.8;opacity:.72}}
-.source-strategic-a-road{{stroke:#0f766e;stroke-width:2.5}}
-.source-strategic-ncn{{stroke:#2563eb;stroke-width:2.5}}
-.source-strategic-cycleway{{stroke:#16a34a;stroke-width:2.5}}
-.source-context{{stroke:#94a3b8;stroke-dasharray:4 5;opacity:.45}}
-.selected-alignment{{fill:none;stroke:#15803d;stroke-width:4}}
-.provisional-alignment{{fill:none;stroke:#d97706;stroke-width:4;stroke-dasharray:8 5}}
-.unresolved-decision{{fill:none;stroke:#7c3aed;stroke-width:3;stroke-dasharray:2 5}}
-.candidate-alternative{{fill:none;stroke:#64748b;stroke-width:2;stroke-dasharray:7 5;opacity:.85}}
-.a-road-departure{{fill:none;stroke:#dc2626;stroke-width:5;stroke-dasharray:11 6}}
-.corridor-departure{{fill:none;stroke:#be123c;stroke-width:4;stroke-dasharray:8 5}}
-.network-place{{fill:#2563eb;stroke:#fff;stroke-width:1.5}}
-.access-obligation{{fill:#dc2626;stroke:#fff;stroke-width:1.5}}
-.key{{display:flex;gap:1rem;list-style:none;padding:0;flex-wrap:wrap}}
-.key li{{display:flex;align-items:center;gap:.35rem}}
-.swatch{{display:inline-block;width:2rem;height:.35rem;vertical-align:middle}}
-.source-key{{background:#475569}} .selected-key{{background:#15803d}} .provisional-key{{background:#d97706}} .unresolved-key{{background:#7c3aed}} .departure-key{{background:#dc2626}} .context-key{{background:#94a3b8}}
-code{{font-size:.9em}} li{{margin:.35rem 0}} small{{display:block;color:#475569;margin-top:.15rem}}
-</style></head>
-<body data-native-publication="native-agentic" data-network-url="decision-map.geojson" data-native-deployment="{deployment_id}" data-branch="{branch}" data-base-id="{base_id}"><h1>{title} decision map</h1>
-<p data-native-branch>Deployment <code>{deployment_id}</code> · Branch <code>{branch}</code> · base <code>{base_id}</code> · accounting <strong>{accounting_status}</strong> · run status <strong>{status}</strong></p>
-<p class="disclaimer">Experimental SATN POC — not an adopted plan.</p>
-<p>Source baseline remains visible as the proposed strategic structure. Selected alignments are decision overlays; source provision, safety, access and adoption remain explicit unknowns where evidence is absent.</p>
-<p class="source-attribution">Source attribution: {attribution} {source_attributions}</p>
-<ul class="key" aria-label="Map legend">
-<li><label><input type="checkbox" data-layer-toggle="source-strategic" checked> <span class="swatch source-key"></span>Strategic source baseline (A-roads, NCN, cycleways/greenways)</label></li>
-<li><label><input type="checkbox" data-layer-toggle="source-context"> <span class="swatch context-key"></span>Context sources (railway, bridleway)</label></li>
-<li><label><input type="checkbox" data-layer-toggle="selected-alignment" checked> <span class="swatch selected-key"></span>Selected alignment</label></li>
-<li><label><input type="checkbox" data-layer-toggle="provisional-alignment" checked> <span class="swatch provisional-key"></span>Provisional alignment</label></li>
-<li><label><input type="checkbox" data-layer-toggle="unresolved-decision" checked> <span class="swatch unresolved-key"></span>Unresolved decision</label></li>
-<li><label><input type="checkbox" data-layer-toggle="a-road-departure" checked> <span class="swatch departure-key"></span>A-road departure</label></li>
-</ul>
-<p>{source_count} source baseline sections · {prepared_connections} prepared connections · {pending_connections} pending connections · {candidate_count} generated candidates · {decision_count} decisions · {unresolved_facts} unresolved facts · {unresolved_access} unresolved access obligations</p>
-{svg}
-<h2>Decision details</h2><ul>{decisions_html}</ul>
-<h2>Source corridor departures</h2><p>Dashed sections identify only graph-bound strategic source geometry left outside a selected alignment when an admitted alternative provides the comparison. Red marks A-road sections; source-only and unknown-topology rows remain undashed baseline evidence.</p><ul>{departures_html}</ul>
-<p id="native-loading-failure" role="alert" hidden>Unable to load public network data.</p>
-<p><a href="{details_file}">Compact decision manifest</a> · <a href="{geojson_file}">GeoJSON download</a> · <a href="{publication_file}">Public publication manifest</a></p>
-<script>
-document.querySelectorAll('[data-layer-toggle]').forEach(function (toggle) {{
-  function update() {{ document.querySelectorAll('[data-map-layer="' + toggle.dataset.layerToggle + '"]').forEach(function (node) {{ node.hidden = !toggle.checked; }}); }}
-  toggle.addEventListener('change', update); update();
-}});
-document.documentElement.dataset.nativeReady = 'false';
-fetch(document.body.dataset.networkUrl).then(function (response) {{
-  if (!response.ok) throw new Error('HTTP ' + response.status);
-  return response.json();
-}}).then(function (network) {{
-  if (!document.querySelector('svg') || !document.querySelector('[data-layer-toggle]')) throw new Error('native map controls are unavailable');
-  if (!network || network.type !== 'FeatureCollection' || !Array.isArray(network.features)) throw new Error('public network data is not a FeatureCollection');
-  window.SATN_NATIVE_NETWORK = network;
-  document.documentElement.dataset.nativeNetworkLoaded = 'true';
-  document.documentElement.dataset.nativeReady = 'true';
-}}).catch(function (error) {{
-  var failure = document.getElementById('native-loading-failure');
-  failure.hidden = false;
-  failure.textContent = 'Unable to load public network data: ' + error.message;
-  document.documentElement.dataset.nativeReady = 'false';
-}});
-</script>
-</body></html>"##,
-        title = title,
-        deployment_id = deployment_id,
-        branch = branch,
-        base_id = base_id,
-        attribution = attribution,
-        source_attributions = source_attributions,
-        status = html_escape(&run.status),
-        accounting_status = html_escape(accounting_status),
-        source_count = counts.source_baseline,
-        prepared_connections = counts.prepared_connections,
-        pending_connections = counts.pending_connections,
-        candidate_count = counts.candidates,
-        decision_count = counts.decisions,
-        unresolved_facts = counts.unresolved_facts,
-        unresolved_access = counts.unresolved_access,
-        svg = svg,
-        decisions_html = decisions_html,
-        departures_html = if departures_html.is_empty() {
-            "<li>No graph-bound A-road departure is recorded for this run.</li>".to_string()
-        } else {
-            departures_html
-        },
-        details_file = files.details,
-        geojson_file = files.geojson,
-        publication_file = files.publication,
-    )
-}
-
-fn render_svg(report: &CompileReport, features: &[MapFeature], coordinates: &[[f64; 2]]) -> String {
-    if coordinates.is_empty() {
-        return "<svg viewBox=\"0 0 1000 600\" role=\"img\" aria-label=\"Empty planning decision map\"><text x=\"20\" y=\"40\">No geometry admitted</text></svg>".to_string();
-    }
-    let (min_x, max_x) = min_max(coordinates.iter().map(|point| point[0]));
-    let (min_y, max_y) = min_max(coordinates.iter().map(|point| point[1]));
-    let width = 1000.0;
-    let height = 600.0;
-    let pad = 24.0;
-    let scale_x = (width - 2.0 * pad) / (max_x - min_x).max(0.000001);
-    let scale_y = (height - 2.0 * pad) / (max_y - min_y).max(0.000001);
-    let scale = scale_x.min(scale_y);
-    let project = |point: [f64; 2]| {
-        let x = pad + (point[0] - min_x) * scale;
-        let y = height - pad - (point[1] - min_y) * scale;
-        format!("{x:.2},{y:.2}")
-    };
-    let mut elements = Vec::new();
-    if let Some(boundary) = &report.boundary_scope {
-        for polygon in &boundary.geometry {
-            let mut path = String::new();
-            for ring in polygon {
-                let Some(first) = ring.first().copied() else {
-                    continue;
-                };
-                path.push_str(&format!("M {} ", project(first)));
-                for point in ring.iter().skip(1).copied() {
-                    path.push_str(&format!("L {} ", project(point)));
-                }
-                path.push_str("Z ");
-            }
-            elements.push(format!(
-                "<path class=\"boundary\" fill-rule=\"evenodd\" d=\"{}\" aria-label=\"Governed boundary\" />",
-                path.trim()
-            ));
-        }
-    }
-    for feature in features {
-        match &feature.geometry {
-            Some(MapGeometry::Line(line)) if line.len() >= 2 => {
-                let label = feature
-                    .properties
-                    .get("label")
-                    .and_then(Value::as_str)
-                    .unwrap_or(&feature.kind);
-                let map_layer = feature_map_layer(feature);
-                let hidden = if map_layer == "source-context" {
-                    " hidden"
-                } else {
-                    ""
-                };
-                let native_geometry = match feature.kind.as_str() {
-                    "selected-alignment" | "provisional-alignment" | "unresolved-decision" => {
-                        " data-native-strategic-geometry"
-                    }
-                    "a-road-departure" | "source-departure" => " data-native-departure-geometry",
-                    _ => "",
-                };
-                elements.push(format!(
-                    "<polyline class=\"{}\" data-map-layer=\"{}\"{}{} points=\"{}\" aria-label=\"{}\" title=\"{}\" />",
-                    html_escape(&feature_css_class(feature)),
-                    html_escape(map_layer),
-                    hidden,
-                    native_geometry,
-                    line.iter()
-                        .copied()
-                        .map(project)
-                        .collect::<Vec<_>>()
-                        .join(" "),
-                    html_escape(label),
-                    html_escape(label),
-                ));
-            }
-            Some(MapGeometry::Point(point)) => {
-                let projected = project(*point);
-                let (x, y) = projected.split_once(',').unwrap_or(("0", "0"));
-                let label = feature
-                    .properties
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or(&feature.kind);
-                elements.push(format!(
-                    "<circle class=\"{}\" data-map-layer=\"{}\" cx=\"{}\" cy=\"{}\" r=\"5\" aria-label=\"{}\" title=\"{}\" />",
-                    html_escape(&feature_css_class(feature)),
-                    html_escape(feature_map_layer(feature)),
-                    x,
-                    y,
-                    html_escape(label),
-                    html_escape(label),
-                ));
-            }
-            _ => {}
-        }
-    }
-    format!(
-        "<svg viewBox=\"0 0 {width} {height}\" role=\"img\" aria-label=\"Planning decision map\">{}</svg>",
-        elements.join("")
-    )
-}
-
-fn feature_map_layer(feature: &MapFeature) -> &str {
-    if feature.kind == "source-baseline" {
-        return match feature
-            .properties
-            .get("baseline_layer")
-            .and_then(Value::as_str)
-        {
-            Some("source-context") => "source-context",
-            Some(_) => "source-strategic",
-            None => "source-strategic",
-        };
-    }
-    feature.kind.as_str()
-}
-
-fn feature_css_class(feature: &MapFeature) -> String {
-    if feature.kind == "source-departure" {
-        return "corridor-departure".to_string();
-    }
-    if feature.kind != "source-baseline" {
-        return feature.kind.clone();
-    }
-    let layer = feature
-        .properties
-        .get("baseline_layer")
-        .and_then(Value::as_str)
-        .unwrap_or("source-context");
-    format!("source-baseline {layer}")
-}
-
-fn min_max(values: impl Iterator<Item = f64>) -> (f64, f64) {
-    values.fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), value| {
-        (min.min(value), max.max(value))
-    })
+    let template = include_str!("native_map_template.html");
+    template
+        .replace("__TITLE__", &title)
+        .replace("__DEPLOYMENT__", &deployment_id)
+        .replace("__BRANCH__", &branch)
+        .replace("__BASE_ID__", &base_id)
+        .replace("__ACCOUNTING__", &html_escape(accounting_status))
+        .replace("__STATUS__", &html_escape(&run.status))
+        .replace("__ATTRIBUTION__", &attribution)
+        .replace("__SOURCE_ATTRIBUTIONS__", &source_attributions)
+        .replace("__SOURCE_COUNT__", &counts.source_baseline.to_string())
+        .replace(
+            "__PREPARED_CONNECTIONS__",
+            &counts.prepared_connections.to_string(),
+        )
+        .replace(
+            "__PENDING_CONNECTIONS__",
+            &counts.pending_connections.to_string(),
+        )
+        .replace("__CANDIDATE_COUNT__", &counts.candidates.to_string())
+        .replace("__DECISION_COUNT__", &counts.decisions.to_string())
+        .replace("__UNRESOLVED_FACTS__", &counts.unresolved_facts.to_string())
+        .replace(
+            "__UNRESOLVED_ACCESS__",
+            &counts.unresolved_access.to_string(),
+        )
+        .replace("__GEOJSON__", files.geojson)
 }
 
 fn html_escape(value: &str) -> String {

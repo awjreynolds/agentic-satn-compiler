@@ -153,16 +153,27 @@ fn publishes_compact_decision_map_with_real_departure_sections() {
     assert!(html.contains("data-network-url=\"decision-map.geojson\""));
     assert!(html.contains("data-native-deployment=\"fixture\""));
     assert!(html.contains("data-native-branch"));
-    assert!(html.contains("data-native-strategic-geometry"));
-    assert!(html.contains("data-native-departure-geometry"));
-    assert!(html.contains("corridor-departure"));
-    assert!(html.contains("data-native-decision-kind"));
-    assert!(html.contains("data-native-departure"));
+    assert!(html.contains("native-selected"));
+    assert!(html.contains("native-a-road-departure"));
+    assert!(html.contains("native-source-departure"));
+    assert!(html.contains("native-feature-details"));
+    assert!(!html.contains("data-native-decision-kind"));
+    assert!(!html.contains("data-native-departure=\""));
     assert!(html.contains("Fixture attribution"));
     assert!(html.contains("Fixture official attribution"));
+    assert!(html.contains("assets/maplibre-gl.js"));
+    assert!(html.contains("assets/maplibre-gl.css"));
+    assert!(html.contains("window.SATN_NATIVE_MAP"));
+    assert!(html.contains("data-native-reset"));
     assert!(html.contains("nativeNetworkLoaded"));
     assert!(html.contains("nativeReady"));
+    assert!(html.contains("data-layer-toggle=\"candidate-alternative\""));
+    assert!(html.contains("data-native-clear"));
+    assert!(!html.contains("<svg"));
     assert!(!html.contains("summary.json"));
+    assert!(root.join("assets/maplibre-gl.js").is_file());
+    assert!(root.join("assets/maplibre-gl.css").is_file());
+    assert!(root.join("assets/MAPLIBRE-LICENSE.txt").is_file());
 }
 
 #[test]

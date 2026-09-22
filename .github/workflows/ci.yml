@@ -47,6 +47,7 @@ jobs:
           tests/test_elevation_sources.py
           tests/test_osm_network_adapter.py
           tests/test_osm_sources.py
+          tests/test_native_pages_publication.py
           tests/test_pages_packaging.py
           tests/test_planning_engine.py
           tests/test_planning_history.py
@@ -70,6 +71,7 @@ jobs:
           uv run pytest --browser -m browser
           tests/test_review_map_browser.py
           tests/test_planning_map_browser.py
+          tests/test_native_pages_publication.py
       - run: uv build --no-sources
 
   portable-network-identifiers:
