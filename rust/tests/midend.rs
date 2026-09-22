@@ -8,7 +8,10 @@ use satn_rs::midend::{
     ChoiceAttempt, ChoiceProvider, MidendConfig, MidendProgress, ProviderSet, SpecialistAttempt,
     SpecialistProvider, TypedOperation, fork, replay, run,
 };
-use satn_rs::{Candidate, CompileReport, Connection, Operation, SourceCorridor, UnknownFact};
+use satn_rs::{
+    AccessObligation, AccountingSummary, Candidate, CompileReport, Connection, NetworkPlace,
+    Operation, SourceCorridor, UnknownFact,
+};
 use serde_json::{Value, json};
 
 fn base() -> CompileReport {
@@ -28,10 +31,16 @@ fn base() -> CompileReport {
             source_kind: "network".to_string(),
             source_id: "network".to_string(),
             scope: "pinned-network".to_string(),
+            baseline_role: "a-road".to_string(),
             source_edge_ids: vec!["edge-a".to_string()],
+            graph_edge_ids: vec![
+                "edge-candidate-a".to_string(),
+                "edge-candidate-b".to_string(),
+            ],
             geometry: vec![vec![[0.0, 0.0], [1.0, 0.0]]],
             topology_status: "graph-bound".to_string(),
             attachment_status: "graph-edge".to_string(),
+            provision_status: "unknown".to_string(),
         }],
         unknown_facts: vec![UnknownFact {
             id: "unknown:a1".to_string(),
@@ -39,6 +48,33 @@ fn base() -> CompileReport {
             status: "unknown".to_string(),
             reason: "source geometry does not establish provision".to_string(),
         }],
+        network_places: vec![
+            NetworkPlace {
+                id: "alpha".to_string(),
+                name: "Alpha".to_string(),
+                source_id: "alpha".to_string(),
+                place_class: "town".to_string(),
+                geometry: [0.0, 0.0],
+            },
+            NetworkPlace {
+                id: "beta".to_string(),
+                name: "Beta".to_string(),
+                source_id: "beta".to_string(),
+                place_class: "town".to_string(),
+                geometry: [1.0, 0.0],
+            },
+        ],
+        access_obligations: vec![access_obligation("alpha"), access_obligation("beta")],
+        destination_profile: "unconfigured".to_string(),
+        accounting: AccountingSummary {
+            status: "reviewable-with-gaps".to_string(),
+            complete: false,
+            source_baseline_count: 1,
+            network_place_count: 2,
+            obligation_count: 2,
+            unresolved_count: 3,
+            network_gap_count: 2,
+        },
         connections: vec![Connection {
             id: "connection:alpha:beta".to_string(),
             origin_place_id: "alpha".to_string(),
@@ -74,6 +110,21 @@ fn base() -> CompileReport {
     }
 }
 
+fn access_obligation(place_id: &str) -> AccessObligation {
+    AccessObligation {
+        id: format!("obligation:community:{place_id}"),
+        kind: "community".to_string(),
+        source_id: place_id.to_string(),
+        name: place_id.to_string(),
+        geometry: None,
+        access_point_status: None,
+        access_point_source_id: None,
+        access_point_rationale: None,
+        disposition: "unresolved".to_string(),
+        reason: "No selected access support is present.".to_string(),
+    }
+}
+
 fn candidate(id: &str, length_m: f64) -> Candidate {
     candidate_for(id, "connection:alpha:beta", length_m)
 }
@@ -100,6 +151,8 @@ fn candidate_for(id: &str, connection_id: &str, length_m: f64) -> Candidate {
 
 struct RecordingJev {
     prior_lengths: Vec<usize>,
+    source_roles: Vec<Vec<String>>,
+    access_unknown_lengths: Vec<usize>,
 }
 
 impl ChoiceProvider for RecordingJev {
@@ -108,6 +161,20 @@ impl ChoiceProvider for RecordingJev {
             request.state["prior_decisions"]
                 .as_array()
                 .expect("prior decisions array")
+                .len(),
+        );
+        self.source_roles.push(
+            request.state["relevant_sources"]
+                .as_array()
+                .expect("relevant source array")
+                .iter()
+                .filter_map(|source| source["baseline_role"].as_str().map(str::to_string))
+                .collect(),
+        );
+        self.access_unknown_lengths.push(
+            request.state["access_unknowns"]
+                .as_array()
+                .expect("access unknown array")
                 .len(),
         );
         let choice = request
@@ -355,6 +422,8 @@ fn later_tasks_freeze_relevant_prior_decisions_after_each_operation() {
 
     let mut jev = RecordingJev {
         prior_lengths: Vec::new(),
+        source_roles: Vec::new(),
+        access_unknown_lengths: Vec::new(),
     };
     let result = run_fixture(
         &history,
@@ -368,6 +437,8 @@ fn later_tasks_freeze_relevant_prior_decisions_after_each_operation() {
 
     assert_eq!(result.operations.len(), 3);
     assert_eq!(jev.prior_lengths, vec![0, 1, 0]);
+    assert_eq!(jev.source_roles[0], vec!["a-road"]);
+    assert_eq!(jev.access_unknown_lengths, vec![2, 1, 0]);
 }
 
 #[test]

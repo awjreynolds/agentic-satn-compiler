@@ -14,7 +14,7 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::compiler::{Candidate, CompileReport, Connection};
+use crate::compiler::{AccessObligation, Candidate, CompileReport, Connection, SourceCorridor};
 pub use crate::judgment::{ChoiceAttempt, SpecialistAttempt};
 use crate::judgment::{ChoiceRequest, ChoiceResult, CodexConfig, ProviderReceipt, TypeSafeConfig};
 
@@ -833,6 +833,24 @@ fn make_task(
         .iter()
         .map(|candidate| (candidate.id.clone(), candidate_summary(candidate)))
         .collect::<BTreeMap<_, _>>();
+    let source_context = relevant_source_context(base, &candidates);
+    let access_unknowns = relevant_access_unknowns(base, connection);
+    let relevant_subjects = source_context
+        .iter()
+        .filter_map(|source| source.get("id").and_then(Value::as_str))
+        .chain(
+            access_unknowns
+                .iter()
+                .filter_map(|obligation| obligation.get("id").and_then(Value::as_str)),
+        )
+        .collect::<BTreeSet<_>>();
+    let source_unknowns = base
+        .report
+        .unknown_facts
+        .iter()
+        .filter(|fact| relevant_subjects.contains(fact.subject.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
     let relevant_prior = prior_operations
         .iter()
         .filter(|operation| operation_relevant(base, connection, operation))
@@ -855,7 +873,14 @@ fn make_task(
             "preferred_classes": connection.preferred_classes,
         },
         "candidates": summaries,
-        "source_unknowns": base.report.unknown_facts,
+        "relevant_sources": source_context,
+        "source_unknowns": source_unknowns,
+        "access_unknowns": access_unknowns,
+        "destination_profile": base.report.destination_profile,
+        "accounting": {
+            "status": base.report.accounting.status,
+            "complete": base.report.accounting.complete,
+        },
         "prior_decisions": relevant_prior,
         "policy": {"allow_provisional_choices": allow_provisional},
     });
@@ -880,6 +905,70 @@ fn make_task(
         state,
         options,
     }
+}
+
+fn relevant_source_context(base: &PlanningBase, candidates: &[&Candidate]) -> Vec<Value> {
+    let graph_edges = candidates
+        .iter()
+        .flat_map(|candidate| candidate.path_edge_ids.iter())
+        .collect::<BTreeSet<_>>();
+    base.report
+        .source_inventory
+        .iter()
+        .filter(|source| {
+            source
+                .graph_edge_ids
+                .iter()
+                .any(|edge| graph_edges.contains(edge))
+        })
+        .map(source_summary)
+        .collect()
+}
+
+fn source_summary(source: &SourceCorridor) -> Value {
+    json!({
+        "id": source.id,
+        "reference": source.reference,
+        "source_kind": source.source_kind,
+        "source_id": source.source_id,
+        "scope": source.scope,
+        "baseline_role": source.baseline_role,
+        "graph_edge_ids": source.graph_edge_ids,
+        "topology_status": source.topology_status,
+        "attachment_status": source.attachment_status,
+        "provision_status": source.provision_status,
+    })
+}
+
+fn relevant_access_unknowns(base: &PlanningBase, connection: &Connection) -> Vec<Value> {
+    let endpoint_ids = [
+        connection.origin_place_id.as_str(),
+        connection.destination_place_id.as_str(),
+    ];
+    base.report
+        .access_obligations
+        .iter()
+        .filter(|obligation| {
+            endpoint_ids.iter().any(|endpoint| {
+                obligation.id.ends_with(&format!(":{endpoint}"))
+                    || obligation.source_id == *endpoint
+            })
+        })
+        .map(access_obligation_summary)
+        .collect()
+}
+
+fn access_obligation_summary(obligation: &AccessObligation) -> Value {
+    json!({
+        "id": obligation.id,
+        "kind": obligation.kind,
+        "source_id": obligation.source_id,
+        "name": obligation.name,
+        "access_point_status": obligation.access_point_status,
+        "access_point_source_id": obligation.access_point_source_id,
+        "disposition": obligation.disposition,
+        "reason": obligation.reason,
+    })
 }
 
 fn operation_relevant(
