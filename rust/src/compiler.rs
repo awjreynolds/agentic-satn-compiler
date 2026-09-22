@@ -4,6 +4,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::config::AreaConfig;
 use crate::error::Result;
@@ -140,6 +141,12 @@ pub struct Operation {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompileReport {
     pub area_id: String,
+    #[serde(default)]
+    pub deployment_id: String,
+    #[serde(default)]
+    pub attribution: String,
+    #[serde(default)]
+    pub source_attributions: Vec<String>,
     pub title: String,
     pub snapshot_id: String,
     pub source_inventory_count: usize,
@@ -254,6 +261,7 @@ pub fn compile_with_progress(
         0,
     );
     let snapshot_path = config.snapshot_path(config_path);
+    let (attribution, source_attributions) = read_snapshot_attributions(&snapshot_path)?;
     let network_path = snapshot_path.join("network.geojson");
     let places_path = snapshot_path.join("places.geojson");
     let network_features = read_feature_collection(&network_path)?;
@@ -356,6 +364,13 @@ pub fn compile_with_progress(
             .area_id
             .clone()
             .unwrap_or_else(|| "unknown-area".to_string()),
+        deployment_id: config
+            .deployment_id
+            .clone()
+            .or_else(|| config.area_id.clone())
+            .unwrap_or_else(|| "unknown-area".to_string()),
+        attribution,
+        source_attributions,
         title: config.title(),
         snapshot_id: config.source.snapshot_id.clone(),
         source_inventory_count: source_inventory.len(),
@@ -394,6 +409,30 @@ pub fn compile_with_progress(
         report.candidate_count,
     );
     Ok(report)
+}
+
+fn read_snapshot_attributions(snapshot_path: &Path) -> Result<(String, Vec<String>)> {
+    let metadata_path = snapshot_path.join("snapshot.json");
+    if !metadata_path.is_file() {
+        return Ok((String::new(), Vec::new()));
+    }
+    let metadata: Value = serde_json::from_str(&std::fs::read_to_string(metadata_path)?)?;
+    let attribution = metadata
+        .get("attribution")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let mut source_attributions = Vec::new();
+    if let Some(official) = metadata
+        .get("evidence_sources")
+        .and_then(|sources| sources.get("official_road_classification"))
+        .and_then(|source| source.get("attribution"))
+        .and_then(Value::as_str)
+    {
+        source_attributions.push(official.to_string());
+    }
+    source_attributions.retain(|source| source != &attribution);
+    Ok((attribution, source_attributions))
 }
 
 fn read_optional_features(path: &Path) -> Result<Vec<Feature>> {
@@ -1049,7 +1088,6 @@ fn build_connections_and_candidates(
                     connection_id.clone(),
                     role,
                     route,
-                    graph,
                 );
                 connection_candidates.push(candidate);
             }
@@ -1231,19 +1269,7 @@ fn classify_edge(edge: &GraphEdge) -> BTreeSet<String> {
     classes
 }
 
-fn candidate_from_route(
-    id: String,
-    connection_id: String,
-    role: &str,
-    route: Route,
-    graph: &Graph,
-) -> Candidate {
-    let path_edge_geometries = route
-        .edge_ids
-        .iter()
-        .filter_map(|edge_id| graph.edges.iter().find(|edge| edge.id == *edge_id))
-        .map(|edge| edge.geometry.clone())
-        .collect();
+fn candidate_from_route(id: String, connection_id: String, role: &str, route: Route) -> Candidate {
     let measured_length = route.length_m;
     Candidate {
         id,
@@ -1268,7 +1294,7 @@ fn candidate_from_route(
         topology_status: "graph-supported".to_string(),
         provision_status: "unknown".to_string(),
         path_edge_ids: route.edge_ids,
-        path_edge_geometries,
+        path_edge_geometries: route.edge_geometries,
         geometry: route.geometry,
     }
 }

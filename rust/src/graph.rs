@@ -25,6 +25,7 @@ pub(crate) struct GraphEdge {
 #[derive(Debug, Clone)]
 pub(crate) struct Route {
     pub edge_ids: Vec<String>,
+    pub edge_geometries: Vec<Vec<[f64; 2]>>,
     pub length_m: f64,
     pub search_cost_m: f64,
     pub a_road_length_m: f64,
@@ -189,6 +190,10 @@ impl Graph {
             .iter()
             .map(|index| self.edges[*index].id.clone())
             .collect::<Vec<_>>();
+        let edge_geometries = edge_indices
+            .iter()
+            .map(|index| self.edges[*index].geometry.clone())
+            .collect::<Vec<_>>();
         let length_m = edge_indices
             .iter()
             .map(|index| self.edges[*index].length_m)
@@ -223,6 +228,7 @@ impl Graph {
         }
         Some(Route {
             edge_ids,
+            edge_geometries,
             length_m,
             search_cost_m: *distances.get(end).unwrap_or(&0.0),
             a_road_length_m,

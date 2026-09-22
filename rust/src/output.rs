@@ -33,19 +33,19 @@ fn network_geojson(report: &CompileReport) -> Value {
         }));
     }
     for source in &report.source_inventory {
-        for coordinates in &source.geometry {
+        for (part_index, coordinates) in source.geometry.iter().enumerate() {
             features.push(json!({
                 "type": "Feature",
                 "properties": {
                     "kind": "source-baseline",
                     "source_kind": source.source_kind,
+                    "source_corridor_id": source.id,
                     "source_corridor_ref": source.reference,
-                "source_id": source.source_id,
-                "scope": source.scope,
+                    "source_id": source.source_id,
+                    "source_geometry_part": part_index,
+                    "scope": source.scope,
                     "baseline_role": source.baseline_role,
-                    "source_edge_ids": source.source_edge_ids,
-                    "graph_edge_ids": source.graph_edge_ids,
-                "topology_status": source.topology_status,
+                    "topology_status": source.topology_status,
                     "attachment_status": source.attachment_status,
                     "provision_status": source.provision_status
                 },

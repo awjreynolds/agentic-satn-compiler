@@ -88,13 +88,13 @@ fn run() -> satn_rs::Result<()> {
         };
         let result = replay(&history, &cli.branch, &mut emit)
             .map_err(|error| satn_rs::SatnError::InvalidInput(error.to_string()))?;
-        let report = load_retained_report(&history)?;
-        publish_decision_map(&cli.output, &report, &result)?;
         std::fs::create_dir_all(&cli.output)?;
         std::fs::write(
             cli.output.join("planning.json"),
             serde_json::to_string_pretty(&result)?,
         )?;
+        let report = load_retained_report(&history)?;
+        publish_decision_map(&cli.output, &report, &result)?;
         println!("{}", serde_json::to_string(&result)?);
         return Ok(());
     }
@@ -147,12 +147,12 @@ fn run() -> satn_rs::Result<()> {
             &mut emit,
         )
         .map_err(|error| satn_rs::SatnError::InvalidInput(error.to_string()))?;
-        publish_decision_map(&cli.output, &publication_report, &result)?;
         std::fs::create_dir_all(&cli.output)?;
         std::fs::write(
             cli.output.join("planning.json"),
             serde_json::to_string_pretty(&result)?,
         )?;
+        publish_decision_map(&cli.output, &publication_report, &result)?;
         println!("{}", serde_json::to_string(&result)?);
         return Ok(());
     }

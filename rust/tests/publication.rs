@@ -10,6 +10,8 @@ use serde_json::Value;
 #[test]
 fn publishes_compact_decision_map_with_real_departure_sections() {
     let root = tempfile_root("satn-rs-publication");
+    fs::create_dir_all(&root).expect("publication root");
+    fs::write(root.join("decision-map.html"), "stale duplicate").expect("stale map");
     let report = report_fixture();
     let run = MidendRun {
         branch: "review-branch".to_string(),
@@ -102,6 +104,10 @@ fn publishes_compact_decision_map_with_real_departure_sections() {
         feature["properties"]["kind"] == "source-baseline"
             && feature["properties"]["source_corridor_id"] == "source:unattached"
     }));
+    assert!(features.iter().any(|feature| {
+        feature["properties"]["kind"] == "source-departure"
+            && feature["properties"]["source_corridor_id"] == "source:cycleway"
+    }));
     assert!(!features.iter().any(|feature| {
         feature["properties"]["kind"] == "a-road-departure"
             && feature["properties"]["source_corridor_id"] == "source:unattached"
@@ -109,12 +115,94 @@ fn publishes_compact_decision_map_with_real_departure_sections() {
 
     let compact = fs::read_to_string(root.join("decision-map.json")).expect("compact output");
     assert!(compact.contains("review-branch"));
+    assert!(compact.contains("Experimental SATN POC — not an adopted plan."));
     assert!(!compact.contains("receipt"));
-    let html = fs::read_to_string(root.join("decision-map.html")).expect("HTML output");
+    let html = fs::read_to_string(root.join("index.html")).expect("HTML output");
     assert!(html.contains("review-branch"));
     assert!(html.contains("Provisional alignment"));
     assert!(html.contains("Unresolved decision"));
+    assert!(html.contains("Strategic source baseline"));
+    assert!(html.contains("Context sources"));
     assert!(!html.contains("source_inventory"));
+    assert!(root.join("index.html").is_file());
+    let publication: Value = serde_json::from_str(
+        &fs::read_to_string(root.join("publication.json")).expect("publication manifest"),
+    )
+    .expect("valid publication manifest");
+    assert_eq!(publication["publication_kind"], "native-agentic");
+    assert_eq!(publication["deployment_id"], "fixture");
+    assert_eq!(publication["attribution"], "Fixture attribution");
+    assert_eq!(
+        publication["source_attributions"][0],
+        "Fixture official attribution"
+    );
+    assert_eq!(publication["status"], "reviewable-with-gaps");
+    assert_eq!(publication["run_status"], "unresolved");
+    assert_eq!(publication["files"]["html"], "index.html");
+    assert!(publication["files"].get("planning").is_none());
+    assert!(publication["files"].get("decision_map_html").is_none());
+    assert_eq!(
+        publication["files"]
+            .as_object()
+            .expect("public files")
+            .len(),
+        4
+    );
+    assert!(!root.join("decision-map.html").exists());
+    assert!(html.contains("data-native-publication=\"native-agentic\""));
+    assert!(html.contains("data-network-url=\"decision-map.geojson\""));
+    assert!(html.contains("data-native-deployment=\"fixture\""));
+    assert!(html.contains("data-native-branch"));
+    assert!(html.contains("data-native-strategic-geometry"));
+    assert!(html.contains("data-native-departure-geometry"));
+    assert!(html.contains("corridor-departure"));
+    assert!(html.contains("data-native-decision-kind"));
+    assert!(html.contains("data-native-departure"));
+    assert!(html.contains("Fixture attribution"));
+    assert!(html.contains("Fixture official attribution"));
+    assert!(html.contains("nativeNetworkLoaded"));
+    assert!(html.contains("nativeReady"));
+    assert!(!html.contains("summary.json"));
+}
+
+#[test]
+fn identical_physical_path_with_parallel_ids_has_no_departure() {
+    let root = tempfile_root("satn-rs-publication-physical-path");
+    let mut report = report_fixture();
+    let alternative = report
+        .candidates
+        .iter()
+        .find(|candidate| candidate.id == "candidate:strategic")
+        .expect("strategic alternative")
+        .clone();
+    let selected = report
+        .candidates
+        .iter_mut()
+        .find(|candidate| candidate.id == "candidate:selected")
+        .expect("selected candidate");
+    selected.path_edge_ids = vec!["parallel-first".to_string(), "parallel-second".to_string()];
+    selected.path_edge_geometries = alternative.path_edge_geometries.clone();
+    selected.geometry = alternative.geometry.clone();
+    let run = MidendRun {
+        branch: "main".to_string(),
+        base_id: "base:fixture:snapshot".to_string(),
+        status: "completed".to_string(),
+        task_ids: Vec::new(),
+        operations: vec![TypedOperation::SelectAlignment {
+            id: "selected".to_string(),
+            task_id: "task:selected".to_string(),
+            attempt_id: "attempt:selected".to_string(),
+            connection_id: "connection:selected".to_string(),
+            candidate_id: "candidate:selected".to_string(),
+            decision_class: "classifier".to_string(),
+            provisional: false,
+            reason: None,
+            uncertainties: Vec::new(),
+        }],
+    };
+
+    let publication = publish_decision_map(&root, &report, &run).expect("publish map");
+    assert_eq!(publication.departure_count, 0);
 }
 
 #[test]
@@ -136,9 +224,44 @@ fn retained_base_reader_supports_offline_projection_without_private_history() {
     assert_eq!(loaded.candidates.len(), report.candidates.len());
 }
 
+#[test]
+fn publication_manifest_exposes_pending_prepared_connections() {
+    let root = tempfile_root("satn-rs-publication-pending");
+    let report = report_fixture();
+    let run = MidendRun {
+        branch: "prefix".to_string(),
+        base_id: "base:fixture:snapshot".to_string(),
+        status: "replayed".to_string(),
+        task_ids: vec!["task:connection:selected".to_string()],
+        operations: vec![TypedOperation::SelectAlignment {
+            id: "decision:selected".to_string(),
+            task_id: "task:connection:selected".to_string(),
+            attempt_id: "attempt:selected".to_string(),
+            connection_id: "connection:selected".to_string(),
+            candidate_id: "candidate:selected".to_string(),
+            decision_class: "classifier".to_string(),
+            provisional: false,
+            reason: None,
+            uncertainties: Vec::new(),
+        }],
+    };
+    publish_decision_map(&root, &report, &run).expect("publish prefix map");
+    let publication: Value = serde_json::from_str(
+        &fs::read_to_string(root.join("publication.json")).expect("publication manifest"),
+    )
+    .expect("valid publication manifest");
+    assert_eq!(publication["status"], "reviewable-with-gaps");
+    assert_eq!(publication["run_status"], "replayed");
+    assert_eq!(publication["counts"]["prepared_connections"], 3);
+    assert_eq!(publication["counts"]["pending_connections"], 2);
+}
+
 fn report_fixture() -> CompileReport {
     CompileReport {
         area_id: "fixture".to_string(),
+        deployment_id: "fixture".to_string(),
+        attribution: "Fixture attribution".to_string(),
+        source_attributions: vec!["Fixture official attribution".to_string()],
         title: "Fixture".to_string(),
         snapshot_id: "snapshot".to_string(),
         source_inventory_count: 2,
@@ -161,6 +284,23 @@ fn report_fixture() -> CompileReport {
                     "alternative-edge-2".to_string(),
                 ],
                 geometry: vec![vec![[0.0, 0.0], [0.5, 0.0]], vec![[0.5, 0.0], [1.0, 0.0]]],
+                topology_status: "graph-bound".to_string(),
+                attachment_status: "graph-edge".to_string(),
+                provision_status: "unknown".to_string(),
+            },
+            SourceCorridor {
+                id: "source:cycleway".to_string(),
+                reference: "current NCN".to_string(),
+                source_kind: "context".to_string(),
+                source_id: "ncn-source".to_string(),
+                scope: "governed".to_string(),
+                baseline_role: "current-ncn".to_string(),
+                source_edge_ids: vec!["ncn-section-1".to_string()],
+                graph_edge_ids: vec![
+                    "alternative-edge-1".to_string(),
+                    "alternative-edge-2".to_string(),
+                ],
+                geometry: vec![vec![[0.0, 0.0], [1.0, 0.0]]],
                 topology_status: "graph-bound".to_string(),
                 attachment_status: "graph-edge".to_string(),
                 provision_status: "unknown".to_string(),

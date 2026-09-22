@@ -17,6 +17,9 @@ use serde_json::{Value, json};
 fn base() -> CompileReport {
     CompileReport {
         area_id: "fixture".to_string(),
+        deployment_id: "fixture".to_string(),
+        attribution: String::new(),
+        source_attributions: Vec::new(),
         title: "Fixture".to_string(),
         snapshot_id: "snapshot-1".to_string(),
         source_inventory_count: 1,
