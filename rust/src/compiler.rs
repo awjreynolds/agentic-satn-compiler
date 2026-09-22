@@ -1,13 +1,15 @@
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap};
 use std::path::Path;
 use std::time::Instant;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::config::AreaConfig;
 use crate::error::Result;
-use crate::geojson::{Feature, Geometry, read_feature_collection, string_property};
+use crate::geojson::{
+    Feature, Geometry, canonical_tag_values, read_feature_collection, string_property,
+};
 use crate::geometry::enrich_network_edges;
 use crate::graph::{Graph, GraphEdge, Route};
 use crate::output::write_bundle;
@@ -25,10 +27,16 @@ pub struct SourceCorridor {
     pub source_kind: String,
     pub source_id: String,
     pub scope: String,
+    #[serde(default)]
+    pub baseline_role: String,
     pub source_edge_ids: Vec<String>,
+    #[serde(default)]
+    pub graph_edge_ids: Vec<String>,
     pub geometry: Vec<Vec<[f64; 2]>>,
     pub topology_status: String,
     pub attachment_status: String,
+    #[serde(default)]
+    pub provision_status: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -44,6 +52,40 @@ pub struct UnknownFact {
     pub subject: String,
     pub status: String,
     pub reason: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct NetworkPlace {
+    pub id: String,
+    pub name: String,
+    pub source_id: String,
+    pub place_class: String,
+    pub geometry: [f64; 2],
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AccessObligation {
+    pub id: String,
+    pub kind: String,
+    pub source_id: String,
+    pub name: String,
+    pub geometry: Option<[f64; 2]>,
+    pub access_point_status: Option<String>,
+    pub access_point_source_id: Option<String>,
+    pub access_point_rationale: Option<String>,
+    pub disposition: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct AccountingSummary {
+    pub status: String,
+    pub complete: bool,
+    pub source_baseline_count: usize,
+    pub network_place_count: usize,
+    pub obligation_count: usize,
+    pub unresolved_count: usize,
+    pub network_gap_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -101,6 +143,14 @@ pub struct CompileReport {
     pub boundary_scope: Option<BoundaryScope>,
     pub source_inventory: Vec<SourceCorridor>,
     pub unknown_facts: Vec<UnknownFact>,
+    #[serde(default)]
+    pub network_places: Vec<NetworkPlace>,
+    #[serde(default)]
+    pub access_obligations: Vec<AccessObligation>,
+    #[serde(default)]
+    pub destination_profile: String,
+    #[serde(default)]
+    pub accounting: AccountingSummary,
     pub connections: Vec<Connection>,
     pub candidates: Vec<Candidate>,
     pub operations: Vec<Operation>,
@@ -211,20 +261,24 @@ pub fn compile_with_progress(
         read_optional_features(&snapshot_path.join("official-road-classification.geojson"))?;
     let boundary_features = read_optional_features(&snapshot_path.join("boundary.geojson"))?;
     let boundary_scope = admit_boundary_scope(&boundary_features);
-    let graph_geometry_keys = graph_geometry_keys(&network.graph);
+    let graph_geometry_bindings = graph_geometry_bindings(&network.graph);
     let place_labels = read_optional_features(&snapshot_path.join("osm-place-features.geojson"))?;
-    let place_labels = if place_labels.is_empty() {
-        places_features
+    let places = if place_labels.is_empty() {
+        admit_places(&places_features, boundary_scope.as_ref())
     } else {
-        place_labels
+        admit_places(&place_labels, boundary_scope.as_ref())
     };
-    let places = admit_places(&place_labels, boundary_scope.as_ref());
+    let network_places = admit_network_places(
+        &places_features,
+        boundary_scope.as_ref(),
+        &config.source.community_place_types,
+    );
     let source_inventory = admit_source_inventory(
         &network.features,
         &network.graph,
         &context_features,
         &official_features,
-        &graph_geometry_keys,
+        &graph_geometry_bindings,
     );
     let unknown_facts = source_inventory
         .iter()
@@ -233,8 +287,10 @@ pub fn compile_with_progress(
                 id: format!("unknown:{}", corridor.id),
                 subject: corridor.id.clone(),
                 status: "unknown".to_string(),
-                reason: "Pinned source geometry does not establish current active-travel provision."
-                    .to_string(),
+                reason: format!(
+                    "Pinned {} source geometry does not establish current active-travel provision.",
+                    corridor.baseline_role
+                ),
             }];
             if corridor.attachment_status != "graph-edge" {
                 facts.push(UnknownFact {
@@ -248,6 +304,10 @@ pub fn compile_with_progress(
             facts
         })
         .collect::<Vec<_>>();
+    let destination_profile = "unconfigured".to_string();
+    let access_obligations = build_access_obligations(&network_places, &context_features);
+    let accounting =
+        derive_accounting(&source_inventory, &access_obligations, &destination_profile);
     emit(
         progress,
         &started,
@@ -299,6 +359,10 @@ pub fn compile_with_progress(
         boundary_scope,
         source_inventory,
         unknown_facts,
+        network_places,
+        access_obligations,
+        destination_profile,
+        accounting,
         connections,
         candidates,
         operations,
@@ -388,14 +452,26 @@ fn admit_source_inventory(
     graph: &Graph,
     context_features: &[Feature],
     official_features: &[Feature],
-    graph_geometry_keys: &HashSet<String>,
+    graph_geometry_bindings: &HashMap<String, Vec<String>>,
 ) -> Vec<SourceCorridor> {
     let mut groups: BTreeMap<String, SourceCorridor> = BTreeMap::new();
     for (index, feature) in network_features.iter().enumerate() {
-        let Some(reference) = string_property(&feature.properties, "ref") else {
-            continue;
-        };
-        if !is_a_reference(&reference) {
+        let references = canonical_tag_values(&feature.properties, "ref");
+        let highways = canonical_tag_values(&feature.properties, "highway");
+        let mut roles = Vec::new();
+        if references.iter().any(|reference| is_a_reference(reference)) {
+            roles.push("a-road");
+        }
+        if highways.iter().any(|highway| is_existing_cycleway(highway)) {
+            roles.push("existing-cycleway");
+        }
+        if highways
+            .iter()
+            .any(|highway| highway.eq_ignore_ascii_case("bridleway"))
+        {
+            roles.push("bridleway");
+        }
+        if roles.is_empty() {
             continue;
         }
         let edge_id = graph
@@ -404,44 +480,65 @@ fn admit_source_inventory(
             .map(|edge| edge.id.clone())
             .unwrap_or_else(|| format!("network-feature:{index}"));
         for (line_index, geometry) in line_geometries(feature).into_iter().enumerate() {
-            add_corridor(
-                &mut groups,
-                format!("source:network:{reference}"),
-                reference.clone(),
-                "network",
-                "network.geojson".to_string(),
-                "pinned-network",
-                format!("{edge_id}:{line_index}"),
-                geometry,
-                true,
-            );
+            for role in &roles {
+                let references_for_role = if *role == "a-road" {
+                    references
+                        .iter()
+                        .filter(|reference| is_a_reference(reference))
+                        .cloned()
+                        .collect::<Vec<_>>()
+                } else if references.is_empty() {
+                    vec![role.to_string()]
+                } else {
+                    vec![references[0].clone()]
+                };
+                for reference in references_for_role {
+                    add_corridor(
+                        &mut groups,
+                        format!("source:network:{role}:{reference}"),
+                        reference,
+                        "network",
+                        "network.geojson".to_string(),
+                        "pinned-network",
+                        role,
+                        format!("{edge_id}:{line_index}"),
+                        geometry.clone(),
+                        vec![edge_id.clone()],
+                    );
+                }
+            }
         }
     }
     for (index, feature) in context_features.iter().enumerate() {
         let feature_type = string_property(&feature.properties, "feature_type").unwrap_or_default();
         let category = string_property(&feature.properties, "category").unwrap_or_default();
-        if feature_type != "a-road-spine" && !category.to_ascii_lowercase().contains("a-road") {
+        let Some(baseline_role) = context_baseline_role(&feature_type, &category) else {
             continue;
-        }
+        };
         let reference = string_property(&feature.properties, "name")
             .filter(|value| is_a_reference(value))
-            .unwrap_or_else(|| "A-road".to_string());
+            .or_else(|| string_property(&feature.properties, "ncn_evidence_role"))
+            .unwrap_or_else(|| baseline_role.to_string());
         let source_id = string_property(&feature.properties, "evidence_id")
             .unwrap_or_else(|| format!("context-feature:{index}"));
         let scope = string_property(&feature.properties, "network_scope")
             .unwrap_or_else(|| "unknown-scope".to_string());
         for (line_index, geometry) in line_geometries(feature).into_iter().enumerate() {
-            let graph_bound = graph_geometry_keys.contains(&geometry_key(&geometry));
+            let graph_edge_ids = graph_geometry_bindings
+                .get(&geometry_key(&geometry))
+                .cloned()
+                .unwrap_or_default();
             add_corridor(
                 &mut groups,
-                format!("source:context:{source_id}"),
+                format!("source:context:{baseline_role}:{source_id}"),
                 reference.clone(),
                 "context",
                 source_id.clone(),
                 &scope,
+                baseline_role,
                 format!("{source_id}:{index}:{line_index}"),
                 geometry,
-                graph_bound,
+                graph_edge_ids,
             );
         }
     }
@@ -457,7 +554,10 @@ fn admit_source_inventory(
         let source_id = string_property(&feature.properties, "official_feature_id")
             .unwrap_or_else(|| format!("official-feature:{index}"));
         for (line_index, geometry) in line_geometries(feature).into_iter().enumerate() {
-            let graph_bound = graph_geometry_keys.contains(&geometry_key(&geometry));
+            let graph_edge_ids = graph_geometry_bindings
+                .get(&geometry_key(&geometry))
+                .cloned()
+                .unwrap_or_default();
             add_corridor(
                 &mut groups,
                 format!("source:official:{source_id}"),
@@ -465,9 +565,10 @@ fn admit_source_inventory(
                 "official",
                 source_id.clone(),
                 "governed-official",
+                "a-road",
                 format!("{source_id}:{index}:{line_index}"),
                 geometry,
-                graph_bound,
+                graph_edge_ids,
             );
         }
     }
@@ -481,17 +582,21 @@ fn add_corridor(
     source_kind: &str,
     source_id: String,
     scope: &str,
+    baseline_role: &str,
     source_edge_id: String,
     geometry: Vec<[f64; 2]>,
-    graph_bound: bool,
+    graph_edge_ids: Vec<String>,
 ) {
+    let graph_bound = !graph_edge_ids.is_empty();
     let corridor = groups.entry(key.clone()).or_insert_with(|| SourceCorridor {
         id: key,
         reference,
         source_kind: source_kind.to_string(),
         source_id,
         scope: scope.to_string(),
+        baseline_role: baseline_role.to_string(),
         source_edge_ids: Vec::new(),
+        graph_edge_ids: Vec::new(),
         geometry: Vec::new(),
         topology_status: if graph_bound {
             "graph-bound".to_string()
@@ -503,6 +608,7 @@ fn add_corridor(
         } else {
             "unknown".to_string()
         },
+        provision_status: "unknown".to_string(),
     });
     let previous_graph_bound = corridor.attachment_status == "graph-edge";
     if previous_graph_bound != graph_bound {
@@ -511,6 +617,11 @@ fn add_corridor(
     }
     if !corridor.source_edge_ids.contains(&source_edge_id) {
         corridor.source_edge_ids.push(source_edge_id);
+    }
+    for graph_edge_id in graph_edge_ids {
+        if !corridor.graph_edge_ids.contains(&graph_edge_id) {
+            corridor.graph_edge_ids.push(graph_edge_id);
+        }
     }
     if !corridor
         .geometry
@@ -529,17 +640,221 @@ fn geometry_key(line: &[[f64; 2]]) -> String {
     format!("{line:?}")
 }
 
-fn graph_geometry_keys(graph: &Graph) -> HashSet<String> {
-    graph
-        .edges
+fn graph_geometry_bindings(graph: &Graph) -> HashMap<String, Vec<String>> {
+    let mut bindings = HashMap::new();
+    for edge in &graph.edges {
+        for key in [
+            geometry_key(&edge.geometry),
+            geometry_key(&edge.geometry.iter().copied().rev().collect::<Vec<_>>()),
+        ] {
+            let values = bindings.entry(key).or_insert_with(Vec::new);
+            if !values.contains(&edge.id) {
+                values.push(edge.id.clone());
+            }
+        }
+    }
+    bindings
+}
+
+fn context_baseline_role(feature_type: &str, category: &str) -> Option<&'static str> {
+    let feature_type = feature_type.to_ascii_lowercase();
+    let category = category.to_ascii_lowercase();
+    if feature_type == "a-road-spine" || category.contains("a-road") {
+        Some("a-road")
+    } else if feature_type == "ncn-route" {
+        Some("current-ncn")
+    } else if feature_type == "ncn-link" {
+        Some("ncn-link")
+    } else if feature_type == "declassified-ncn-route" {
+        Some("declassified-ncn")
+    } else if feature_type == "greenway-cycleway" || category.contains("greenway") {
+        Some("greenway-cycleway")
+    } else if feature_type == "cycleway" || category.contains("cycleway") {
+        Some("existing-cycleway")
+    } else if feature_type == "bridleway" || category.contains("bridleway") {
+        Some("bridleway")
+    } else if (feature_type.contains("railway") || category.contains("railway"))
+        && [feature_type.as_str(), category.as_str()]
+            .iter()
+            .any(|value| {
+                value.contains("former") || value.contains("disused") || value.contains("abandoned")
+            })
+    {
+        Some("former-railway")
+    } else if feature_type == "railway" || category.contains("railway") {
+        Some("railway")
+    } else {
+        None
+    }
+}
+
+fn is_existing_cycleway(highway: &str) -> bool {
+    matches!(
+        highway,
+        "cycleway"
+            | "cycle_track"
+            | "cycle-track"
+            | "greenway"
+            | "path-cycleway"
+            | "shared_use_path"
+    )
+}
+
+fn admit_network_places(
+    features: &[Feature],
+    boundary: Option<&BoundaryScope>,
+    allowed_types: &[String],
+) -> Vec<NetworkPlace> {
+    features
         .iter()
-        .flat_map(|edge| {
-            [
-                geometry_key(&edge.geometry),
-                geometry_key(&edge.geometry.iter().copied().rev().collect::<Vec<_>>()),
-            ]
+        .filter_map(|feature| {
+            let Geometry::Point(point) = feature.geometry else {
+                return None;
+            };
+            let place_class = string_property(&feature.properties, "place_class")
+                .or_else(|| string_property(&feature.properties, "place"))
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if !allowed_types
+                .iter()
+                .any(|value| value.eq_ignore_ascii_case(&place_class))
+            {
+                return None;
+            }
+            if boundary.is_some_and(|scope| !boundary_contains(scope, point)) {
+                return None;
+            }
+            let id = string_property(&feature.properties, "place_id")
+                .or_else(|| string_property(&feature.properties, "source_id"))
+                .or_else(|| string_property(&feature.properties, "id"))?;
+            let name = string_property(&feature.properties, "name").unwrap_or_else(|| id.clone());
+            Some(NetworkPlace {
+                source_id: string_property(&feature.properties, "source_id")
+                    .unwrap_or_else(|| id.clone()),
+                id,
+                name,
+                place_class,
+                geometry: point,
+            })
         })
         .collect()
+}
+
+fn build_access_obligations(
+    network_places: &[NetworkPlace],
+    context_features: &[Feature],
+) -> Vec<AccessObligation> {
+    let mut obligations = network_places
+        .iter()
+        .map(|place| AccessObligation {
+            id: format!("obligation:community:{}", place.id),
+            kind: "community".to_string(),
+            source_id: place.source_id.clone(),
+            name: place.name.clone(),
+            geometry: Some(place.geometry),
+            access_point_status: None,
+            access_point_source_id: None,
+            access_point_rationale: None,
+            disposition: "unresolved".to_string(),
+            reason: "No selected access support is present in the mechanical compilation."
+                .to_string(),
+        })
+        .collect::<Vec<_>>();
+    obligations.extend(context_features.iter().filter_map(|feature| {
+        if string_property(&feature.properties, "feature_type")?.to_ascii_lowercase() != "school" {
+            return None;
+        }
+        if !string_property(&feature.properties, "school_obligation_eligible")
+            .is_some_and(|value| value.eq_ignore_ascii_case("true"))
+        {
+            return None;
+        }
+        let id = string_property(&feature.properties, "evidence_id")?;
+        let name = string_property(&feature.properties, "name").unwrap_or_else(|| id.clone());
+        let point = match feature.geometry {
+            Geometry::Point(point) => Some(point),
+            _ => None,
+        };
+        let access_point_status = string_property(&feature.properties, "access_point_status");
+        let unresolved_access = access_point_status
+            .as_deref()
+            .is_none_or(|status| status.eq_ignore_ascii_case("unresolved"));
+        Some(AccessObligation {
+            id: format!("obligation:school:{id}"),
+            kind: "school".to_string(),
+            source_id: string_property(&feature.properties, "source_id").unwrap_or(id.clone()),
+            name,
+            geometry: point,
+            access_point_status,
+            access_point_source_id: string_property(
+                &feature.properties,
+                "access_point_source_id",
+            ),
+            access_point_rationale: string_property(
+                &feature.properties,
+                "access_point_rationale",
+            ),
+            disposition: if unresolved_access {
+                "network-gap".to_string()
+            } else {
+                "unresolved".to_string()
+            },
+            reason: if unresolved_access {
+                "School access-point evidence is unresolved; no route or entrance is invented."
+                    .to_string()
+            } else {
+                "Access point is evidenced, but no selected support is present in the mechanical compilation."
+                    .to_string()
+            },
+        })
+    }));
+    obligations.sort_by(|left, right| left.id.cmp(&right.id));
+    obligations
+}
+
+fn derive_accounting(
+    source_inventory: &[SourceCorridor],
+    obligations: &[AccessObligation],
+    destination_profile: &str,
+) -> AccountingSummary {
+    let network_gap_count = obligations
+        .iter()
+        .filter(|obligation| obligation.disposition == "network-gap")
+        .count();
+    let unresolved_count = source_inventory
+        .iter()
+        .filter(|source| {
+            source.attachment_status != "graph-edge" || source.provision_status == "unknown"
+        })
+        .count()
+        + obligations
+            .iter()
+            .filter(|obligation| obligation.disposition != "served")
+            .count();
+    let complete = destination_profile == "configured"
+        && network_gap_count == 0
+        && obligations
+            .iter()
+            .all(|obligation| obligation.disposition == "served")
+        && source_inventory
+            .iter()
+            .all(|source| source.attachment_status == "graph-edge");
+    AccountingSummary {
+        status: if complete {
+            "complete".to_string()
+        } else {
+            "reviewable-with-gaps".to_string()
+        },
+        complete,
+        source_baseline_count: source_inventory.len(),
+        network_place_count: obligations
+            .iter()
+            .filter(|obligation| obligation.kind == "community")
+            .count(),
+        obligation_count: obligations.len(),
+        unresolved_count,
+        network_gap_count,
+    }
 }
 
 fn admit_boundary_scope(features: &[Feature]) -> Option<BoundaryScope> {

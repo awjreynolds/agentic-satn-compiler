@@ -18,6 +18,8 @@ pub(crate) struct AreaConfig {
 pub(crate) struct SourceConfig {
     pub snapshot_dir: PathBuf,
     pub snapshot_id: String,
+    #[serde(default = "default_community_place_types")]
+    pub community_place_types: Vec<String>,
     #[serde(default = "default_urban_scope_buffer_km")]
     pub urban_scope_buffer_km: f64,
 }
@@ -42,6 +44,20 @@ fn default_max_connection_km() -> f64 {
 
 fn default_urban_scope_buffer_km() -> f64 {
     2.0
+}
+
+fn default_community_place_types() -> Vec<String> {
+    [
+        "city",
+        "town",
+        "village",
+        "suburb",
+        "quarter",
+        "neighbourhood",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
 }
 
 impl AreaConfig {
