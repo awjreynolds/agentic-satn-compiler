@@ -1,0 +1,849 @@
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
+use std::path::Path;
+use std::time::Instant;
+
+use serde::Serialize;
+
+use crate::config::AreaConfig;
+use crate::error::Result;
+use crate::geojson::{Feature, Geometry, read_feature_collection, string_property};
+use crate::graph::{Graph, GraphEdge, Route};
+use crate::output::write_bundle;
+
+#[derive(Debug, Clone, Default)]
+pub struct CompileOptions {
+    pub origin: Option<String>,
+    pub destination: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SourceCorridor {
+    pub id: String,
+    pub reference: String,
+    pub source_kind: String,
+    pub source_id: String,
+    pub scope: String,
+    pub source_edge_ids: Vec<String>,
+    pub geometry: Vec<Vec<[f64; 2]>>,
+    pub topology_status: String,
+    pub attachment_status: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BoundaryScope {
+    pub id: String,
+    pub name: String,
+    pub geometry: Vec<Vec<Vec<[f64; 2]>>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UnknownFact {
+    pub id: String,
+    pub subject: String,
+    pub status: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Connection {
+    pub id: String,
+    pub origin_place_id: String,
+    pub origin_name: String,
+    pub destination_place_id: String,
+    pub destination_name: String,
+    pub origin_node: String,
+    pub destination_node: String,
+    pub cross_region_edge_ids: Vec<String>,
+    pub road_classes: Vec<String>,
+    pub preferred_classes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Candidate {
+    pub id: String,
+    pub connection_id: String,
+    pub status: String,
+    pub decision_class: String,
+    pub length_m: f64,
+    pub path_edge_ids: Vec<String>,
+    pub geometry: Vec<[f64; 2]>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Operation {
+    pub id: String,
+    pub kind: String,
+    pub decision_class: String,
+    pub candidate_id: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CompileReport {
+    pub area_id: String,
+    pub title: String,
+    pub snapshot_id: String,
+    pub source_inventory_count: usize,
+    pub unknown_fact_count: usize,
+    pub connection_count: usize,
+    pub candidate_count: usize,
+    pub operation_count: usize,
+    pub boundary_scope: Option<BoundaryScope>,
+    pub source_inventory: Vec<SourceCorridor>,
+    pub unknown_facts: Vec<UnknownFact>,
+    pub connections: Vec<Connection>,
+    pub candidates: Vec<Candidate>,
+    pub operations: Vec<Operation>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProgressEvent {
+    pub stage: String,
+    pub message: String,
+    pub elapsed_ms: u128,
+    pub source_inventory_count: usize,
+    pub connection_count: usize,
+    pub candidate_count: usize,
+}
+
+#[derive(Debug, Clone)]
+struct Place {
+    id: String,
+    name: String,
+    point: [f64; 2],
+}
+
+#[derive(Debug, Clone)]
+struct LoadedNetwork {
+    graph: Graph,
+    features: Vec<Feature>,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedAdjacency {
+    left: usize,
+    right: usize,
+    edge_ids: Vec<String>,
+    road_classes: Vec<String>,
+    preferred_classes: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct DistanceEntry {
+    distance: f64,
+    node: String,
+}
+
+impl PartialEq for DistanceEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.distance == other.distance && self.node == other.node
+    }
+}
+
+impl Eq for DistanceEntry {}
+
+impl Ord for DistanceEntry {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other
+            .distance
+            .partial_cmp(&self.distance)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| self.node.cmp(&other.node))
+    }
+}
+
+impl PartialOrd for DistanceEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+pub fn compile(
+    config_path: &Path,
+    output_dir: &Path,
+    options: CompileOptions,
+) -> Result<CompileReport> {
+    let mut ignored_progress = |_event: ProgressEvent| {};
+    compile_with_progress(config_path, output_dir, options, &mut ignored_progress)
+}
+
+pub fn compile_with_progress(
+    config_path: &Path,
+    output_dir: &Path,
+    options: CompileOptions,
+    progress: &mut dyn FnMut(ProgressEvent),
+) -> Result<CompileReport> {
+    let started = Instant::now();
+    let config = AreaConfig::read(config_path)?;
+    emit(
+        progress,
+        &started,
+        "preparation",
+        "reading governed area configuration and pinned snapshot",
+        0,
+        0,
+        0,
+    );
+    let snapshot_path = config.snapshot_path(config_path);
+    let network_path = snapshot_path.join("network.geojson");
+    let places_path = snapshot_path.join("places.geojson");
+    let network_features = read_feature_collection(&network_path)?;
+    let network = LoadedNetwork {
+        graph: Graph::from_features(&network_features)?,
+        features: network_features,
+    };
+    let places_features = read_feature_collection(&places_path)?;
+    let context_features = read_optional_features(&snapshot_path.join("context.geojson"))?;
+    let official_features =
+        read_optional_features(&snapshot_path.join("official-road-classification.geojson"))?;
+    let boundary_features = read_optional_features(&snapshot_path.join("boundary.geojson"))?;
+    let boundary_scope = admit_boundary_scope(&boundary_features);
+    let graph_geometry_keys = graph_geometry_keys(&network.graph);
+    let place_labels = read_optional_features(&snapshot_path.join("osm-place-features.geojson"))?;
+    let place_labels = if place_labels.is_empty() {
+        places_features
+    } else {
+        place_labels
+    };
+    let places = admit_places(&place_labels, boundary_scope.as_ref());
+    let source_inventory = admit_source_inventory(
+        &network.features,
+        &network.graph,
+        &context_features,
+        &official_features,
+        &graph_geometry_keys,
+    );
+    let unknown_facts = source_inventory
+        .iter()
+        .flat_map(|corridor| {
+            let mut facts = vec![UnknownFact {
+                id: format!("unknown:{}", corridor.id),
+                subject: corridor.id.clone(),
+                status: "unknown".to_string(),
+                reason: "Pinned source geometry does not establish current active-travel provision."
+                    .to_string(),
+            }];
+            if corridor.attachment_status != "graph-edge" {
+                facts.push(UnknownFact {
+                    id: format!("unknown:topology:{}", corridor.id),
+                    subject: corridor.id.clone(),
+                    status: "unknown".to_string(),
+                    reason: "No admitted graph-edge attachment has been established for this source geometry; topology remains unknown."
+                        .to_string(),
+                });
+            }
+            facts
+        })
+        .collect::<Vec<_>>();
+    emit(
+        progress,
+        &started,
+        "graph",
+        &format!(
+            "indexed {} directed source edges and admitted {} city/town places",
+            network.graph.edges.len(),
+            places.len()
+        ),
+        source_inventory.len(),
+        0,
+        0,
+    );
+
+    let (connections, candidates) = build_connections_and_candidates(
+        &places,
+        &network.graph,
+        &options,
+        progress,
+        &started,
+        source_inventory.len(),
+        config.source.urban_scope_buffer_km * 1000.0,
+    )?;
+    // Candidates are mechanically generated. Record that compact operation, but do not
+    // emit a selection operation until a later judgment boundary actually selects one.
+    let operations = candidates
+        .iter()
+        .map(|candidate| Operation {
+            id: format!("operation:{}", candidate.id),
+            kind: "generate-candidate".to_string(),
+            decision_class: "mechanical".to_string(),
+            candidate_id: candidate.id.clone(),
+            reason: "Deterministic measured-length route from a prepared graph adjacency."
+                .to_string(),
+        })
+        .collect::<Vec<_>>();
+    let report = CompileReport {
+        area_id: config
+            .area_id
+            .clone()
+            .unwrap_or_else(|| "unknown-area".to_string()),
+        title: config.title(),
+        snapshot_id: config.source.snapshot_id.clone(),
+        source_inventory_count: source_inventory.len(),
+        unknown_fact_count: unknown_facts.len(),
+        connection_count: connections.len(),
+        candidate_count: candidates.len(),
+        operation_count: operations.len(),
+        boundary_scope,
+        source_inventory,
+        unknown_facts,
+        connections,
+        candidates,
+        operations,
+    };
+    emit(
+        progress,
+        &started,
+        "publication",
+        "writing compact summary, GeoJSON and review map",
+        report.source_inventory_count,
+        report.connection_count,
+        report.candidate_count,
+    );
+    write_bundle(output_dir, &report)?;
+    emit(
+        progress,
+        &started,
+        "completed",
+        "mechanical compilation completed",
+        report.source_inventory_count,
+        report.connection_count,
+        report.candidate_count,
+    );
+    Ok(report)
+}
+
+fn read_optional_features(path: &Path) -> Result<Vec<Feature>> {
+    if path.exists() {
+        read_feature_collection(path)
+    } else {
+        Ok(Vec::new())
+    }
+}
+
+fn emit(
+    progress: &mut dyn FnMut(ProgressEvent),
+    started: &Instant,
+    stage: &str,
+    message: &str,
+    source_inventory_count: usize,
+    connection_count: usize,
+    candidate_count: usize,
+) {
+    progress(ProgressEvent {
+        stage: stage.to_string(),
+        message: message.to_string(),
+        elapsed_ms: started.elapsed().as_millis(),
+        source_inventory_count,
+        connection_count,
+        candidate_count,
+    });
+}
+
+fn admit_places(features: &[Feature], boundary: Option<&BoundaryScope>) -> Vec<Place> {
+    let mut places = features
+        .iter()
+        .filter_map(|feature| {
+            let Geometry::Point(point) = feature.geometry else {
+                return None;
+            };
+            let class = string_property(&feature.properties, "place_class")
+                .or_else(|| string_property(&feature.properties, "place"))
+                .or_else(|| string_property(&feature.properties, "kind"))
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            // The preparation contract is city/town adjacency. Community eligibility is
+            // retained as source evidence, but it does not create a Cartesian roster.
+            if class != "city" && class != "town" {
+                return None;
+            }
+            let id = string_property(&feature.properties, "place_id")
+                .or_else(|| string_property(&feature.properties, "source_id"))
+                .or_else(|| string_property(&feature.properties, "id"))?;
+            let name = string_property(&feature.properties, "name").unwrap_or_else(|| id.clone());
+            if boundary.is_some_and(|boundary| !boundary_contains(boundary, point)) {
+                return None;
+            }
+            Some(Place { id, name, point })
+        })
+        .collect::<Vec<_>>();
+    places.sort_by(|left, right| left.id.cmp(&right.id));
+    places
+}
+
+fn admit_source_inventory(
+    network_features: &[Feature],
+    graph: &Graph,
+    context_features: &[Feature],
+    official_features: &[Feature],
+    graph_geometry_keys: &HashSet<String>,
+) -> Vec<SourceCorridor> {
+    let mut groups: BTreeMap<String, SourceCorridor> = BTreeMap::new();
+    for (index, feature) in network_features.iter().enumerate() {
+        let Some(reference) = string_property(&feature.properties, "ref") else {
+            continue;
+        };
+        if !is_a_reference(&reference) {
+            continue;
+        }
+        let edge_id = graph
+            .edges
+            .get(index)
+            .map(|edge| edge.id.clone())
+            .unwrap_or_else(|| format!("network-feature:{index}"));
+        for (line_index, geometry) in line_geometries(feature).into_iter().enumerate() {
+            add_corridor(
+                &mut groups,
+                format!("source:network:{reference}"),
+                reference.clone(),
+                "network",
+                "network.geojson".to_string(),
+                "pinned-network",
+                format!("{edge_id}:{line_index}"),
+                geometry,
+                true,
+            );
+        }
+    }
+    for (index, feature) in context_features.iter().enumerate() {
+        let feature_type = string_property(&feature.properties, "feature_type").unwrap_or_default();
+        let category = string_property(&feature.properties, "category").unwrap_or_default();
+        if feature_type != "a-road-spine" && !category.to_ascii_lowercase().contains("a-road") {
+            continue;
+        }
+        let reference = string_property(&feature.properties, "name")
+            .filter(|value| is_a_reference(value))
+            .unwrap_or_else(|| "A-road".to_string());
+        let source_id = string_property(&feature.properties, "evidence_id")
+            .unwrap_or_else(|| format!("context-feature:{index}"));
+        let scope = string_property(&feature.properties, "network_scope")
+            .unwrap_or_else(|| "unknown-scope".to_string());
+        for (line_index, geometry) in line_geometries(feature).into_iter().enumerate() {
+            let graph_bound = graph_geometry_keys.contains(&geometry_key(&geometry));
+            add_corridor(
+                &mut groups,
+                format!("source:context:{source_id}"),
+                reference.clone(),
+                "context",
+                source_id.clone(),
+                &scope,
+                format!("{source_id}:{index}:{line_index}"),
+                geometry,
+                graph_bound,
+            );
+        }
+    }
+    for (index, feature) in official_features.iter().enumerate() {
+        let classification = string_property(&feature.properties, "official_classification")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let number = string_property(&feature.properties, "official_road_number");
+        if !classification.contains("a-road") && !number.as_deref().is_some_and(is_a_reference) {
+            continue;
+        }
+        let reference = number.unwrap_or_else(|| "A-road".to_string());
+        let source_id = string_property(&feature.properties, "official_feature_id")
+            .unwrap_or_else(|| format!("official-feature:{index}"));
+        for (line_index, geometry) in line_geometries(feature).into_iter().enumerate() {
+            let graph_bound = graph_geometry_keys.contains(&geometry_key(&geometry));
+            add_corridor(
+                &mut groups,
+                format!("source:official:{source_id}"),
+                reference.clone(),
+                "official",
+                source_id.clone(),
+                "governed-official",
+                format!("{source_id}:{index}:{line_index}"),
+                geometry,
+                graph_bound,
+            );
+        }
+    }
+    groups.into_values().collect()
+}
+
+fn add_corridor(
+    groups: &mut BTreeMap<String, SourceCorridor>,
+    key: String,
+    reference: String,
+    source_kind: &str,
+    source_id: String,
+    scope: &str,
+    source_edge_id: String,
+    geometry: Vec<[f64; 2]>,
+    graph_bound: bool,
+) {
+    let corridor = groups.entry(key.clone()).or_insert_with(|| SourceCorridor {
+        id: key,
+        reference,
+        source_kind: source_kind.to_string(),
+        source_id,
+        scope: scope.to_string(),
+        source_edge_ids: Vec::new(),
+        geometry: Vec::new(),
+        topology_status: if graph_bound {
+            "graph-bound".to_string()
+        } else {
+            "source-only".to_string()
+        },
+        attachment_status: if graph_bound {
+            "graph-edge".to_string()
+        } else {
+            "unknown".to_string()
+        },
+    });
+    let previous_graph_bound = corridor.attachment_status == "graph-edge";
+    if previous_graph_bound != graph_bound {
+        corridor.topology_status = "partially-graph-bound".to_string();
+        corridor.attachment_status = "partial".to_string();
+    }
+    if !corridor.source_edge_ids.contains(&source_edge_id) {
+        corridor.source_edge_ids.push(source_edge_id);
+    }
+    if !corridor
+        .geometry
+        .iter()
+        .any(|existing| equivalent_geometry(existing, &geometry))
+    {
+        corridor.geometry.push(geometry);
+    }
+}
+
+fn equivalent_geometry(left: &[[f64; 2]], right: &[[f64; 2]]) -> bool {
+    left == right || left.iter().eq(right.iter().rev())
+}
+
+fn geometry_key(line: &[[f64; 2]]) -> String {
+    format!("{line:?}")
+}
+
+fn graph_geometry_keys(graph: &Graph) -> HashSet<String> {
+    graph
+        .edges
+        .iter()
+        .flat_map(|edge| {
+            [
+                geometry_key(&edge.geometry),
+                geometry_key(&edge.geometry.iter().copied().rev().collect::<Vec<_>>()),
+            ]
+        })
+        .collect()
+}
+
+fn admit_boundary_scope(features: &[Feature]) -> Option<BoundaryScope> {
+    let feature = features.first()?;
+    let geometry = match &feature.geometry {
+        Geometry::Polygon(rings) => vec![rings.clone()],
+        Geometry::MultiPolygon(polygons) => polygons.clone(),
+        _ => return None,
+    };
+    Some(BoundaryScope {
+        id: string_property(&feature.properties, "osm_id")
+            .or_else(|| string_property(&feature.properties, "place_id"))
+            .unwrap_or_else(|| "boundary".to_string()),
+        name: string_property(&feature.properties, "name")
+            .unwrap_or_else(|| "governed boundary".to_string()),
+        geometry,
+    })
+}
+
+fn boundary_contains(boundary: &BoundaryScope, point: [f64; 2]) -> bool {
+    boundary.geometry.iter().any(|polygon| {
+        let Some(outer) = polygon.first() else {
+            return false;
+        };
+        if !point_in_ring(outer, point) {
+            return false;
+        }
+        !polygon
+            .iter()
+            .skip(1)
+            .any(|hole| point_in_ring(hole, point))
+    })
+}
+
+fn point_in_ring(ring: &[[f64; 2]], point: [f64; 2]) -> bool {
+    let mut inside = false;
+    for (left, right) in ring
+        .iter()
+        .zip(ring.iter().cycle().skip(1))
+        .take(ring.len())
+    {
+        let crosses = (left[1] > point[1]) != (right[1] > point[1]);
+        if crosses {
+            let intersection =
+                (right[0] - left[0]) * (point[1] - left[1]) / (right[1] - left[1]) + left[0];
+            if point[0] < intersection {
+                inside = !inside;
+            }
+        }
+    }
+    inside
+}
+
+fn line_geometries(feature: &Feature) -> Vec<Vec<[f64; 2]>> {
+    match &feature.geometry {
+        Geometry::LineString(line) => vec![line.clone()],
+        Geometry::MultiLineString(lines) => lines.clone(),
+        _ => Vec::new(),
+    }
+}
+
+fn is_a_reference(value: &str) -> bool {
+    value
+        .trim()
+        .to_ascii_uppercase()
+        .split([';', ',', ' '])
+        .any(|part| {
+            part.starts_with('A')
+                && part.len() > 1
+                && part[1..]
+                    .chars()
+                    .all(|character| character.is_ascii_digit())
+        })
+}
+
+fn build_connections_and_candidates(
+    places: &[Place],
+    graph: &Graph,
+    options: &CompileOptions,
+    progress: &mut dyn FnMut(ProgressEvent),
+    started: &Instant,
+    source_inventory_count: usize,
+    attachment_extent_m: f64,
+) -> Result<(Vec<Connection>, Vec<Candidate>)> {
+    let prepared = prepare_adjacencies(places, graph, attachment_extent_m);
+    emit(
+        progress,
+        started,
+        "mechanical",
+        &format!(
+            "prepared {} graph-supported city/town adjacencies",
+            prepared.len()
+        ),
+        source_inventory_count,
+        0,
+        0,
+    );
+    let mut connections = Vec::new();
+    let mut candidates = Vec::new();
+    for adjacency in prepared {
+        let left = &places[adjacency.left];
+        let right = &places[adjacency.right];
+        if !matches_options(left, right, options) {
+            continue;
+        }
+        let connection_id = format!("prepared-urban-journey:{}:{}", left.id, right.id);
+        let left_routing_node = left_node(left, graph, attachment_extent_m);
+        let right_routing_node = left_node(right, graph, attachment_extent_m);
+        let (origin, destination, route) =
+            match graph.route(&left_routing_node, &right_routing_node) {
+                Some(route) => (left, right, Some(route)),
+                None => match graph.route(&right_routing_node, &left_routing_node) {
+                    Some(route) => (right, left, Some(route)),
+                    None => (left, right, None),
+                },
+            };
+        connections.push(Connection {
+            id: connection_id.clone(),
+            origin_place_id: origin.id.clone(),
+            origin_name: origin.name.clone(),
+            destination_place_id: destination.id.clone(),
+            destination_name: destination.name.clone(),
+            origin_node: left_node(origin, graph, attachment_extent_m),
+            destination_node: left_node(destination, graph, attachment_extent_m),
+            cross_region_edge_ids: adjacency.edge_ids,
+            road_classes: adjacency.road_classes,
+            preferred_classes: adjacency.preferred_classes,
+        });
+        if let Some(route) = route {
+            candidates.push(candidate_from_route(
+                format!("candidate:{connection_id}"),
+                connection_id.clone(),
+                route,
+            ));
+        }
+        emit(
+            progress,
+            started,
+            "mechanical",
+            "prepared graph-supported connection and candidate status",
+            source_inventory_count,
+            connections.len(),
+            candidates.len(),
+        );
+    }
+    Ok((connections, candidates))
+}
+
+fn matches_options(left: &Place, right: &Place, options: &CompileOptions) -> bool {
+    let matches = |value: &str, place: &Place| value == place.id || value == place.name;
+    match (&options.origin, &options.destination) {
+        (None, None) => true,
+        (Some(origin), None) => matches(origin, left) || matches(origin, right),
+        (None, Some(destination)) => matches(destination, left) || matches(destination, right),
+        (Some(origin), Some(destination)) => {
+            (matches(origin, left) && matches(destination, right))
+                || (matches(origin, right) && matches(destination, left))
+        }
+    }
+}
+
+fn left_node(place: &Place, graph: &Graph, attachment_extent_m: f64) -> String {
+    graph
+        .nearest_scoped_node(place.point, attachment_extent_m)
+        .unwrap_or_default()
+}
+
+fn prepare_adjacencies(
+    places: &[Place],
+    graph: &Graph,
+    attachment_extent_m: f64,
+) -> Vec<PreparedAdjacency> {
+    let mut undirected: HashMap<String, Vec<(String, f64)>> = HashMap::new();
+    for edge in &graph.edges {
+        undirected
+            .entry(edge.from.clone())
+            .or_default()
+            .push((edge.to.clone(), edge.length_m));
+        undirected
+            .entry(edge.to.clone())
+            .or_default()
+            .push((edge.from.clone(), edge.length_m));
+    }
+    let mut owners: HashMap<String, (f64, usize)> = HashMap::new();
+    for (place_index, place) in places.iter().enumerate() {
+        let Some(start) = graph.nearest_scoped_node(place.point, attachment_extent_m) else {
+            continue;
+        };
+        let mut distances = HashMap::new();
+        let mut queue = BinaryHeap::new();
+        distances.insert(start.clone(), 0.0);
+        queue.push(DistanceEntry {
+            distance: 0.0,
+            node: start,
+        });
+        while let Some(DistanceEntry { distance, node }) = queue.pop() {
+            if distance > *distances.get(&node).unwrap_or(&f64::INFINITY) {
+                continue;
+            }
+            let should_take = owners.get(&node).is_none_or(|(known, known_place)| {
+                distance < *known || (distance == *known && place.id < places[*known_place].id)
+            });
+            if should_take {
+                owners.insert(node.clone(), (distance, place_index));
+            }
+            for (next, length_m) in undirected.get(&node).into_iter().flatten() {
+                let next_distance = distance + length_m;
+                if next_distance < *distances.get(next).unwrap_or(&f64::INFINITY) {
+                    distances.insert(next.clone(), next_distance);
+                    queue.push(DistanceEntry {
+                        distance: next_distance,
+                        node: next.clone(),
+                    });
+                }
+            }
+        }
+    }
+    let mut groups: BTreeMap<(usize, usize), (BTreeSet<String>, BTreeSet<String>)> =
+        BTreeMap::new();
+    for edge in &graph.edges {
+        let Some((_, left_owner)) = owners.get(&edge.from) else {
+            continue;
+        };
+        let Some((_, right_owner)) = owners.get(&edge.to) else {
+            continue;
+        };
+        if left_owner == right_owner {
+            continue;
+        }
+        let pair = if left_owner < right_owner {
+            (*left_owner, *right_owner)
+        } else {
+            (*right_owner, *left_owner)
+        };
+        let group = groups.entry(pair).or_default();
+        group.0.insert(edge.id.clone());
+        for class in classify_edge(edge) {
+            group.1.insert(class);
+        }
+    }
+    groups
+        .into_iter()
+        .map(|((left, right), (edge_ids, classes))| {
+            let preferred_classes = classes
+                .iter()
+                .filter(|class| {
+                    matches!(
+                        class.as_str(),
+                        "a-road-reference" | "a-road-highway" | "cycleway" | "ncn"
+                    )
+                })
+                .cloned()
+                .collect();
+            PreparedAdjacency {
+                left,
+                right,
+                edge_ids: edge_ids.into_iter().collect(),
+                road_classes: classes.into_iter().collect(),
+                preferred_classes,
+            }
+        })
+        .collect()
+}
+
+fn classify_edge(edge: &GraphEdge) -> BTreeSet<String> {
+    let mut classes = BTreeSet::new();
+    if edge.reference.as_deref().is_some_and(is_a_reference) {
+        classes.insert("a-road-reference".to_string());
+    }
+    if edge.highway.as_deref().is_some_and(|highway| {
+        matches!(highway, "trunk" | "primary" | "trunk_link" | "primary_link")
+    }) {
+        classes.insert("a-road-highway".to_string());
+    }
+    if edge.highway.as_deref().is_some_and(|highway| {
+        matches!(
+            highway,
+            "cycleway"
+                | "cycle_track"
+                | "cycle-track"
+                | "greenway"
+                | "path-cycleway"
+                | "shared_use_path"
+        )
+    }) {
+        classes.insert("cycleway".to_string());
+    }
+    if edge.reference.as_deref().is_some_and(|reference| {
+        reference
+            .trim()
+            .to_ascii_uppercase()
+            .split([';', ',', ' '])
+            .any(|part| {
+                part.starts_with('B')
+                    && part.len() > 1
+                    && part[1..]
+                        .chars()
+                        .all(|character| character.is_ascii_digit())
+            })
+    }) {
+        classes.insert("b-road-reference".to_string());
+    }
+    if classes.is_empty() {
+        classes.insert("local".to_string());
+    }
+    classes
+}
+
+fn candidate_from_route(id: String, connection_id: String, route: Route) -> Candidate {
+    Candidate {
+        id,
+        connection_id,
+        status: "mechanical-candidate".to_string(),
+        decision_class: "mechanical".to_string(),
+        length_m: route.length_m,
+        path_edge_ids: route.edge_ids,
+        geometry: route.geometry,
+    }
+}
