@@ -1,0 +1,430 @@
+<!doctype html>
+<html lang="en" data-journey-ready="false">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title id="page-title">Journey comparison</title>
+<link rel="stylesheet" href="assets/maplibre-gl.css">
+<style>
+:root { color-scheme: light; font: 16px system-ui, sans-serif; color: #17202a; background: #f8fafc; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+header { padding: 1rem 1.25rem .85rem; background: #fff; border-bottom: 1px solid #cbd5e1; }
+header h1 { margin: 0 0 .35rem; font-size: 1.4rem; line-height: 1.25; }
+header p { margin: .25rem 0; max-width: 70rem; }
+.disclaimer { color: #92400e; font-weight: 650; }
+.context { color: #334155; }
+.journey-shell { display: grid; grid-template-columns: minmax(20rem, 27rem) minmax(0, 1fr); min-height: 70vh; }
+.journey-panel { padding: .9rem 1rem 1.25rem; background: #fff; overflow: auto; max-height: 80vh; }
+.journey-map-wrap { position: relative; min-height: 36rem; border-left: 1px solid #cbd5e1; }
+#journey-map { position: absolute; inset: 0; min-height: 36rem; }
+h2 { margin: 0 0 .55rem; font-size: 1.05rem; }
+h3 { margin: 0 0 .4rem; font-size: 1rem; }
+.panel-section { margin: 0 0 1rem; }
+.panel-section + .panel-section { border-top: 1px solid #e2e8f0; padding-top: .9rem; }
+.map-actions { display: flex; gap: .45rem; flex-wrap: wrap; margin-bottom: .85rem; }
+button { padding: .4rem .65rem; border: 1px solid #64748b; border-radius: .3rem; background: #fff; color: #17202a; cursor: pointer; font: inherit; }
+button:hover { background: #f1f5f9; }
+button:focus-visible, input:focus-visible { outline: 3px solid #2563eb; outline-offset: 2px; }
+button[data-route-inspect] { padding: .25rem .5rem; font-size: .88rem; }
+.route-control { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .45rem; align-items: center; padding: .5rem .55rem; border: 1px solid #e2e8f0; border-radius: .35rem; margin: .4rem 0; }
+.route-control:hover { border-color: #94a3b8; }
+.route-name { display: flex; gap: .45rem; align-items: flex-start; line-height: 1.25; }
+.route-name input { margin: .16rem 0 0; }
+.swatch { display: inline-block; flex: 0 0 auto; width: 1.7rem; height: .35rem; margin-top: .42rem; }
+.selected-key { background: #15803d; }
+.retained-key { background: #d97706; background-image: linear-gradient(90deg, #d97706 0 55%, transparent 55% 75%, #d97706 75%); }
+.direct-key { background: #64748b; background-image: linear-gradient(90deg, #64748b 0 55%, transparent 55% 75%, #64748b 75%); }
+.route-note { color: #475569; }
+.route-note { margin: .4rem 0 .65rem; font-size: .91rem; }
+.empty-state { color: #64748b; margin: .4rem 0; }
+.comparison-table { width: 100%; border-collapse: collapse; font-size: .86rem; }
+.comparison-table caption { text-align: left; font-weight: 700; padding: 0 0 .4rem; }
+.comparison-table th, .comparison-table td { border-bottom: 1px solid #e2e8f0; padding: .4rem .3rem; vertical-align: top; text-align: left; }
+.comparison-table th { font-weight: 700; color: #334155; }
+.comparison-table th:not(:first-child), .comparison-table td:not(:first-child) { text-align: right; }
+.comparison-table td:first-child { width: 43%; }
+.detail-card { border: 1px solid #cbd5e1; border-radius: .35rem; padding: .65rem; background: #f8fafc; min-height: 4.5rem; }
+.detail-card p { margin: .25rem 0; }
+.detail-card dl { display: grid; grid-template-columns: minmax(8rem, auto) minmax(0, 1fr); gap: .2rem .65rem; margin: .35rem 0 0; }
+.detail-card dt { font-weight: 700; }
+.detail-card dd { margin: 0; overflow-wrap: anywhere; }
+#journey-loading-failure { color: #b91c1c; font-weight: 700; }
+.maplibregl-popup-content { max-height: calc(100dvh - 1rem); overflow-y: auto; min-width: 13rem; }
+.popup-title { margin: 0 0 .3rem; font-size: 1rem; }
+.popup-table { border-collapse: collapse; width: 100%; font-size: .86rem; }
+.popup-table th, .popup-table td { padding: .2rem .25rem; border-bottom: 1px solid #e2e8f0; text-align: left; }
+.popup-table th { font-weight: 700; }
+@media (max-width: 760px) {
+  header { padding: .75rem; }
+  .journey-shell { display: flex; flex-direction: column; min-height: 0; }
+  .journey-map-wrap { order: 1; min-height: 55vh; border-left: 0; border-bottom: 1px solid #cbd5e1; }
+  #journey-map { min-height: 55vh; }
+  .journey-panel { order: 2; max-height: none; }
+}
+</style>
+</head>
+<body data-journey-publication="journey-comparison" data-network-url="journey-comparison.geojson">
+<header>
+  <h1 id="journey-title">Journey comparison</h1>
+  <p class="disclaimer">Experimental SATN POC — a mechanical journey comparison, not an adopted plan.</p>
+  <p id="journey-context" class="context">Metrics cover the complete origin → town route. Source evidence does not establish provision, safety, or adoption.</p>
+</header>
+<main class="journey-shell">
+  <aside class="journey-panel" aria-label="Journey comparison controls and measures">
+    <div class="map-actions">
+      <button type="button" data-journey-reset>Reset view</button>
+      <button type="button" data-journey-zoom-in>Zoom in</button>
+      <button type="button" data-journey-zoom-out>Zoom out</button>
+      <button type="button" data-journey-clear>Clear inspection</button>
+    </div>
+    <section class="panel-section" aria-labelledby="route-heading">
+      <h2 id="route-heading">Routes</h2>
+      <p class="route-note">Toggle routes on the map. Use each named Inspect button when routes overlap; retained and direct routes are comparison evidence, not adopted alignments.</p>
+      <div id="journey-route-controls" aria-live="polite"><p class="empty-state">Loading route options…</p></div>
+    </section>
+    <section class="panel-section" aria-labelledby="comparison-heading">
+      <h2 id="comparison-heading">Complete journey measures</h2>
+      <p class="route-note">Values describe the full origin → town journey. A missing or unsupported metric remains Unknown.</p>
+      <div id="journey-measures" class="detail-card"><p class="empty-state">Loading comparison measures…</p></div>
+    </section>
+    <section class="panel-section" aria-labelledby="inspection-heading">
+      <h2 id="inspection-heading">Inspection</h2>
+      <div id="journey-feature-details" class="detail-card" aria-live="polite"><p>Select a route to inspect its measured geometry and status.</p></div>
+    </section>
+    <p id="journey-loading-failure" role="alert" hidden>Unable to load journey comparison data.</p>
+  </aside>
+  <section class="journey-map-wrap" aria-label="Interactive journey comparison map"><div id="journey-map"></div></section>
+</main>
+<script src="assets/maplibre-gl.js"></script>
+<script>
+(function () {
+  const root = document.documentElement;
+  const networkUrl = document.body.dataset.networkUrl;
+  const failure = document.getElementById('journey-loading-failure');
+  const title = document.getElementById('journey-title');
+  const pageTitle = document.getElementById('page-title');
+  const context = document.getElementById('journey-context');
+  const routeControls = document.getElementById('journey-route-controls');
+  const measures = document.getElementById('journey-measures');
+  const details = document.getElementById('journey-feature-details');
+  const allowedKinds = ['selected', 'retained-alternative', 'direct'];
+  const routeLabels = {
+    selected: 'Selected branch + onward route',
+    'retained-alternative': 'Retained feeder alternative + onward route',
+    direct: 'Direct mechanical route'
+  };
+  const routeColors = {
+    selected: '#15803d',
+    'retained-alternative': '#d97706',
+    direct: '#64748b'
+  };
+  const routeClasses = {
+    selected: 'selected-key',
+    'retained-alternative': 'retained-key',
+    direct: 'direct-key'
+  };
+  const routeLayerIds = {};
+  let activePopup = null;
+  let pinnedFeature = null;
+  let map = null;
+  let mapLoaded = false;
+  let bounds = null;
+  const routeVisibility = {};
+
+  const escapeHtml = value => String(value === null || value === undefined ? '' : value).replace(/[&<>"']/g, character => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[character]));
+  const numberValue = value => {
+    if (value === null || value === undefined || value === '') return null;
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+  };
+  const formatDistance = value => {
+    const numeric = numberValue(value);
+    if (numeric === null) return 'Unknown';
+    return numeric >= 1000 ? (numeric / 1000).toFixed(2) + ' km' : Math.round(numeric) + ' m';
+  };
+  const formatElevation = value => {
+    const numeric = numberValue(value);
+    return numeric === null ? 'Unknown' : Math.round(numeric) + ' m';
+  };
+  const formatGradient = profile => {
+    if (!profile || typeof profile !== 'object') return 'Unknown';
+    const sustained = profile.sustained_gradient;
+    if (!sustained || typeof sustained !== 'object') return 'Unknown';
+    const gradient = numberValue(sustained.absolute_gradient_pct);
+    const signed = numberValue(sustained.gradient_pct);
+    const chosen = gradient === null ? signed : gradient;
+    if (chosen === null) return 'Unknown';
+    const interval = formatDistance(sustained.interval_length_m);
+    return chosen.toFixed(1) + '%' + (interval === 'Unknown' ? '' : ' over ' + interval);
+  };
+  const normalizedValue = value => {
+    if (typeof value !== 'string') return value;
+    const text = value.trim();
+    const container = (text.startsWith('[') && text.endsWith(']')) ||
+      (text.startsWith('{') && text.endsWith('}'));
+    if (!container) return value;
+    try {
+      const parsed = JSON.parse(text);
+      return parsed && typeof parsed === 'object' ? parsed : value;
+    } catch (_) {
+      return value;
+    }
+  };
+  const featureProperties = feature => feature && feature.properties && typeof feature.properties === 'object'
+    ? (() => {
+        const properties = feature.properties;
+        const topography = normalizedValue(properties.topography);
+        return topography === properties.topography ? properties : { ...properties, topography };
+      })() : {};
+  const routeLabel = feature => routeLabels[featureProperties(feature).kind] || 'Journey route';
+  const routeFeatures = data => (Array.isArray(data && data.features) ? data.features : [])
+    .filter(feature => allowedKinds.includes(featureProperties(feature).kind));
+  const valueOrUnknown = value => value === null || value === undefined || value === '' ? 'Unknown' : String(value);
+  const availabilityText = profile => {
+    const availability = profile && profile.availability ? String(profile.availability).toLowerCase() : '';
+    if (availability === 'available') return 'Available';
+    if (availability === 'unknown') return 'Unknown';
+    return availability ? availability[0].toUpperCase() + availability.slice(1) : 'Unknown';
+  };
+  const networkStatusText = value => {
+    const status = String(value || '').trim().toLowerCase();
+    if (status === 'selected-network') return 'Selected network continuation';
+    if (status === 'selected-feeder-plus-source-graph-onward') return 'Accepted feeder; onward route follows source graph';
+    if (status === 'source-graph-alternative') return 'Source graph comparison';
+    if (status === 'retained-alternative') return 'Retained feeder comparison';
+    if (!status) return 'Unknown';
+    return status.split(/[-_]+/).map(word => word ? word[0].toUpperCase() + word.slice(1) : '').join(' ');
+  };
+
+  const metricRows = feature => {
+    const props = featureProperties(feature);
+    const profile = props.topography;
+    const direct = props.kind === 'direct';
+    return [
+      ['Full origin → town length', formatDistance(props.length_m)],
+      ['Feeder to spine', direct ? 'Unknown' : formatDistance(props.feeder_length_m)],
+      ['New rural link', direct ? 'Unknown' : formatDistance(props.new_link_length_m)],
+      ['Shared branch length', direct ? 'Unknown' : formatDistance(props.shared_suffix_length_m)],
+      ['Onward to destination', direct ? 'Unknown' : formatDistance(props.onward_length_m)],
+      ['Forward ascent', formatElevation(profile && profile.forward_ascent_m)],
+      ['Forward descent', formatElevation(profile && profile.forward_descent_m)],
+      ['Steepest sampled interval', formatGradient(profile)]
+    ];
+  };
+  const rowsHtml = rows => rows.map(row => '<tr><th scope="row">' + escapeHtml(row[0]) + '</th><td>' + escapeHtml(row[1]) + '</td></tr>').join('');
+  const popupHtml = feature => {
+    const props = featureProperties(feature);
+    const rows = metricRows(feature);
+    rows.push(['Network status', networkStatusText(props.network_status)]);
+    rows.push(['Topography profile', availabilityText(props.topography)]);
+    return '<h3 class="popup-title">' + escapeHtml(routeLabel(feature)) + '</h3>' +
+      '<table class="popup-table"><tbody>' + rowsHtml(rows) + '</tbody></table>';
+  };
+  const detailHtml = feature => {
+    const props = featureProperties(feature);
+    const rows = metricRows(feature);
+    rows.push(['Network status', networkStatusText(props.network_status)]);
+    rows.push(['Topography profile', availabilityText(props.topography)]);
+    return '<h3>' + escapeHtml(routeLabel(feature)) + '</h3>' +
+      '<p class="route-note">This line is a measured comparison route; its display does not establish provision, safety, or adoption.</p>' +
+      '<dl>' + rows.map(row => '<dt>' + escapeHtml(row[0]) + '</dt><dd>' + escapeHtml(row[1]) + '</dd>').join('') + '</dl>';
+  };
+  const comparisonTable = features => {
+    const available = allowedKinds.map(kind => features.find(feature => featureProperties(feature).kind === kind)).filter(Boolean);
+    if (!available.length) return '<p class="empty-state">No comparison routes are present in the published data.</p>';
+    const headers = available.map(feature => '<th scope="col">' + escapeHtml(routeLabel(feature)) + '</th>').join('');
+    const allRows = metricRows(available[0]).map((row, index) => {
+      const values = available.map(feature => '<td>' + escapeHtml(metricRows(feature)[index][1]) + '</td>').join('');
+      return '<tr><th scope="row">' + escapeHtml(row[0]) + '</th>' + values + '</tr>';
+    }).join('');
+    return '<table class="comparison-table"><caption>Measured route comparison</caption><thead><tr><th scope="col">Metric</th>' + headers + '</tr></thead><tbody>' + allRows + '</tbody></table>';
+  };
+
+  const coordinates = (value, points) => {
+    if (!Array.isArray(value)) return;
+    if (value.length >= 2 && typeof value[0] === 'number' && typeof value[1] === 'number') {
+      points.push([value[0], value[1]]);
+      return;
+    }
+    value.forEach(item => coordinates(item, points));
+  };
+  const boundsFor = data => {
+    const points = [];
+    (data.features || []).forEach(feature => coordinates(feature.geometry && feature.geometry.coordinates, points));
+    if (!points.length) return null;
+    const routeBounds = new maplibregl.LngLatBounds(points[0], points[0]);
+    points.slice(1).forEach(point => routeBounds.extend(point));
+    return routeBounds;
+  };
+  const firstCoordinate = feature => {
+    const points = [];
+    coordinates(feature && feature.geometry && feature.geometry.coordinates, points);
+    return points[0] || null;
+  };
+  const setRouteVisibility = (kind, checked) => {
+    if (!map) return;
+    (routeLayerIds[kind] || []).forEach(layerId => {
+      if (map.getLayer(layerId)) map.setLayoutProperty(layerId, 'visibility', checked ? 'visible' : 'none');
+    });
+  };
+  const highlight = feature => {
+    if (!map || !mapLoaded) return;
+    const source = map.getSource('journey-highlight');
+    if (source) source.setData(feature ? { type: 'FeatureCollection', features: [feature] } : { type: 'FeatureCollection', features: [] });
+  };
+  const showFeature = feature => {
+    details.innerHTML = feature ? detailHtml(feature) : '<p>Select a route to inspect its measured geometry and status.</p>';
+    highlight(feature);
+  };
+  const inspectFeature = (feature, lngLat) => {
+    if (!feature) return;
+    pinnedFeature = feature;
+    showFeature(feature);
+    if (map && mapLoaded && lngLat) {
+      if (activePopup) activePopup.remove();
+      activePopup = new maplibregl.Popup({ closeButton: true, closeOnClick: true })
+        .setLngLat(lngLat).setHTML(popupHtml(feature)).addTo(map);
+    }
+  };
+  const clearInspection = () => {
+    pinnedFeature = null;
+    if (activePopup) {
+      activePopup.remove();
+      activePopup = null;
+    }
+    showFeature(null);
+  };
+  const focusRoute = (feature, openPopup) => {
+    if (!feature) return;
+    const coordinate = firstCoordinate(feature);
+    inspectFeature(feature, openPopup && coordinate ? coordinate : null);
+    const routeBounds = boundsFor({ type: 'FeatureCollection', features: [feature] });
+    if (map && mapLoaded && routeBounds) map.fitBounds(routeBounds, { padding: 70, duration: 350, maxZoom: 15 });
+  };
+  const installRouteControls = features => {
+    routeControls.textContent = '';
+    const present = allowedKinds.filter(kind => features.some(feature => featureProperties(feature).kind === kind));
+    if (!present.length) {
+      routeControls.innerHTML = '<p class="empty-state">No comparison route is present in the published data.</p>';
+      return;
+    }
+    present.forEach(kind => {
+      const feature = features.find(candidate => featureProperties(candidate).kind === kind);
+      const row = document.createElement('div');
+      row.className = 'route-control';
+      const label = document.createElement('label');
+      label.className = 'route-name';
+      const toggle = document.createElement('input');
+      toggle.type = 'checkbox';
+      toggle.checked = true;
+      toggle.dataset.routeToggle = kind;
+      const swatch = document.createElement('span');
+      swatch.className = 'swatch ' + routeClasses[kind];
+      const text = document.createElement('span');
+      text.textContent = routeLabels[kind];
+      label.append(toggle, swatch, text);
+      routeVisibility[kind] = true;
+      toggle.addEventListener('change', () => {
+        routeVisibility[kind] = toggle.checked;
+        setRouteVisibility(kind, toggle.checked);
+      });
+      const inspect = document.createElement('button');
+      inspect.type = 'button';
+      inspect.dataset.routeInspect = kind;
+      inspect.textContent = 'Inspect';
+      inspect.setAttribute('aria-label', 'Inspect ' + routeLabels[kind]);
+      inspect.addEventListener('click', () => focusRoute(feature, true));
+      row.append(label, inspect);
+      routeControls.appendChild(row);
+    });
+  };
+  const addRouteLayers = (mapInstance, data) => {
+    const present = allowedKinds.filter(kind => routeFeatures(data).some(feature => featureProperties(feature).kind === kind));
+    mapInstance.addSource('journey-routes', { type: 'geojson', data: data });
+    mapInstance.addSource('journey-highlight', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+    present.forEach(kind => {
+      const base = 'journey-' + kind;
+      const lineId = base + '-line';
+      const pointId = base + '-point';
+      const lineLayer = { id: lineId, type: 'line', source: 'journey-routes', filter: ['all', ['==', ['get', 'kind'], kind], ['==', ['geometry-type'], 'LineString']], paint: { 'line-color': routeColors[kind], 'line-width': kind === 'selected' ? 6 : 4, 'line-opacity': kind === 'selected' ? 0.92 : 0.8 } };
+      if (kind !== 'selected') lineLayer.paint['line-dasharray'] = kind === 'direct' ? [3, 2] : [7, 4];
+      mapInstance.addLayer(lineLayer);
+      mapInstance.addLayer({ id: pointId, type: 'circle', source: 'journey-routes', filter: ['all', ['==', ['get', 'kind'], kind], ['==', ['geometry-type'], 'Point']], paint: { 'circle-radius': kind === 'selected' ? 7 : 6, 'circle-color': routeColors[kind], 'circle-stroke-color': '#fff', 'circle-stroke-width': 1.5 } });
+      routeLayerIds[kind] = [lineId, pointId];
+      setRouteVisibility(kind, routeVisibility[kind] !== false);
+    });
+    mapInstance.addLayer({ id: 'journey-highlight-line', type: 'line', source: 'journey-highlight', filter: ['==', ['geometry-type'], 'LineString'], paint: { 'line-color': '#f59e0b', 'line-width': 9, 'line-opacity': 0.82 } });
+    mapInstance.addLayer({ id: 'journey-highlight-point', type: 'circle', source: 'journey-highlight', filter: ['==', ['geometry-type'], 'Point'], paint: { 'circle-radius': 10, 'circle-color': '#f59e0b', 'circle-stroke-color': '#fff', 'circle-stroke-width': 2 } });
+    return present.flatMap(kind => routeLayerIds[kind]);
+  };
+
+  const initialize = data => {
+    const features = routeFeatures(data);
+    const first = features[0];
+    const firstProps = featureProperties(first);
+    const origin = valueOrUnknown(firstProps.community_name);
+    const destination = valueOrUnknown(firstProps.destination_name);
+    title.textContent = 'Journey comparison: ' + origin + ' → ' + destination;
+    pageTitle.textContent = 'Journey comparison: ' + origin + ' → ' + destination;
+    context.textContent = 'Complete origin → town journey: ' + origin + ' → ' + destination + '. Source evidence does not establish provision, safety, or adoption.';
+    measures.innerHTML = comparisonTable(features);
+    installRouteControls(features);
+    bounds = boundsFor(data);
+    map = new maplibregl.Map({
+      container: 'journey-map',
+      style: {
+        version: 8,
+        sources: { osm: { type: 'raster', tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'], tileSize: 256, attribution: '&copy; OpenStreetMap contributors' } },
+        layers: [{ id: 'osm', type: 'raster', source: 'osm' }]
+      },
+      center: [0, 0],
+      zoom: 1,
+      attributionControl: true
+    });
+    window.SATN_JOURNEY_MAP = map;
+    window.SATN_JOURNEY_NETWORK = data;
+    map.addControl(new maplibregl.NavigationControl(), 'top-right');
+    map.on('load', () => {
+      mapLoaded = true;
+      const interactiveLayers = addRouteLayers(map, data);
+      if (bounds) map.fitBounds(bounds, { padding: 50, duration: 0 });
+      document.querySelector('[data-journey-reset]').addEventListener('click', () => { if (bounds) map.fitBounds(bounds, { padding: 50, duration: 250 }); clearInspection(); });
+      document.querySelector('[data-journey-zoom-in]').addEventListener('click', () => map.zoomIn());
+      document.querySelector('[data-journey-zoom-out]').addEventListener('click', () => map.zoomOut());
+      document.querySelector('[data-journey-clear]').addEventListener('click', clearInspection);
+      map.on('mousemove', event => {
+        const found = map.queryRenderedFeatures(event.point, { layers: interactiveLayers });
+        map.getCanvas().style.cursor = found.length ? 'pointer' : '';
+        if (!pinnedFeature) showFeature(found[0] || null);
+      });
+      if (routeLayerIds.selected) {
+        map.on('mouseleave', 'journey-selected-line', () => { if (!pinnedFeature) clearInspection(); });
+      }
+      map.on('click', event => {
+        const found = map.queryRenderedFeatures(event.point, { layers: interactiveLayers });
+        if (found[0]) inspectFeature(found[0], event.lngLat);
+      });
+      map.once('idle', () => { root.dataset.journeyReady = 'true'; });
+    });
+    root.dataset.journeyNetworkLoaded = 'true';
+  };
+
+  root.dataset.journeyReady = 'false';
+  fetch(networkUrl, { cache: 'no-store' }).then(response => {
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    return response.json();
+  }).then(data => {
+    if (!data || data.type !== 'FeatureCollection' || !Array.isArray(data.features)) throw new Error('journey comparison is not a FeatureCollection');
+    initialize(data);
+  }).catch(error => {
+    failure.hidden = false;
+    failure.textContent = 'Unable to load journey comparison data: ' + error.message;
+    root.dataset.journeyReady = 'false';
+  });
+}());
+</script>
+</body>
+</html>
