@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import http.server
 import importlib.util
 import json
+import os
+import shutil
 import sys
+import threading
 import zipfile
 from pathlib import Path
 
@@ -285,6 +289,124 @@ def test_package_pages_accepts_the_explicit_native_agentic_publication(tmp_path:
     entry = public_catalogue["deployments"][0]
     assert entry["publication_kind"] == "native-agentic"
     assert entry["artifacts"]["network_geojson"].endswith("decision-map.geojson")
+
+
+@pytest.mark.browser
+def test_native_package_takes_over_a_legacy_cache_first_worker(tmp_path: Path) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    _write_native_catalogue(catalogue)
+    _write_native_bundle(bundles)
+    result = package_pages(
+        catalogue,
+        bundles,
+        tmp_path / "pages",
+        tmp_path / "satn-pages.zip",
+    )
+
+    native_deployment = result.pages_directory / "deployments" / "native-area"
+    assert (native_deployment / "service-worker.js").is_file()
+
+    server_root = tmp_path / "server"
+    shutil.copytree(result.pages_directory, server_root)
+    deployment = server_root / "deployments" / "native-area"
+    (deployment / "index.html").write_text(
+        """<!doctype html>
+<html><body><p id="legacy-map">Old Python map</p><script>
+navigator.serviceWorker.register("service-worker.js");
+</script></body></html>
+""",
+        encoding="utf-8",
+    )
+    (deployment / "service-worker.js").write_text(
+        """const CACHE = "satn-native-area-run-old";
+self.addEventListener("install", event => {
+  self.skipWaiting();
+  event.waitUntil(caches.open(CACHE).then(cache =>
+    cache.addAll(["./", "index.html"])
+  ));
+});
+self.addEventListener("activate", event => {
+  event.waitUntil(self.clients.claim());
+});
+self.addEventListener("fetch", event => {
+  if (event.request.method === "GET") {
+    event.respondWith(caches.match(event.request).then(cached => cached || fetch(event.request)));
+  }
+});
+""",
+        encoding="utf-8",
+    )
+
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            super().__init__(*args, directory=str(server_root), **kwargs)
+
+        def do_GET(self) -> None:
+            if self.path.endswith("/service-worker.js"):
+                body = Path(self.translate_path(self.path)).read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/javascript")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            super().do_GET()
+
+        def end_headers(self) -> None:
+            self.send_header("Cache-Control", "no-store")
+            super().end_headers()
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        executable = os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE")
+        with VALIDATOR.sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True, executable_path=executable)
+            context = browser.new_context()
+            page = context.new_page()
+            url = f"http://127.0.0.1:{server.server_port}/deployments/native-area/"
+            page.goto(url, wait_until="domcontentloaded")
+            page.wait_for_function(
+                "document.getElementById('legacy-map')?.textContent === 'Old Python map'"
+            )
+            page.wait_for_function("navigator.serviceWorker.controller !== null")
+            page.reload(wait_until="domcontentloaded")
+            page.wait_for_function(
+                "async () => (await caches.keys()).includes('satn-native-area-run-old')"
+            )
+            page.evaluate(
+                "caches.open('unrelated-cache').then(cache => "
+                "cache.put('/unrelated', new Response('keep')))"
+            )
+
+            shutil.copytree(native_deployment, deployment, dirs_exist_ok=True)
+            page.evaluate(
+                "window.__satnControllerChanged = false; "
+                "navigator.serviceWorker.addEventListener('controllerchange', () => "
+                "window.__satnControllerChanged = true)"
+            )
+            page.evaluate(
+                "void navigator.serviceWorker.getRegistration().then(registration => "
+                "registration.update())"
+            )
+            page.wait_for_function("window.__satnControllerChanged === true")
+            page.wait_for_function(
+                "async () => !(await caches.keys()).includes('satn-native-area-run-old')"
+            )
+            page.reload(wait_until="domcontentloaded")
+            page.wait_for_function("document.documentElement.dataset.nativeReady === 'true'")
+            assert page.locator('[data-native-publication="native-agentic"]').count() == 1
+            assert "unrelated-cache" in page.evaluate("caches.keys()")
+            browser.close()
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
 
 
 @pytest.mark.browser
