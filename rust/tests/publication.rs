@@ -6,7 +6,7 @@ use satn_rs::{
     NetworkPlace, SchoolContext, SourceCorridor, UnknownFact, load_retained_report,
     publish_decision_map,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 
 #[test]
 fn publishes_compact_decision_map_with_real_departure_sections() {
@@ -60,6 +60,7 @@ fn publishes_compact_decision_map_with_real_departure_sections() {
                 uncertainties: vec!["provision status is unknown".to_string()],
             },
         ],
+        community_access: Vec::new(),
     };
 
     let publication = publish_decision_map(&root, &report, &run).expect("publish decision map");
@@ -223,6 +224,115 @@ fn publishes_compact_decision_map_with_real_departure_sections() {
 }
 
 #[test]
+fn publication_uses_accepted_rural_path_with_compact_elevation_evidence() {
+    let root = tempfile_root("satn-rs-publication-rural");
+    let mut report = report_fixture();
+    let mut accepted = report.community_access[0].clone();
+    accepted.decision_class = "agent".to_string();
+    accepted.path_edge_ids = vec!["edge-flat".to_string()];
+    accepted.path_geometry = vec![[0.0, 0.0], [0.0, 1.0]];
+    accepted.new_link_length_m = Some(80.0);
+    accepted.full_access_length_m = Some(240.0);
+    accepted.reason = "A supported provisional rural access choice.".to_string();
+    let profile = json!({
+        "availability": "available",
+        "reason": "12 governed elevation samples cover the route",
+        "evidence_file": "elevation-evidence.geojson",
+        "policy": {
+            "evidence_tolerance_m": 5.0,
+            "maximum_sample_spacing_m": 250.0,
+            "minimum_sustained_spacing_m": 10.0
+        },
+        "evidence_refs": ["elevation:1", "elevation:2"],
+        "source_refs": ["dtm-fixture"],
+        "coverage": {
+            "route_length_m": 240.0,
+            "start_m": 0.0,
+            "end_m": 240.0,
+            "maximum_gap_m": 20.0,
+            "sample_count": 12
+        },
+        "forward_ascent_m": 6.0,
+        "forward_descent_m": 2.0,
+        "reverse_ascent_m": 2.0,
+        "reverse_descent_m": 6.0,
+        "cumulative_elevation_variation_m": 8.0,
+        "sustained_gradient": {
+            "gradient_pct": 2.0,
+            "absolute_gradient_pct": 2.0,
+            "interval_length_m": 30.0,
+            "evidence_refs": ["elevation:1", "elevation:2"]
+        },
+        "source_resolution_m": 10.0,
+        "output_sample_spacing_m": 10.0,
+        "vertical_accuracy_m": 1.0
+    });
+    accepted.new_link_topography = serde_json::from_value(profile.clone()).expect("new profile");
+    accepted.full_access_topography = serde_json::from_value(profile).expect("full profile");
+    report.community_access[0].path_geometry = vec![[0.0, 0.0], [0.5, 0.0]];
+    let run = MidendRun {
+        branch: "rural-review".to_string(),
+        base_id: "base:fixture:snapshot".to_string(),
+        status: "completed".to_string(),
+        task_ids: vec!["task:rural:village-1".to_string()],
+        operations: vec![TypedOperation::SelectCommunityAccess {
+            id: "decision:rural:village-1".to_string(),
+            task_id: "task:rural:village-1".to_string(),
+            attempt_id: "attempt:rural:village-1".to_string(),
+            community_id: "village-1".to_string(),
+            candidate_id: "rural:village-1:comfort".to_string(),
+            decision_class: "agent".to_string(),
+            provisional: true,
+            reason: Some("A supported provisional rural access choice.".to_string()),
+            uncertainties: vec!["Provision remains unknown.".to_string()],
+            parent_community_id: None,
+            root_spine_id: Some("source:a-road".to_string()),
+            new_link_length_m: Some(80.0),
+            full_access_length_m: Some(240.0),
+        }],
+        community_access: vec![accepted],
+    };
+
+    let publication = publish_decision_map(&root, &report, &run).expect("publish rural map");
+    assert_eq!(publication.decision_count, 1);
+    assert_eq!(publication.provisional_count, 1);
+    let geojson: Value = serde_json::from_str(
+        &fs::read_to_string(root.join("decision-map.geojson")).expect("GeoJSON output"),
+    )
+    .expect("valid GeoJSON");
+    let features = geojson["features"].as_array().expect("features");
+    let selected = features
+        .iter()
+        .find(|feature| feature["properties"]["kind"] == "provisional-alignment")
+        .expect("provisional rural decision");
+    assert_eq!(selected["properties"]["community_id"], "village-1");
+    assert_eq!(selected["properties"]["full_access_length_m"], 240.0);
+    assert_eq!(
+        selected["properties"]["full_access_topography"]["availability"],
+        "available"
+    );
+    assert_eq!(
+        selected["properties"]["full_access_topography"]["cumulative_elevation_variation_m"],
+        8.0
+    );
+    assert_eq!(
+        selected["geometry"]["coordinates"],
+        json!([[0.0, 0.0], [0.0, 1.0]])
+    );
+    let community = features
+        .iter()
+        .find(|feature| feature["properties"]["kind"] == "community-access")
+        .expect("accepted community access");
+    assert_eq!(
+        community["geometry"]["coordinates"],
+        json!([[0.0, 0.0], [0.0, 1.0]])
+    );
+    let html = fs::read_to_string(root.join("index.html")).expect("map HTML");
+    assert!(html.contains("New link elevation"));
+    assert!(html.contains("Full journey elevation"));
+}
+
+#[test]
 fn identical_physical_path_with_parallel_ids_has_no_departure() {
     let root = tempfile_root("satn-rs-publication-physical-path");
     let mut report = report_fixture();
@@ -256,6 +366,7 @@ fn identical_physical_path_with_parallel_ids_has_no_departure() {
             reason: None,
             uncertainties: Vec::new(),
         }],
+        community_access: Vec::new(),
     };
 
     let publication = publish_decision_map(&root, &report, &run).expect("publish map");
@@ -314,6 +425,7 @@ fn publication_manifest_exposes_pending_prepared_connections() {
             reason: None,
             uncertainties: Vec::new(),
         }],
+        community_access: Vec::new(),
     };
     publish_decision_map(&root, &report, &run).expect("publish prefix map");
     let publication: Value = serde_json::from_str(
@@ -442,8 +554,6 @@ fn report_fixture() -> CompileReport {
             attachment_depth: Some(0),
             new_link_length_m: Some(120.0),
             full_access_length_m: Some(120.0),
-            new_link_topography: None,
-            full_access_topography: None,
             joined_spine_id: Some("source:a-road".to_string()),
             access_length_m: Some(120.0),
             path_edge_ids: vec!["edge-access".to_string()],
@@ -456,6 +566,8 @@ fn report_fixture() -> CompileReport {
             provision_status: "unknown".to_string(),
             reason: "Shortest measured-length cycling path reaches the admitted strategic spine."
                 .to_string(),
+            new_link_topography: None,
+            full_access_topography: None,
         }],
         access_obligations: vec![AccessObligation {
             id: "obligation:community:alpha".to_string(),

@@ -6,11 +6,11 @@ use std::path::{Path, PathBuf};
 use satn_rs::judgment::{ChoiceResult, ProviderReceipt};
 use satn_rs::midend::{
     ChoiceAttempt, ChoiceProvider, MidendConfig, MidendProgress, ProviderSet, SpecialistAttempt,
-    SpecialistProvider, TypedOperation, fork, replay, run,
+    SpecialistProvider, TypedOperation, fork, replay, run, run_prepared,
 };
 use satn_rs::{
-    AccessObligation, AccountingSummary, Candidate, CompileReport, Connection, NetworkPlace,
-    Operation, SourceCorridor, UnknownFact,
+    AccessObligation, AccountingSummary, Candidate, CompileOptions, CompileReport, Connection,
+    NetworkPlace, Operation, SourceCorridor, UnknownFact, prepare_with_progress,
 };
 use serde_json::{Value, json};
 
@@ -755,4 +755,621 @@ fn fork_starts_before_decision_and_accepts_replacement() {
 
     let replayed = replay(&history, "alternative", &mut |_event| {}).expect("branch replay");
     assert_eq!(replayed.operations[0].candidate_id(), Some("candidate-b"));
+}
+
+struct RuralChoiceJev {
+    calls: usize,
+    choices: Vec<String>,
+    choose_comfort: bool,
+}
+
+impl ChoiceProvider for RuralChoiceJev {
+    fn classify_choice(&mut self, request: &satn_rs::judgment::ChoiceRequest) -> ChoiceAttempt {
+        assert_eq!(request.state["schema"], "satn-rust-rural-task/v1");
+        assert!(request.state.get("offer").is_none());
+        assert!(request.state.get("prior_decisions").is_none());
+        assert!(
+            request
+                .instructions
+                .as_str()
+                .is_some_and(|brief| brief.contains("rural community access"))
+        );
+        for marker in ["__unknown__", "__needs_evidence__", "__none__"] {
+            assert!(request.options.contains_key(marker));
+        }
+        self.calls += 1;
+        let choice = request
+            .options
+            .keys()
+            .find(|option| self.choose_comfort && option.ends_with(":comfort"))
+            .or_else(|| {
+                (!self.choose_comfort)
+                    .then(|| {
+                        request
+                            .options
+                            .keys()
+                            .find(|option| option.ends_with(":shortest"))
+                    })
+                    .flatten()
+            })
+            .or_else(|| {
+                request
+                    .options
+                    .keys()
+                    .find(|option| !option.starts_with("__"))
+            })
+            .expect("rural candidate option")
+            .clone();
+        self.choices.push(choice.clone());
+        ChoiceAttempt {
+            result: Some(ChoiceResult {
+                model: "jev-rural-fixture".to_string(),
+                choice,
+                probabilities: BTreeMap::new(),
+                confidence: 0.0,
+            }),
+            receipt: receipt("typesafe", "jev-rural-fixture", "{\"choice\":\"rural\"}"),
+        }
+    }
+}
+
+struct RuralUnknownJev {
+    calls: usize,
+}
+
+impl ChoiceProvider for RuralUnknownJev {
+    fn classify_choice(&mut self, request: &satn_rs::judgment::ChoiceRequest) -> ChoiceAttempt {
+        self.calls += 1;
+        assert!(request.options.contains_key("__unknown__"));
+        ChoiceAttempt {
+            result: Some(ChoiceResult {
+                model: "jev-rural-fixture".to_string(),
+                choice: "__unknown__".to_string(),
+                probabilities: BTreeMap::new(),
+                confidence: 0.0,
+            }),
+            receipt: receipt(
+                "typesafe",
+                "jev-rural-fixture",
+                "{\"choice\":\"__unknown__\"}",
+            ),
+        }
+    }
+}
+
+struct RuralSpecialist {
+    response: Value,
+    calls: usize,
+}
+
+impl SpecialistProvider for RuralSpecialist {
+    fn propose(&mut self, prompt: &str) -> SpecialistAttempt {
+        self.calls += 1;
+        assert!(prompt.contains("select-community-access"));
+        assert!(!prompt.contains("\"offer\""));
+        assert!(!prompt.contains("\"prior_decisions\""));
+        SpecialistAttempt {
+            response: Some(self.response.clone()),
+            receipt: receipt("codex-exec", "gpt-5.6-luna", &self.response.to_string()),
+        }
+    }
+}
+
+#[test]
+fn prepared_rural_choice_binds_the_next_offer_to_the_selected_parent_path() {
+    let root = rural_prepared_fixture("selected-parent");
+    let prepared = prepare_with_progress(
+        &root.join("area.yaml"),
+        CompileOptions::default(),
+        &mut |_event| {},
+    )
+    .expect("prepared rural fixture");
+    let mut probe = prepared.rural_planner();
+    let offer = probe
+        .offer_next()
+        .expect("rural offer")
+        .expect("parent offer");
+    assert_eq!(
+        offer
+            .candidates
+            .iter()
+            .map(|candidate| candidate.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["rural:parent:shortest", "rural:parent:comfort"]
+    );
+    drop(probe);
+    let history = root.join("history");
+    let mut jev = RuralChoiceJev {
+        calls: 0,
+        choices: Vec::new(),
+        choose_comfort: true,
+    };
+    let result = run_prepared(
+        &history,
+        &prepared,
+        MidendConfig::live(false),
+        ProviderSet {
+            classifier: Some(&mut jev),
+            specialist: None,
+        },
+        &mut |_event| {},
+    )
+    .expect("prepared rural run");
+
+    assert_eq!(
+        jev.calls, 1,
+        "only the tradeoff parent needs the classifier"
+    );
+    assert_eq!(jev.choices, vec!["rural:parent:comfort"]);
+    assert_eq!(result.operations.len(), 2);
+    let parent = result
+        .community_access
+        .iter()
+        .find(|access| access.community_id == "parent")
+        .expect("accepted parent");
+    let child = result
+        .community_access
+        .iter()
+        .find(|access| access.community_id == "child")
+        .expect("accepted child");
+    assert_eq!(child.parent_community_id.as_deref(), Some("parent"));
+    assert_eq!(child.path_edge_ids, Vec::<String>::new());
+    assert_eq!(
+        result
+            .operations
+            .iter()
+            .find_map(|operation| match operation {
+                TypedOperation::SelectCommunityAccess {
+                    community_id,
+                    candidate_id,
+                    ..
+                } if community_id == "parent" => Some(candidate_id.as_str()),
+                _ => None,
+            }),
+        Some("rural:parent:comfort")
+    );
+    assert!(
+        parent
+            .path_edge_ids
+            .iter()
+            .any(|edge_id| edge_id.contains(":parent:flat:")),
+        "selected parent path must be the alternate flat branch"
+    );
+    assert_eq!(
+        result
+            .operations
+            .iter()
+            .filter(|operation| operation.is_rural())
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn prepared_rural_replay_reuses_retained_operations_without_providers() {
+    let root = rural_prepared_fixture("replay");
+    let prepared = prepare_with_progress(
+        &root.join("area.yaml"),
+        CompileOptions::default(),
+        &mut |_event| {},
+    )
+    .expect("prepared rural fixture");
+    let history = root.join("history");
+    let mut jev = RuralChoiceJev {
+        calls: 0,
+        choices: Vec::new(),
+        choose_comfort: true,
+    };
+    let first = run_prepared(
+        &history,
+        &prepared,
+        MidendConfig::live(false),
+        ProviderSet {
+            classifier: Some(&mut jev),
+            specialist: None,
+        },
+        &mut |_event| {},
+    )
+    .expect("prepared rural run");
+    assert_eq!(jev.calls, 1);
+
+    let replayed = replay(&history, "main", &mut |_event| {}).expect("rural replay");
+    assert_eq!(replayed.operations, first.operations);
+    assert_eq!(replayed.community_access, first.community_access);
+}
+
+#[test]
+fn rural_fork_discards_descendants_and_replays_a_replacement_parent_choice() {
+    let root = rural_prepared_fixture("fork");
+    let prepared = prepare_with_progress(
+        &root.join("area.yaml"),
+        CompileOptions::default(),
+        &mut |_event| {},
+    )
+    .expect("prepared rural fixture");
+    let history = root.join("history");
+    let mut jev = RuralChoiceJev {
+        calls: 0,
+        choices: Vec::new(),
+        choose_comfort: true,
+    };
+    let first = run_prepared(
+        &history,
+        &prepared,
+        MidendConfig::live(false),
+        ProviderSet {
+            classifier: Some(&mut jev),
+            specialist: None,
+        },
+        &mut |_event| {},
+    )
+    .expect("prepared rural run");
+    let parent_task = first
+        .task_ids
+        .iter()
+        .find(|task_id| task_id.as_str() == "task:rural:parent")
+        .expect("retained parent task")
+        .clone();
+    fork(&history, "main", "shortest", &parent_task).expect("fork before parent decision");
+
+    let mut replacement = RuralChoiceJev {
+        calls: 0,
+        choices: Vec::new(),
+        choose_comfort: false,
+    };
+    let branch = run_prepared(
+        &history,
+        &prepared,
+        MidendConfig::live(false).with_branch("shortest"),
+        ProviderSet {
+            classifier: Some(&mut replacement),
+            specialist: None,
+        },
+        &mut |_event| {},
+    )
+    .expect("replacement rural branch");
+    assert_eq!(replacement.choices, vec!["rural:parent:shortest"]);
+    assert!(matches!(
+        branch.operations.first(),
+        Some(TypedOperation::SelectCommunityAccess { candidate_id, .. })
+            if candidate_id == "rural:parent:shortest"
+    ));
+    assert_eq!(branch.operations.len(), 2);
+    assert!(branch.task_ids.contains(&"task:rural:child".to_string()));
+}
+
+#[test]
+fn unresolved_rural_parent_is_not_used_as_a_child_frontier() {
+    let root = rural_prepared_fixture("unresolved-parent");
+    let prepared = prepare_with_progress(
+        &root.join("area.yaml"),
+        CompileOptions::default(),
+        &mut |_event| {},
+    )
+    .expect("prepared rural fixture");
+    let mut jev = RuralUnknownJev { calls: 0 };
+    let result = run_prepared(
+        &root.join("history"),
+        &prepared,
+        MidendConfig::live(false),
+        ProviderSet {
+            classifier: Some(&mut jev),
+            specialist: None,
+        },
+        &mut |_event| {},
+    )
+    .expect("unresolved rural run");
+    assert_eq!(jev.calls, 1);
+    assert!(matches!(
+        result.operations.first(),
+        Some(TypedOperation::UnresolvedCommunityAccess { community_id, .. })
+            if community_id == "parent"
+    ));
+    assert!(
+        result
+            .community_access
+            .iter()
+            .all(|access| access.parent_community_id.as_deref() != Some("parent")),
+        "a child must not be served from an unresolved parent"
+    );
+    let parent = result
+        .community_access
+        .iter()
+        .find(|access| access.community_id == "parent")
+        .expect("unresolved parent projection");
+    assert_eq!(parent.status, "unresolved");
+    assert!(parent.path_edge_ids.is_empty());
+    assert!(parent.path_geometry.is_empty());
+    assert!(parent.parent_community_id.is_none());
+    assert!(parent.root_spine_id.is_none());
+    assert!(parent.new_link_length_m.is_none());
+    assert!(parent.full_access_length_m.is_none());
+    assert!(parent.new_link_topography.is_none());
+    assert!(parent.full_access_topography.is_none());
+}
+
+#[test]
+fn unknown_rural_jev_escalates_to_typed_provisional_specialist_choice() {
+    let root = rural_prepared_fixture("rural-specialist");
+    let prepared = prepare_with_progress(
+        &root.join("area.yaml"),
+        CompileOptions::default(),
+        &mut |_event| {},
+    )
+    .expect("prepared rural fixture");
+    let response = json!({
+        "proposal": {"operation": {"kind": "select-community-access", "payload": {
+            "candidate_id": "rural:parent:comfort",
+            "community_id": "parent",
+            "provisional": true,
+            "reason": "The flatter complete journey is the supported best guess.",
+            "uncertainties": ["Provision remains unknown."]
+        }}}
+    });
+    let mut jev = RuralUnknownJev { calls: 0 };
+    let mut specialist = RuralSpecialist { response, calls: 0 };
+    let result = run_prepared(
+        &root.join("history"),
+        &prepared,
+        MidendConfig::live(true),
+        ProviderSet {
+            classifier: Some(&mut jev),
+            specialist: Some(&mut specialist),
+        },
+        &mut |_event| {},
+    )
+    .expect("rural specialist run");
+    assert_eq!(jev.calls, 1);
+    assert_eq!(specialist.calls, 1);
+    assert!(matches!(
+        result.operations.first(),
+        Some(TypedOperation::SelectCommunityAccess {
+            community_id,
+            candidate_id,
+            decision_class,
+            provisional: true,
+            ..
+        }) if community_id == "parent"
+            && candidate_id == "rural:parent:comfort"
+            && decision_class == "agent"
+    ));
+    assert_eq!(result.operations.len(), 2);
+}
+
+#[test]
+fn genuine_gap_can_resume_without_an_offer_or_provider() {
+    let root = rural_prepared_fixture("replay-gap");
+    let network_path = root.join("snapshot/network.geojson");
+    let mut network: Value =
+        serde_json::from_str(&fs::read_to_string(&network_path).expect("network")).expect("json");
+    add_bidirectional(
+        network["features"].as_array_mut().expect("features"),
+        "isolated",
+        "isolated-end",
+        [2.0, 2.0],
+        [2.01, 2.0],
+        10.0,
+        "residential",
+        None,
+    );
+    fs::write(
+        &network_path,
+        serde_json::to_vec(&network).expect("network json"),
+    )
+    .expect("write network");
+    let places_path = root.join("snapshot/places.geojson");
+    let mut places: Value =
+        serde_json::from_str(&fs::read_to_string(&places_path).expect("places")).expect("json");
+    places["features"]
+        .as_array_mut()
+        .expect("features")
+        .push(place_feature("isolated", "Isolated", "village", [2.0, 2.0]));
+    fs::write(
+        &places_path,
+        serde_json::to_vec(&places).expect("places json"),
+    )
+    .expect("write places");
+    let prepared = prepare_with_progress(
+        &root.join("area.yaml"),
+        CompileOptions::default(),
+        &mut |_event| {},
+    )
+    .expect("prepared rural fixture");
+    let history = root.join("history");
+    let mut jev = RuralChoiceJev {
+        calls: 0,
+        choices: Vec::new(),
+        choose_comfort: true,
+    };
+    let first = run_prepared(
+        &history,
+        &prepared,
+        MidendConfig::live(false),
+        ProviderSet {
+            classifier: Some(&mut jev),
+            specialist: None,
+        },
+        &mut |_event| {},
+    )
+    .expect("prepared rural run");
+    assert_eq!(jev.calls, 1);
+    let gap = first
+        .community_access
+        .iter()
+        .find(|access| access.community_id == "isolated")
+        .expect("retained graph gap");
+    assert_eq!(gap.status, "network-gap");
+    assert!(gap.path_edge_ids.is_empty());
+    assert!(gap.parent_community_id.is_none());
+    assert!(gap.root_spine_id.is_none());
+    assert!(gap.full_access_length_m.is_none());
+
+    let resumed = run_prepared(
+        &history,
+        &prepared,
+        MidendConfig::live(false),
+        ProviderSet {
+            classifier: None,
+            specialist: None,
+        },
+        &mut |_event| {},
+    )
+    .expect("resume with genuine gap");
+    assert_eq!(resumed.operations, first.operations);
+    assert_eq!(resumed.community_access, first.community_access);
+}
+
+fn rural_prepared_fixture(label: &str) -> PathBuf {
+    let root = std::env::temp_dir().join(format!(
+        "satn-rust-midend-rural-{label}-{}",
+        std::process::id()
+    ));
+    if root.exists() {
+        fs::remove_dir_all(&root).expect("clean rural fixture");
+    }
+    let snapshot = root.join("snapshot");
+    fs::create_dir_all(&snapshot).expect("rural snapshot");
+    fs::write(
+        root.join("area.yaml"),
+        format!(
+            "area_id: fixture\narea_name: Fixture\nsource:\n  snapshot_dir: {}\n  snapshot_id: snapshot\n  community_place_types: [village]\n  national_elevation:\n    path: {}\ncompilation:\n  max_connection_km: 15\n",
+            root.display(),
+            root.join("elevation.geojson").display()
+        ),
+    )
+    .expect("rural config");
+    let mut edges = Vec::new();
+    add_bidirectional(
+        &mut edges,
+        "parent",
+        "high",
+        [0.0, 0.0],
+        [0.01, 0.0],
+        10.0,
+        "residential",
+        None,
+    );
+    add_bidirectional(
+        &mut edges,
+        "high",
+        "spine",
+        [0.01, 0.0],
+        [0.02, 0.0],
+        10.0,
+        "primary",
+        Some("A1"),
+    );
+    add_bidirectional(
+        &mut edges,
+        "parent",
+        "flat",
+        [0.0, 0.0],
+        [0.0, 0.01],
+        15.0,
+        "residential",
+        None,
+    );
+    add_bidirectional(
+        &mut edges,
+        "flat",
+        "spine",
+        [0.0, 0.01],
+        [0.02, 0.0],
+        15.0,
+        "residential",
+        None,
+    );
+    write_collection(&snapshot.join("network.geojson"), edges);
+    write_collection(
+        &snapshot.join("places.geojson"),
+        vec![
+            place_feature("parent", "Parent", "village", [0.0, 0.0]),
+            place_feature("child", "Child", "village", [0.0, 0.005]),
+        ],
+    );
+    write_collection(
+        &root.join("elevation.geojson"),
+        vec![
+            elevation_feature("high-0", [0.0, 0.0], 0.0),
+            elevation_feature("high-1", [0.002, 0.0], 4.0),
+            elevation_feature("high-2", [0.004, 0.0], 8.0),
+            elevation_feature("high-3", [0.006, 0.0], 12.0),
+            elevation_feature("high-4", [0.008, 0.0], 16.0),
+            elevation_feature("high-5", [0.01, 0.0], 20.0),
+            elevation_feature("spine-1", [0.012, 0.0], 16.0),
+            elevation_feature("spine-2", [0.014, 0.0], 12.0),
+            elevation_feature("spine-3", [0.016, 0.0], 8.0),
+            elevation_feature("spine-4", [0.018, 0.0], 4.0),
+            elevation_feature("spine-5", [0.02, 0.0], 0.0),
+            elevation_feature("flat-0", [0.0, 0.0], 0.0),
+            elevation_feature("flat-1", [0.0, 0.002], 0.2),
+            elevation_feature("flat-2", [0.0, 0.004], 0.4),
+            elevation_feature("flat-3", [0.0, 0.006], 0.6),
+            elevation_feature("flat-4", [0.0, 0.008], 0.8),
+            elevation_feature("flat-5", [0.0, 0.01], 1.0),
+            elevation_feature("flat-spine-1", [0.002, 0.009], 1.1),
+            elevation_feature("flat-spine-2", [0.004, 0.008], 1.2),
+            elevation_feature("flat-spine-3", [0.006, 0.007], 1.3),
+            elevation_feature("flat-spine-4", [0.008, 0.006], 1.4),
+            elevation_feature("flat-spine-5", [0.01, 0.005], 1.5),
+            elevation_feature("flat-spine-6", [0.012, 0.004], 1.6),
+            elevation_feature("flat-spine-7", [0.014, 0.003], 1.7),
+            elevation_feature("flat-spine-8", [0.016, 0.002], 1.8),
+            elevation_feature("flat-spine-9", [0.018, 0.001], 1.9),
+            elevation_feature("flat-spine-10", [0.02, 0.0], 2.0),
+        ],
+    );
+    root
+}
+
+fn place_feature(id: &str, name: &str, class: &str, point: [f64; 2]) -> Value {
+    json!({
+        "type": "Feature",
+        "properties": {"place_id": id, "source_id": id, "name": name, "place_class": class},
+        "geometry": {"type": "Point", "coordinates": point}
+    })
+}
+
+fn elevation_feature(id: &str, point: [f64; 2], elevation_m: f64) -> Value {
+    json!({
+        "type": "Feature",
+        "properties": {"evidence_id": id, "source_id": "fixture-dtm", "elevation_m": elevation_m},
+        "geometry": {"type": "Point", "coordinates": point}
+    })
+}
+
+fn add_bidirectional(
+    edges: &mut Vec<Value>,
+    from: &str,
+    to: &str,
+    start: [f64; 2],
+    end: [f64; 2],
+    length: f64,
+    highway: &str,
+    reference: Option<&str>,
+) {
+    for (u, v, coordinates) in [
+        (from, to, json!([start, end])),
+        (to, from, json!([end, start])),
+    ] {
+        let mut properties =
+            json!({"u": u, "v": v, "key": 0, "length": length, "highway": highway});
+        if let Some(reference) = reference {
+            properties["ref"] = json!(reference);
+        }
+        edges.push(json!({
+            "type": "Feature",
+            "properties": properties,
+            "geometry": {"type": "LineString", "coordinates": coordinates}
+        }));
+    }
+}
+
+fn write_collection(path: &Path, features: Vec<Value>) {
+    fs::write(
+        path,
+        serde_json::to_string(&json!({"type": "FeatureCollection", "features": features}))
+            .expect("feature collection"),
+    )
+    .expect("write feature collection");
 }

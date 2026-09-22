@@ -14,14 +14,19 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::compiler::{AccessObligation, Candidate, CompileReport, Connection, SourceCorridor};
+use crate::compiler::{
+    AccessObligation, Candidate, CommunityAccess, CompileReport, Connection, PreparedCompilation,
+    RuralAccessOffer, RuralAccessPlanner, SourceCorridor,
+};
 pub use crate::judgment::{ChoiceAttempt, SpecialistAttempt};
 use crate::judgment::{ChoiceRequest, ChoiceResult, CodexConfig, ProviderReceipt, TypeSafeConfig};
+use crate::topography::TopographyAvailability;
 
 const UNKNOWN: &str = "__unknown__";
 const NEEDS_EVIDENCE: &str = "__needs_evidence__";
 const NONE: &str = "__none__";
 const PLANNING_BRIEF: &str = "Choose the strategic active-travel alignment connecting the named places from the supplied route alternatives. Preserve A-road corridor importance and existing cycle-alignment evidence. Weigh source-supported directness and continuity without invented numeric weights. A role's search cost is not a cross-role quality score. Route selection does not establish provision, safety, access, or adoption. If required evidence is missing, choose an explicit unresolved option.";
+const RURAL_PLANNING_BRIEF: &str = "Choose one admitted rural community access path to the currently accepted frontier. Compare the supplied measured new-link and complete child-to-spine journey evidence, including ordered elevation variation and sustained gradient where supported. Do not invent a score, treat missing evidence as zero, or select a path outside this retained offer. If the evidence does not support a choice, choose an explicit unresolved option.";
 
 #[derive(Debug)]
 pub enum MidendError {
@@ -157,6 +162,19 @@ pub struct DecisionTask {
 
 impl DecisionTask {
     fn choice_request(&self) -> ChoiceRequest {
+        if self.state.get("schema") == Some(&json!("satn-rust-rural-task/v1")) {
+            let mut state = self.state.clone();
+            if let Some(object) = state.as_object_mut() {
+                object.remove("offer");
+                object.remove("prior_decisions");
+            }
+            return ChoiceRequest::new(
+                state,
+                self.question_id.clone(),
+                json!(RURAL_PLANNING_BRIEF),
+                self.options.clone(),
+            );
+        }
         ChoiceRequest::new(
             self.state.clone(),
             self.question_id.clone(),
@@ -192,20 +210,71 @@ pub enum TypedOperation {
         reason: String,
         uncertainties: Vec<String>,
     },
+    #[serde(rename = "select-community-access")]
+    SelectCommunityAccess {
+        id: String,
+        task_id: String,
+        attempt_id: String,
+        community_id: String,
+        candidate_id: String,
+        decision_class: String,
+        provisional: bool,
+        reason: Option<String>,
+        uncertainties: Vec<String>,
+        parent_community_id: Option<String>,
+        root_spine_id: Option<String>,
+        new_link_length_m: Option<f64>,
+        full_access_length_m: Option<f64>,
+    },
+    #[serde(rename = "unresolved-community-access")]
+    UnresolvedCommunityAccess {
+        id: String,
+        task_id: String,
+        attempt_id: String,
+        community_id: String,
+        candidate_id: String,
+        decision_class: String,
+        marker: Option<String>,
+        reason: String,
+        uncertainties: Vec<String>,
+        parent_community_id: Option<String>,
+        root_spine_id: Option<String>,
+        new_link_length_m: Option<f64>,
+        full_access_length_m: Option<f64>,
+    },
 }
 
 impl TypedOperation {
     pub fn candidate_id(&self) -> Option<&str> {
         match self {
-            Self::SelectAlignment { candidate_id, .. } => Some(candidate_id),
-            Self::Unresolved { .. } => None,
+            Self::SelectAlignment { candidate_id, .. }
+            | Self::SelectCommunityAccess { candidate_id, .. } => Some(candidate_id),
+            Self::Unresolved { .. } | Self::UnresolvedCommunityAccess { .. } => None,
+        }
+    }
+
+    pub fn rural_candidate_id(&self) -> Option<&str> {
+        match self {
+            Self::SelectCommunityAccess { candidate_id, .. }
+            | Self::UnresolvedCommunityAccess { candidate_id, .. } => Some(candidate_id),
+            Self::SelectAlignment { .. } | Self::Unresolved { .. } => None,
+        }
+    }
+
+    pub fn community_id(&self) -> Option<&str> {
+        match self {
+            Self::SelectCommunityAccess { community_id, .. }
+            | Self::UnresolvedCommunityAccess { community_id, .. } => Some(community_id),
+            Self::SelectAlignment { .. } | Self::Unresolved { .. } => None,
         }
     }
 
     pub fn decision_class(&self) -> &str {
         match self {
             Self::SelectAlignment { decision_class, .. }
-            | Self::Unresolved { decision_class, .. } => decision_class,
+            | Self::Unresolved { decision_class, .. }
+            | Self::SelectCommunityAccess { decision_class, .. }
+            | Self::UnresolvedCommunityAccess { decision_class, .. } => decision_class,
         }
     }
 
@@ -215,18 +284,33 @@ impl TypedOperation {
             Self::SelectAlignment {
                 provisional: true,
                 ..
+            } | Self::SelectCommunityAccess {
+                provisional: true,
+                ..
             }
         )
     }
 
     pub fn is_unresolved(&self) -> bool {
-        matches!(self, Self::Unresolved { .. })
+        matches!(
+            self,
+            Self::Unresolved { .. } | Self::UnresolvedCommunityAccess { .. }
+        )
+    }
+
+    pub fn is_rural(&self) -> bool {
+        matches!(
+            self,
+            Self::SelectCommunityAccess { .. } | Self::UnresolvedCommunityAccess { .. }
+        )
     }
 
     fn connection_id(&self) -> &str {
         match self {
             Self::SelectAlignment { connection_id, .. }
             | Self::Unresolved { connection_id, .. } => connection_id,
+            Self::SelectCommunityAccess { community_id, .. }
+            | Self::UnresolvedCommunityAccess { community_id, .. } => community_id,
         }
     }
 }
@@ -267,6 +351,8 @@ pub struct MidendRun {
     pub status: String,
     pub task_ids: Vec<String>,
     pub operations: Vec<TypedOperation>,
+    #[serde(default)]
+    pub community_access: Vec<CommunityAccess>,
 }
 
 struct HistoryStore {
@@ -566,14 +652,18 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), MidendE
 fn operation_task_id(operation: &TypedOperation) -> &str {
     match operation {
         TypedOperation::SelectAlignment { task_id, .. }
-        | TypedOperation::Unresolved { task_id, .. } => task_id,
+        | TypedOperation::Unresolved { task_id, .. }
+        | TypedOperation::SelectCommunityAccess { task_id, .. }
+        | TypedOperation::UnresolvedCommunityAccess { task_id, .. } => task_id,
     }
 }
 
 fn operation_attempt_id(operation: &TypedOperation) -> &str {
     match operation {
         TypedOperation::SelectAlignment { attempt_id, .. }
-        | TypedOperation::Unresolved { attempt_id, .. } => attempt_id,
+        | TypedOperation::Unresolved { attempt_id, .. }
+        | TypedOperation::SelectCommunityAccess { attempt_id, .. }
+        | TypedOperation::UnresolvedCommunityAccess { attempt_id, .. } => attempt_id,
     }
 }
 
@@ -595,8 +685,33 @@ pub fn run(
     root: &Path,
     report: CompileReport,
     config: MidendConfig,
+    providers: ProviderSet<'_>,
+    progress: &mut dyn FnMut(MidendProgress),
+) -> Result<MidendRun, MidendError> {
+    run_internal(root, report, config, providers, progress, None)
+}
+
+/// Run the prepared interurban and rural decision sequence while borrowing the
+/// graph/elevation state held by one `PreparedCompilation`.
+pub fn run_prepared(
+    root: &Path,
+    prepared: &PreparedCompilation,
+    config: MidendConfig,
+    providers: ProviderSet<'_>,
+    progress: &mut dyn FnMut(MidendProgress),
+) -> Result<MidendRun, MidendError> {
+    let report = prepared.report.clone();
+    let planner = prepared.rural_planner();
+    run_internal(root, report, config, providers, progress, Some(planner))
+}
+
+fn run_internal(
+    root: &Path,
+    report: CompileReport,
+    config: MidendConfig,
     mut providers: ProviderSet<'_>,
     progress: &mut dyn FnMut(MidendProgress),
+    rural_planner: Option<RuralAccessPlanner<'_>>,
 ) -> Result<MidendRun, MidendError> {
     let started = Instant::now();
     let store = HistoryStore::open(root)?;
@@ -616,10 +731,17 @@ pub fn run(
     }
     let mut operations = store.operations(&config.branch)?;
     for operation in &operations {
-        validate_operation(&base.report, operation, config.allow_provisional)?;
+        let task = store.task(&config.branch, operation_task_id(operation))?;
+        validate_operation(
+            &base.report,
+            operation,
+            config.allow_provisional,
+            task.as_ref(),
+        )?;
     }
     let mut completed_connections: BTreeSet<String> = operations
         .iter()
+        .filter(|operation| !operation.is_rural())
         .map(|operation| operation.connection_id().to_string())
         .collect();
     let mut task_ids = Vec::new();
@@ -795,7 +917,12 @@ pub fn run(
                 Vec::new(),
             )
         });
-        validate_operation(&base.report, &operation, config.allow_provisional)?;
+        validate_operation(
+            &base.report,
+            &operation,
+            config.allow_provisional,
+            Some(&task),
+        )?;
         store.append_operation(&config.branch, operation.clone())?;
         completed_connections.insert(operation.connection_id().to_string());
         operations.push(operation);
@@ -810,6 +937,23 @@ pub fn run(
         );
     }
 
+    let community_access = if let Some(planner) = rural_planner {
+        run_rural_sequence(
+            &store,
+            &base,
+            &config,
+            &mut providers,
+            progress,
+            planner,
+            &mut operations,
+            &mut task_ids,
+        )?
+    } else if operations.iter().any(TypedOperation::is_rural) {
+        records_from_history(&store, &config.branch, &operations)?
+    } else {
+        base.report.community_access.clone()
+    };
+
     let status = if operations.iter().any(TypedOperation::is_unresolved) {
         "unresolved"
     } else {
@@ -821,7 +965,447 @@ pub fn run(
         status: status.to_string(),
         task_ids,
         operations,
+        community_access,
     })
+}
+
+fn run_rural_sequence(
+    store: &HistoryStore,
+    base: &PlanningBase,
+    config: &MidendConfig,
+    providers: &mut ProviderSet<'_>,
+    progress: &mut dyn FnMut(MidendProgress),
+    planner: RuralAccessPlanner<'_>,
+    operations: &mut Vec<TypedOperation>,
+    task_ids: &mut Vec<String>,
+) -> Result<Vec<CommunityAccess>, MidendError> {
+    let started = Instant::now();
+    let mut planner = planner;
+    let mut completed = operations
+        .iter()
+        .filter_map(|operation| operation.community_id().map(str::to_string))
+        .collect::<BTreeSet<_>>();
+
+    // Rebuild the accepted frontier from retained operations. This is the only
+    // graph interaction on resume; provider receipts and task offers stay in
+    // history and are never regenerated for a completed decision.
+    for operation in operations.iter().filter(|operation| operation.is_rural()) {
+        let task = store
+            .task(&config.branch, operation_task_id(operation))?
+            .ok_or_else(|| {
+                MidendError::Invalid(format!(
+                    "rural operation {} has no retained task",
+                    operation_task_id(operation)
+                ))
+            })?;
+        let candidate_id = operation.rural_candidate_id().ok_or_else(|| {
+            MidendError::Invalid(format!(
+                "rural operation {} has no offered candidate",
+                operation_task_id(operation)
+            ))
+        })?;
+        let retained_candidate = rural_candidate_from_task(&task, candidate_id)?;
+        // A genuine graph gap is recorded after the planner has exhausted its
+        // frontier. It has no pending offer to consume on resume, so replay
+        // the retained typed operation without asking the planner to serve it.
+        if retained_candidate.criterion == "unresolved-gap" {
+            continue;
+        }
+        let offer = rural_offer_from_task(&task)?;
+        let current = planner
+            .offer_next()
+            .map_err(|error| MidendError::Invalid(error.to_string()))?
+            .ok_or_else(|| {
+                MidendError::Invalid(format!(
+                    "retained rural task {} has no current offer",
+                    task.task_id
+                ))
+            })?;
+        if current.community_id != offer.community_id {
+            return Err(MidendError::Invalid(format!(
+                "retained rural task {} does not match the accepted frontier offer {}",
+                task.task_id, current.community_id
+            )));
+        }
+        if retained_candidate
+            .access
+            .parent_community_id
+            .as_ref()
+            .is_some_and(|parent| {
+                !operations
+                    .iter()
+                    .take_while(|prior| *prior != operation)
+                    .any(|prior| {
+                        prior.is_rural()
+                            && prior.community_id() == Some(parent.as_str())
+                            && !prior.is_unresolved()
+                    })
+            })
+        {
+            return Err(MidendError::Invalid(format!(
+                "rural candidate {candidate_id} binds to an unresolved parent"
+            )));
+        }
+        match operation {
+            TypedOperation::SelectCommunityAccess { .. } => {
+                let accepted = planner
+                    .accept(candidate_id)
+                    .map_err(|error| MidendError::Invalid(error.to_string()))?;
+                if accepted.path_edge_ids != retained_candidate.access.path_edge_ids
+                    || accepted.parent_community_id != retained_candidate.access.parent_community_id
+                {
+                    return Err(MidendError::Invalid(format!(
+                        "rural candidate {candidate_id} changed while replaying task {}",
+                        task.task_id
+                    )));
+                }
+            }
+            TypedOperation::UnresolvedCommunityAccess { .. } => {
+                planner
+                    .reject(&unresolved_reason(operation))
+                    .map_err(|error| MidendError::Invalid(error.to_string()))?;
+            }
+            TypedOperation::SelectAlignment { .. } | TypedOperation::Unresolved { .. } => {
+                return Err(MidendError::Invalid(
+                    "urban operation entered rural frontier replay".to_string(),
+                ));
+            }
+        }
+    }
+
+    loop {
+        let Some(offer) = planner
+            .offer_next()
+            .map_err(|error| MidendError::Invalid(error.to_string()))?
+        else {
+            break;
+        };
+        let task = make_rural_task(base, &offer, config.allow_provisional)?;
+        let retained_task = store.task(&config.branch, &task.task_id)?;
+        let task = retained_task.clone().unwrap_or(task);
+        if !task_ids.iter().any(|id| id == &task.task_id) {
+            task_ids.push(task.task_id.clone());
+        }
+        if completed.contains(&offer.community_id) {
+            return Err(MidendError::Invalid(format!(
+                "rural community {} was already completed before its task",
+                offer.community_id
+            )));
+        }
+        if retained_task.is_none() {
+            store.append_task(&config.branch, task.clone())?;
+        }
+
+        let operation = if let Some(candidate) = mechanical_rural_candidate(&offer) {
+            rural_select_operation(
+                &task,
+                "mechanical:rural",
+                candidate,
+                "mechanically admissible rural candidate",
+                Vec::new(),
+                false,
+            )
+        } else {
+            let attempt_id = format!("attempt:{}:jev", task.task_id);
+            let classifier_attempt = classifier_attempt_for_task(
+                store,
+                config,
+                providers,
+                progress,
+                &started,
+                &task,
+                &attempt_id,
+            )?;
+            let mut operation = rural_classifier_operation(&task, &attempt_id, &classifier_attempt);
+            if operation.is_none()
+                && should_escalate(&classifier_attempt)
+                && config.mode == "live"
+                && providers.specialist.is_some()
+            {
+                let specialist_attempt_id = format!("attempt:{}:specialist", task.task_id);
+                let specialist_attempt = specialist_attempt_for_task(
+                    store,
+                    config,
+                    providers,
+                    progress,
+                    &started,
+                    &task,
+                    &specialist_attempt_id,
+                )?;
+                operation = rural_specialist_operation(
+                    &task,
+                    &specialist_attempt_id,
+                    &specialist_attempt,
+                    config.allow_provisional,
+                    classifier_marker(&classifier_attempt),
+                );
+            }
+            operation.unwrap_or_else(|| {
+                rural_unresolved_operation(
+                    &task,
+                    &attempt_id,
+                    classifier_decision_class(&classifier_attempt),
+                    "the admitted rural access choice remains unresolved",
+                    classifier_marker(&classifier_attempt),
+                    Vec::new(),
+                )
+            })
+        };
+        validate_operation(
+            &base.report,
+            &operation,
+            config.allow_provisional,
+            Some(&task),
+        )?;
+        let candidate_id = operation.rural_candidate_id().ok_or_else(|| {
+            MidendError::Invalid("rural operation did not retain an offered candidate".to_string())
+        })?;
+        match &operation {
+            TypedOperation::SelectCommunityAccess {
+                parent_community_id,
+                root_spine_id,
+                new_link_length_m,
+                full_access_length_m,
+                ..
+            } => {
+                let accepted = planner
+                    .accept(candidate_id)
+                    .map_err(|error| MidendError::Invalid(error.to_string()))?;
+                if accepted.path_edge_ids
+                    != rural_candidate_from_task(&task, candidate_id)?
+                        .access
+                        .path_edge_ids
+                    || accepted.parent_community_id.as_ref() != parent_community_id.as_ref()
+                    || accepted.root_spine_id.as_ref() != root_spine_id.as_ref()
+                    || accepted.new_link_length_m != *new_link_length_m
+                    || accepted.full_access_length_m != *full_access_length_m
+                {
+                    return Err(MidendError::Invalid(format!(
+                        "rural candidate {candidate_id} changed while accepting task {}",
+                        task.task_id
+                    )));
+                }
+            }
+            TypedOperation::UnresolvedCommunityAccess { reason, .. } => {
+                planner
+                    .reject(reason)
+                    .map_err(|error| MidendError::Invalid(error.to_string()))?;
+            }
+            TypedOperation::SelectAlignment { .. } | TypedOperation::Unresolved { .. } => {
+                return Err(MidendError::Invalid(
+                    "urban operation entered rural frontier processing".to_string(),
+                ));
+            }
+        }
+        store.append_operation(&config.branch, operation.clone())?;
+        completed.insert(offer.community_id.clone());
+        operations.push(operation);
+        emit(
+            progress,
+            config,
+            started,
+            Some(task.task_id),
+            None,
+            "decision",
+            "recorded-rural",
+        );
+    }
+
+    let records = planner
+        .into_records()
+        .into_iter()
+        .map(|mut access| {
+            if let Some(operation) = operations.iter().rev().find(|operation| {
+                operation.is_rural()
+                    && operation.community_id() == Some(access.community_id.as_str())
+            }) {
+                access.decision_class = operation.decision_class().to_string();
+                if let Some(reason) = operation_reason(operation) {
+                    access.reason = reason.to_string();
+                }
+            }
+            access
+        })
+        .collect::<Vec<_>>();
+
+    // Persist genuine graph gaps as compact unresolved rural tasks so replay
+    // can expose them without rebuilding the graph or elevation index.
+    for access in &records {
+        if completed.contains(&access.community_id) {
+            continue;
+        }
+        let candidate = crate::compiler::RuralAccessCandidate {
+            id: format!("rural:{}:gap", access.community_id),
+            criterion: "unresolved-gap".to_string(),
+            access: access.clone(),
+        };
+        let offer = RuralAccessOffer {
+            community_id: access.community_id.clone(),
+            community_name: access.name.clone(),
+            candidates: vec![candidate],
+        };
+        let task = make_rural_task(base, &offer, config.allow_provisional)?;
+        if store.task(&config.branch, &task.task_id)?.is_none() {
+            store.append_task(&config.branch, task.clone())?;
+        }
+        let operation = rural_unresolved_operation(
+            &task,
+            "mechanical:rural-gap",
+            "mechanical",
+            &access.reason,
+            Some(NEEDS_EVIDENCE.to_string()),
+            vec![access.reason.clone()],
+        );
+        validate_operation(
+            &base.report,
+            &operation,
+            config.allow_provisional,
+            Some(&task),
+        )?;
+        store.append_operation(&config.branch, operation.clone())?;
+        operations.push(operation);
+    }
+    // Return the exact compact facts retained with each accepted operation so
+    // live output and offline replay share one byte-stable projection. The
+    // planner remains responsible for frontier extension; history is the
+    // durable public record of the accepted prefix.
+    records_from_history(store, &config.branch, operations)
+}
+
+fn classifier_attempt_for_task(
+    store: &HistoryStore,
+    config: &MidendConfig,
+    providers: &mut ProviderSet<'_>,
+    progress: &mut dyn FnMut(MidendProgress),
+    started: &Instant,
+    task: &DecisionTask,
+    attempt_id: &str,
+) -> Result<ChoiceAttempt, MidendError> {
+    if let Some(record) = store.attempt_result(&config.branch, attempt_id)? {
+        let attempt = choice_attempt_from_record(record);
+        emit(
+            progress,
+            config,
+            *started,
+            Some(task.task_id.clone()),
+            Some(attempt.receipt.provider.clone()),
+            "provider",
+            "resumed",
+        );
+        return Ok(attempt);
+    }
+    store.append_attempt_started(
+        &config.branch,
+        &task.task_id,
+        attempt_id,
+        "classifier",
+        "typesafe",
+        &config.jev_model,
+    )?;
+    emit(
+        progress,
+        config,
+        *started,
+        Some(task.task_id.clone()),
+        Some("typesafe".to_string()),
+        "provider",
+        "started",
+    );
+    let attempt = match providers.classifier.as_deref_mut() {
+        Some(provider) if config.mode == "live" => provider.classify_choice(&task.choice_request()),
+        Some(_) => skipped_attempt("typesafe", &config.jev_model, "deterministic mode"),
+        None => skipped_attempt("typesafe", &config.jev_model, "classifier is unconfigured"),
+    };
+    store.append_attempt_result(
+        &config.branch,
+        AttemptRecord {
+            id: attempt_id.to_string(),
+            task_id: task.task_id.clone(),
+            actor: "classifier".to_string(),
+            status: attempt.receipt.status.clone(),
+            choice: attempt.result.clone(),
+            proposal: None,
+            receipt: attempt.receipt.clone(),
+        },
+    )?;
+    emit(
+        progress,
+        config,
+        *started,
+        Some(task.task_id.clone()),
+        Some(attempt.receipt.provider.clone()),
+        "provider",
+        &attempt.receipt.status,
+    );
+    Ok(attempt)
+}
+
+fn specialist_attempt_for_task(
+    store: &HistoryStore,
+    config: &MidendConfig,
+    providers: &mut ProviderSet<'_>,
+    progress: &mut dyn FnMut(MidendProgress),
+    started: &Instant,
+    task: &DecisionTask,
+    attempt_id: &str,
+) -> Result<SpecialistAttempt, MidendError> {
+    if let Some(record) = store.attempt_result(&config.branch, attempt_id)? {
+        let attempt = specialist_attempt_from_record(record);
+        emit(
+            progress,
+            config,
+            *started,
+            Some(task.task_id.clone()),
+            Some(attempt.receipt.provider.clone()),
+            "provider",
+            "resumed",
+        );
+        return Ok(attempt);
+    }
+    store.append_attempt_started(
+        &config.branch,
+        &task.task_id,
+        attempt_id,
+        "agent",
+        "codex-exec",
+        "configured",
+    )?;
+    emit(
+        progress,
+        config,
+        *started,
+        Some(task.task_id.clone()),
+        Some("codex-exec".to_string()),
+        "provider",
+        "started",
+    );
+    let attempt = providers
+        .specialist
+        .as_deref_mut()
+        .ok_or_else(|| MidendError::Invalid("specialist provider is unavailable".to_string()))?
+        .propose(&specialist_prompt(task)?);
+    store.append_attempt_result(
+        &config.branch,
+        AttemptRecord {
+            id: attempt_id.to_string(),
+            task_id: task.task_id.clone(),
+            actor: "agent".to_string(),
+            status: attempt.receipt.status.clone(),
+            choice: None,
+            proposal: attempt.response.clone(),
+            receipt: attempt.receipt.clone(),
+        },
+    )?;
+    emit(
+        progress,
+        config,
+        *started,
+        Some(task.task_id.clone()),
+        Some(attempt.receipt.provider.clone()),
+        "provider",
+        &attempt.receipt.status,
+    );
+    Ok(attempt)
 }
 
 pub fn replay(
@@ -834,7 +1418,8 @@ pub fn replay(
     let base = store.base()?;
     let operations = store.operations(branch)?;
     for operation in &operations {
-        validate_operation(&base.report, operation, true)?;
+        let task = store.task(branch, operation_task_id(operation))?;
+        validate_operation(&base.report, operation, true, task.as_ref())?;
     }
     let task_ids = store
         .chain(branch)?
@@ -843,6 +1428,11 @@ pub fn replay(
         .filter_map(|event| event.task_id)
         .collect::<Vec<_>>();
     let config = MidendConfig::deterministic(false).with_branch(branch.to_string());
+    let community_access = if operations.iter().any(TypedOperation::is_rural) {
+        records_from_history(&store, branch, &operations)?
+    } else {
+        base.report.community_access.clone()
+    };
     emit(
         progress,
         &config,
@@ -862,6 +1452,7 @@ pub fn replay(
         },
         task_ids,
         operations,
+        community_access,
     })
 }
 
@@ -894,6 +1485,454 @@ pub fn fork(
         },
     );
     store.write_branches(&branches)
+}
+
+fn make_rural_task(
+    base: &PlanningBase,
+    offer: &RuralAccessOffer,
+    allow_provisional: bool,
+) -> Result<DecisionTask, MidendError> {
+    let mut options = offer
+        .candidates
+        .iter()
+        .map(|candidate| {
+            (
+                candidate.id.clone(),
+                json!({
+                    "criterion": candidate.criterion,
+                    "community_id": candidate.access.community_id,
+                    "status": candidate.access.status,
+                    "new_link_length_m": candidate.access.new_link_length_m,
+                    "full_access_length_m": candidate.access.full_access_length_m,
+                    "parent_community_id": candidate.access.parent_community_id,
+                    "root_spine_id": candidate.access.root_spine_id,
+                    "topography": topography_summary(candidate.access.full_access_topography.as_ref()),
+                }),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    options.insert(
+        UNKNOWN.to_string(),
+        json!("record rural access as unknown and continue review"),
+    );
+    options.insert(
+        NEEDS_EVIDENCE.to_string(),
+        json!("request evidence before selecting rural access"),
+    );
+    options.insert(
+        NONE.to_string(),
+        json!("record that no supplied rural access option is adopted"),
+    );
+    Ok(DecisionTask {
+        task_id: format!("task:rural:{}", offer.community_id),
+        base_id: base.base_id.clone(),
+        connection_id: format!("rural:{}", offer.community_id),
+        question_id: format!("rural-access:{}", offer.community_id),
+        state: json!({
+            "schema": "satn-rust-rural-task/v1",
+            "base_id": base.base_id,
+            "snapshot_id": base.report.snapshot_id,
+            "community": {
+                "id": offer.community_id,
+                "name": offer.community_name,
+            },
+            // The concrete offer is retained once. Options above are deliberately thin.
+            "offer": offer,
+            "planning_brief": RURAL_PLANNING_BRIEF,
+            "policy": {"allow_provisional_choices": allow_provisional},
+        }),
+        options,
+    })
+}
+
+fn rural_offer_from_task(task: &DecisionTask) -> Result<RuralAccessOffer, MidendError> {
+    if task.state.get("schema") != Some(&json!("satn-rust-rural-task/v1")) {
+        return Err(MidendError::Invalid(format!(
+            "task {} is not a retained rural task",
+            task.task_id
+        )));
+    }
+    serde_json::from_value(
+        task.state.get("offer").cloned().ok_or_else(|| {
+            MidendError::Invalid(format!("rural task {} has no offer", task.task_id))
+        })?,
+    )
+    .map_err(|error| {
+        MidendError::Invalid(format!(
+            "rural task {} has invalid offer: {error}",
+            task.task_id
+        ))
+    })
+}
+
+fn rural_candidate_from_task(
+    task: &DecisionTask,
+    candidate_id: &str,
+) -> Result<crate::compiler::RuralAccessCandidate, MidendError> {
+    rural_offer_from_task(task)?
+        .candidates
+        .into_iter()
+        .find(|candidate| candidate.id == candidate_id)
+        .ok_or_else(|| {
+            MidendError::Invalid(format!(
+                "rural candidate {candidate_id} is not in task {}",
+                task.task_id
+            ))
+        })
+}
+
+fn rural_select_operation(
+    task: &DecisionTask,
+    attempt_id: &str,
+    candidate: &crate::compiler::RuralAccessCandidate,
+    reason: &str,
+    uncertainties: Vec<String>,
+    provisional: bool,
+) -> TypedOperation {
+    let access = &candidate.access;
+    TypedOperation::SelectCommunityAccess {
+        id: format!("decision:{}:{}", task.task_id, candidate.id),
+        task_id: task.task_id.clone(),
+        attempt_id: attempt_id.to_string(),
+        community_id: access.community_id.clone(),
+        candidate_id: candidate.id.clone(),
+        decision_class: if provisional {
+            "agent".to_string()
+        } else if attempt_id.starts_with("mechanical:") {
+            "mechanical".to_string()
+        } else {
+            "classifier".to_string()
+        },
+        provisional,
+        reason: provisional.then(|| reason.to_string()),
+        uncertainties,
+        parent_community_id: access.parent_community_id.clone(),
+        root_spine_id: access.root_spine_id.clone(),
+        new_link_length_m: access.new_link_length_m,
+        full_access_length_m: access.full_access_length_m,
+    }
+}
+
+fn rural_unresolved_operation(
+    task: &DecisionTask,
+    attempt_id: &str,
+    decision_class: &str,
+    reason: &str,
+    marker: Option<String>,
+    uncertainties: Vec<String>,
+) -> TypedOperation {
+    let candidate = task
+        .state
+        .get("offer")
+        .and_then(|offer| offer.get("candidates"))
+        .and_then(Value::as_array)
+        .and_then(|candidates| candidates.first())
+        .and_then(|candidate| {
+            serde_json::from_value::<crate::compiler::RuralAccessCandidate>(candidate.clone()).ok()
+        });
+    let (
+        community_id,
+        candidate_id,
+        parent_community_id,
+        root_spine_id,
+        new_link_length_m,
+        full_access_length_m,
+    ) = candidate
+        .map(|candidate| {
+            (
+                candidate.access.community_id,
+                candidate.id,
+                candidate.access.parent_community_id,
+                candidate.access.root_spine_id,
+                candidate.access.new_link_length_m,
+                candidate.access.full_access_length_m,
+            )
+        })
+        .unwrap_or_else(|| {
+            (
+                task.connection_id.trim_start_matches("rural:").to_string(),
+                String::new(),
+                None,
+                None,
+                None,
+                None,
+            )
+        });
+    TypedOperation::UnresolvedCommunityAccess {
+        id: format!("decision:{}:unresolved", task.task_id),
+        task_id: task.task_id.clone(),
+        attempt_id: attempt_id.to_string(),
+        community_id,
+        candidate_id,
+        decision_class: decision_class.to_string(),
+        marker,
+        reason: reason.to_string(),
+        uncertainties,
+        parent_community_id,
+        root_spine_id,
+        new_link_length_m,
+        full_access_length_m,
+    }
+}
+
+fn rural_classifier_operation(
+    task: &DecisionTask,
+    attempt_id: &str,
+    attempt: &ChoiceAttempt,
+) -> Option<TypedOperation> {
+    let result = attempt.result.as_ref()?;
+    if matches!(result.choice.as_str(), UNKNOWN | NEEDS_EVIDENCE | NONE) {
+        return None;
+    }
+    let candidate = rural_candidate_from_task(task, &result.choice).ok()?;
+    Some(rural_select_operation(
+        task,
+        attempt_id,
+        &candidate,
+        "Classifier selected an admitted rural access alternative.",
+        Vec::new(),
+        false,
+    ))
+}
+
+fn rural_specialist_operation(
+    task: &DecisionTask,
+    attempt_id: &str,
+    attempt: &SpecialistAttempt,
+    allow_provisional: bool,
+    marker: Option<String>,
+) -> Option<TypedOperation> {
+    let response = attempt.response.as_ref()?;
+    let proposal = response.get("proposal")?.as_object()?;
+    let operation = proposal.get("operation")?.as_object()?;
+    let kind = operation.get("kind")?.as_str()?;
+    let payload = operation.get("payload")?.as_object()?;
+    match kind {
+        "select-community-access" => {
+            if !allow_provisional || payload.get("provisional") != Some(&Value::Bool(true)) {
+                return None;
+            }
+            let candidate_id = payload.get("candidate_id")?.as_str()?;
+            let candidate = rural_candidate_from_task(task, candidate_id).ok()?;
+            if payload
+                .get("community_id")
+                .and_then(Value::as_str)
+                .is_some_and(|community_id| community_id != candidate.access.community_id)
+            {
+                return None;
+            }
+            let reason = payload.get("reason")?.as_str()?.trim();
+            if reason.is_empty() {
+                return None;
+            }
+            let uncertainties = payload
+                .get("uncertainties")?
+                .as_array()?
+                .iter()
+                .map(Value::as_str)
+                .collect::<Option<Vec<_>>>()?
+                .into_iter()
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            if uncertainties.is_empty() {
+                return None;
+            }
+            Some(rural_select_operation(
+                task,
+                attempt_id,
+                &candidate,
+                reason,
+                uncertainties,
+                true,
+            ))
+        }
+        "unresolved" => {
+            let reason = payload.get("reason")?.as_str()?.trim();
+            if reason.is_empty() {
+                return None;
+            }
+            let uncertainties = payload
+                .get("uncertainties")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::trim)
+                        .filter(|item| !item.is_empty())
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            Some(rural_unresolved_operation(
+                task,
+                attempt_id,
+                "agent",
+                reason,
+                marker,
+                uncertainties,
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn mechanical_rural_candidate(
+    offer: &RuralAccessOffer,
+) -> Option<&crate::compiler::RuralAccessCandidate> {
+    if offer.candidates.len() == 1 {
+        return offer.candidates.first();
+    }
+    offer.candidates.iter().find(|candidate| {
+        offer
+            .candidates
+            .iter()
+            .filter(|other| other.id != candidate.id)
+            .all(|other| rural_dominates(&candidate.access, &other.access))
+    })
+}
+
+fn rural_dominates(left: &CommunityAccess, right: &CommunityAccess) -> bool {
+    let left_profile = left.full_access_topography.as_ref();
+    let right_profile = right.full_access_topography.as_ref();
+    let Some(left_metrics) = rural_metrics(left, left_profile) else {
+        return false;
+    };
+    let Some(right_metrics) = rural_metrics(right, right_profile) else {
+        return false;
+    };
+    let no_worse = left_metrics
+        .iter()
+        .zip(right_metrics.iter())
+        .all(|(left, right)| left <= right);
+    let strictly_better = left_metrics
+        .iter()
+        .zip(right_metrics.iter())
+        .any(|(left, right)| left < right);
+    no_worse && strictly_better
+}
+
+fn rural_metrics(
+    access: &CommunityAccess,
+    profile: Option<&crate::topography::RouteTopographyProfile>,
+) -> Option<[f64; 4]> {
+    let profile =
+        profile.filter(|profile| profile.availability == TopographyAvailability::Available)?;
+    let sustained = profile.sustained_gradient.as_ref()?.absolute_gradient_pct;
+    let metrics = [
+        access.new_link_length_m?,
+        access.full_access_length_m?,
+        profile.cumulative_elevation_variation_m?,
+        sustained,
+    ];
+    metrics
+        .iter()
+        .all(|value| value.is_finite())
+        .then_some(metrics)
+}
+
+fn topography_summary(profile: Option<&crate::topography::RouteTopographyProfile>) -> Value {
+    let Some(profile) = profile else {
+        return Value::Null;
+    };
+    json!({
+        "availability": profile.availability,
+        "reason": profile.reason,
+        "coverage": profile.coverage,
+        "forward_ascent_m": profile.forward_ascent_m,
+        "forward_descent_m": profile.forward_descent_m,
+        "reverse_ascent_m": profile.reverse_ascent_m,
+        "reverse_descent_m": profile.reverse_descent_m,
+        "cumulative_elevation_variation_m": profile.cumulative_elevation_variation_m,
+        "sustained_gradient": profile.sustained_gradient,
+        "evidence_refs": profile.evidence_refs,
+        "source_refs": profile.source_refs,
+    })
+}
+
+fn operation_reason(operation: &TypedOperation) -> Option<&str> {
+    match operation {
+        TypedOperation::SelectAlignment { reason, .. }
+        | TypedOperation::SelectCommunityAccess { reason, .. } => reason.as_deref(),
+        TypedOperation::Unresolved { reason, .. }
+        | TypedOperation::UnresolvedCommunityAccess { reason, .. } => Some(reason),
+    }
+}
+
+fn unresolved_reason(operation: &TypedOperation) -> String {
+    operation_reason(operation)
+        .unwrap_or("rural access remains unresolved")
+        .to_string()
+}
+
+fn clear_unselected_rural_projection(access: &mut CommunityAccess) {
+    access.parent_community_id = None;
+    access.parent_community_name = None;
+    access.parent_junction_node = None;
+    access.parent_junction_edge_id = None;
+    access.parent_junction_fraction = None;
+    access.parent_junction_remaining_m = None;
+    access.root_spine_id = None;
+    access.admission_order = None;
+    access.attachment_depth = None;
+    access.new_link_length_m = None;
+    access.full_access_length_m = None;
+    access.joined_spine_id = None;
+    access.access_length_m = None;
+    access.path_edge_ids.clear();
+    access.path_start_fraction = None;
+    access.path_end_fraction = None;
+    access.path_geometry.clear();
+    access.onward_destinations.clear();
+    access.onward_benefits.clear();
+    access.joined_spine_reference = None;
+    access.new_link_topography = None;
+    access.full_access_topography = None;
+}
+
+fn records_from_history(
+    store: &HistoryStore,
+    branch: &str,
+    operations: &[TypedOperation],
+) -> Result<Vec<CommunityAccess>, MidendError> {
+    let mut records = Vec::new();
+    for operation in operations.iter().filter(|operation| operation.is_rural()) {
+        let task = store
+            .task(branch, operation_task_id(operation))?
+            .ok_or_else(|| {
+                MidendError::Invalid(format!("missing task {}", operation_task_id(operation)))
+            })?;
+        let candidate_id = operation.rural_candidate_id().ok_or_else(|| {
+            MidendError::Invalid(format!(
+                "rural operation {} has no candidate",
+                operation_task_id(operation)
+            ))
+        })?;
+        let candidate = rural_candidate_from_task(&task, candidate_id)?;
+        let mut access = candidate.access;
+        access.decision_class = operation.decision_class().to_string();
+        if let Some(reason) = operation_reason(operation) {
+            access.reason = reason.to_string();
+        }
+        if operation.is_unresolved() {
+            let is_network_gap =
+                candidate.criterion == "unresolved-gap" || access.status == "network-gap";
+            access.status = if is_network_gap {
+                "network-gap"
+            } else {
+                "unresolved"
+            }
+            .to_string();
+            access.is_primary = true;
+            clear_unselected_rural_projection(&mut access);
+        }
+        records.retain(|existing: &CommunityAccess| existing.community_id != access.community_id);
+        records.push(access);
+    }
+    records.sort_by(|left, right| left.community_id.cmp(&right.community_id));
+    Ok(records)
 }
 
 fn make_task(
@@ -1277,7 +2316,11 @@ fn validate_operation(
     report: &CompileReport,
     operation: &TypedOperation,
     allow_provisional: bool,
+    task: Option<&DecisionTask>,
 ) -> Result<(), MidendError> {
+    if operation.is_rural() {
+        return validate_rural_operation(operation, allow_provisional, task);
+    }
     let connection_id = operation.connection_id();
     if !report
         .connections
@@ -1378,6 +2421,165 @@ fn validate_operation(
                 ));
             }
         }
+        TypedOperation::SelectCommunityAccess { .. }
+        | TypedOperation::UnresolvedCommunityAccess { .. } => {
+            return Err(MidendError::Invalid(
+                "rural operation entered urban validation".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_rural_operation(
+    operation: &TypedOperation,
+    allow_provisional: bool,
+    task: Option<&DecisionTask>,
+) -> Result<(), MidendError> {
+    let task = task.ok_or_else(|| {
+        MidendError::Invalid(format!(
+            "rural operation {} has no retained decision task",
+            operation_task_id(operation)
+        ))
+    })?;
+    if !task.task_id.starts_with("task:rural:")
+        || task.state.get("schema") != Some(&json!("satn-rust-rural-task/v1"))
+    {
+        return Err(MidendError::Invalid(format!(
+            "rural operation {} has an invalid retained task",
+            operation_task_id(operation)
+        )));
+    }
+    let (
+        task_id,
+        community_id,
+        candidate_id,
+        decision_class,
+        provisional,
+        reason,
+        uncertainties,
+        parent_community_id,
+        root_spine_id,
+        new_link_length_m,
+        full_access_length_m,
+        marker,
+    ) = match operation {
+        TypedOperation::SelectCommunityAccess {
+            task_id,
+            community_id,
+            candidate_id,
+            decision_class,
+            provisional,
+            reason,
+            uncertainties,
+            parent_community_id,
+            root_spine_id,
+            new_link_length_m,
+            full_access_length_m,
+            ..
+        } => (
+            task_id,
+            community_id,
+            candidate_id,
+            decision_class,
+            provisional,
+            reason,
+            uncertainties,
+            parent_community_id,
+            root_spine_id,
+            new_link_length_m,
+            full_access_length_m,
+            None,
+        ),
+        TypedOperation::UnresolvedCommunityAccess {
+            task_id,
+            community_id,
+            candidate_id,
+            decision_class,
+            reason,
+            uncertainties,
+            parent_community_id,
+            root_spine_id,
+            new_link_length_m,
+            full_access_length_m,
+            marker,
+            ..
+        } => (
+            task_id,
+            community_id,
+            candidate_id,
+            decision_class,
+            &false,
+            &Some(reason.clone()),
+            uncertainties,
+            parent_community_id,
+            root_spine_id,
+            new_link_length_m,
+            full_access_length_m,
+            marker.as_ref(),
+        ),
+        TypedOperation::SelectAlignment { .. } | TypedOperation::Unresolved { .. } => {
+            return Err(MidendError::Invalid(
+                "urban operation entered rural validation".to_string(),
+            ));
+        }
+    };
+    if task_id != &task.task_id || task_id != &format!("task:rural:{community_id}") {
+        return Err(MidendError::Invalid(format!(
+            "rural operation task {task_id} does not match community {community_id}"
+        )));
+    }
+    if !matches!(
+        decision_class.as_str(),
+        "mechanical" | "classifier" | "agent"
+    ) {
+        return Err(MidendError::Invalid(format!(
+            "rural operation has unsupported decision class {decision_class}"
+        )));
+    }
+    let candidate = rural_candidate_from_task(task, candidate_id)?;
+    let access = &candidate.access;
+    if access.community_id != *community_id
+        || access.parent_community_id.as_ref() != parent_community_id.as_ref()
+        || access.root_spine_id.as_ref() != root_spine_id.as_ref()
+        || access.new_link_length_m != *new_link_length_m
+        || access.full_access_length_m != *full_access_length_m
+    {
+        return Err(MidendError::Invalid(format!(
+            "rural operation {candidate_id} does not match its retained offer"
+        )));
+    }
+    if let TypedOperation::SelectCommunityAccess { .. } = operation {
+        if *provisional {
+            if !allow_provisional {
+                return Err(MidendError::Invalid(
+                    "provisional rural selection requires allow_provisional".to_string(),
+                ));
+            }
+            if reason
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty())
+                || uncertainties.is_empty()
+                || uncertainties.iter().any(|item| item.trim().is_empty())
+            {
+                return Err(MidendError::Invalid(
+                    "provisional rural selection requires a reason and uncertainties".to_string(),
+                ));
+            }
+        }
+    } else if reason
+        .as_deref()
+        .is_none_or(|value| value.trim().is_empty())
+        || uncertainties.iter().any(|item| item.trim().is_empty())
+    {
+        return Err(MidendError::Invalid(
+            "unresolved rural operation needs a reason and nonblank uncertainties".to_string(),
+        ));
+    }
+    if marker.is_some_and(|marker| ![UNKNOWN, NEEDS_EVIDENCE, NONE].contains(&marker.as_str())) {
+        return Err(MidendError::Invalid(
+            "unresolved rural operation has an unknown marker".to_string(),
+        ));
     }
     Ok(())
 }
@@ -1441,6 +2643,26 @@ fn skipped_attempt(provider: &str, model: &str, reason: &str) -> ChoiceAttempt {
 }
 
 fn specialist_prompt(task: &DecisionTask) -> Result<String, MidendError> {
+    if task.state.get("schema") == Some(&json!("satn-rust-rural-task/v1")) {
+        let planning_brief = task
+            .state
+            .get("planning_brief")
+            .and_then(Value::as_str)
+            .unwrap_or(RURAL_PLANNING_BRIEF);
+        let mut state = task.state.clone();
+        if let Some(object) = state.as_object_mut() {
+            object.remove("offer");
+            object.remove("prior_decisions");
+        }
+        let frozen_task = DecisionTask {
+            state,
+            ..task.clone()
+        };
+        return Ok(format!(
+            "You are a SATN planning specialist. Use only the frozen rural task below. Do not call tools, browse, retrieve sources, inspect files, or add facts. Planning brief: {planning_brief} Return exactly one JSON object with {{\"proposal\":{{\"operation\":{{\"kind\":\"select-community-access\" or \"unresolved\",\"payload\":{{...}}}}}}}}. A select-community-access payload must copy an offered candidate_id from the options, set community_id when supplied, set provisional true, and include a concise decision reason plus a nonempty uncertainties list. An unresolved payload must include a concise reason and may include uncertainties. Do not include hidden chain of thought.\n\nFrozen rural planning task:\n{}\n",
+            serde_json::to_string_pretty(&frozen_task)?
+        ));
+    }
     let planning_brief = task
         .state
         .get("planning_brief")

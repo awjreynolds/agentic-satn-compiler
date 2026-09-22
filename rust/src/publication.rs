@@ -12,7 +12,7 @@ use std::path::Path;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::compiler::{Candidate, CompileReport};
+use crate::compiler::{Candidate, CommunityAccess, CompileReport};
 use crate::error::{Result, SatnError};
 use crate::midend::{MidendRun, TypedOperation};
 
@@ -158,6 +158,14 @@ pub fn publish_decision_map(
     fs::create_dir_all(output_dir)?;
     write_viewer_assets(output_dir)?;
     let files = decision_map_files();
+    let effective_report = if run.community_access.is_empty() {
+        report.clone()
+    } else {
+        report
+            .clone()
+            .with_community_access(run.community_access.clone())
+    };
+    let report = &effective_report;
 
     let mut features = baseline_features(report);
     let mut decisions = Vec::new();
@@ -315,6 +323,130 @@ pub fn publish_decision_map(
                     }),
                 });
             }
+            TypedOperation::SelectCommunityAccess {
+                id,
+                community_id,
+                candidate_id,
+                decision_class,
+                provisional,
+                reason,
+                uncertainties,
+                ..
+            } => {
+                selected_count += 1;
+                if *provisional {
+                    provisional_count += 1;
+                }
+                let access = report
+                    .community_access
+                    .iter()
+                    .find(|access| access.community_id == *community_id);
+                let public_reason = reason.clone().unwrap_or_else(|| {
+                    "Selected rural access path; current provision, safety, access and adoption remain unresolved."
+                        .to_string()
+                });
+                let kind = if *provisional {
+                    "provisional-alignment"
+                } else {
+                    "selected-alignment"
+                };
+                let evidence_refs = vec![community_id.clone(), candidate_id.clone()];
+                decisions.push(PublicDecision {
+                    id: id.clone(),
+                    kind: "rural-community-access".to_string(),
+                    connection_id: format!("rural:{community_id}"),
+                    connection_label: access
+                        .map(|access| format!("{} → accepted frontier", access.name))
+                        .unwrap_or_else(|| community_id.clone()),
+                    road_classes: Vec::new(),
+                    candidate_id: Some(candidate_id.clone()),
+                    decision_class: decision_class.clone(),
+                    provisional: *provisional,
+                    reason: public_reason.clone(),
+                    uncertainties: uncertainties.clone(),
+                    evidence_refs: evidence_refs.clone(),
+                });
+                if let Some(access) = access {
+                    features.push(rural_decision_feature(
+                        kind,
+                        access,
+                        id,
+                        candidate_id,
+                        decision_class,
+                        *provisional,
+                        &public_reason,
+                        uncertainties,
+                        evidence_refs,
+                        &run.branch,
+                        &run.base_id,
+                    ));
+                }
+            }
+            TypedOperation::UnresolvedCommunityAccess {
+                id,
+                community_id,
+                candidate_id,
+                decision_class,
+                marker,
+                reason,
+                uncertainties,
+                ..
+            } => {
+                unresolved_count += 1;
+                let access = report
+                    .community_access
+                    .iter()
+                    .find(|access| access.community_id == *community_id);
+                let evidence_refs = vec![community_id.clone(), candidate_id.clone()];
+                decisions.push(PublicDecision {
+                    id: id.clone(),
+                    kind: "unresolved-rural-community-access".to_string(),
+                    connection_id: format!("rural:{community_id}"),
+                    connection_label: access
+                        .map(|access| format!("{} → accepted frontier", access.name))
+                        .unwrap_or_else(|| community_id.clone()),
+                    road_classes: Vec::new(),
+                    candidate_id: Some(candidate_id.clone()),
+                    decision_class: decision_class.clone(),
+                    provisional: false,
+                    reason: reason.clone(),
+                    uncertainties: uncertainties.clone(),
+                    evidence_refs: evidence_refs.clone(),
+                });
+                if let Some(access) = access {
+                    features.push(rural_decision_feature(
+                        "unresolved-decision",
+                        access,
+                        id,
+                        candidate_id,
+                        decision_class,
+                        false,
+                        reason,
+                        uncertainties,
+                        evidence_refs,
+                        &run.branch,
+                        &run.base_id,
+                    ));
+                } else {
+                    features.push(MapFeature {
+                        kind: "unresolved-decision".to_string(),
+                        geometry: None,
+                        properties: json!({
+                            "kind": "unresolved-decision",
+                            "decision_id": id,
+                            "connection_id": format!("rural:{community_id}"),
+                            "candidate_id": candidate_id,
+                            "decision_class": decision_class,
+                            "marker": marker,
+                            "reason": reason,
+                            "uncertainties": uncertainties,
+                            "evidence_refs": evidence_refs,
+                            "branch": run.branch,
+                            "base_id": run.base_id,
+                        }),
+                    });
+                }
+            }
         }
     }
 
@@ -356,6 +488,7 @@ pub fn publish_decision_map(
     let decided_connections = run
         .operations
         .iter()
+        .filter(|operation| !operation.is_rural())
         .map(operation_connection_id)
         .collect::<BTreeSet<_>>();
     let pending_connections = report
@@ -511,6 +644,8 @@ fn operation_connection_id(operation: &TypedOperation) -> &str {
     match operation {
         TypedOperation::SelectAlignment { connection_id, .. }
         | TypedOperation::Unresolved { connection_id, .. } => connection_id,
+        TypedOperation::SelectCommunityAccess { community_id, .. }
+        | TypedOperation::UnresolvedCommunityAccess { community_id, .. } => community_id,
     }
 }
 
@@ -609,6 +744,8 @@ fn baseline_features(report: &CompileReport) -> Vec<MapFeature> {
                 "onward_benefits": access.onward_benefits,
                 "provision_status": access.provision_status,
                 "reason": access.reason,
+                "full_access_topography": topography_summary(access.full_access_topography.as_ref()),
+                "new_link_topography": topography_summary(access.new_link_topography.as_ref()),
             }),
         });
     }
@@ -634,6 +771,71 @@ fn baseline_features(report: &CompileReport) -> Vec<MapFeature> {
         });
     }
     features
+}
+
+fn rural_decision_feature(
+    kind: &str,
+    access: &CommunityAccess,
+    decision_id: &str,
+    candidate_id: &str,
+    decision_class: &str,
+    provisional: bool,
+    reason: &str,
+    uncertainties: &[String],
+    evidence_refs: Vec<String>,
+    branch: &str,
+    base_id: &str,
+) -> MapFeature {
+    let geometry = if access.path_geometry.len() >= 2 {
+        Some(MapGeometry::Line(access.path_geometry.clone()))
+    } else {
+        Some(MapGeometry::Point(access.geometry))
+    };
+    MapFeature {
+        kind: kind.to_string(),
+        geometry,
+        properties: json!({
+            "kind": kind,
+            "decision_id": decision_id,
+            "community_id": access.community_id,
+            "community_name": access.name,
+            "candidate_id": candidate_id,
+            "decision_class": decision_class,
+            "provisional": provisional,
+            "parent_community_id": access.parent_community_id,
+            "parent_community_name": access.parent_community_name,
+            "root_spine_id": access.root_spine_id,
+            "root_spine_reference": access.joined_spine_reference,
+            "new_link_length_m": access.new_link_length_m,
+            "full_access_length_m": access.full_access_length_m,
+            "new_link_topography": topography_summary(access.new_link_topography.as_ref()),
+            "full_access_topography": topography_summary(access.full_access_topography.as_ref()),
+            "reason": reason,
+            "uncertainties": uncertainties,
+            "evidence_refs": evidence_refs,
+            "branch": branch,
+            "base_id": base_id,
+        }),
+    }
+}
+
+fn topography_summary(profile: Option<&crate::topography::RouteTopographyProfile>) -> Value {
+    let Some(profile) = profile else {
+        return Value::Null;
+    };
+    json!({
+        "availability": profile.availability,
+        "reason": profile.reason,
+        "coverage": profile.coverage,
+        "forward_ascent_m": profile.forward_ascent_m,
+        "forward_descent_m": profile.forward_descent_m,
+        "reverse_ascent_m": profile.reverse_ascent_m,
+        "reverse_descent_m": profile.reverse_descent_m,
+        "cumulative_elevation_variation_m": profile.cumulative_elevation_variation_m,
+        "sustained_gradient": profile.sustained_gradient,
+        "evidence_refs": profile.evidence_refs,
+        "source_refs": profile.source_refs,
+    })
 }
 
 fn community_access_represents_obligation(
