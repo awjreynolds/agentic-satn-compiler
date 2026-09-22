@@ -3,7 +3,10 @@ use std::path::PathBuf;
 use clap::Parser;
 use satn_rs::judgment::{CodexConfig, TypeSafeConfig};
 use satn_rs::midend::{MidendConfig, MidendProgress, ProviderSet, replay, run as run_midend};
-use satn_rs::{CompileOptions, ProgressEvent, compile_with_progress};
+use satn_rs::{
+    CompileOptions, ProgressEvent, compile_with_progress, load_retained_report,
+    publish_decision_map,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "satn-rs", about = "Native SATN mechanical compiler")]
@@ -90,6 +93,8 @@ fn run() -> satn_rs::Result<()> {
             cli.output.join("planning.json"),
             serde_json::to_string_pretty(&result)?,
         )?;
+        let report = load_retained_report(&history)?;
+        publish_decision_map(&cli.output, &report, &result)?;
         println!("{}", serde_json::to_string(&result)?);
         return Ok(());
     }
@@ -103,6 +108,7 @@ fn run() -> satn_rs::Result<()> {
         &mut progress,
     )?;
     if cli.mode == "live" {
+        let publication_report = report.clone();
         let mut classifier = TypeSafeConfig::from_env(cli.jev_model.clone())
             .map_err(|error| satn_rs::SatnError::InvalidInput(error.to_string()))?;
         let mut specialist = match (
@@ -146,6 +152,7 @@ fn run() -> satn_rs::Result<()> {
             cli.output.join("planning.json"),
             serde_json::to_string_pretty(&result)?,
         )?;
+        publish_decision_map(&cli.output, &publication_report, &result)?;
         println!("{}", serde_json::to_string(&result)?);
         return Ok(());
     }

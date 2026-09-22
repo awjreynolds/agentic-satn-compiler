@@ -176,6 +176,12 @@ fn route_roles_produce_distinct_source_supported_alternatives() {
 
     assert_eq!(report.connection_count, 1);
     assert_eq!(report.candidate_count, 4);
+    assert!(
+        report
+            .candidates
+            .iter()
+            .all(|candidate| candidate.path_edge_geometries.len() == candidate.path_edge_ids.len())
+    );
     let direct = report
         .candidates
         .iter()

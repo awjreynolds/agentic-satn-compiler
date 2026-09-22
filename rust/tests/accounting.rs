@@ -9,6 +9,11 @@ fn accounts_strategic_baseline_places_and_school_gaps() {
     let snapshot = root.join("snapshot");
     fs::create_dir_all(&snapshot).expect("snapshot directory");
     fs::write(
+        snapshot.join("snapshot.json"),
+        r#"{"attribution":"OSM and NCN attribution","evidence_sources":{"official_road_classification":{"attribution":"Official roads attribution"}}}"#,
+    )
+    .expect("snapshot metadata");
+    fs::write(
         root.join("area.yaml"),
         format!(
             "area_id: fixture\narea_name: Fixture\nsource:\n  snapshot_dir: {}\n  snapshot_id: snapshot\n  community_place_types: [town, village]\ncompilation:\n  max_connection_km: 15\n",
@@ -158,6 +163,11 @@ fn accounts_strategic_baseline_places_and_school_gaps() {
             .any(|obligation| { obligation.id == "obligation:community:community-c" })
     );
     assert_eq!(report.destination_profile, "unconfigured");
+    assert_eq!(report.attribution, "OSM and NCN attribution");
+    assert_eq!(
+        report.source_attributions,
+        vec!["Official roads attribution".to_string()]
+    );
     assert_eq!(report.accounting.status, "reviewable-with-gaps");
     assert!(!report.accounting.complete);
     assert!(report.accounting.network_gap_count >= 1);
@@ -171,7 +181,8 @@ fn accounts_strategic_baseline_places_and_school_gaps() {
 
     let network = fs::read_to_string(root.join("output/network.geojson")).expect("network output");
     assert!(network.contains("source-baseline"));
-    assert!(network.contains("source_edge_ids"));
+    assert!(network.contains("source_geometry_part"));
+    assert!(!network.contains("source_edge_ids"));
     assert!(network.contains("access-obligation"));
     assert!(network.contains("network-place"));
     let network_json: Value = serde_json::from_str(&network).expect("valid GeoJSON");

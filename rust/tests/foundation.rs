@@ -70,6 +70,10 @@ fn compiles_fixture_area_to_small_review_bundle() {
     assert_eq!(report.connection_count, 1);
     assert_eq!(report.candidate_count, 1);
     assert_eq!(report.candidates[0].path_edge_ids.len(), 1);
+    assert_eq!(
+        report.candidates[0].path_edge_geometries.len(),
+        report.candidates[0].path_edge_ids.len()
+    );
     assert!(report.candidates[0].length_m > 15_000.0);
     assert_eq!(report.unknown_fact_count, 6);
     let context = report

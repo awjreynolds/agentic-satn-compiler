@@ -33,19 +33,19 @@ fn network_geojson(report: &CompileReport) -> Value {
         }));
     }
     for source in &report.source_inventory {
-        for coordinates in &source.geometry {
+        for (part_index, coordinates) in source.geometry.iter().enumerate() {
             features.push(json!({
                 "type": "Feature",
                 "properties": {
                     "kind": "source-baseline",
                     "source_kind": source.source_kind,
+                    "source_corridor_id": source.id,
                     "source_corridor_ref": source.reference,
-                "source_id": source.source_id,
-                "scope": source.scope,
+                    "source_id": source.source_id,
+                    "source_geometry_part": part_index,
+                    "scope": source.scope,
                     "baseline_role": source.baseline_role,
-                    "source_edge_ids": source.source_edge_ids,
-                    "graph_edge_ids": source.graph_edge_ids,
-                "topology_status": source.topology_status,
+                    "topology_status": source.topology_status,
                     "attachment_status": source.attachment_status,
                     "provision_status": source.provision_status
                 },
@@ -124,7 +124,6 @@ fn candidate_feature(candidate: &Candidate) -> Value {
 fn render_html(report: &CompileReport) -> String {
     let title = html_escape(&report.title);
     let svg = render_svg(report);
-    let summary = serde_json::to_string(report).unwrap_or_else(|_| "{}".to_string());
     format!(
         r#"<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -148,8 +147,7 @@ pre{{max-height:20rem;overflow:auto;background:#f6f8fa;padding:1rem}}
 <p>{source_count} source corridors · {connection_count} prepared connections · {candidate_count} generated candidates · {unknown_count} unresolved facts</p>
 <p>Accounting: {accounting_status} · {network_place_count} network places · {obligation_count} access obligations · destination profile: {destination_profile}</p>
 {svg}
-<details><summary>Compact mechanical report</summary><pre id="summary"></pre></details>
-<script>const report={summary};document.querySelector('#summary').textContent=JSON.stringify(report,null,2);</script>
+<p><a href="summary.json">Download the mechanical summary</a> · <a href="network.geojson">Download the mechanical GeoJSON</a></p>
 </body></html>"#,
         title = title,
         source_count = report.source_inventory_count,
@@ -161,7 +159,6 @@ pre{{max-height:20rem;overflow:auto;background:#f6f8fa;padding:1rem}}
         obligation_count = report.access_obligations.len(),
         destination_profile = html_escape(&report.destination_profile),
         svg = svg,
-        summary = summary,
     )
 }
 
