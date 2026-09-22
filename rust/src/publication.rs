@@ -544,6 +544,19 @@ fn baseline_features(report: &CompileReport) -> Vec<MapFeature> {
             }),
         });
     }
+    for school in &report.school_context {
+        features.push(MapFeature {
+            kind: "school-context".to_string(),
+            geometry: Some(MapGeometry::Point(school.geometry)),
+            properties: json!({
+                "kind": "school-context",
+                "school_id": school.id,
+                "source_id": school.source_id,
+                "name": school.name,
+                "school_obligation_eligible": school.school_obligation_eligible,
+            }),
+        });
+    }
     for obligation in &report.access_obligations {
         let Some(point) = obligation.geometry else {
             continue;

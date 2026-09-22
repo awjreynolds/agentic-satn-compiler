@@ -95,7 +95,7 @@ fn accounts_strategic_baseline_places_and_school_gaps() {
                     "evidence_id":"school-1",
                     "source_id":"school-source-1",
                     "name":"Alpha School",
-                    "school_obligation_eligible":"True",
+                    "school_obligation_eligible":"False",
                     "access_point_status":"unresolved",
                     "access_point_rationale":"Entrance evidence is unresolved."
                 },
@@ -147,14 +147,20 @@ fn accounts_strategic_baseline_places_and_school_gaps() {
             .iter()
             .any(|place| place.id == "community-c")
     );
-    assert_eq!(report.access_obligations.len(), 4);
+    assert_eq!(report.school_context.len(), 1);
+    let school = report.school_context.first().expect("school context");
+    assert_eq!(school.id, "school-1");
+    assert_eq!(school.source_id, "school-source-1");
+    assert_eq!(school.name, "Alpha School");
+    assert!(!school.school_obligation_eligible);
+    assert_eq!(report.access_obligations.len(), 3);
     assert_eq!(
         report
             .access_obligations
             .iter()
             .filter(|obligation| obligation.kind == "school")
             .count(),
-        1
+        0
     );
     assert!(
         report
@@ -170,20 +176,14 @@ fn accounts_strategic_baseline_places_and_school_gaps() {
     );
     assert_eq!(report.accounting.status, "reviewable-with-gaps");
     assert!(!report.accounting.complete);
-    assert!(report.accounting.network_gap_count >= 1);
-    let school = report
-        .access_obligations
-        .iter()
-        .find(|obligation| obligation.kind == "school")
-        .expect("school obligation");
-    assert_eq!(school.disposition, "network-gap");
-    assert_eq!(school.access_point_status.as_deref(), Some("unresolved"));
+    assert_eq!(report.accounting.network_gap_count, 0);
 
     let network = fs::read_to_string(root.join("output/network.geojson")).expect("network output");
     assert!(network.contains("source-baseline"));
     assert!(network.contains("source_geometry_part"));
     assert!(!network.contains("source_edge_ids"));
     assert!(network.contains("access-obligation"));
+    assert!(network.contains("school-context"));
     assert!(network.contains("network-place"));
     let network_json: Value = serde_json::from_str(&network).expect("valid GeoJSON");
     let access_feature = network_json["features"]
@@ -194,10 +194,20 @@ fn accounts_strategic_baseline_places_and_school_gaps() {
         .expect("access obligation feature");
     assert_eq!(access_feature["geometry"]["type"], "Point");
     assert!(access_feature["geometry"]["coordinates"].is_array());
+    let school_feature = network_json["features"]
+        .as_array()
+        .expect("features")
+        .iter()
+        .find(|feature| feature["properties"]["kind"] == "school-context")
+        .expect("school context feature");
+    assert_eq!(school_feature["properties"]["source_id"], "school-source-1");
+    assert_eq!(school_feature["properties"]["name"], "Alpha School");
+    assert_eq!(school_feature["geometry"]["type"], "Point");
     let map = fs::read_to_string(root.join("output/index.html")).expect("review map");
     assert!(map.contains("Accounting: reviewable-with-gaps"));
     assert!(map.contains("Network place"));
     assert!(map.contains("Access obligation"));
+    assert!(map.contains("School context"));
     assert!(map.contains("class=\"place\""));
     assert!(map.contains("class=\"obligation\""));
 }

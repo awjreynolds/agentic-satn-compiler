@@ -2,7 +2,7 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 
-use crate::compiler::{AccessObligation, Candidate, CompileReport, NetworkPlace};
+use crate::compiler::{AccessObligation, Candidate, CompileReport, NetworkPlace, SchoolContext};
 use crate::error::Result;
 
 pub(crate) fn write_bundle(output_dir: &Path, report: &CompileReport) -> Result<()> {
@@ -56,6 +56,9 @@ fn network_geojson(report: &CompileReport) -> Value {
     for place in &report.network_places {
         features.push(network_place_feature(place));
     }
+    for school in &report.school_context {
+        features.push(school_context_feature(school));
+    }
     for obligation in &report.access_obligations {
         if obligation.geometry.is_some() {
             features.push(access_obligation_feature(obligation));
@@ -78,6 +81,20 @@ fn network_place_feature(place: &NetworkPlace) -> Value {
             "source_id": place.source_id
         },
         "geometry": {"type": "Point", "coordinates": place.geometry}
+    })
+}
+
+fn school_context_feature(school: &SchoolContext) -> Value {
+    json!({
+        "type": "Feature",
+        "properties": {
+            "kind": "school-context",
+            "school_id": school.id,
+            "source_id": school.source_id,
+            "name": school.name,
+            "school_obligation_eligible": school.school_obligation_eligible
+        },
+        "geometry": {"type": "Point", "coordinates": school.geometry}
     })
 }
 
@@ -135,16 +152,17 @@ svg{{width:100%;height:65vh;min-height:24rem;background:#f6f8fa;border:1px solid
 .source{{fill:none;stroke:#4b5563;stroke-width:1.8;opacity:.72}}
 .candidate{{fill:none;stroke:#16803c;stroke-width:3}}
 .place{{fill:#7c3aed;stroke:#fff;stroke-width:1.5}}
+.school-context{{fill:#9333ea;stroke:#fff;stroke-width:1.5}}
 .obligation{{fill:#dc2626;stroke:#fff;stroke-width:1.5}}
 .key{{display:flex;gap:1rem;list-style:none;padding:0;flex-wrap:wrap}}
 .swatch{{display:inline-block;width:2rem;height:.35rem;vertical-align:middle;margin-right:.35rem}}
-.boundary-key{{background:#2563eb}} .source-key{{background:#4b5563}} .candidate-key{{background:#16803c}} .place-key{{background:#7c3aed}} .obligation-key{{background:#dc2626}}
+.boundary-key{{background:#2563eb}} .source-key{{background:#4b5563}} .candidate-key{{background:#16803c}} .place-key{{background:#7c3aed}} .school-key{{background:#9333ea}} .obligation-key{{background:#dc2626}}
 pre{{max-height:20rem;overflow:auto;background:#f6f8fa;padding:1rem}}
 </style></head>
 <body><h1>{title}</h1>
 <p>Mechanical source baseline and graph-supported candidates. Provision, safety, access and adoption remain explicit unknowns until separately evidenced.</p>
-<ul class="key"><li><span class="swatch boundary-key"></span>Governed boundary</li><li><span class="swatch source-key"></span>Governed source baseline</li><li><span class="swatch candidate-key"></span>Mechanical candidate</li><li><span class="swatch place-key"></span>Network place</li><li><span class="swatch obligation-key"></span>Access obligation</li></ul>
-<p>{source_count} source corridors · {connection_count} prepared connections · {candidate_count} generated candidates · {unknown_count} unresolved facts</p>
+<ul class="key"><li><span class="swatch boundary-key"></span>Governed boundary</li><li><span class="swatch source-key"></span>Governed source baseline</li><li><span class="swatch candidate-key"></span>Mechanical candidate</li><li><span class="swatch place-key"></span>Network place</li><li><span class="swatch school-key"></span>School context</li><li><span class="swatch obligation-key"></span>Access obligation</li></ul>
+<p>{source_count} source corridors · {connection_count} prepared connections · {candidate_count} generated candidates · {unknown_count} unresolved facts · {school_count} school context features</p>
 <p>Accounting: {accounting_status} · {network_place_count} network places · {obligation_count} access obligations · destination profile: {destination_profile}</p>
 {svg}
 <p><a href="summary.json">Download the mechanical summary</a> · <a href="network.geojson">Download the mechanical GeoJSON</a></p>
@@ -154,6 +172,7 @@ pre{{max-height:20rem;overflow:auto;background:#f6f8fa;padding:1rem}}
         connection_count = report.connection_count,
         candidate_count = report.candidate_count,
         unknown_count = report.unknown_fact_count,
+        school_count = report.school_context.len(),
         accounting_status = html_escape(&report.accounting.status),
         network_place_count = report.network_places.len(),
         obligation_count = report.access_obligations.len(),
@@ -175,6 +194,9 @@ fn render_svg(report: &CompileReport) -> String {
     }
     for place in &report.network_places {
         coordinates.push(place.geometry);
+    }
+    for school in &report.school_context {
+        coordinates.push(school.geometry);
     }
     for obligation in &report.access_obligations {
         if let Some(point) = obligation.geometry {
@@ -251,6 +273,15 @@ fn render_svg(report: &CompileReport) -> String {
             point.split_once(',').map(|(x, _)| x).unwrap_or("0"),
             point.split_once(',').map(|(_, y)| y).unwrap_or("0"),
             html_escape(&place.name)
+        ));
+    }
+    for school in &report.school_context {
+        let point = project(school.geometry);
+        elements.push(format!(
+            "<circle class=\"school-context\" cx=\"{}\" cy=\"{}\" r=\"5\" aria-label=\"School context {}\" />",
+            point.split_once(',').map(|(x, _)| x).unwrap_or("0"),
+            point.split_once(',').map(|(_, y)| y).unwrap_or("0"),
+            html_escape(&school.name)
         ));
     }
     for obligation in &report.access_obligations {

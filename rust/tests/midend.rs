@@ -67,6 +67,7 @@ fn base() -> CompileReport {
                 geometry: [1.0, 0.0],
             },
         ],
+        school_context: Vec::new(),
         access_obligations: vec![access_obligation("alpha"), access_obligation("beta")],
         destination_profile: "unconfigured".to_string(),
         accounting: AccountingSummary {

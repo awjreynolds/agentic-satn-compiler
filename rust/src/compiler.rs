@@ -65,6 +65,15 @@ pub struct NetworkPlace {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SchoolContext {
+    pub id: String,
+    pub source_id: String,
+    pub name: String,
+    pub school_obligation_eligible: bool,
+    pub geometry: [f64; 2],
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AccessObligation {
     pub id: String,
     pub kind: String,
@@ -159,6 +168,8 @@ pub struct CompileReport {
     pub unknown_facts: Vec<UnknownFact>,
     #[serde(default)]
     pub network_places: Vec<NetworkPlace>,
+    #[serde(default)]
+    pub school_context: Vec<SchoolContext>,
     #[serde(default)]
     pub access_obligations: Vec<AccessObligation>,
     #[serde(default)]
@@ -320,7 +331,8 @@ pub fn compile_with_progress(
         })
         .collect::<Vec<_>>();
     let destination_profile = "unconfigured".to_string();
-    let access_obligations = build_access_obligations(&network_places, &context_features);
+    let school_context = admit_school_context(&context_features);
+    let access_obligations = build_access_obligations(&network_places);
     let accounting =
         derive_accounting(&source_inventory, &access_obligations, &destination_profile);
     emit(
@@ -382,6 +394,7 @@ pub fn compile_with_progress(
         source_inventory,
         unknown_facts,
         network_places,
+        school_context,
         access_obligations,
         destination_profile,
         accounting,
@@ -786,10 +799,44 @@ fn admit_network_places(
         .collect()
 }
 
-fn build_access_obligations(
-    network_places: &[NetworkPlace],
-    context_features: &[Feature],
-) -> Vec<AccessObligation> {
+fn admit_school_context(features: &[Feature]) -> Vec<SchoolContext> {
+    let mut schools = features
+        .iter()
+        .filter_map(|feature| {
+            if string_property(&feature.properties, "feature_type")?.eq_ignore_ascii_case("school")
+            {
+                // School context is point evidence only; lines or polygons are not admitted as
+                // point features and do not become route/access obligations.
+                let Geometry::Point(point) = feature.geometry else {
+                    return None;
+                };
+                let id = string_property(&feature.properties, "evidence_id")
+                    .or_else(|| string_property(&feature.properties, "source_id"))
+                    .or_else(|| string_property(&feature.properties, "id"))?;
+                let source_id =
+                    string_property(&feature.properties, "source_id").unwrap_or_else(|| id.clone());
+                let name =
+                    string_property(&feature.properties, "name").unwrap_or_else(|| id.clone());
+                let school_obligation_eligible =
+                    string_property(&feature.properties, "school_obligation_eligible")
+                        .is_some_and(|value| value.eq_ignore_ascii_case("true"));
+                Some(SchoolContext {
+                    id,
+                    source_id,
+                    name,
+                    school_obligation_eligible,
+                    geometry: point,
+                })
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    schools.sort_by(|left, right| left.id.cmp(&right.id));
+    schools
+}
+
+fn build_access_obligations(network_places: &[NetworkPlace]) -> Vec<AccessObligation> {
     let mut obligations = network_places
         .iter()
         .map(|place| AccessObligation {
@@ -806,54 +853,6 @@ fn build_access_obligations(
                 .to_string(),
         })
         .collect::<Vec<_>>();
-    obligations.extend(context_features.iter().filter_map(|feature| {
-        if string_property(&feature.properties, "feature_type")?.to_ascii_lowercase() != "school" {
-            return None;
-        }
-        if !string_property(&feature.properties, "school_obligation_eligible")
-            .is_some_and(|value| value.eq_ignore_ascii_case("true"))
-        {
-            return None;
-        }
-        let id = string_property(&feature.properties, "evidence_id")?;
-        let name = string_property(&feature.properties, "name").unwrap_or_else(|| id.clone());
-        let point = match feature.geometry {
-            Geometry::Point(point) => Some(point),
-            _ => None,
-        };
-        let access_point_status = string_property(&feature.properties, "access_point_status");
-        let unresolved_access = access_point_status
-            .as_deref()
-            .is_none_or(|status| status.eq_ignore_ascii_case("unresolved"));
-        Some(AccessObligation {
-            id: format!("obligation:school:{id}"),
-            kind: "school".to_string(),
-            source_id: string_property(&feature.properties, "source_id").unwrap_or(id.clone()),
-            name,
-            geometry: point,
-            access_point_status,
-            access_point_source_id: string_property(
-                &feature.properties,
-                "access_point_source_id",
-            ),
-            access_point_rationale: string_property(
-                &feature.properties,
-                "access_point_rationale",
-            ),
-            disposition: if unresolved_access {
-                "network-gap".to_string()
-            } else {
-                "unresolved".to_string()
-            },
-            reason: if unresolved_access {
-                "School access-point evidence is unresolved; no route or entrance is invented."
-                    .to_string()
-            } else {
-                "Access point is evidenced, but no selected support is present in the mechanical compilation."
-                    .to_string()
-            },
-        })
-    }));
     obligations.sort_by(|left, right| left.id.cmp(&right.id));
     obligations
 }
