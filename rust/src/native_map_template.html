@@ -23,6 +23,7 @@ button:focus-visible, input:focus-visible { outline: 3px solid #2563eb; outline-
 .source-key { background: #475569; } .context-key { background: #94a3b8; }
 .selected-key { background: #15803d; } .provisional-key { background: #d97706; }
 .unresolved-key { background: #7c3aed; } .departure-key { background: #dc2626; }
+.community-key { background: #0891b2; }
 .native-details { border: 1px solid #cbd5e1; border-radius: .3rem; padding: .6rem; background: #f8fafc; min-height: 5rem; }
 .native-details h3 { margin: 0 0 .35rem; font-size: 1rem; }
 .native-details dl { margin: 0; }
@@ -60,10 +61,11 @@ code { font-size: .9em; }
       <li><label><input type="checkbox" data-layer-toggle="source-departure" checked> <span class="swatch departure-key"></span>Source departure <span data-layer-count></span></label></li>
       <li><label><input type="checkbox" data-layer-toggle="network-place" checked> Network places <span data-layer-count></span></label></li>
       <li><label><input type="checkbox" data-layer-toggle="school-context" checked> Schools <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="community-access" checked> Community access <span data-layer-count></span></label></li>
       <li><label><input type="checkbox" data-layer-toggle="access-obligation" checked> Access obligations and gaps <span data-layer-count></span></label></li>
     </ul></fieldset>
     <section class="native-details" id="native-feature-details" aria-live="polite"><h3>Evidence</h3><p>Hover or select a rendered map feature to inspect its public evidence.</p></section>
-    <p>__SOURCE_COUNT__ source baseline sections · __PREPARED_CONNECTIONS__ prepared connections · __PENDING_CONNECTIONS__ pending connections · __CANDIDATE_COUNT__ generated candidates · __DECISION_COUNT__ decisions · __UNRESOLVED_FACTS__ unresolved facts · __UNRESOLVED_ACCESS__ unresolved access obligations</p>
+    <p>__SOURCE_COUNT__ source baseline sections · __PREPARED_CONNECTIONS__ prepared connections · __PENDING_CONNECTIONS__ pending connections · __CANDIDATE_COUNT__ generated candidates · __DECISION_COUNT__ decisions · __UNRESOLVED_FACTS__ unresolved facts · __UNRESOLVED_ACCESS__ unresolved access obligations · __COMMUNITY_ACCESS__ community access records · __COMMUNITY_GAPS__ community gaps</p>
     <p id="native-loading-failure" role="alert" hidden>Unable to load public network data.</p>
     <p><a href="decision-map.json">Compact decision manifest</a> · <a href="decision-map.geojson">GeoJSON download</a> · <a href="publication.json">Public publication manifest</a></p>
   </aside>
@@ -79,7 +81,8 @@ code { font-size: .9em; }
   const interactiveLayers = [
     'native-selected', 'native-provisional', 'native-unresolved', 'native-alternative',
     'native-a-road-departure', 'native-source-departure', 'native-source-strategic',
-    'native-source-context', 'native-network-place', 'native-school-context', 'native-access-obligation'
+    'native-source-context', 'native-network-place', 'native-school-context',
+    'native-community-access', 'native-community-access-point', 'native-community-access-gap', 'native-access-obligation'
   ];
   const layerGroups = {
     'source-strategic': ['native-source-strategic'],
@@ -92,6 +95,7 @@ code { font-size: .9em; }
     'source-departure': ['native-source-departure'],
     'network-place': ['native-network-place'],
     'school-context': ['native-school-context'],
+    'community-access': ['native-community-access', 'native-community-access-point', 'native-community-access-gap'],
     'access-obligation': ['native-access-obligation']
   };
   const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({
@@ -119,9 +123,34 @@ code { font-size: .9em; }
       : String(normalized ?? '');
   };
   const formatDistance = value => {
+    if (value === null || value === undefined || value === '') return '';
     const metres = Number(value);
     if (!Number.isFinite(metres)) return '';
     return metres >= 1000 ? (metres / 1000).toFixed(1) + ' km' : Math.round(metres) + ' m';
+  };
+  const formatSaving = value => {
+    if (value === null || value === undefined || value === '') return '';
+    const metres = Number(value);
+    if (!Number.isFinite(metres)) return '';
+    return metres >= 1000 ? (metres / 1000).toFixed(2) + ' km' : metres.toFixed(2) + ' m';
+  };
+  const formatBenefits = value => {
+    const normalized = normalizedValue(value);
+    if (!Array.isArray(normalized)) return '';
+    return normalized.map(item => {
+      if (!item || typeof item !== 'object') return String(item ?? '');
+      const full = formatDistance(item.full_route_length_m);
+      const primary = formatDistance(item.primary_access_plus_onward_m);
+      const primaryMetres = Number(item.primary_access_plus_onward_m);
+      const fullMetres = Number(item.full_route_length_m);
+      const saving = Number.isFinite(primaryMetres) && Number.isFinite(fullMetres)
+        ? formatSaving(primaryMetres - fullMetres)
+        : '';
+      const comparison = primary
+        ? 'complete ' + full + '; primary + onward ' + primary + (saving ? '; saving ' + saving : '')
+        : 'complete ' + full + '; primary onward unavailable';
+      return (item.destination_name || 'Destination') + ': ' + comparison;
+    }).filter(Boolean).join('; ');
   };
   const readableRows = props => {
     const rows = [];
@@ -137,6 +166,16 @@ code { font-size: .9em; }
     add('Source', props.source_reference);
     if (props.kind === 'school-context') add('School', props.name);
     else add('Place', props.name);
+    if (props.kind === 'community-access') {
+      add('Access status', props.status);
+      add('Access role', props.is_primary ? 'Primary spine access' : 'Additional destination access');
+      add('Joined spine', props.joined_spine_reference || props.joined_spine_id);
+      add('Attachment edge', props.attachment_edge_id);
+      add('Attachment offset', formatDistance(props.attachment_distance_m));
+      add('Access distance', formatDistance(props.access_length_m));
+      add('Onward destination', props.onward_destinations);
+      add('Onward comparison', formatBenefits(props.onward_benefits));
+    }
     add('Source kind', props.source_kind);
     add('Place class', props.place_class);
     add('Obligation', props.obligation_kind);
@@ -210,6 +249,7 @@ code { font-size: .9em; }
       'source-departure': network.features.filter(feature => feature.properties?.kind === 'source-departure').length,
       'network-place': network.features.filter(feature => feature.properties?.kind === 'network-place').length,
       'school-context': network.features.filter(feature => feature.properties?.kind === 'school-context').length,
+      'community-access': network.features.filter(feature => feature.properties?.kind === 'community-access').length,
       'access-obligation': network.features.filter(feature => feature.properties?.kind === 'access-obligation').length
     };
     document.querySelectorAll('[data-layer-toggle]').forEach(toggle => {
@@ -301,6 +341,9 @@ code { font-size: .9em; }
       line('native-source-departure', ['==', ['get', 'kind'], 'source-departure'], '#be123c', 5, [8, 5]);
       map.addLayer({ id: 'native-network-place', type: 'circle', source: 'native-network', filter: ['==', ['get', 'kind'], 'network-place'], paint: { 'circle-radius': 5, 'circle-color': '#2563eb', 'circle-stroke-color': '#fff', 'circle-stroke-width': 1 } });
       map.addLayer({ id: 'native-school-context', type: 'circle', source: 'native-network', filter: ['==', ['get', 'kind'], 'school-context'], paint: { 'circle-radius': 6, 'circle-color': '#9333ea', 'circle-stroke-color': '#fff', 'circle-stroke-width': 1 } });
+      map.addLayer({ id: 'native-community-access', type: 'line', source: 'native-network', filter: ['all', ['==', ['get', 'kind'], 'community-access'], ['==', ['geometry-type'], 'LineString']], paint: { 'line-color': '#0891b2', 'line-width': 4 } });
+      map.addLayer({ id: 'native-community-access-point', type: 'circle', source: 'native-network', filter: ['all', ['==', ['get', 'kind'], 'community-access'], ['==', ['geometry-type'], 'Point'], ['!=', ['get', 'status'], 'network-gap']], paint: { 'circle-radius': 6, 'circle-color': '#0891b2', 'circle-stroke-color': '#fff', 'circle-stroke-width': 1 } });
+      map.addLayer({ id: 'native-community-access-gap', type: 'circle', source: 'native-network', filter: ['all', ['==', ['get', 'kind'], 'community-access'], ['==', ['geometry-type'], 'Point'], ['==', ['get', 'status'], 'network-gap']], paint: { 'circle-radius': 6, 'circle-color': '#b91c1c', 'circle-stroke-color': '#fff', 'circle-stroke-width': 1 } });
       map.addLayer({ id: 'native-access-obligation', type: 'circle', source: 'native-network', filter: ['==', ['get', 'kind'], 'access-obligation'], paint: { 'circle-radius': 6, 'circle-color': '#dc2626', 'circle-stroke-color': '#fff', 'circle-stroke-width': 1 } });
       map.addLayer({ id: 'native-highlight-line', type: 'line', source: 'native-highlight', filter: ['==', ['geometry-type'], 'LineString'], paint: { 'line-color': '#f59e0b', 'line-width': 8, 'line-opacity': 0.8 } });
       map.addLayer({ id: 'native-highlight-point', type: 'circle', source: 'native-highlight', filter: ['==', ['geometry-type'], 'Point'], paint: { 'circle-radius': 9, 'circle-color': '#f59e0b', 'circle-stroke-color': '#fff', 'circle-stroke-width': 2 } });

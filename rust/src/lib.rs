@@ -10,9 +10,9 @@ mod output;
 pub mod publication;
 
 pub use compiler::{
-    AccessObligation, AccountingSummary, Candidate, CompileOptions, CompileReport, Connection,
-    NetworkPlace, Operation, ProgressEvent, SchoolContext, SourceCorridor, UnknownFact, compile,
-    compile_with_progress,
+    AccessObligation, AccountingSummary, Candidate, CommunityAccess, CommunityAccessBenefit,
+    CompileOptions, CompileReport, Connection, NetworkPlace, Operation, ProgressEvent,
+    SchoolContext, SourceCorridor, UnknownFact, compile, compile_with_progress,
 };
 pub use error::{Result, SatnError};
 pub use geometry::{GRIDLESS_BNG_PROJECTION_POLICY, project_wgs84_to_bng};

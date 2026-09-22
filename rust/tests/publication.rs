@@ -2,8 +2,9 @@ use std::fs;
 
 use satn_rs::midend::{MidendRun, PlanningBase, TypedOperation};
 use satn_rs::{
-    AccessObligation, AccountingSummary, Candidate, CompileReport, Connection, NetworkPlace,
-    SchoolContext, SourceCorridor, UnknownFact, load_retained_report, publish_decision_map,
+    AccessObligation, AccountingSummary, Candidate, CommunityAccess, CompileReport, Connection,
+    NetworkPlace, SchoolContext, SourceCorridor, UnknownFact, load_retained_report,
+    publish_decision_map,
 };
 use serde_json::Value;
 
@@ -108,6 +109,28 @@ fn publishes_compact_decision_map_with_real_departure_sections() {
         feature["properties"]["kind"] == "source-departure"
             && feature["properties"]["source_corridor_id"] == "source:cycleway"
     }));
+    let community_access = features
+        .iter()
+        .find(|feature| feature["properties"]["kind"] == "community-access")
+        .expect("community access feature");
+    assert_eq!(community_access["properties"]["status"], "served");
+    assert_eq!(
+        community_access["properties"]["joined_spine_reference"],
+        "A-road"
+    );
+    assert_eq!(
+        community_access["properties"]["decision_class"],
+        "mechanical"
+    );
+    assert_eq!(
+        community_access["properties"]["attachment_edge_id"],
+        "edge-access"
+    );
+    assert_eq!(
+        community_access["properties"]["attachment_point"],
+        serde_json::json!([0.0, 0.0])
+    );
+    assert_eq!(community_access["geometry"]["type"], "LineString");
     let school = features
         .iter()
         .find(|feature| feature["properties"]["kind"] == "school-context")
@@ -165,6 +188,8 @@ fn publishes_compact_decision_map_with_real_departure_sections() {
     assert!(html.contains("native-source-departure"));
     assert!(html.contains("data-layer-toggle=\"school-context\""));
     assert!(html.contains("native-school-context"));
+    assert!(html.contains("data-layer-toggle=\"community-access\""));
+    assert!(html.contains("native-community-access"));
     assert!(html.contains("native-feature-details"));
     assert!(!html.contains("data-native-decision-kind"));
     assert!(!html.contains("data-native-departure=\""));
@@ -248,13 +273,13 @@ fn retained_base_reader_supports_offline_projection_without_private_history() {
 fn legacy_report_without_school_context_defaults_to_empty() {
     let report = report_fixture();
     let mut legacy = serde_json::to_value(report).expect("serialize report");
-    legacy
-        .as_object_mut()
-        .expect("report object")
-        .remove("school_context");
+    let object = legacy.as_object_mut().expect("report object");
+    object.remove("school_context");
+    object.remove("community_access");
 
     let loaded: CompileReport = serde_json::from_value(legacy).expect("read legacy report");
     assert!(loaded.school_context.is_empty());
+    assert!(loaded.community_access.is_empty());
 }
 
 #[test]
@@ -380,6 +405,29 @@ fn report_fixture() -> CompileReport {
             name: "Alpha School".to_string(),
             school_obligation_eligible: false,
             geometry: [0.5, 0.0],
+        }],
+        community_access: vec![CommunityAccess {
+            community_id: "village-1".to_string(),
+            source_id: "village-1".to_string(),
+            name: "Village One".to_string(),
+            geometry: [0.0, 0.0],
+            status: "served".to_string(),
+            decision_class: "mechanical".to_string(),
+            is_primary: true,
+            attachment_node: Some("node-village".to_string()),
+            attachment_edge_id: Some("edge-access".to_string()),
+            attachment_point: Some([0.0, 0.0]),
+            attachment_distance_m: Some(12.0),
+            joined_spine_id: Some("source:a-road".to_string()),
+            access_length_m: Some(120.0),
+            path_edge_ids: vec!["edge-access".to_string()],
+            path_geometry: vec![[0.0, 0.0], [0.5, 0.0]],
+            onward_destinations: Vec::new(),
+            onward_benefits: Vec::new(),
+            joined_spine_reference: Some("A-road".to_string()),
+            provision_status: "unknown".to_string(),
+            reason: "Shortest measured-length cycling path reaches the admitted strategic spine."
+                .to_string(),
         }],
         access_obligations: vec![AccessObligation {
             id: "obligation:community:alpha".to_string(),

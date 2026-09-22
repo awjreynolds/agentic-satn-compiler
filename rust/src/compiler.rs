@@ -12,7 +12,7 @@ use crate::geojson::{
     Feature, Geometry, canonical_tag_values, read_feature_collection, string_property,
 };
 use crate::geometry::enrich_network_edges;
-use crate::graph::{Graph, GraphEdge, Route};
+use crate::graph::{EdgeAttachment, Graph, GraphEdge, Route};
 use crate::output::write_bundle;
 
 #[derive(Debug, Clone, Default)]
@@ -71,6 +71,44 @@ pub struct SchoolContext {
     pub name: String,
     pub school_obligation_eligible: bool,
     pub geometry: [f64; 2],
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CommunityAccessBenefit {
+    pub destination_name: String,
+    pub full_route_length_m: f64,
+    pub primary_access_plus_onward_m: Option<f64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CommunityAccess {
+    pub community_id: String,
+    pub source_id: String,
+    pub name: String,
+    pub geometry: [f64; 2],
+    pub status: String,
+    #[serde(default)]
+    pub decision_class: String,
+    pub is_primary: bool,
+    pub attachment_node: Option<String>,
+    #[serde(default)]
+    pub attachment_edge_id: Option<String>,
+    #[serde(default)]
+    pub attachment_point: Option<[f64; 2]>,
+    pub attachment_distance_m: Option<f64>,
+    pub joined_spine_id: Option<String>,
+    pub access_length_m: Option<f64>,
+    pub path_edge_ids: Vec<String>,
+    #[serde(default)]
+    pub path_geometry: Vec<[f64; 2]>,
+    #[serde(default)]
+    pub onward_destinations: Vec<String>,
+    #[serde(default)]
+    pub onward_benefits: Vec<CommunityAccessBenefit>,
+    #[serde(default)]
+    pub joined_spine_reference: Option<String>,
+    pub provision_status: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -170,6 +208,8 @@ pub struct CompileReport {
     pub network_places: Vec<NetworkPlace>,
     #[serde(default)]
     pub school_context: Vec<SchoolContext>,
+    #[serde(default)]
+    pub community_access: Vec<CommunityAccess>,
     #[serde(default)]
     pub access_obligations: Vec<AccessObligation>,
     #[serde(default)]
@@ -332,9 +372,42 @@ pub fn compile_with_progress(
         .collect::<Vec<_>>();
     let destination_profile = "unconfigured".to_string();
     let school_context = admit_school_context(&context_features);
-    let access_obligations = build_access_obligations(&network_places);
-    let accounting =
-        derive_accounting(&source_inventory, &access_obligations, &destination_profile);
+    let rural_community_count = network_places
+        .iter()
+        .filter(|place| is_rural_community(place))
+        .count();
+    emit(
+        progress,
+        &started,
+        "community-access",
+        &format!(
+            "evaluating shortest source-bound spine access for {rural_community_count} rural communities"
+        ),
+        source_inventory.len(),
+        0,
+        0,
+    );
+    let community_access =
+        build_community_access(&network_places, &places, &network.graph, &source_inventory);
+    emit(
+        progress,
+        &started,
+        "community-access",
+        &format!(
+            "retained {} primary and alternate community access records",
+            community_access.len()
+        ),
+        source_inventory.len(),
+        0,
+        0,
+    );
+    let access_obligations = build_access_obligations(&network_places, &community_access);
+    let accounting = derive_accounting(
+        &source_inventory,
+        &network_places,
+        &access_obligations,
+        &destination_profile,
+    );
     emit(
         progress,
         &started,
@@ -395,6 +468,7 @@ pub fn compile_with_progress(
         unknown_facts,
         network_places,
         school_context,
+        community_access,
         access_obligations,
         destination_profile,
         accounting,
@@ -836,21 +910,311 @@ fn admit_school_context(features: &[Feature]) -> Vec<SchoolContext> {
     schools
 }
 
-fn build_access_obligations(network_places: &[NetworkPlace]) -> Vec<AccessObligation> {
-    let mut obligations = network_places
+fn build_community_access(
+    network_places: &[NetworkPlace],
+    destinations: &[Place],
+    graph: &Graph,
+    source_inventory: &[SourceCorridor],
+) -> Vec<CommunityAccess> {
+    let (target_nodes, target_edges) = strategic_spine_targets(graph, source_inventory);
+    let mut records = Vec::new();
+    for place in network_places
         .iter()
-        .map(|place| AccessObligation {
-            id: format!("obligation:community:{}", place.id),
-            kind: "community".to_string(),
+        .filter(|place| is_rural_community(place))
+    {
+        let Some(attachment) = graph.nearest_edge_attachment(place.geometry) else {
+            records.push(community_access_gap(
+                place,
+                None,
+                "No graph edge is available for the inferred community attachment.",
+            ));
+            continue;
+        };
+        let Some((primary_route, joined_spine_id)) =
+            graph.route_from_attachment_to_targets(&attachment, &target_nodes, &target_edges)
+        else {
+            records.push(community_access_gap(
+                place,
+                Some(&attachment),
+                "No reachable admitted strategic spine exists after explicit bicycle/access restrictions.",
+            ));
+            continue;
+        };
+        let entry_node = primary_route.nodes.last().cloned().unwrap_or_default();
+        let status = if primary_route.edge_ids.is_empty() {
+            "on-spine"
+        } else {
+            "served"
+        };
+        records.push(CommunityAccess {
+            community_id: place.id.clone(),
             source_id: place.source_id.clone(),
             name: place.name.clone(),
-            geometry: Some(place.geometry),
-            access_point_status: None,
-            access_point_source_id: None,
-            access_point_rationale: None,
-            disposition: "unresolved".to_string(),
-            reason: "No selected access support is present in the mechanical compilation."
-                .to_string(),
+            geometry: place.geometry,
+            status: status.to_string(),
+            decision_class: "mechanical".to_string(),
+            is_primary: true,
+            attachment_node: attachment.node.clone(),
+            attachment_edge_id: Some(attachment.edge_id.clone()),
+            attachment_point: Some(attachment.point),
+            attachment_distance_m: Some(attachment.distance_m),
+            joined_spine_id: Some(joined_spine_id.clone()),
+            access_length_m: Some(primary_route.length_m),
+            path_edge_ids: primary_route.edge_ids.clone(),
+            path_geometry: primary_route.geometry.clone(),
+            onward_destinations: Vec::new(),
+            onward_benefits: Vec::new(),
+            joined_spine_reference: joined_spine_reference(
+                &joined_spine_id,
+                source_inventory,
+            ),
+            provision_status: "unknown".to_string(),
+            reason: if status == "on-spine" {
+                "The inferred community attachment is already on an admitted strategic spine; no access route is generated.".to_string()
+            } else {
+                "Shortest measured-length cycling path reaches the admitted strategic spine.".to_string()
+            },
+        });
+
+        if primary_route.edge_ids.is_empty() {
+            continue;
+        }
+        let mut alternatives: BTreeMap<
+            (String, Vec<String>),
+            (Route, Vec<CommunityAccessBenefit>),
+        > = BTreeMap::new();
+        for destination in destinations {
+            if destination.id == place.id {
+                continue;
+            }
+            let Some(destination_node) = graph.nearest_node(destination.point) else {
+                continue;
+            };
+            let Some(full_route) =
+                graph.cycling_route_from_attachment(&attachment, &destination_node)
+            else {
+                continue;
+            };
+            let Some((prefix, alternate_spine_id, alternate_entry_node)) =
+                first_spine_prefix(graph, &full_route, &target_nodes)
+            else {
+                continue;
+            };
+            if alternate_entry_node == entry_node || prefix.edge_ids.is_empty() {
+                continue;
+            }
+            let onward_from_primary = graph
+                .cycling_route(&entry_node, &destination_node)
+                .map(|route| route.length_m);
+            let primary_access_plus_onward =
+                onward_from_primary.map(|length| primary_route.length_m + length);
+            if primary_access_plus_onward.is_some_and(|length| full_route.length_m >= length) {
+                continue;
+            }
+            let key = (alternate_spine_id, prefix.edge_ids.clone());
+            let entry = alternatives
+                .entry(key)
+                .or_insert_with(|| (prefix.clone(), Vec::new()));
+            if !entry
+                .1
+                .iter()
+                .any(|benefit| benefit.destination_name == destination.name)
+            {
+                entry.1.push(CommunityAccessBenefit {
+                    destination_name: destination.name.clone(),
+                    full_route_length_m: full_route.length_m,
+                    primary_access_plus_onward_m: primary_access_plus_onward,
+                });
+                entry
+                    .1
+                    .sort_by(|left, right| left.destination_name.cmp(&right.destination_name));
+            }
+        }
+        for ((joined_spine_id, _), (route, onward_benefits)) in alternatives {
+            let onward_destinations = onward_benefits
+                .iter()
+                .map(|benefit| benefit.destination_name.clone())
+                .collect::<Vec<_>>();
+            let destination_label = onward_destinations.join(", ");
+            records.push(CommunityAccess {
+                community_id: place.id.clone(),
+                source_id: place.source_id.clone(),
+                name: place.name.clone(),
+                geometry: place.geometry,
+                status: "served".to_string(),
+                decision_class: "mechanical".to_string(),
+                is_primary: false,
+                attachment_node: attachment.node.clone(),
+                attachment_edge_id: Some(attachment.edge_id.clone()),
+                attachment_point: Some(attachment.point),
+                attachment_distance_m: Some(attachment.distance_m),
+                joined_spine_id: Some(joined_spine_id.clone()),
+                access_length_m: Some(route.length_m),
+                path_edge_ids: route.edge_ids,
+                path_geometry: route.geometry,
+                onward_destinations,
+                onward_benefits,
+                joined_spine_reference: joined_spine_reference(
+                    &joined_spine_id,
+                    source_inventory,
+                ),
+                provision_status: "unknown".to_string(),
+                reason: format!(
+                    "A shorter measured route toward {destination_label} reaches a different strategic spine entry."
+                ),
+            });
+        }
+    }
+    records.sort_by(|left, right| {
+        left.community_id
+            .cmp(&right.community_id)
+            .then_with(|| right.is_primary.cmp(&left.is_primary))
+            .then_with(|| left.path_edge_ids.cmp(&right.path_edge_ids))
+    });
+    records
+}
+
+fn community_access_gap(
+    place: &NetworkPlace,
+    attachment: Option<&EdgeAttachment>,
+    reason: &str,
+) -> CommunityAccess {
+    CommunityAccess {
+        community_id: place.id.clone(),
+        source_id: place.source_id.clone(),
+        name: place.name.clone(),
+        geometry: place.geometry,
+        status: "network-gap".to_string(),
+        decision_class: "mechanical".to_string(),
+        is_primary: true,
+        attachment_node: attachment.and_then(|value| value.node.clone()),
+        attachment_edge_id: attachment.map(|value| value.edge_id.clone()),
+        attachment_point: attachment.map(|value| value.point),
+        attachment_distance_m: attachment.map(|value| value.distance_m),
+        joined_spine_id: None,
+        access_length_m: None,
+        path_edge_ids: Vec::new(),
+        path_geometry: Vec::new(),
+        onward_destinations: Vec::new(),
+        onward_benefits: Vec::new(),
+        joined_spine_reference: None,
+        provision_status: "unknown".to_string(),
+        reason: reason.to_string(),
+    }
+}
+
+fn joined_spine_reference(
+    joined_spine_id: &str,
+    source_inventory: &[SourceCorridor],
+) -> Option<String> {
+    let references = joined_spine_id
+        .split('+')
+        .filter_map(|id| source_inventory.iter().find(|source| source.id == id))
+        .map(|source| source.reference.clone())
+        .collect::<BTreeSet<_>>();
+    (!references.is_empty()).then(|| references.into_iter().collect::<Vec<_>>().join(" + "))
+}
+
+fn is_rural_community(place: &NetworkPlace) -> bool {
+    matches!(place.place_class.as_str(), "village" | "hamlet")
+}
+
+fn strategic_spine_targets(
+    graph: &Graph,
+    source_inventory: &[SourceCorridor],
+) -> (HashMap<String, String>, HashMap<String, String>) {
+    let mut edge_spines: HashMap<String, BTreeSet<String>> = HashMap::new();
+    for source in source_inventory.iter().filter(|source| {
+        matches!(
+            source.baseline_role.as_str(),
+            "a-road"
+                | "current-ncn"
+                | "declassified-ncn"
+                | "existing-cycleway"
+                | "greenway-cycleway"
+        )
+    }) {
+        for edge_id in &source.graph_edge_ids {
+            edge_spines
+                .entry(edge_id.clone())
+                .or_default()
+                .insert(source.id.clone());
+        }
+    }
+    let edge_spines = edge_spines
+        .into_iter()
+        .map(|(edge_id, spines)| (edge_id, spines.into_iter().collect::<Vec<_>>().join("+")))
+        .collect::<HashMap<_, _>>();
+    let mut node_spines: HashMap<String, BTreeSet<String>> = HashMap::new();
+    for edge in &graph.edges {
+        let Some(spines) = edge_spines.get(&edge.id) else {
+            continue;
+        };
+        for spine in spines.split('+') {
+            node_spines
+                .entry(edge.from.clone())
+                .or_default()
+                .insert(spine.to_string());
+            node_spines
+                .entry(edge.to.clone())
+                .or_default()
+                .insert(spine.to_string());
+        }
+    }
+    let node_spines = node_spines
+        .into_iter()
+        .map(|(node, spines)| (node, spines.into_iter().collect::<Vec<_>>().join("+")))
+        .collect();
+    (node_spines, edge_spines)
+}
+
+fn first_spine_prefix(
+    graph: &Graph,
+    route: &Route,
+    target_nodes: &HashMap<String, String>,
+) -> Option<(Route, String, String)> {
+    route
+        .nodes
+        .iter()
+        .enumerate()
+        .find_map(|(node_index, node)| {
+            let spine_id = target_nodes.get(node)?;
+            Some((
+                graph.prefix_route(route, node_index),
+                spine_id.clone(),
+                node.clone(),
+            ))
+        })
+}
+
+fn build_access_obligations(
+    network_places: &[NetworkPlace],
+    community_access: &[CommunityAccess],
+) -> Vec<AccessObligation> {
+    let mut obligations = network_places
+        .iter()
+        .filter(|place| is_rural_community(place))
+        .filter_map(|place| {
+            let access = community_access
+                .iter()
+                .find(|access| access.is_primary && access.community_id == place.id)?;
+            let disposition = match access.status.as_str() {
+                "served" | "on-spine" => "served",
+                "network-gap" => "network-gap",
+                _ => "unresolved",
+            };
+            Some(AccessObligation {
+                id: format!("obligation:community:{}", access.community_id),
+                kind: "community".to_string(),
+                source_id: access.source_id.clone(),
+                name: access.name.clone(),
+                geometry: Some(access.geometry),
+                access_point_status: Some(access.status.clone()),
+                access_point_source_id: Some(access.source_id.clone()),
+                access_point_rationale: Some(access.reason.clone()),
+                disposition: disposition.to_string(),
+                reason: access.reason.clone(),
+            })
         })
         .collect::<Vec<_>>();
     obligations.sort_by(|left, right| left.id.cmp(&right.id));
@@ -859,6 +1223,7 @@ fn build_access_obligations(network_places: &[NetworkPlace]) -> Vec<AccessObliga
 
 fn derive_accounting(
     source_inventory: &[SourceCorridor],
+    network_places: &[NetworkPlace],
     obligations: &[AccessObligation],
     destination_profile: &str,
 ) -> AccountingSummary {
@@ -892,10 +1257,7 @@ fn derive_accounting(
         },
         complete,
         source_baseline_count: source_inventory.len(),
-        network_place_count: obligations
-            .iter()
-            .filter(|obligation| obligation.kind == "community")
-            .count(),
+        network_place_count: network_places.len(),
         obligation_count: obligations.len(),
         unresolved_count,
         network_gap_count,

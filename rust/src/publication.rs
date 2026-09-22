@@ -115,6 +115,8 @@ struct DecisionMapCounts {
     unresolved_facts: usize,
     access_obligations: usize,
     unresolved_access: usize,
+    community_access: usize,
+    community_gaps: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -366,6 +368,11 @@ pub fn publish_decision_map(
         .iter()
         .filter(|obligation| obligation.disposition != "served")
         .count();
+    let community_gaps = report
+        .community_access
+        .iter()
+        .filter(|access| access.status == "network-gap")
+        .count();
     let accounting_status = if report.accounting.status.is_empty() {
         "reviewable-with-gaps".to_string()
     } else {
@@ -385,6 +392,8 @@ pub fn publish_decision_map(
         unresolved_facts: report.unknown_facts.len(),
         access_obligations: report.access_obligations.len(),
         unresolved_access,
+        community_access: report.community_access.len(),
+        community_gaps,
     };
     let deployment_id = if report.deployment_id.is_empty() {
         report.area_id.clone()
@@ -557,7 +566,42 @@ fn baseline_features(report: &CompileReport) -> Vec<MapFeature> {
             }),
         });
     }
+    for access in &report.community_access {
+        let geometry = if access.path_geometry.len() >= 2 {
+            Some(MapGeometry::Line(access.path_geometry.clone()))
+        } else {
+            Some(MapGeometry::Point(access.geometry))
+        };
+        features.push(MapFeature {
+            kind: "community-access".to_string(),
+            geometry,
+            properties: json!({
+                "kind": "community-access",
+                "community_id": access.community_id,
+                "source_id": access.source_id,
+                "name": access.name,
+                "status": access.status,
+                "decision_class": access.decision_class,
+                "is_primary": access.is_primary,
+                "attachment_node": access.attachment_node,
+                "attachment_distance_m": access.attachment_distance_m,
+                "attachment_edge_id": access.attachment_edge_id,
+                "attachment_point": access.attachment_point,
+                "joined_spine_id": access.joined_spine_id,
+                "joined_spine_reference": access.joined_spine_reference,
+                "access_length_m": access.access_length_m,
+                "path_edge_count": access.path_edge_ids.len(),
+                "onward_destinations": access.onward_destinations,
+                "onward_benefits": access.onward_benefits,
+                "provision_status": access.provision_status,
+                "reason": access.reason,
+            }),
+        });
+    }
     for obligation in &report.access_obligations {
+        if community_access_represents_obligation(obligation, &report.community_access) {
+            continue;
+        }
         let Some(point) = obligation.geometry else {
             continue;
         };
@@ -576,6 +620,17 @@ fn baseline_features(report: &CompileReport) -> Vec<MapFeature> {
         });
     }
     features
+}
+
+fn community_access_represents_obligation(
+    obligation: &crate::compiler::AccessObligation,
+    community_access: &[crate::compiler::CommunityAccess],
+) -> bool {
+    !community_access.is_empty()
+        && community_access.iter().any(|access| {
+            access.is_primary
+                && obligation.id == format!("obligation:community:{}", access.community_id)
+        })
 }
 
 fn source_layer(baseline_role: &str) -> &'static str {
@@ -859,6 +914,8 @@ fn render_interactive_html(
             "__UNRESOLVED_ACCESS__",
             &counts.unresolved_access.to_string(),
         )
+        .replace("__COMMUNITY_ACCESS__", &counts.community_access.to_string())
+        .replace("__COMMUNITY_GAPS__", &counts.community_gaps.to_string())
         .replace("__GEOJSON__", files.geojson)
 }
 
