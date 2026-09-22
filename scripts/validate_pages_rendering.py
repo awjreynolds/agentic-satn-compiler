@@ -79,6 +79,209 @@ def _rendered_strategic_spines_failure(deployment_id: str, rendered: int) -> str
     return None
 
 
+def _inspect_native_agentic(
+    context: BrowserContext,
+    origin: str,
+    entry: dict[str, object],
+) -> DeploymentRenderResult:
+    """Check the native decision map's loaded data and visible public sections."""
+    deployment_id = entry.get("deployment_id")
+    artifacts = entry.get("artifacts")
+    if not isinstance(deployment_id, str) or not isinstance(artifacts, dict):
+        raise ValueError("Pages catalogue native deployment entry is invalid")
+    review_map = artifacts.get("review_map")
+    network_geojson = artifacts.get("network_geojson")
+    if not isinstance(review_map, str) or not isinstance(network_geojson, str):
+        raise ValueError(f"Pages catalogue native artifacts are invalid: {deployment_id}")
+
+    page = context.new_page()
+    page_errors: list[str] = []
+    network_requests: list[str] = []
+    page.on("pageerror", lambda error: page_errors.append(str(error)))
+    page.on("request", lambda request: network_requests.append(request.url))
+    try:
+        page.goto(f"{origin}/{review_map}", wait_until="domcontentloaded")
+        loaded_network = page.evaluate(
+            """() => document.querySelector(
+              '[data-native-publication="native-agentic"]'
+            )?.dataset.networkUrl || null"""
+        )
+        if (
+            not isinstance(loaded_network, str)
+            or loaded_network.rsplit("/", 1)[-1] != (network_geojson.rsplit("/", 1)[-1])
+        ):
+            raise ValueError(
+                f"{deployment_id} native page loaded an undeclared GeoJSON: {loaded_network}"
+            )
+        if not any(
+            url.rsplit("/", 1)[-1] == network_geojson.rsplit("/", 1)[-1] for url in network_requests
+        ):
+            raise ValueError(
+                f"{deployment_id} native page did not request its declared GeoJSON: "
+                f"{network_geojson}"
+            )
+        try:
+            page.wait_for_function(
+                """() => document.documentElement.dataset.nativeReady === 'true' &&
+                  document.documentElement.dataset.nativeNetworkLoaded === 'true' &&
+                  Boolean(document.querySelector('[data-native-publication="native-agentic"]')) &&
+                  window.SATN_NATIVE_NETWORK?.type === 'FeatureCollection'"""
+            )
+        except PlaywrightTimeoutError as error:
+            details = page.evaluate(
+                """() => ({
+                  ready: document.documentElement.dataset.nativeReady,
+                  networkLoaded: document.documentElement.dataset.nativeNetworkLoaded,
+                  publication: Boolean(
+                    document.querySelector('[data-native-publication="native-agentic"]')
+                  ),
+                  network: window.SATN_NATIVE_NETWORK?.type,
+                })"""
+            )
+            browser_errors = "; ".join(f"browser error: {message}" for message in page_errors)
+            suffix = f"; {browser_errors}" if browser_errors else ""
+            raise ValueError(
+                f"{deployment_id} native map did not load its GeoJSON: {details}{suffix}"
+            ) from error
+
+        inspection = page.evaluate(
+            """() => {
+              const root = document.querySelector('[data-native-publication="native-agentic"]');
+              const network = window.SATN_NATIVE_NETWORK;
+              const features = network?.features || [];
+              const properties = feature => feature?.properties || {};
+              const kind = feature => properties(feature).kind;
+              const count = value => features.filter(feature => kind(feature) === value).length;
+              const strategicKinds = ['selected-alignment', 'provisional-alignment'];
+              const strategic = features.filter(feature => strategicKinds.includes(kind(feature)));
+              const decisionGeometryKinds = [...strategicKinds, 'unresolved-decision'];
+              const decisionGeometry = features.filter(feature =>
+                decisionGeometryKinds.includes(kind(feature))
+              );
+              const sourceBaseline = features.filter(
+                feature => kind(feature) === 'source-baseline'
+              );
+              const departureKinds = ['a-road-departure', 'source-departure'];
+              const departures = features.filter(feature => departureKinds.includes(kind(feature)));
+              const unresolved = features.filter(
+                feature => kind(feature) === 'unresolved-decision'
+              );
+              const gaps = features.filter(feature =>
+                ['network-gap', 'access-obligation'].includes(kind(feature))
+              );
+              const visible = element => {
+                if (!element) return false;
+                const style = getComputedStyle(element);
+                return style.display !== 'none' && style.visibility !== 'hidden' &&
+                  Number.parseFloat(style.opacity || '1') > 0 &&
+                  (element.getBoundingClientRect().width > 0 ||
+                    element.getBoundingClientRect().height > 0);
+              };
+              const geometryType = feature => feature?.geometry?.type;
+              const lineGeometry = feature => ['LineString', 'MultiLineString'].includes(
+                geometryType(feature)
+              ) && Array.isArray(feature?.geometry?.coordinates) &&
+                feature.geometry.coordinates.length > 0;
+              const failures = [];
+              if (!root) failures.push('native publication root is missing');
+              if (!sourceBaseline.length) failures.push('native map contains no source baseline');
+              if (!sourceBaseline.some(feature => properties(feature).baseline_role === 'a-road')) {
+                failures.push('native map contains no retained A-road source baseline');
+              }
+              if (!decisionGeometry.length) {
+                failures.push('native map contains no strategic geometry');
+              }
+              const visibleStrategic = [...document.querySelectorAll(
+                '[data-native-strategic-geometry], svg .selected-alignment,' +
+                ' svg .provisional-alignment, svg .unresolved-decision'
+              )].filter(visible).length;
+              if (!visibleStrategic) failures.push('native strategic geometry is not visible');
+              const visibleSource = [...document.querySelectorAll(
+                '[data-native-source-geometry], svg .source-baseline'
+              )].filter(visible).length;
+              if (sourceBaseline.length && !visibleSource) {
+                failures.push('native source baseline geometry is not visible');
+              }
+              const visibleDepartures = [...document.querySelectorAll(
+                '[data-native-departure-geometry], svg .a-road-departure,' +
+                ' svg .corridor-departure, svg .source-departure'
+              )].filter(visible).length;
+              if (departures.length && strategic.length && !visibleDepartures) {
+                failures.push('native departure geometry is not visible');
+              }
+              const branch = root?.matches('[data-native-branch]')
+                ? root
+                : root?.querySelector('[data-native-branch]');
+              const featureBranch = features.map(feature => properties(feature).branch)
+                .find(value => typeof value === 'string' && value.trim());
+              const branchVisible = branch
+                ? visible(branch) && Boolean(branch.textContent?.trim())
+                : Boolean(featureBranch && document.body.innerText.includes(featureBranch));
+              if (!branchVisible) {
+                failures.push('native branch identity is not visible');
+              }
+              for (const decisionKind of [
+                'selected-alignment', 'provisional-alignment', 'unresolved-decision'
+              ]) {
+                const explicit = [...document.querySelectorAll(
+                  `[data-native-decision-kind="${decisionKind}"]`
+                )];
+                const labelled = [...document.querySelectorAll('strong')]
+                  .filter(element => element.textContent?.trim() === decisionKind);
+                if (count(decisionKind) && ![...explicit, ...labelled].some(visible)) {
+                  failures.push(`native ${decisionKind} is not displayed`);
+                }
+              }
+              const explicitDepartures = [...document.querySelectorAll('[data-native-departure]')];
+              const labelledDepartures = [...document.querySelectorAll('strong')]
+                .filter(element => ['A-road departure', 'Source corridor departure']
+                  .includes(element.textContent?.trim()));
+              if (departures.length && strategic.length && ![
+                ...explicitDepartures, ...labelledDepartures,
+              ].some(visible)) {
+                failures.push('native departures are not displayed');
+              }
+              const visibleGaps = [...document.querySelectorAll(
+                '[data-native-gap], svg .access-obligation'
+              )].filter(visible);
+              if (gaps.length && !visibleGaps.length) {
+                failures.push('native network gaps are not displayed');
+              }
+              const invalidGeometry = features
+                .filter(feature => strategicKinds.includes(kind(feature)) ||
+                  kind(feature) === 'candidate-alternative' ||
+                  departureKinds.includes(kind(feature)) || kind(feature) === 'source-baseline')
+                .filter(feature => !lineGeometry(feature))
+                .map(feature => feature.id || kind(feature));
+              if (invalidGeometry.length) {
+                failures.push(`native line geometry is invalid: ${invalidGeometry.join(', ')}`);
+              }
+              return {
+                failures,
+                strategic: strategic.length,
+                sourceBaseline: sourceBaseline.length,
+                accessConnections: gaps.length,
+                departures: departures.length,
+                unresolved: unresolved.length,
+                rendered: visibleStrategic,
+              };
+            }"""
+        )
+        failures = list(inspection["failures"])
+        failures.extend(f"browser error: {message}" for message in page_errors)
+        if failures:
+            raise ValueError(f"{deployment_id} native map rendering failed: {'; '.join(failures)}")
+        return DeploymentRenderResult(
+            deployment_id=deployment_id,
+            strategic_spines=inspection["strategic"],
+            access_connections=inspection["accessConnections"],
+            cross_spine_connectors=inspection["departures"],
+            rendered_strategic_spines=inspection["rendered"],
+        )
+    finally:
+        page.close()
+
+
 @contextmanager
 def _serve(root: Path) -> Iterator[str]:
     server = ThreadingHTTPServer(("127.0.0.1", 0), partial(_PagesHandler, directory=str(root)))
@@ -106,6 +309,8 @@ def _inspect_deployment(
     origin: str,
     entry: dict[str, object],
 ) -> DeploymentRenderResult:
+    if entry.get("publication_kind") == "native-agentic":
+        return _inspect_native_agentic(context, origin, entry)
     if entry.get("publication_kind") == "source-baseline":
         return _inspect_source_baseline(context, origin, entry)
     deployment_id = entry.get("deployment_id")
