@@ -8,6 +8,7 @@ pub mod judgment;
 pub mod midend;
 mod output;
 pub mod publication;
+pub mod topography;
 
 pub use compiler::{
     AccessObligation, AccountingSummary, Candidate, CommunityAccess, CommunityAccessBenefit,
