@@ -40,13 +40,13 @@ pub(crate) struct EdgeEvidence {
 }
 
 #[derive(Clone)]
-struct Projector {
+pub(crate) struct Projector {
     source: Proj,
     target: Proj,
 }
 
 impl Projector {
-    fn new() -> Result<Self> {
+    pub(crate) fn new() -> Result<Self> {
         let source = Proj::from_proj_string(WGS84)
             .map_err(|error| SatnError::InvalidInput(format!("WGS84 projection: {error}")))?;
         let target = Proj::from_proj_string(GRIDLESS_BNG)
@@ -54,7 +54,7 @@ impl Projector {
         Ok(Self { source, target })
     }
 
-    fn point(&self, point: [f64; 2]) -> Result<[f64; 2]> {
+    pub(crate) fn point(&self, point: [f64; 2]) -> Result<[f64; 2]> {
         let (x, y) = transform_vertex_2d(
             &self.source,
             &self.target,
@@ -66,7 +66,7 @@ impl Projector {
         Ok([x, y])
     }
 
-    fn line(&self, line: &[[f64; 2]]) -> Result<LineString<f64>> {
+    pub(crate) fn line(&self, line: &[[f64; 2]]) -> Result<LineString<f64>> {
         line.iter()
             .copied()
             .map(|point| self.point(point).map(|[x, y]| Coord { x, y }))
