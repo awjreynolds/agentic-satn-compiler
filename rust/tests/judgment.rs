@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use satn_rs::judgment::{
-    decode_choice_response, run_codex, ChoiceRequest, CodexConfig, JudgmentError, TypeSafeConfig,
+    ChoiceRequest, CodexConfig, JudgmentError, TypeSafeConfig, decode_choice_response, run_codex,
 };
 use serde_json::json;
 
