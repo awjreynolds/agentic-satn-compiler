@@ -84,7 +84,7 @@ def _write_native_bundle(
                     "decision_id": "decision:selected",
                     "candidate_id": "candidate:selected",
                     "reason": "Selected public evidence alignment",
-                    "uncertainties": ["Provision remains unknown"],
+                    "uncertainties": [],
                     "evidence_refs": ["candidate:selected"],
                 },
                 "geometry": {"type": "LineString", "coordinates": [[-2, 51], [-1.9, 51.1]]},
@@ -485,6 +485,13 @@ def test_native_map_supports_public_feature_inspection_reset_and_layer_toggle(
                 page.wait_for_selector(".maplibregl-popup")
                 assert "selected-alignment" in page.locator("#native-feature-details").inner_text()
                 assert page.locator(".maplibregl-popup").count() == 1
+                page.locator("#native-feature-details summary").click()
+                detail_text = page.locator("#native-feature-details").inner_text()
+                popup_text = page.locator(".maplibregl-popup-content").inner_text()
+                assert "candidate:selected" in detail_text
+                assert "[]" not in detail_text
+                assert "[]" not in popup_text
+                assert "[" not in popup_text
                 map_box = page.locator("#native-map").bounding_box()
                 assert map_box and map_box["width"] > 0 and map_box["height"] > 0
                 page.mouse.move(

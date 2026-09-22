@@ -28,6 +28,7 @@ button:focus-visible, input:focus-visible { outline: 3px solid #2563eb; outline-
 .native-details dl { margin: 0; }
 .native-details dt { font-weight: 700; }
 .native-details dd { margin: 0 0 .25rem; overflow-wrap: anywhere; }
+.maplibregl-popup-content { max-height: calc(100dvh - 1rem); overflow-y: auto; }
 small { display: block; color: #475569; margin-top: .15rem; }
 code { font-size: .9em; }
 #native-loading-failure { color: #b91c1c; font-weight: 700; }
@@ -98,9 +99,23 @@ code { font-size: .9em; }
     const props = feature && feature.properties ? feature.properties : {};
     return props.connection_label || props.source_reference || props.name || props.label || props.kind || 'Public feature';
   };
-  const valueText = value => Array.isArray(value)
-    ? value.filter(item => item !== null && item !== undefined && String(item).trim()).join('; ')
-    : String(value ?? '');
+  const normalizedValue = value => {
+    if (typeof value !== 'string') return value;
+    const text = value.trim();
+    if (!text.startsWith('[') || !text.endsWith(']')) return value;
+    try {
+      const parsed = JSON.parse(text);
+      return Array.isArray(parsed) ? parsed : value;
+    } catch (_) {
+      return value;
+    }
+  };
+  const valueText = value => {
+    const normalized = normalizedValue(value);
+    return Array.isArray(normalized)
+      ? normalized.filter(item => item !== null && item !== undefined && String(item).trim()).join('; ')
+      : String(normalized ?? '');
+  };
   const formatDistance = value => {
     const metres = Number(value);
     if (!Number.isFinite(metres)) return '';
