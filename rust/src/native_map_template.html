@@ -169,10 +169,10 @@ code { font-size: .9em; }
     if (props.kind === 'community-access') {
       add('Access status', props.status);
       add('Access role', props.is_primary ? 'Primary spine access' : 'Additional destination access');
-      add('Joined spine', props.joined_spine_reference || props.joined_spine_id);
-      add('Attachment edge', props.attachment_edge_id);
-      add('Attachment offset', formatDistance(props.attachment_distance_m));
-      add('Access distance', formatDistance(props.access_length_m));
+      add('Root spine', props.joined_spine_reference);
+      add('Parent community', props.parent_community_name || props.parent_community_id);
+      add('New link distance', formatDistance(props.new_link_length_m || props.access_length_m));
+      add('Complete access distance', formatDistance(props.full_access_length_m));
       add('Onward destination', props.onward_destinations);
       add('Onward comparison', formatBenefits(props.onward_benefits));
     }
@@ -193,7 +193,10 @@ code { font-size: .9em; }
     const technicalKeys = new Set([
       'kind', 'decision_id', 'connection_id', 'candidate_id', 'source_corridor_id', 'source_id',
       'place_id', 'obligation_id', 'graph_edge_id', 'alternative_candidate_id', 'evidence_refs',
-      'branch', 'base_id', 'source_geometry_part'
+      'branch', 'base_id', 'source_geometry_part', 'root_spine_id', 'parent_community_id',
+      'parent_junction_node', 'parent_junction_edge_id', 'parent_junction_fraction',
+      'admission_order', 'attachment_depth', 'parent_junction_remaining_m', 'attachment_edge_id',
+      'attachment_distance_m', 'attachment_fraction', 'path_start_fraction', 'path_end_fraction'
     ]);
     return Object.keys(props).filter(key => technicalKeys.has(key) && valueText(props[key]).trim())
       .map(key => [key.replaceAll('_', ' '), valueText(props[key])]);

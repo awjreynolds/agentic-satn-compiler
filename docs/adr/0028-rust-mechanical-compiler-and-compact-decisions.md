@@ -75,3 +75,27 @@ Continue along permitted directed edges with their partial measured lengths; do
 not substitute a farther edge merely because it reaches the spine. No synthetic
 point-to-road segment or observed entrance is invented. Unreachable access stays
 a gap, and current provision remains unknown.
+
+
+The owner's subsequent rural-network refinement replaces independent settlement
+feeders with shared Spine Access Branches. Grow outward from admitted spines,
+accepting the nearest reachable new community link to the currently served
+frontier. A deeper community may join an already-served community or branch.
+Compare new network length separately from the complete journey to the spine;
+retain parent/root lineage and avoid repeating the parent's geometry in every
+child. This is a constructive sharing policy, not a claim of global optimality.
+Independent per-destination extra feeders are no longer adopted as a default.
+
+Comfort comparisons use actual ordered elevation evidence: directional ascent
+and descent, cumulative elevation variation and supported sustained gradients.
+Missing or incomplete profiles remain unknown. Preserve the existing source
+binding and sampling policies; do not invent a combined distance/gradient cost
+or treat endpoint height difference as cumulative climbing.
+
+A prepared alternative is not a served route. If a comfort choice changes an
+alignment, only its accepted path may enlarge the frontier for later communities.
+Retain finite alternatives and parent bindings in the existing task history;
+replay applies the selected paths in order without providers or rerouting.
+Mechanical branch construction alone must not be described as classifier-driven
+comfort selection. The existing classifier and reasoning escalation workflow
+handles unresolved judgments once route evidence is available.

@@ -130,6 +130,15 @@ fn publishes_compact_decision_map_with_real_departure_sections() {
         community_access["properties"]["attachment_point"],
         serde_json::json!([0.0, 0.0])
     );
+    assert_eq!(
+        community_access["properties"]["root_spine_id"],
+        "source:a-road"
+    );
+    assert_eq!(community_access["properties"]["new_link_length_m"], 120.0);
+    assert_eq!(
+        community_access["properties"]["full_access_length_m"],
+        120.0
+    );
     assert_eq!(community_access["geometry"]["type"], "LineString");
     let school = features
         .iter()
@@ -190,6 +199,9 @@ fn publishes_compact_decision_map_with_real_departure_sections() {
     assert!(html.contains("native-school-context"));
     assert!(html.contains("data-layer-toggle=\"community-access\""));
     assert!(html.contains("native-community-access"));
+    assert!(html.contains("Parent community"));
+    assert!(html.contains("New link distance"));
+    assert!(html.contains("Complete access distance"));
     assert!(html.contains("native-feature-details"));
     assert!(!html.contains("data-native-decision-kind"));
     assert!(!html.contains("data-native-departure=\""));
@@ -417,10 +429,24 @@ fn report_fixture() -> CompileReport {
             attachment_node: Some("node-village".to_string()),
             attachment_edge_id: Some("edge-access".to_string()),
             attachment_point: Some([0.0, 0.0]),
+            attachment_fraction: Some(0.0),
             attachment_distance_m: Some(12.0),
+            parent_community_id: None,
+            parent_community_name: None,
+            parent_junction_node: None,
+            parent_junction_edge_id: None,
+            parent_junction_fraction: None,
+            parent_junction_remaining_m: None,
+            root_spine_id: Some("source:a-road".to_string()),
+            admission_order: Some(1),
+            attachment_depth: Some(0),
+            new_link_length_m: Some(120.0),
+            full_access_length_m: Some(120.0),
             joined_spine_id: Some("source:a-road".to_string()),
             access_length_m: Some(120.0),
             path_edge_ids: vec!["edge-access".to_string()],
+            path_start_fraction: Some(0.0),
+            path_end_fraction: Some(1.0),
             path_geometry: vec![[0.0, 0.0], [0.5, 0.0]],
             onward_destinations: Vec::new(),
             onward_benefits: Vec::new(),

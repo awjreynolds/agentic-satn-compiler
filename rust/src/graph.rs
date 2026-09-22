@@ -76,9 +76,37 @@ struct AttachmentSeed {
 #[derive(Debug, Clone)]
 pub(crate) struct Graph {
     pub edges: Vec<GraphEdge>,
+    edge_indexes: HashMap<String, usize>,
     outgoing: HashMap<String, Vec<usize>>,
+    incoming: HashMap<String, Vec<usize>>,
     node_points: HashMap<String, [f64; 2]>,
     reciprocal_components: Vec<BTreeSet<String>>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct FrontierTarget {
+    pub key: String,
+    pub spine_id: String,
+    pub community_id: Option<String>,
+    pub junction_node: String,
+    pub remaining_access_length_m: f64,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct FrontierEdgeTarget {
+    pub edge_id: String,
+    pub fraction: f64,
+    pub point: [f64; 2],
+    pub target: FrontierTarget,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct FrontierSearch {
+    distances: HashMap<String, f64>,
+    previous: HashMap<String, usize>,
+    targets: HashMap<String, FrontierTarget>,
+    frontier_nodes: BTreeSet<String>,
+    partial_targets: HashMap<String, FrontierEdgeTarget>,
 }
 
 #[derive(Debug, Clone)]
@@ -163,9 +191,11 @@ impl Graph {
         }
 
         let mut outgoing: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut incoming: HashMap<String, Vec<usize>> = HashMap::new();
         let mut node_points: HashMap<String, [f64; 2]> = HashMap::new();
         for (index, edge) in edges.iter().enumerate() {
             outgoing.entry(edge.from.clone()).or_default().push(index);
+            incoming.entry(edge.to.clone()).or_default().push(index);
             if let Some(point) = edge.geometry.first() {
                 node_points.entry(edge.from.clone()).or_insert(*point);
             }
@@ -176,10 +206,20 @@ impl Graph {
         for indexes in outgoing.values_mut() {
             indexes.sort_by(|left, right| edges[*left].id.cmp(&edges[*right].id));
         }
+        for indexes in incoming.values_mut() {
+            indexes.sort_by(|left, right| edges[*left].id.cmp(&edges[*right].id));
+        }
         let reciprocal_components = reciprocal_components(&edges);
+        let edge_indexes = edges
+            .iter()
+            .enumerate()
+            .map(|(index, edge)| (edge.id.clone(), index))
+            .collect();
         Ok(Self {
             edges,
+            edge_indexes,
             outgoing,
+            incoming,
             node_points,
             reciprocal_components,
         })
@@ -313,6 +353,134 @@ impl Graph {
         best
     }
 
+    pub(crate) fn frontier_search(
+        &self,
+        target_nodes: &HashMap<String, FrontierTarget>,
+        partial_targets: &[FrontierEdgeTarget],
+    ) -> FrontierSearch {
+        let mut search = FrontierSearch {
+            targets: target_nodes.clone(),
+            frontier_nodes: target_nodes.keys().cloned().collect(),
+            ..FrontierSearch::default()
+        };
+        let mut queue = BinaryHeap::new();
+        for node in target_nodes.keys() {
+            search.distances.insert(node.clone(), 0.0);
+            queue.push(QueueEntry {
+                distance: 0.0,
+                node: node.clone(),
+            });
+        }
+        for partial_target in partial_targets {
+            let Some(edge) = self.edge_by_id(&partial_target.edge_id) else {
+                continue;
+            };
+            let node = edge.from.clone();
+            let distance = partial_target.fraction * edge.length_m;
+            let replace = match search.distances.get(&node) {
+                None => true,
+                Some(current_distance) if distance < *current_distance => true,
+                Some(current_distance) if distance == *current_distance => search
+                    .targets
+                    .get(&node)
+                    .is_none_or(|current| partial_target.target.key < current.key),
+                Some(_) => false,
+            };
+            if !replace {
+                continue;
+            }
+            search.distances.insert(node.clone(), distance);
+            search
+                .targets
+                .insert(node.clone(), partial_target.target.clone());
+            search
+                .partial_targets
+                .insert(node.clone(), partial_target.clone());
+            search.frontier_nodes.insert(node.clone());
+            queue.push(QueueEntry { distance, node });
+        }
+
+        while let Some(QueueEntry { distance, node }) = queue.pop() {
+            if distance > *search.distances.get(&node).unwrap_or(&f64::INFINITY) {
+                continue;
+            }
+            let Some(target) = search.targets.get(&node).cloned() else {
+                continue;
+            };
+            for edge_index in self.incoming.get(&node).into_iter().flatten() {
+                let edge = &self.edges[*edge_index];
+                if !edge.cycling_allowed() {
+                    continue;
+                }
+                let next_distance = distance + edge.length_m;
+                let replace = match search.distances.get(&edge.from) {
+                    None => true,
+                    Some(current_distance) if next_distance < *current_distance => true,
+                    Some(current_distance) if next_distance == *current_distance => search
+                        .targets
+                        .get(&edge.from)
+                        .is_none_or(|current| target.key < current.key),
+                    Some(_) => false,
+                };
+                if !replace {
+                    continue;
+                }
+                if search.partial_targets.remove(&edge.from).is_some() {
+                    search.frontier_nodes.remove(&edge.from);
+                }
+                search.distances.insert(edge.from.clone(), next_distance);
+                search.previous.insert(edge.from.clone(), *edge_index);
+                search.targets.insert(edge.from.clone(), target.clone());
+                queue.push(QueueEntry {
+                    distance: next_distance,
+                    node: edge.from.clone(),
+                });
+            }
+        }
+        search
+    }
+
+    pub(crate) fn route_from_attachment_to_frontier(
+        &self,
+        attachment: &EdgeAttachment,
+        search: &FrontierSearch,
+        target_edges: &HashMap<String, String>,
+    ) -> Option<(Route, FrontierTarget)> {
+        if let Some(spine_id) = target_edges.get(&attachment.edge_id) {
+            return Some((
+                self.empty_route(),
+                FrontierTarget {
+                    key: format!("spine-edge:{spine_id}:{}", attachment.edge_id),
+                    spine_id: spine_id.clone(),
+                    community_id: None,
+                    junction_node: format!("attachment:{}", attachment.edge_id),
+                    remaining_access_length_m: 0.0,
+                },
+            ));
+        }
+        if let Some(node) = &attachment.node {
+            return self.route_from_frontier_node(node, search);
+        }
+        let mut best: Option<(Route, FrontierTarget)> = None;
+        for seed in self.attachment_seeds(attachment) {
+            let Some((route, target)) = self.route_from_frontier_node(&seed.end_node, search)
+            else {
+                continue;
+            };
+            let combined = self.prepend_attachment_seed(attachment, &seed, &route);
+            let replace = best.as_ref().is_none_or(|(current, current_target)| {
+                combined.length_m < current.length_m
+                    || (combined.length_m == current.length_m
+                        && (target.key.clone(), &combined.edge_ids)
+                            < (current_target.key.clone(), &current.edge_ids))
+            });
+            if replace {
+                best = Some((combined, target));
+            }
+        }
+        best
+    }
+
     pub(crate) fn cycling_route_from_attachment(
         &self,
         attachment: &EdgeAttachment,
@@ -417,6 +585,53 @@ impl Graph {
         Some(self.route_from_indices(&edge_indices, *distances.get(end).unwrap_or(&0.0), nodes))
     }
 
+    fn route_from_frontier_node(
+        &self,
+        start: &str,
+        search: &FrontierSearch,
+    ) -> Option<(Route, FrontierTarget)> {
+        let distance = *search.distances.get(start)?;
+        let mut edge_indices = Vec::new();
+        let mut nodes = vec![start.to_string()];
+        let mut cursor = start.to_string();
+        while !search.frontier_nodes.contains(&cursor) {
+            let edge_index = *search.previous.get(&cursor)?;
+            let edge = &self.edges[edge_index];
+            if edge.from != cursor {
+                return None;
+            }
+            edge_indices.push(edge_index);
+            cursor = edge.to.clone();
+            nodes.push(cursor.clone());
+        }
+        let target = search.targets.get(&cursor)?.clone();
+        let partial = search.partial_targets.get(&cursor);
+        let route_distance = partial
+            .map(|partial| {
+                distance
+                    - self
+                        .edge_by_id(&partial.edge_id)
+                        .map_or(0.0, |edge| partial.fraction * edge.length_m)
+            })
+            .unwrap_or(distance);
+        let route = self.route_from_indices(&edge_indices, route_distance, nodes);
+        let route = if let Some(partial) = partial {
+            let edge = self.edge_by_id(&partial.edge_id)?;
+            let start_point = *edge.geometry.first()?;
+            let suffix = self.partial_edge_route(
+                &partial.edge_id,
+                0.0,
+                partial.fraction,
+                start_point,
+                partial.point,
+            )?;
+            self.append_routes(&route, &suffix)
+        } else {
+            route
+        };
+        Some((route, target))
+    }
+
     fn route_from_indices(
         &self,
         edge_indices: &[usize],
@@ -491,8 +706,98 @@ impl Graph {
         }
     }
 
-    fn empty_route(&self) -> Route {
+    pub(crate) fn empty_route(&self) -> Route {
         self.route_from_parts(&[], Vec::new(), Vec::new(), 0.0, Vec::new())
+    }
+
+    pub(crate) fn edge_by_id(&self, edge_id: &str) -> Option<&GraphEdge> {
+        self.edge_indexes
+            .get(edge_id)
+            .and_then(|index| self.edges.get(*index))
+    }
+
+    pub(crate) fn attachment_fraction_on_edge(
+        &self,
+        attachment: &EdgeAttachment,
+        edge_id: &str,
+    ) -> Option<f64> {
+        let attached_edge = self.edges.get(attachment.edge_index)?;
+        self.normalize_edge_fraction(&attached_edge.id, attachment.fraction, edge_id)
+    }
+
+    pub(crate) fn normalize_edge_fraction(
+        &self,
+        source_edge_id: &str,
+        fraction: f64,
+        target_edge_id: &str,
+    ) -> Option<f64> {
+        let source = self.edge_by_id(source_edge_id)?;
+        let target = self.edge_by_id(target_edge_id)?;
+        if source.id == target.id || source.geometry == target.geometry {
+            Some(fraction)
+        } else if source.geometry.iter().eq(target.geometry.iter().rev()) {
+            Some(1.0 - fraction)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn partial_edge_route(
+        &self,
+        edge_id: &str,
+        start_fraction: f64,
+        end_fraction: f64,
+        start_point: [f64; 2],
+        end_point: [f64; 2],
+    ) -> Option<Route> {
+        if end_fraction < start_fraction {
+            return None;
+        }
+        let edge_index = *self.edge_indexes.get(edge_id)?;
+        let edge = &self.edges[edge_index];
+        if !edge.cycling_allowed() {
+            return None;
+        }
+        let length_m = (end_fraction - start_fraction) * edge.length_m;
+        let geometry = partial_geometry_between(
+            &edge.geometry,
+            start_fraction,
+            end_fraction,
+            start_point,
+            end_point,
+        );
+        Some(self.route_from_parts(
+            &[edge_index],
+            vec![length_m],
+            vec![geometry],
+            length_m,
+            vec![
+                format!("attachment:{edge_id}@{start_fraction:.12}"),
+                format!("edge:{edge_id}@{end_fraction:.12}"),
+            ],
+        ))
+    }
+
+    fn append_routes(&self, first: &Route, second: &Route) -> Route {
+        let mut edge_indices = first.edge_indices.clone();
+        edge_indices.extend(second.edge_indices.iter().copied());
+        let mut edge_lengths_m = first.edge_lengths_m.clone();
+        edge_lengths_m.extend(second.edge_lengths_m.iter().copied());
+        let mut edge_geometries = first.edge_geometries.clone();
+        edge_geometries.extend(second.edge_geometries.iter().cloned());
+        let mut nodes = first.nodes.clone();
+        if nodes.is_empty() {
+            nodes.extend(second.nodes.iter().cloned());
+        } else {
+            nodes.extend(second.nodes.iter().skip(1).cloned());
+        }
+        self.route_from_parts(
+            &edge_indices,
+            edge_lengths_m,
+            edge_geometries,
+            first.search_cost_m + second.search_cost_m,
+            nodes,
+        )
     }
 
     fn attachment_seeds(&self, attachment: &EdgeAttachment) -> Vec<AttachmentSeed> {
@@ -521,10 +826,13 @@ impl Graph {
             else {
                 continue;
             };
+            let fraction = self
+                .normalize_edge_fraction(&edge.id, attachment.fraction, &reverse.id)
+                .unwrap_or(closest.fraction);
             seeds.push(AttachmentSeed {
                 edge_index,
                 end_node: reverse.to.clone(),
-                partial_length_m: (1.0 - closest.fraction) * reverse.length_m,
+                partial_length_m: (1.0 - fraction) * reverse.length_m,
                 geometry: partial_geometry(
                     &reverse.geometry,
                     closest.segment_index,
@@ -738,6 +1046,36 @@ fn partial_geometry(
     }
     if partial.len() > 1 && partial[0] == partial[1] && segment_fraction == 0.0 {
         partial.remove(0);
+    }
+    partial
+}
+
+fn partial_geometry_between(
+    geometry: &[[f64; 2]],
+    start_fraction: f64,
+    end_fraction: f64,
+    start_point: [f64; 2],
+    end_point: [f64; 2],
+) -> Vec<[f64; 2]> {
+    let mut partial = vec![start_point];
+    if geometry.len() > 1 {
+        let total_length_m = geometry
+            .windows(2)
+            .map(|segment| haversine_m(segment[0], segment[1]))
+            .sum::<f64>();
+        if total_length_m > 0.0 {
+            let mut travelled_m = 0.0;
+            for segment in geometry.windows(2) {
+                travelled_m += haversine_m(segment[0], segment[1]);
+                let fraction = travelled_m / total_length_m;
+                if fraction > start_fraction && fraction < end_fraction {
+                    partial.push(segment[1]);
+                }
+            }
+        }
+    }
+    if partial.last().copied() != Some(end_point) {
+        partial.push(end_point);
     }
     partial
 }

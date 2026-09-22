@@ -89,7 +89,7 @@ A declaration of scope-specific main-network spacing guidance. The initial profi
 _Avoid_: parallel-candidate proximity, Access Support spacing, binding Dutch standard
 
 **Access Support**:
-Community connections that reach the Strategic Main Network without counting as main-route mesh coverage. Rural access follows the shortest connected route to the spine; an additional connection must serve a useful onward urban journey. School locations are informational and do not generate Access Support in the strategic planning scope. Unsupported or disconnected access remains an inspectable Network Gap.
+Community connections that reach the Strategic Main Network without counting as main-route mesh coverage. Rural access forms shared Spine Access Branches grown outward through served Communities, with new link length distinguished from the full journey to the spine. Route comfort is informed by measured climbing and sustained gradients where evidence exists. School locations are informational and do not generate Access Support in the strategic planning scope. Unsupported or disconnected access remains an inspectable Network Gap.
 _Avoid_: Strategic Main Network, hidden feeder, discarded access route
 
 **Strategic Network Visualization**:
