@@ -555,6 +555,7 @@ pub fn prepare_with_progress(
         candidates,
         operations,
     };
+    let report = report.with_community_access(Vec::new());
     Ok(PreparedCompilation {
         report,
         graph: network.graph,
@@ -2033,27 +2034,45 @@ fn build_access_obligations(
     let mut obligations = network_places
         .iter()
         .filter(|place| is_rural_community(place))
-        .filter_map(|place| {
-            let access = community_access
+        .map(|place| {
+            if let Some(access) = community_access
                 .iter()
-                .find(|access| access.is_primary && access.community_id == place.id)?;
-            let disposition = match access.status.as_str() {
-                "served" | "on-spine" => "served",
-                "network-gap" => "network-gap",
-                _ => "unresolved",
-            };
-            Some(AccessObligation {
-                id: format!("obligation:community:{}", access.community_id),
-                kind: "community".to_string(),
-                source_id: access.source_id.clone(),
-                name: access.name.clone(),
-                geometry: Some(access.geometry),
-                access_point_status: Some(access.status.clone()),
-                access_point_source_id: Some(access.source_id.clone()),
-                access_point_rationale: Some(access.reason.clone()),
-                disposition: disposition.to_string(),
-                reason: access.reason.clone(),
-            })
+                .find(|access| access.is_primary && access.community_id == place.id)
+            {
+                let disposition = match access.status.as_str() {
+                    "served" | "on-spine" => "served",
+                    "network-gap" => "network-gap",
+                    _ => "unresolved",
+                };
+                AccessObligation {
+                    id: format!("obligation:community:{}", access.community_id),
+                    kind: "community".to_string(),
+                    source_id: access.source_id.clone(),
+                    name: access.name.clone(),
+                    geometry: Some(access.geometry),
+                    access_point_status: Some(access.status.clone()),
+                    access_point_source_id: Some(access.source_id.clone()),
+                    access_point_rationale: Some(access.reason.clone()),
+                    disposition: disposition.to_string(),
+                    reason: access.reason.clone(),
+                }
+            } else {
+                let reason =
+                    "Rural access decision remains pending; no path has been accepted in this prepared report."
+                        .to_string();
+                AccessObligation {
+                    id: format!("obligation:community:{}", place.id),
+                    kind: "community".to_string(),
+                    source_id: place.source_id.clone(),
+                    name: place.name.clone(),
+                    geometry: Some(place.geometry),
+                    access_point_status: Some("unresolved".to_string()),
+                    access_point_source_id: Some(place.source_id.clone()),
+                    access_point_rationale: Some(reason.clone()),
+                    disposition: "unresolved".to_string(),
+                    reason,
+                }
+            }
         })
         .collect::<Vec<_>>();
     obligations.sort_by(|left, right| left.id.cmp(&right.id));
