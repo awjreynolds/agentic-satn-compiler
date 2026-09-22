@@ -1,4 +1,5 @@
 use std::fs;
+use std::process::Command;
 
 use satn_rs::midend::{MidendRun, PlanningBase, TypedOperation};
 use satn_rs::{
@@ -330,6 +331,63 @@ fn publication_uses_accepted_rural_path_with_compact_elevation_evidence() {
     let html = fs::read_to_string(root.join("index.html")).expect("map HTML");
     assert!(html.contains("New link elevation"));
     assert!(html.contains("Full journey elevation"));
+    let formatter_test = root.join("native-map-formatter-test.js");
+    fs::write(
+        &formatter_test,
+        r#"
+const fs = require('fs');
+const html = fs.readFileSync(process.argv[2], 'utf8');
+const start = html.indexOf('  const normalizedValue =');
+const end = html.indexOf('  const rowsHtml =', start);
+if (start < 0 || end < 0) throw new Error('formatter source missing');
+const source = html.slice(start, end);
+eval(source + `
+const available = JSON.stringify({
+  availability: 'available',
+  coverage: { sample_count: 12 },
+  cumulative_elevation_variation_m: 8,
+  forward_ascent_m: 6,
+  forward_descent_m: 2,
+  sustained_gradient: { absolute_gradient_pct: 2 },
+  reason: 'governed samples cover the route'
+});
+const unknown = JSON.stringify({
+  availability: 'unknown',
+  coverage: { sample_count: 0 },
+  cumulative_elevation_variation_m: null,
+  forward_ascent_m: null,
+  forward_descent_m: null,
+  sustained_gradient: null,
+  reason: 'elevation evidence is incomplete'
+});
+const rows = readableRows({
+  kind: 'community-access',
+  name: 'Example village',
+  parent_community_name: 'Parent village',
+  joined_spine_reference: 'A-road',
+  new_link_length_m: 120,
+  full_access_length_m: 240,
+  new_link_topography: available,
+  full_access_topography: unknown
+});
+const labels = rows.map(row => row[0]);
+const terrain = Object.fromEntries(rows.filter(row => row[0].includes('elevation')));
+if (!terrain['New link elevation'].includes('variation 8 m') ||
+    !terrain['New link elevation'].includes('sustained grade 2.0%')) process.exit(1);
+if (!terrain['Full journey elevation'].includes('unknown') ||
+    terrain['Full journey elevation'].includes('variation 0 m') ||
+    terrain['Full journey elevation'].includes('ascent 0 m')) process.exit(1);
+if (labels.some((label, index) => labels.indexOf(label) !== index)) process.exit(1);
+`);
+"#,
+    )
+    .expect("formatter test script");
+    let status = Command::new("node")
+        .arg(&formatter_test)
+        .arg(root.join("index.html"))
+        .status()
+        .expect("run formatter test");
+    assert!(status.success());
 }
 
 #[test]
