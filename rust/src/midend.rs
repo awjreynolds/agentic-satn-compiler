@@ -21,6 +21,7 @@ use crate::judgment::{ChoiceRequest, ChoiceResult, CodexConfig, ProviderReceipt,
 const UNKNOWN: &str = "__unknown__";
 const NEEDS_EVIDENCE: &str = "__needs_evidence__";
 const NONE: &str = "__none__";
+const PLANNING_BRIEF: &str = "Choose the strategic active-travel alignment connecting the named places from the supplied route alternatives. Preserve A-road corridor importance and existing cycle-alignment evidence. Weigh source-supported directness and continuity without invented numeric weights. A role's search cost is not a cross-role quality score. Route selection does not establish provision, safety, access, or adoption. If required evidence is missing, choose an explicit unresolved option.";
 
 #[derive(Debug)]
 pub enum MidendError {
@@ -159,7 +160,7 @@ impl DecisionTask {
         ChoiceRequest::new(
             self.state.clone(),
             self.question_id.clone(),
-            json!("Choose one admitted planning option or an explicit unresolved outcome."),
+            json!(PLANNING_BRIEF),
             self.options.clone(),
         )
     }
@@ -431,6 +432,28 @@ impl HistoryStore {
             .collect())
     }
 
+    fn task(&self, branch: &str, task_id: &str) -> Result<Option<DecisionTask>, MidendError> {
+        Ok(self
+            .chain(branch)?
+            .into_iter()
+            .find(|event| event.kind == "task" && event.task_id.as_deref() == Some(task_id))
+            .and_then(|event| event.task))
+    }
+
+    fn attempt_result(
+        &self,
+        branch: &str,
+        attempt_id: &str,
+    ) -> Result<Option<AttemptRecord>, MidendError> {
+        Ok(self
+            .chain(branch)?
+            .into_iter()
+            .find(|event| {
+                event.kind == "attempt-result" && event.attempt_id.as_deref() == Some(attempt_id)
+            })
+            .and_then(|event| event.attempt))
+    }
+
     fn append_task(&self, branch: &str, task: DecisionTask) -> Result<String, MidendError> {
         self.append(
             branch,
@@ -554,6 +577,20 @@ fn operation_attempt_id(operation: &TypedOperation) -> &str {
     }
 }
 
+fn choice_attempt_from_record(record: AttemptRecord) -> ChoiceAttempt {
+    ChoiceAttempt {
+        result: record.choice,
+        receipt: record.receipt,
+    }
+}
+
+fn specialist_attempt_from_record(record: AttemptRecord) -> SpecialistAttempt {
+    SpecialistAttempt {
+        response: record.proposal,
+        receipt: record.receipt,
+    }
+}
+
 pub fn run(
     root: &Path,
     report: CompileReport,
@@ -590,56 +627,78 @@ pub fn run(
     connections.sort_by(|left, right| left.id.cmp(&right.id));
 
     for connection in connections {
-        let task = make_task(&base, &connection, &operations, config.allow_provisional);
+        let generated_task = make_task(&base, &connection, &operations, config.allow_provisional);
+        let retained_task = store.task(&config.branch, &generated_task.task_id)?;
+        let task = retained_task.clone().unwrap_or(generated_task);
         task_ids.push(task.task_id.clone());
         if completed_connections.contains(&task.connection_id) {
             continue;
         }
-        store.append_task(&config.branch, task.clone())?;
+        if retained_task.is_none() {
+            store.append_task(&config.branch, task.clone())?;
+        }
         let attempt_id = format!("attempt:{}:jev", task.task_id);
-        store.append_attempt_started(
-            &config.branch,
-            &task.task_id,
-            &attempt_id,
-            "classifier",
-            "typesafe",
-            &config.jev_model,
-        )?;
-        emit(
-            progress,
-            &config,
-            started,
-            Some(task.task_id.clone()),
-            Some("typesafe".to_string()),
-            "provider",
-            "started",
-        );
-        let classifier_attempt = match providers.classifier.as_deref_mut() {
-            Some(provider) if config.mode == "live" => {
-                provider.classify_choice(&task.choice_request())
-            }
-            Some(_) => skipped_attempt("typesafe", &config.jev_model, "deterministic mode"),
-            None => skipped_attempt("typesafe", &config.jev_model, "classifier is unconfigured"),
-        };
-        let classifier_record = AttemptRecord {
-            id: attempt_id.clone(),
-            task_id: task.task_id.clone(),
-            actor: "classifier".to_string(),
-            status: classifier_attempt.receipt.status.clone(),
-            choice: classifier_attempt.result.clone(),
-            proposal: None,
-            receipt: classifier_attempt.receipt.clone(),
-        };
-        store.append_attempt_result(&config.branch, classifier_record)?;
-        emit(
-            progress,
-            &config,
-            started,
-            Some(task.task_id.clone()),
-            Some(classifier_attempt.receipt.provider.clone()),
-            "provider",
-            &classifier_attempt.receipt.status,
-        );
+        let classifier_attempt =
+            if let Some(record) = store.attempt_result(&config.branch, &attempt_id)? {
+                let attempt = choice_attempt_from_record(record);
+                emit(
+                    progress,
+                    &config,
+                    started,
+                    Some(task.task_id.clone()),
+                    Some(attempt.receipt.provider.clone()),
+                    "provider",
+                    "resumed",
+                );
+                attempt
+            } else {
+                store.append_attempt_started(
+                    &config.branch,
+                    &task.task_id,
+                    &attempt_id,
+                    "classifier",
+                    "typesafe",
+                    &config.jev_model,
+                )?;
+                emit(
+                    progress,
+                    &config,
+                    started,
+                    Some(task.task_id.clone()),
+                    Some("typesafe".to_string()),
+                    "provider",
+                    "started",
+                );
+                let attempt = match providers.classifier.as_deref_mut() {
+                    Some(provider) if config.mode == "live" => {
+                        provider.classify_choice(&task.choice_request())
+                    }
+                    Some(_) => skipped_attempt("typesafe", &config.jev_model, "deterministic mode"),
+                    None => {
+                        skipped_attempt("typesafe", &config.jev_model, "classifier is unconfigured")
+                    }
+                };
+                let classifier_record = AttemptRecord {
+                    id: attempt_id.clone(),
+                    task_id: task.task_id.clone(),
+                    actor: "classifier".to_string(),
+                    status: attempt.receipt.status.clone(),
+                    choice: attempt.result.clone(),
+                    proposal: None,
+                    receipt: attempt.receipt.clone(),
+                };
+                store.append_attempt_result(&config.branch, classifier_record)?;
+                emit(
+                    progress,
+                    &config,
+                    started,
+                    Some(task.task_id.clone()),
+                    Some(attempt.receipt.provider.clone()),
+                    "provider",
+                    &attempt.receipt.status,
+                );
+                attempt
+            };
 
         let mut operation =
             classifier_operation(&base.report, &task, &attempt_id, &classifier_attempt);
@@ -649,47 +708,64 @@ pub fn run(
             && providers.specialist.is_some()
         {
             let specialist_attempt_id = format!("attempt:{}:specialist", task.task_id);
-            store.append_attempt_started(
-                &config.branch,
-                &task.task_id,
-                &specialist_attempt_id,
-                "agent",
-                "codex-exec",
-                "configured",
-            )?;
-            emit(
-                progress,
-                &config,
-                started,
-                Some(task.task_id.clone()),
-                Some("codex-exec".to_string()),
-                "provider",
-                "started",
-            );
-            let specialist_attempt = providers
-                .specialist
-                .as_deref_mut()
-                .expect("specialist presence checked above")
-                .propose(&specialist_prompt(&task)?);
-            let specialist_record = AttemptRecord {
-                id: specialist_attempt_id.clone(),
-                task_id: task.task_id.clone(),
-                actor: "agent".to_string(),
-                status: specialist_attempt.receipt.status.clone(),
-                choice: None,
-                proposal: specialist_attempt.response.clone(),
-                receipt: specialist_attempt.receipt.clone(),
+            let specialist_attempt = if let Some(record) =
+                store.attempt_result(&config.branch, &specialist_attempt_id)?
+            {
+                let attempt = specialist_attempt_from_record(record);
+                emit(
+                    progress,
+                    &config,
+                    started,
+                    Some(task.task_id.clone()),
+                    Some(attempt.receipt.provider.clone()),
+                    "provider",
+                    "resumed",
+                );
+                attempt
+            } else {
+                store.append_attempt_started(
+                    &config.branch,
+                    &task.task_id,
+                    &specialist_attempt_id,
+                    "agent",
+                    "codex-exec",
+                    "configured",
+                )?;
+                emit(
+                    progress,
+                    &config,
+                    started,
+                    Some(task.task_id.clone()),
+                    Some("codex-exec".to_string()),
+                    "provider",
+                    "started",
+                );
+                let attempt = providers
+                    .specialist
+                    .as_deref_mut()
+                    .expect("specialist presence checked above")
+                    .propose(&specialist_prompt(&task)?);
+                let specialist_record = AttemptRecord {
+                    id: specialist_attempt_id.clone(),
+                    task_id: task.task_id.clone(),
+                    actor: "agent".to_string(),
+                    status: attempt.receipt.status.clone(),
+                    choice: None,
+                    proposal: attempt.response.clone(),
+                    receipt: attempt.receipt.clone(),
+                };
+                store.append_attempt_result(&config.branch, specialist_record)?;
+                emit(
+                    progress,
+                    &config,
+                    started,
+                    Some(task.task_id.clone()),
+                    Some(attempt.receipt.provider.clone()),
+                    "provider",
+                    &attempt.receipt.status,
+                );
+                attempt
             };
-            store.append_attempt_result(&config.branch, specialist_record)?;
-            emit(
-                progress,
-                &config,
-                started,
-                Some(task.task_id.clone()),
-                Some(specialist_attempt.receipt.provider.clone()),
-                "provider",
-                &specialist_attempt.receipt.status,
-            );
             operation = specialist_operation(
                 &base.report,
                 &task,
@@ -702,7 +778,7 @@ pub fn run(
                 operation = Some(unresolved_operation(
                     &task,
                     &specialist_attempt_id,
-                    "code",
+                    "mechanical",
                     "specialist did not produce a valid typed operation",
                     classifier_marker(&classifier_attempt),
                     Vec::new(),
@@ -789,6 +865,10 @@ pub fn replay(
     })
 }
 
+pub fn load_base(root: &Path) -> Result<PlanningBase, MidendError> {
+    HistoryStore::open(root)?.base()
+}
+
 pub fn fork(
     root: &Path,
     source_branch: &str,
@@ -873,6 +953,7 @@ fn make_task(
             "preferred_classes": connection.preferred_classes,
         },
         "candidates": summaries,
+        "planning_brief": PLANNING_BRIEF,
         "relevant_sources": source_context,
         "source_unknowns": source_unknowns,
         "access_unknowns": access_unknowns,
@@ -933,10 +1014,10 @@ fn source_summary(source: &SourceCorridor) -> Value {
         "source_id": source.source_id,
         "scope": source.scope,
         "baseline_role": source.baseline_role,
-        "graph_edge_ids": source.graph_edge_ids,
         "topology_status": source.topology_status,
         "attachment_status": source.attachment_status,
         "provision_status": source.provision_status,
+        "graph_edge_count": source.graph_edge_ids.len(),
     })
 }
 
@@ -984,12 +1065,15 @@ fn operation_relevant(
     else {
         return false;
     };
-    if prior_connection.id == connection.id
-        || prior_connection.origin_place_id == connection.origin_place_id
-        || prior_connection.destination_place_id == connection.destination_place_id
-        || prior_connection.origin_node == connection.origin_node
-        || prior_connection.destination_node == connection.destination_node
-    {
+    let shared_place = prior_connection.origin_place_id == connection.origin_place_id
+        || prior_connection.origin_place_id == connection.destination_place_id
+        || prior_connection.destination_place_id == connection.origin_place_id
+        || prior_connection.destination_place_id == connection.destination_place_id;
+    let shared_node = prior_connection.origin_node == connection.origin_node
+        || prior_connection.origin_node == connection.destination_node
+        || prior_connection.destination_node == connection.origin_node
+        || prior_connection.destination_node == connection.destination_node;
+    if prior_connection.id == connection.id || shared_place || shared_node {
         return true;
     }
     if prior_connection
@@ -1035,7 +1119,7 @@ fn candidate_summary(candidate: &Candidate) -> Value {
         "cycle_alignment_bases": candidate.cycle_alignment_bases,
         "topology_status": candidate.topology_status,
         "provision_status": candidate.provision_status,
-        "path_edge_ids": candidate.path_edge_ids,
+        "path_edge_count": candidate.path_edge_ids.len(),
     })
 }
 
@@ -1228,7 +1312,10 @@ fn validate_operation(
                 options: BTreeMap::new(),
             };
             validate_candidate(report, &task, candidate_id)?;
-            if decision_class != "classifier" && decision_class != "agent" {
+            if !matches!(
+                decision_class.as_str(),
+                "mechanical" | "classifier" | "agent"
+            ) {
                 return Err(MidendError::Invalid(format!(
                     "select operation has unsupported decision class {decision_class}"
                 )));
@@ -1269,7 +1356,10 @@ fn validate_operation(
                     "unresolved operation task {task_id} does not match connection {connection_id}"
                 )));
             }
-            if !matches!(decision_class.as_str(), "classifier" | "agent" | "code") {
+            if !matches!(
+                decision_class.as_str(),
+                "mechanical" | "classifier" | "agent"
+            ) {
                 return Err(MidendError::Invalid(format!(
                     "unresolved operation has unsupported decision class {decision_class}"
                 )));
@@ -1310,7 +1400,7 @@ fn classifier_decision_class(attempt: &ChoiceAttempt) -> &str {
     if attempt.result.is_some() {
         "classifier"
     } else {
-        "code"
+        "mechanical"
     }
 }
 
@@ -1351,8 +1441,13 @@ fn skipped_attempt(provider: &str, model: &str, reason: &str) -> ChoiceAttempt {
 }
 
 fn specialist_prompt(task: &DecisionTask) -> Result<String, MidendError> {
+    let planning_brief = task
+        .state
+        .get("planning_brief")
+        .and_then(Value::as_str)
+        .unwrap_or(PLANNING_BRIEF);
     Ok(format!(
-        "You are a SATN planning specialist. Use only the frozen task below. Do not call tools, browse, retrieve sources, inspect files, or add facts. Return exactly one JSON object with {{\"proposal\":{{\"operation\":{{\"kind\":\"select-alignment\" or \"unresolved\",\"payload\":{{...}}}}}}}}. A select-alignment payload must copy an offered candidate_id, set provisional true, and include a concise reason plus a nonempty uncertainties list. Do not include hidden chain of thought.\n\nFrozen planning task:\n{}\n",
+        "You are a SATN planning specialist. Use only the frozen task below. Do not call tools, browse, retrieve sources, inspect files, or add facts. Planning brief: {planning_brief} Return exactly one JSON object with {{\"proposal\":{{\"operation\":{{\"kind\":\"select-alignment\" or \"unresolved\",\"payload\":{{...}}}}}}}}. A select-alignment payload must copy an offered candidate_id, set provisional true, and include a concise decision reason plus a nonempty uncertainties list. Do not include hidden chain of thought.\n\nFrozen planning task:\n{}\n",
         serde_json::to_string_pretty(task)?
     ))
 }

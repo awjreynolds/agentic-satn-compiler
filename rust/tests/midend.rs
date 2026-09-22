@@ -157,6 +157,29 @@ struct RecordingJev {
 
 impl ChoiceProvider for RecordingJev {
     fn classify_choice(&mut self, request: &satn_rs::judgment::ChoiceRequest) -> ChoiceAttempt {
+        assert!(
+            request.instructions.as_str().is_some_and(|instructions| {
+                instructions.contains("strategic active-travel alignment")
+            }),
+            "classifier receives the strategic planning brief"
+        );
+        assert_eq!(request.state["planning_brief"], request.instructions);
+        assert!(
+            request.state["candidates"]
+                .as_object()
+                .expect("candidate summaries")
+                .values()
+                .all(|candidate| candidate.get("path_edge_ids").is_none()),
+            "classifier packet omits opaque candidate edge IDs"
+        );
+        assert!(
+            request.state["relevant_sources"]
+                .as_array()
+                .expect("source summaries")
+                .iter()
+                .all(|source| source.get("graph_edge_ids").is_none()),
+            "classifier packet omits opaque source edge IDs"
+        );
         self.prior_lengths.push(
             request.state["prior_decisions"]
                 .as_array()
@@ -442,6 +465,107 @@ fn later_tasks_freeze_relevant_prior_decisions_after_each_operation() {
 }
 
 #[test]
+fn opposite_direction_shared_endpoint_is_relevant_without_shared_corridor_edge() {
+    let history = root("cross-orientation");
+    let mut report = base();
+    let mut second = report.connections[0].clone();
+    second.id = "connection:beta:gamma".to_string();
+    second.origin_place_id = "beta".to_string();
+    second.origin_name = "Beta".to_string();
+    second.destination_place_id = "gamma".to_string();
+    second.destination_name = "Gamma".to_string();
+    second.origin_node = "n2".to_string();
+    second.destination_node = "n3".to_string();
+    second.cross_region_edge_ids = vec!["edge-c".to_string()];
+    report.connections.push(second);
+    report
+        .candidates
+        .push(candidate_for("candidate-c", "connection:beta:gamma", 140.0));
+    report.connection_count = report.connections.len();
+    report.candidate_count = report.candidates.len();
+
+    let mut jev = RecordingJev {
+        prior_lengths: Vec::new(),
+        source_roles: Vec::new(),
+        access_unknown_lengths: Vec::new(),
+    };
+    run_fixture(
+        &history,
+        report,
+        MidendConfig::live(false),
+        ProviderSet {
+            classifier: Some(&mut jev),
+            specialist: None,
+        },
+    );
+
+    assert_eq!(jev.prior_lengths, vec![0, 1]);
+}
+
+#[test]
+fn resume_uses_recorded_classifier_result_without_redispatch() {
+    let history = root("recorded-result-resume");
+    let mut first_jev = FakeJev {
+        choice: "candidate-a".to_string(),
+        calls: 0,
+    };
+    run_fixture(
+        &history,
+        base(),
+        MidendConfig::live(false),
+        ProviderSet {
+            classifier: Some(&mut first_jev),
+            specialist: None,
+        },
+    );
+    assert_eq!(first_jev.calls, 1);
+
+    let events_path = history.join("events.jsonl");
+    let mut events = fs::read_to_string(&events_path)
+        .expect("events")
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("event JSON"))
+        .collect::<Vec<_>>();
+    let decision = events.pop().expect("decision event");
+    assert_eq!(decision["kind"], "decision");
+    let retained_head = events.last().expect("retained event")["id"]
+        .as_str()
+        .expect("retained event id")
+        .to_string();
+    fs::write(
+        &events_path,
+        events
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n",
+    )
+    .expect("truncate decision");
+    fs::write(
+        history.join("branches.json"),
+        json!({"main": {"head": retained_head}}).to_string(),
+    )
+    .expect("rewind branch");
+
+    let mut resumed_jev = FakeJev {
+        choice: "candidate-b".to_string(),
+        calls: 0,
+    };
+    let resumed = run_fixture(
+        &history,
+        base(),
+        MidendConfig::live(false),
+        ProviderSet {
+            classifier: Some(&mut resumed_jev),
+            specialist: None,
+        },
+    );
+    assert_eq!(resumed_jev.calls, 0);
+    assert_eq!(resumed.operations[0].candidate_id(), Some("candidate-a"));
+}
+
+#[test]
 fn resume_rejects_a_different_prepared_report_with_the_same_base_id() {
     let history = root("retained-base");
     let mut jev = FakeJev {
@@ -528,7 +652,7 @@ fn failed_providers_are_retained_without_becoming_classifier_answers() {
     );
 
     assert!(result.operations[0].is_unresolved());
-    assert_eq!(result.operations[0].decision_class(), "code");
+    assert_eq!(result.operations[0].decision_class(), "mechanical");
     assert_eq!(specialist.calls, 1);
     let history_text = fs::read_to_string(history.join("events.jsonl")).expect("history");
     assert!(history_text.contains("provider failure"));
