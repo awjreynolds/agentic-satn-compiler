@@ -3,11 +3,12 @@ use std::env;
 use std::fmt::{Display, Formatter};
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 pub const TYPESAFE_ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
@@ -94,12 +95,36 @@ fn valid_instruction_value(value: &Value) -> bool {
     value.is_string() || value.is_object() || value.is_array()
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChoiceResult {
     pub model: String,
     pub choice: String,
     pub probabilities: BTreeMap<String, f64>,
     pub confidence: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProviderReceipt {
+    pub provider: String,
+    pub requested_model: String,
+    pub observed_model: Option<String>,
+    pub status: String,
+    pub request_body: String,
+    pub response_body: Option<String>,
+    pub error: Option<String>,
+    pub usage: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChoiceAttempt {
+    pub result: Option<ChoiceResult>,
+    pub receipt: ProviderReceipt,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpecialistAttempt {
+    pub response: Option<Value>,
+    pub receipt: ProviderReceipt,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -203,13 +228,67 @@ impl TypeSafeConfig {
     }
 
     pub fn classify_choice(&self, request: &ChoiceRequest) -> Result<ChoiceResult, JudgmentError> {
-        let credential = self
-            .api_key
-            .as_deref()
-            .ok_or(JudgmentError::MissingCredential)?;
-        let payload = request.payload(&self.model)?;
-        let body = serde_json::to_string(&payload)
-            .map_err(|_| JudgmentError::InvalidInput("Choice request is not JSON".to_string()))?;
+        let attempt = self.classify_choice_attempt(request);
+        attempt
+            .result
+            .ok_or_else(|| choice_attempt_error(&attempt.receipt))
+    }
+
+    pub fn classify_choice_attempt(&self, request: &ChoiceRequest) -> ChoiceAttempt {
+        let payload = match request.payload(&self.model) {
+            Ok(payload) => payload,
+            Err(error) => {
+                return ChoiceAttempt {
+                    result: None,
+                    receipt: ProviderReceipt {
+                        provider: "typesafe".to_string(),
+                        requested_model: self.model.clone(),
+                        observed_model: None,
+                        status: "invalid".to_string(),
+                        request_body: String::new(),
+                        response_body: None,
+                        error: Some(error.to_string()),
+                        usage: None,
+                    },
+                };
+            }
+        };
+        let body = match serde_json::to_string(&payload) {
+            Ok(body) => body,
+            Err(_) => {
+                return ChoiceAttempt {
+                    result: None,
+                    receipt: ProviderReceipt {
+                        provider: "typesafe".to_string(),
+                        requested_model: self.model.clone(),
+                        observed_model: None,
+                        status: "invalid".to_string(),
+                        request_body: String::new(),
+                        response_body: None,
+                        error: Some("Choice request is not JSON".to_string()),
+                        usage: None,
+                    },
+                };
+            }
+        };
+        let mut receipt = ProviderReceipt {
+            provider: "typesafe".to_string(),
+            requested_model: self.model.clone(),
+            observed_model: None,
+            status: "started".to_string(),
+            request_body: body.clone(),
+            response_body: None,
+            error: None,
+            usage: None,
+        };
+        let Some(credential) = self.api_key.as_deref() else {
+            receipt.status = "failed".to_string();
+            receipt.error = Some("TypeSafe credential is unavailable".to_string());
+            return ChoiceAttempt {
+                result: None,
+                receipt,
+            };
+        };
         let authorization = format!("Bearer {credential}");
         let response = match ureq::post(&self.endpoint)
             .set("Content-Type", "application/json")
@@ -218,18 +297,91 @@ impl TypeSafeConfig {
             .send_string(&body)
         {
             Ok(response) => response,
-            Err(ureq::Error::Status(status, _response)) => {
-                return Err(JudgmentError::ProviderStatus(status));
+            Err(ureq::Error::Status(status, response)) => {
+                receipt.status = "failed".to_string();
+                receipt.error = Some(format!("TypeSafe returned HTTP status {status}"));
+                receipt.response_body = response.into_string().ok();
+                return ChoiceAttempt {
+                    result: None,
+                    receipt,
+                };
             }
-            Err(ureq::Error::Transport(_transport)) => return Err(JudgmentError::Transport),
+            Err(ureq::Error::Transport(_transport)) => {
+                receipt.status = "failed".to_string();
+                receipt.error = Some("TypeSafe transport failed".to_string());
+                return ChoiceAttempt {
+                    result: None,
+                    receipt,
+                };
+            }
         };
         if !(200..300).contains(&response.status()) {
-            return Err(JudgmentError::ProviderStatus(response.status()));
+            receipt.status = "failed".to_string();
+            receipt.error = Some(format!(
+                "TypeSafe returned HTTP status {}",
+                response.status()
+            ));
+            receipt.response_body = response.into_string().ok();
+            return ChoiceAttempt {
+                result: None,
+                receipt,
+            };
         }
-        let response_body = response
-            .into_string()
-            .map_err(|_| JudgmentError::Transport)?;
-        decode_choice_response(request, response_body.as_bytes())
+        let response_body = match response.into_string() {
+            Ok(body) => body,
+            Err(_) => {
+                receipt.status = "failed".to_string();
+                receipt.error = Some("TypeSafe transport failed".to_string());
+                return ChoiceAttempt {
+                    result: None,
+                    receipt,
+                };
+            }
+        };
+        receipt.response_body = Some(response_body.clone());
+        match decode_choice_response(request, response_body.as_bytes()) {
+            Ok(result) => {
+                receipt.status = "answered".to_string();
+                receipt.observed_model = Some(result.model.clone());
+                ChoiceAttempt {
+                    result: Some(result),
+                    receipt,
+                }
+            }
+            Err(error) => {
+                receipt.status = "invalid".to_string();
+                receipt.error = Some(error.to_string());
+                ChoiceAttempt {
+                    result: None,
+                    receipt,
+                }
+            }
+        }
+    }
+}
+
+fn choice_attempt_error(receipt: &ProviderReceipt) -> JudgmentError {
+    let message = receipt
+        .error
+        .clone()
+        .unwrap_or_else(|| "TypeSafe attempt failed".to_string());
+    if message == "TypeSafe credential is unavailable" {
+        JudgmentError::MissingCredential
+    } else if message == "TypeSafe transport failed" {
+        JudgmentError::Transport
+    } else if let Some(status) = message
+        .strip_prefix("TypeSafe returned HTTP status ")
+        .and_then(|value| value.parse::<u16>().ok())
+    {
+        JudgmentError::ProviderStatus(status)
+    } else if message.starts_with("invalid TypeSafe response:") {
+        JudgmentError::InvalidResponse(message)
+    } else if message.starts_with("invalid judgment input:")
+        || message == "Choice request is not JSON"
+    {
+        JudgmentError::InvalidInput(message)
+    } else {
+        JudgmentError::Transport
     }
 }
 
@@ -341,24 +493,45 @@ impl CodexConfig {
 }
 
 pub fn run_codex(config: &CodexConfig, prompt: &str) -> Result<Value, JudgmentError> {
-    if prompt.trim().is_empty() {
-        return Err(JudgmentError::InvalidInput(
-            "Codex prompt must not be empty".to_string(),
-        ));
+    let attempt = run_codex_attempt(config, prompt);
+    if let Some(response) = attempt.response {
+        return Ok(response);
     }
-    let (output_dir, output_path) = create_output_path().map_err(|_| JudgmentError::ProcessIo)?;
-    let result = run_codex_in_dir(config, prompt, &output_path);
-    let _ = fs::remove_dir_all(output_dir);
-    result
+    Err(codex_attempt_error(&attempt.receipt))
 }
 
-fn run_codex_in_dir(
-    config: &CodexConfig,
-    prompt: &str,
-    output_path: &Path,
-) -> Result<Value, JudgmentError> {
+pub fn run_codex_attempt(config: &CodexConfig, prompt: &str) -> SpecialistAttempt {
+    let mut receipt = ProviderReceipt {
+        provider: "codex-exec".to_string(),
+        requested_model: config.model.clone(),
+        observed_model: None,
+        status: "started".to_string(),
+        request_body: prompt.to_string(),
+        response_body: None,
+        error: None,
+        usage: None,
+    };
+    if prompt.trim().is_empty() {
+        receipt.status = "invalid".to_string();
+        receipt.error = Some("Codex prompt must not be empty".to_string());
+        return SpecialistAttempt {
+            response: None,
+            receipt,
+        };
+    }
+    let (output_dir, output_path) = match create_output_path() {
+        Ok(paths) => paths,
+        Err(_) => {
+            receipt.status = "failed".to_string();
+            receipt.error = Some("Codex process I/O failed".to_string());
+            return SpecialistAttempt {
+                response: None,
+                receipt,
+            };
+        }
+    };
     let reasoning_config = format!("model_reasoning_effort=\"{}\"", config.reasoning_effort);
-    let mut child = Command::new(&config.executable)
+    let mut child = match Command::new(&config.executable)
         .arg("exec")
         .arg("--model")
         .arg(&config.model)
@@ -369,53 +542,161 @@ fn run_codex_in_dir(
         .arg("--ephemeral")
         .arg("--skip-git-repo-check")
         .arg("--output-last-message")
-        .arg(output_path)
+        .arg(&output_path)
         .arg("--json")
         .arg("-")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|_| JudgmentError::ProcessLaunch)?;
+    {
+        Ok(child) => child,
+        Err(_) => {
+            let _ = fs::remove_dir_all(output_dir);
+            receipt.status = "failed".to_string();
+            receipt.error = Some("Codex process could not be launched".to_string());
+            return SpecialistAttempt {
+                response: None,
+                receipt,
+            };
+        }
+    };
     let write_result = child
         .stdin
         .take()
-        .ok_or(JudgmentError::ProcessIo)
-        .and_then(|mut stdin| {
-            stdin
-                .write_all(prompt.as_bytes())
-                .map_err(|_| JudgmentError::ProcessIo)
-        });
-    let output = child
-        .wait_with_output()
-        .map_err(|_| JudgmentError::ProcessIo)?;
-    if write_result.is_err() {
-        return Err(JudgmentError::ProcessIo);
-    }
-    if !output.status.success() {
-        return Err(JudgmentError::ProcessExit(output.status.code()));
-    }
-
-    let final_response = fs::read(output_path).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
-            JudgmentError::FinalResponse("final message is missing".to_string())
-        } else {
-            JudgmentError::ProcessIo
+        .ok_or(())
+        .and_then(|mut stdin| stdin.write_all(prompt.as_bytes()).map_err(|_| ()));
+    let output = match child.wait_with_output() {
+        Ok(output) => output,
+        Err(_) => {
+            let _ = fs::remove_dir_all(output_dir);
+            receipt.status = "failed".to_string();
+            receipt.error = Some("Codex process I/O failed".to_string());
+            return SpecialistAttempt {
+                response: None,
+                receipt,
+            };
         }
-    })?;
-    if final_response.iter().all(u8::is_ascii_whitespace) {
-        return Err(JudgmentError::FinalResponse(
-            "final message is blank".to_string(),
-        ));
+    };
+    receipt.observed_model = observed_model(&output.stdout);
+    if write_result.is_err() {
+        let _ = fs::remove_dir_all(output_dir);
+        receipt.status = "failed".to_string();
+        receipt.error = Some("Codex process I/O failed".to_string());
+        return SpecialistAttempt {
+            response: None,
+            receipt,
+        };
     }
-    let response: Value = serde_json::from_slice(&final_response)
-        .map_err(|_| JudgmentError::FinalResponse("final message is not JSON".to_string()))?;
+    let final_response = fs::read_to_string(&output_path).ok();
+    receipt.response_body = final_response.clone();
+    if !output.status.success() {
+        let _ = fs::remove_dir_all(output_dir);
+        receipt.status = "failed".to_string();
+        receipt.error = Some(format!(
+            "Codex process exited with {:?}",
+            output.status.code()
+        ));
+        return SpecialistAttempt {
+            response: None,
+            receipt,
+        };
+    }
+    let Some(final_response) = final_response else {
+        let _ = fs::remove_dir_all(output_dir);
+        receipt.status = "invalid".to_string();
+        receipt.error = Some("final message is missing".to_string());
+        return SpecialistAttempt {
+            response: None,
+            receipt,
+        };
+    };
+    if final_response.trim().is_empty() {
+        let _ = fs::remove_dir_all(output_dir);
+        receipt.status = "invalid".to_string();
+        receipt.error = Some("final message is blank".to_string());
+        return SpecialistAttempt {
+            response: None,
+            receipt,
+        };
+    }
+    let response: Value = match serde_json::from_str(&final_response) {
+        Ok(response) => response,
+        Err(_) => {
+            let _ = fs::remove_dir_all(output_dir);
+            receipt.status = "invalid".to_string();
+            receipt.error = Some("final message is not JSON".to_string());
+            return SpecialistAttempt {
+                response: None,
+                receipt,
+            };
+        }
+    };
     if !response.is_object() {
-        return Err(JudgmentError::FinalResponse(
-            "final message must be a JSON object".to_string(),
-        ));
+        let _ = fs::remove_dir_all(output_dir);
+        receipt.status = "invalid".to_string();
+        receipt.error = Some("final message must be a JSON object".to_string());
+        return SpecialistAttempt {
+            response: None,
+            receipt,
+        };
     }
-    Ok(response)
+    let _ = fs::remove_dir_all(output_dir);
+    receipt.status = "answered".to_string();
+    SpecialistAttempt {
+        response: Some(response),
+        receipt,
+    }
+}
+
+fn observed_model(stdout: &[u8]) -> Option<String> {
+    std::str::from_utf8(stdout).ok()?.lines().find_map(|line| {
+        let value: Value = serde_json::from_str(line).ok()?;
+        let object = value.as_object()?;
+        let event_type = object.get("type")?.as_str()?;
+        if !matches!(
+            event_type,
+            "thread.started" | "turn.started" | "turn.completed" | "response.completed"
+        ) {
+            return None;
+        }
+        object
+            .get("model")
+            .and_then(Value::as_str)
+            .filter(|model| !model.trim().is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn codex_attempt_error(receipt: &ProviderReceipt) -> JudgmentError {
+    match receipt.error.as_deref() {
+        Some("Codex prompt must not be empty") => {
+            JudgmentError::InvalidInput("Codex prompt must not be empty".to_string())
+        }
+        Some("Codex process could not be launched") => JudgmentError::ProcessLaunch,
+        Some("Codex process I/O failed") => JudgmentError::ProcessIo,
+        Some("final message is missing") => {
+            JudgmentError::FinalResponse("final message is missing".to_string())
+        }
+        Some("final message is blank") => {
+            JudgmentError::FinalResponse("final message is blank".to_string())
+        }
+        Some("final message is not JSON") => {
+            JudgmentError::FinalResponse("final message is not JSON".to_string())
+        }
+        Some("final message must be a JSON object") => {
+            JudgmentError::FinalResponse("final message must be a JSON object".to_string())
+        }
+        Some(message) if message.starts_with("Codex process exited with ") => {
+            let code = message
+                .trim_start_matches("Codex process exited with ")
+                .strip_prefix("Some(")
+                .and_then(|value| value.strip_suffix(')'))
+                .and_then(|value| value.parse::<i32>().ok());
+            JudgmentError::ProcessExit(code)
+        }
+        _ => JudgmentError::ProcessIo,
+    }
 }
 
 fn create_output_path() -> std::io::Result<(PathBuf, PathBuf)> {

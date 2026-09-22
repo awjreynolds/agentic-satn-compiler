@@ -5,6 +5,7 @@ mod geojson;
 mod geometry;
 mod graph;
 pub mod judgment;
+pub mod midend;
 mod output;
 
 pub use compiler::{
