@@ -179,6 +179,92 @@ pub(crate) fn string_property(properties: &Properties, key: &str) -> Option<Stri
     })
 }
 
+/// Decode source tags the same way as the reference compiler's tag layer.
+///
+/// GeoJSON snapshots contain scalar values, JSON arrays, and values which have
+/// made a round trip through a Python repr (for example, `['A4', 'A36']`).
+/// Keep this seam separate from `string_property`: callers which need one
+/// display string should retain the existing scalar behaviour, while graph
+/// policy must see each canonical tag value independently.
+pub(crate) fn canonical_tag_values(properties: &Properties, key: &str) -> Vec<String> {
+    properties
+        .get(key)
+        .map(tag_values)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty() && !is_missing_marker(value))
+        .collect()
+}
+
+fn tag_values(value: &Value) -> Vec<String> {
+    match value {
+        Value::Null => Vec::new(),
+        Value::Array(values) => values.iter().map(value_text).collect(),
+        Value::String(text) => {
+            parse_stringified_collection(text).unwrap_or_else(|| vec![text.clone()])
+        }
+        other => vec![value_text(other)],
+    }
+}
+
+fn value_text(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        Value::Number(number) => number.to_string(),
+        Value::Bool(value) => value.to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn is_missing_marker(value: &str) -> bool {
+    matches!(value.to_ascii_lowercase().as_str(), "nan" | "none" | "<na>")
+}
+
+fn parse_stringified_collection(text: &str) -> Option<Vec<String>> {
+    let trimmed = text.trim();
+    let (opening, closing) = match trimmed.as_bytes() {
+        [b'[', ..] if trimmed.ends_with(']') => ('[', ']'),
+        [b'(', ..] if trimmed.ends_with(')') => ('(', ')'),
+        [b'{', ..] if trimmed.ends_with('}') => ('{', '}'),
+        _ => return None,
+    };
+    let inner = trimmed[opening.len_utf8()..trimmed.len() - closing.len_utf8()].trim();
+    if inner.is_empty() {
+        return Some(Vec::new());
+    }
+    // Python's repr uses single quotes and sets use braces. This parser only
+    // needs flat source tags; commas inside quoted tags are retained.
+    let mut values = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    for character in inner.chars() {
+        match (quote, character) {
+            (Some(active), value) if value == active => quote = None,
+            (None, '\'' | '"') => quote = Some(character),
+            (None, ',') => {
+                values.push(clean_collection_item(&current));
+                current.clear();
+            }
+            _ => current.push(character),
+        }
+    }
+    values.push(clean_collection_item(&current));
+    values.retain(|value| !value.is_empty());
+    if opening == '{' {
+        values.sort();
+    }
+    Some(values)
+}
+
+fn clean_collection_item(value: &str) -> String {
+    value
+        .trim()
+        .trim_matches(|character| character == '\'' || character == '"')
+        .trim()
+        .to_string()
+}
+
 pub(crate) fn number_property(properties: &Properties, key: &str) -> Option<f64> {
     properties.get(key).and_then(|value| match value {
         Value::Number(value) => value.as_f64(),

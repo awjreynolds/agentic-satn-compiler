@@ -33,6 +33,23 @@ Urban attachment uses the configured scope. Prepared urban connections come
 from graph adjacency; the legacy rural-backbone distance limit does not cap
 their routed length.
 
+Each prepared connection searches the same directed graph four times: `direct`
+uses measured edge length, `strategic-spine` uses `0.35 × length` for an A-road
+reference and `1.6 × length` otherwise, `ncn-informed` uses `0.4 × length` for
+an edge supported by current or context-derived cycle-route evidence and
+`1.3 × length` otherwise, and `low-traffic` uses `0.75 × length` for the
+configured low-traffic highway classes and `4.0 × length` otherwise. The
+reported `length_m` is always the measured source length; `search_cost_m` is
+the role's mechanical search cost. Identical ordered edge paths retain their
+additional role names in `role_aliases`.
+
+Context-derived NCN evidence is computed in native projected metres with a
+20m buffer and a 50% edge overlap share. The projection is the explicitly
+frozen gridless WGS84 to BNG Helmert fallback (`GRIDLESS_BNG_PROJECTION_POLICY`);
+the Rust compiler does not claim OSTN15 accuracy. Candidate topology is
+graph-supported, while provision remains an explicit `unknown` until a later
+evidence or judgment stage.
+
 Run the focused foundation check with:
 
 ```sh
