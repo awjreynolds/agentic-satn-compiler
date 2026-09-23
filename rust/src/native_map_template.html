@@ -5,15 +5,15 @@
 <style>
 :root { color-scheme: light; font: 16px system-ui,sans-serif; color: #17202a; background: #f8fafc; }
 * { box-sizing: border-box; }
-body { margin: 0; }
+body { display: grid; grid-template-rows: auto minmax(0, 1fr); height: 100dvh; margin: 0; }
 header { padding: 1rem 1.25rem .75rem; background: #fff; border-bottom: 1px solid #cbd5e1; }
 header h1 { margin: 0 0 .35rem; font-size: 1.35rem; }
 header p { margin: .2rem 0; }
 .disclaimer { color: #92400e; font-weight: 600; }
-.native-shell { display: grid; grid-template-columns: minmax(18rem, 24rem) minmax(0, 1fr); min-height: 68vh; height: 68vh; }
-.native-panel { padding: .9rem 1rem; background: #fff; overflow: auto; max-height: 75vh; min-height: 0; }
-.native-map-wrap { position: relative; min-height: 32rem; border-left: 1px solid #cbd5e1; }
-#native-map { position: absolute; inset: 0; min-height: 32rem; }
+.native-shell { display: grid; grid-template-columns: minmax(18rem, 24rem) minmax(0, 1fr); min-height: 0; height: 100%; }
+.native-panel { padding: .9rem 1rem; background: #fff; overflow: auto; min-height: 0; }
+.native-map-wrap { position: relative; min-height: 0; border-left: 1px solid #cbd5e1; }
+#native-map { position: absolute; inset: 0; min-height: 0; }
 .map-actions { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: .75rem; }
 button { padding: .4rem .65rem; border: 1px solid #64748b; border-radius: .25rem; background: #fff; cursor: pointer; }
 button:focus-visible, input:focus-visible { outline: 3px solid #2563eb; outline-offset: 2px; }
@@ -61,6 +61,7 @@ small { display: block; color: #475569; margin-top: .15rem; }
 code { font-size: .9em; }
 #native-loading-failure { color: #b91c1c; font-weight: 700; }
 @media (max-width: 720px) {
+  body { grid-template-rows: auto auto; height: auto; min-height: 100dvh; }
   header { padding: .75rem; }
   .native-shell { display: flex; flex-direction: column; min-height: 0; height: auto; }
   .native-panel { order: 2; max-height: none; }
@@ -75,8 +76,9 @@ code { font-size: .9em; }
 <p>Source baseline remains visible as the proposed strategic structure. Selected alignments are decision overlays; source provision, safety, access and adoption remain explicit unknowns where evidence is absent.</p>
 <p class="source-attribution">Source attribution: __ATTRIBUTION__ __SOURCE_ATTRIBUTIONS__</p></header>
 <main class="native-shell">
-  <aside class="native-panel" aria-label="Decision map controls and evidence">
+  <aside class="native-panel" aria-label="Decision map controls and evidence" tabindex="0">
     <div class="map-actions"><button type="button" data-native-reset>Reset to network</button><button type="button" data-native-clear>Clear inspection</button></div>
+    <section class="native-details" id="native-feature-details" aria-live="polite"><h3>Evidence</h3><p>Hover or select a rendered map feature to inspect its public evidence.</p></section>
     <fieldset><legend>Layers</legend><ul class="key">
       <li><label><input type="checkbox" data-layer-toggle="source-strategic" checked> <span class="swatch source-key" aria-hidden="true"></span>Strategic source baseline · solid <span data-layer-count></span></label></li>
       <li><label><input type="checkbox" data-layer-toggle="source-context"> <span class="swatch context-key" aria-hidden="true"></span>Context sources · dotted <span data-layer-count></span></label></li>
@@ -93,7 +95,6 @@ code { font-size: .9em; }
       <li><label><input type="checkbox" data-layer-toggle="access-obligation" checked> <span class="marker-key marker-hexagon-key obligation-point-key" aria-hidden="true"></span>Access obligations and gaps · hexagon <span data-layer-count></span></label></li>
     </ul></fieldset>
     <p class="layer-key-note"><span class="swatch study-boundary-key" aria-hidden="true"></span>Study area boundary · pale fill and thin neutral edge &nbsp; <span class="swatch highlight-key" aria-hidden="true"></span><span class="marker-key marker-circle-key highlight-point-key" aria-hidden="true"></span>Inspection highlight · yellow with dark edge</p>
-    <section class="native-details" id="native-feature-details" aria-live="polite"><h3>Evidence</h3><p>Hover or select a rendered map feature to inspect its public evidence.</p></section>
     <p>__SOURCE_COUNT__ source baseline sections · __PREPARED_CONNECTIONS__ prepared connections · __PENDING_CONNECTIONS__ pending connections · __CANDIDATE_COUNT__ generated candidates · __DECISION_COUNT__ decisions · __UNRESOLVED_FACTS__ unresolved facts · __UNRESOLVED_ACCESS__ unresolved access obligations · __COMMUNITY_ACCESS__ community access records · __COMMUNITY_GAPS__ community gaps</p>
     <p id="native-loading-failure" role="alert" hidden>Unable to load public network data.</p>
     <p><a href="decision-map.json">Compact decision manifest</a> · <a href="decision-map.geojson">GeoJSON download</a> · <a href="publication.json">Public publication manifest</a></p>
@@ -439,10 +440,12 @@ code { font-size: .9em; }
     detail.innerHTML = '<h3>Evidence</h3><p>Hover or select a rendered map feature to inspect its public evidence.</p>';
   };
   const inspect = (map, event, openPopup) => {
+    if (openPopup) document.querySelector('.native-panel').scrollTop = 0;
     const layers = interactiveLayers.filter(layer => map.getLayer(layer));
     const found = map.queryRenderedFeatures(event.point, { layers });
     const feature = found[0];
     map.getCanvas().style.cursor = feature ? 'pointer' : '';
+    if (openPopup && !feature) { clearInspection(map); return; }
     if (openPopup && feature) {
       pinnedFeature = feature;
       highlight(map, feature);
@@ -477,6 +480,7 @@ code { font-size: .9em; }
       attributionControl: true
     });
     window.SATN_NATIVE_MAP = map;
+    document.querySelector('.run-details').addEventListener('toggle', () => map.resize());
     map.addControl(new maplibregl.NavigationControl(), 'top-right');
     map.on('load', () => {
       map.addSource('native-network', { type: 'geojson', data: network });
