@@ -185,6 +185,14 @@ def _inspect_native_agentic(
                   const failures = [];
                   const root = document.documentElement;
                   const map = window.SATN_NATIVE_MAP;
+                  const initialCamera = {
+                    center: map.getCenter().toArray(),
+                    zoom: map.getZoom(),
+                    bearing: map.getBearing(),
+                    pitch: map.getPitch(),
+                    padding: map.getPadding()
+                  };
+                  let cameraChanged = false;
                   const context = window.SATN_BUS_CONTEXT;
                   const features = context?.features || [];
                   const routes = features.filter(
@@ -323,6 +331,7 @@ def _inspect_native_agentic(
                     toggle.dispatchEvent(new Event('change', {bubbles: true}));
                     const position = firstPosition(feature.geometry?.coordinates);
                     if (!position) return false;
+                    cameraChanged = true;
                     await waitForIdleAfter(() => map.jumpTo({center: position, zoom: 15}));
                     const probeValue = '<img data-bus-safety-probe="true">';
                     const probeFeature = safetyProbe
@@ -436,6 +445,9 @@ def _inspect_native_agentic(
                       'bus transfer inspection does not render readable schedule evidence '
                       + 'with source IDs collapsed'
                     );
+                  }
+                  if (cameraChanged) {
+                    await waitForIdleAfter(() => map.jumpTo(initialCamera));
                   }
                   return {
                     failures,
