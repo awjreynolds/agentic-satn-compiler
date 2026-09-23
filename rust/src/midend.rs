@@ -388,7 +388,16 @@ impl HistoryStore {
                     existing.base_id, base.base_id
                 )));
             }
-            if serde_json::to_value(&existing.report)? != serde_json::to_value(&base.report)? {
+            // Compare the retained report with the exact representation that
+            // would be written for this incoming report.  Derived floating
+            // point fields can be one ULP away in memory from their persisted
+            // JSON spelling; comparing the in-memory value would reject a
+            // valid resume while comparing a text round-trip preserves strict
+            // binding to the retained report.
+            let incoming_persisted: CompileReport =
+                serde_json::from_str(&serde_json::to_string(&base.report)?)?;
+            if serde_json::to_value(&existing.report)? != serde_json::to_value(&incoming_persisted)?
+            {
                 return Err(MidendError::Invalid(
                     "incoming prepared report differs from the retained planning base".to_string(),
                 ));
