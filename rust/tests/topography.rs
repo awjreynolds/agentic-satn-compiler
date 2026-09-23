@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use satn_rs::topography::{ElevationEvidenceIndex, TopographyAvailability};
+use satn_rs::travel_time::TravelTimeEstimate;
 use serde_json::{Value, json};
 
 #[test]
@@ -60,6 +61,50 @@ fn route_profile_retains_directional_climbing_and_evidence_metadata() {
 
     let serialized = serde_json::to_value(&profile).expect("serializable profile");
     assert!(serialized.get("samples").is_none());
+}
+
+#[test]
+fn moving_time_extends_a_bounded_missing_start_without_changing_coverage() {
+    let root = fixture_root("moving-time-boundary");
+    let evidence = root.join("elevation-evidence.geojson");
+    write_points(
+        &evidence,
+        &[
+            ("e-1", "dtm", [-2.49999, 51.5000], 0.0),
+            ("e-2", "dtm", [-2.49900, 51.5000], 20.0),
+            ("e-3", "dtm", [-2.49800, 51.5000], 15.0),
+        ],
+    );
+
+    let index = ElevationEvidenceIndex::load(&evidence).expect("elevation evidence");
+    let profile = index
+        .enrich_route(&[
+            [-2.50000, 51.5000],
+            [-2.49900, 51.5000],
+            [-2.49800, 51.5000],
+        ])
+        .expect("route profile");
+
+    assert_eq!(profile.availability, TopographyAvailability::Available);
+    let coverage_start = profile.coverage.start_m.expect("coverage start");
+    assert!(coverage_start > 0.0 && coverage_start < 5.0);
+    assert!(
+        (profile.coverage.end_m.expect("coverage end") - profile.coverage.route_length_m).abs()
+            < 1e-6
+    );
+    assert!(matches!(
+        profile.estimated_moving_time,
+        TravelTimeEstimate::Available { .. }
+    ));
+
+    let boundary = profile
+        .moving_time_boundary_extrapolation
+        .expect("bounded endpoint extension should be recorded");
+    let start_extension = boundary.start_extension_m.expect("start extension");
+    assert!((start_extension - coverage_start).abs() < 1e-9);
+    assert!(boundary.start_local_slope.expect("start local slope") > 0.0);
+    assert!(boundary.end_extension_m.is_none());
+    assert!(boundary.end_local_slope.is_none());
 }
 
 #[test]

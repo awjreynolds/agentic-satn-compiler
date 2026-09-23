@@ -196,8 +196,92 @@ button[data-route-inspect] { padding: .25rem .5rem; font-size: .88rem; }
     ? (() => {
         const properties = feature.properties;
         const topography = normalizedValue(properties.topography);
-        return topography === properties.topography ? properties : { ...properties, topography };
+        const movingTime = normalizedValue(properties.moving_time);
+        const hillNeutralMovingTime = normalizedValue(properties.hill_neutral_moving_time);
+        return topography === properties.topography && movingTime === properties.moving_time &&
+          hillNeutralMovingTime === properties.hill_neutral_moving_time
+          ? properties
+          : { ...properties, topography, moving_time: movingTime, hill_neutral_moving_time: hillNeutralMovingTime };
       })() : {};
+  const movingTimeRecord = feature => {
+    const props = featureProperties(feature);
+    const direct = normalizedValue(props.moving_time);
+    if (direct && typeof direct === 'object') return direct;
+    const profile = normalizedValue(props.topography);
+    const nested = profile && typeof profile === 'object'
+      ? normalizedValue(profile.estimated_moving_time)
+      : null;
+    return nested && typeof nested === 'object' ? nested : null;
+  };
+  const hillNeutralRecord = feature => {
+    const props = featureProperties(feature);
+    const direct = normalizedValue(props.hill_neutral_moving_time);
+    if (direct && typeof direct === 'object') return direct;
+    const profile = normalizedValue(props.topography);
+    const nested = profile && typeof profile === 'object'
+      ? normalizedValue(profile.hill_neutral_moving_time)
+      : null;
+    return nested && typeof nested === 'object' ? nested : null;
+  };
+  const formatMovingTime = feature => {
+    const record = movingTimeRecord(feature);
+    if (!record || String(record.availability || '').toLowerCase() !== 'available') return 'Unknown';
+    const minutes = numberValue(record.minutes);
+    if (minutes === null) return 'Unknown';
+    if (minutes >= 60) {
+      const hours = Math.floor(minutes / 60);
+      const remaining = Math.round(minutes - hours * 60);
+      return hours + ' h ' + remaining + ' min';
+    }
+    return minutes.toFixed(1) + ' min';
+  };
+  const movingTimeModel = feature => {
+    const record = movingTimeRecord(feature);
+    const model = record && normalizedValue(record.model);
+    if (!model || typeof model !== 'object' || !model.name) return 'Unknown';
+    const details = [];
+    const mass = numberValue(model.total_mass_kg);
+    const power = numberValue(model.biker_power_w);
+    const cap = numberValue(model.max_speed_kmh);
+    if (mass !== null) details.push(mass + ' kg');
+    if (power !== null) details.push(power + ' W rider');
+    if (cap !== null) details.push(cap + ' km/h cap');
+    return String(model.name) + (details.length ? ' (' + details.join(', ') + '; unassisted)' : ' (unassisted)');
+  };
+  const movingTimeBoundaryAssumption = feature => {
+    const props = featureProperties(feature);
+    const profile = normalizedValue(props.topography);
+    const record = profile && typeof profile === 'object'
+      ? normalizedValue(profile.moving_time_boundary_extrapolation)
+      : null;
+    if (!record || typeof record !== 'object') return 'None';
+    const parts = [];
+    const startExtension = numberValue(record.start_extension_m);
+    const startSlope = numberValue(record.start_local_slope);
+    const endExtension = numberValue(record.end_extension_m);
+    const endSlope = numberValue(record.end_local_slope);
+    if (startExtension !== null && startSlope !== null) {
+      parts.push('start ' + formatDistance(startExtension) + ' at ' + (startSlope * 100).toFixed(2) + '% local slope');
+    }
+    if (endExtension !== null && endSlope !== null) {
+      parts.push('end ' + formatDistance(endExtension) + ' at ' + (endSlope * 100).toFixed(2) + '% local slope');
+    }
+    return parts.length ? parts.join('; ') : 'Unknown';
+  };
+  const formatHillNeutralTime = feature => {
+    const record = hillNeutralRecord(feature);
+    if (!record || String(record.label || '') !== 'Hill-neutral sensitivity (not an e-bike ETA)') return 'Unknown';
+    const minutes = numberValue(record.minutes);
+    if (minutes === null) return 'Unknown';
+    const time = minutes >= 60
+      ? Math.floor(minutes / 60) + ' h ' + Math.round(minutes % 60) + ' min'
+      : minutes.toFixed(1) + ' min';
+    return time + ' — ' + String(record.label);
+  };
+  const hillNeutralRationale = feature => {
+    const record = hillNeutralRecord(feature);
+    return record && record.rationale ? String(record.rationale) : 'Unknown';
+  };
   const routeLabel = feature => routeLabels[featureProperties(feature).kind] || 'Journey route';
   const routeFeatures = data => (Array.isArray(data && data.features) ? data.features : [])
     .filter(feature => allowedKinds.includes(featureProperties(feature).kind));
@@ -251,7 +335,12 @@ button[data-route-inspect] { padding: .25rem .5rem; font-size: .88rem; }
       ['Onward to destination', direct ? 'Unknown' : formatDistance(props.onward_length_m)],
       ['Forward ascent', formatElevation(topographyMetric(profile, 'forward_ascent_m'))],
       ['Forward descent', formatElevation(topographyMetric(profile, 'forward_descent_m'))],
-      ['Steepest sampled interval', formatGradient(profile)]
+      ['Steepest sampled interval', formatGradient(profile)],
+      ['Estimated moving time', formatMovingTime(feature)],
+      ['Moving-time model', movingTimeModel(feature)],
+      ['Moving-time boundary assumption', movingTimeBoundaryAssumption(feature)],
+      ['Hill-neutral sensitivity', formatHillNeutralTime(feature)],
+      ['Hill-neutral rationale', hillNeutralRationale(feature)]
     ];
   };
   const rowsHtml = rows => rows.map(row => '<tr><th scope="row">' + escapeHtml(row[0]) + '</th><td>' + escapeHtml(row[1]) + '</td></tr>').join('');

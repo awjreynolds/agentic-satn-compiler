@@ -99,3 +99,24 @@ replay applies the selected paths in order without providers or rerouting.
 Mechanical branch construction alone must not be described as classifier-driven
 comfort selection. The existing classifier and reasoning escalation workflow
 handles unresolved judgments once route evidence is available.
+
+The owner requested estimated cycling moving time alongside route distance and
+terrain comparisons. The initial explicit rider assumption is the published
+[BRouter Trekking v1.7.10 profile](https://github.com/abrensch/brouter/blob/4d2639af77ea5ed9c30d3e400764eb6f9e8522da/misc/profiles2/trekking.brf):
+90 kg total mass, 100 W rider power, 0.225 effective cubic drag coefficient,
+0.01 rolling resistance and 45 km/h maximum speed. These are a named model's
+parameters, not observed rider behaviour or new route-selection weights.
+Apply its steady-power equation to ordered source elevation intervals, retaining
+the profile assumption with results. This uses SATN's terrain handling and does
+not claim identical BRouter journey predictions. Incomplete terrain leaves the
+estimate unknown. Junction waits, stops, acceleration and weather are not
+modelled; label the result estimated moving time, not observed travel time.
+The BRouter MIT notice is retained in `rust/licenses/BROUTER-MIT.txt`.
+
+To examine the owner's e-bike observation without inventing motor-assistance
+parameters, also report a hill-neutral sensitivity: the same route distance and
+the same profile's flat-ground speed, with gradient excluded. This follows the
+hill-neutral comparison described for e-bikes in the
+[CycleStreets routing explanation](https://www.cyclestreets.net/help/journey/routing/),
+but does not reproduce its complete model or predict an e-bike ETA. Keep that
+distinction visible and retain unknown terrain for the gradient-aware estimate.
