@@ -763,6 +763,35 @@ def test_native_map_supports_public_feature_inspection_reset_and_layer_toggle(
                     "() => document.documentElement.dataset.nativeReady === 'true' && "
                     "window.SATN_NATIVE_MAP?.isStyleLoaded()"
                 )
+                layout = page.evaluate(
+                    """() => {
+                      const panel = document.querySelector('.native-panel');
+                      const evidence = document.querySelector('#native-feature-details');
+                      const layers = document.querySelector('.native-panel fieldset');
+                      return {
+                        shellBottom: Math.round(
+                          document.querySelector('.native-shell').getBoundingClientRect().bottom
+                        ),
+                        viewportHeight: window.innerHeight,
+                        documentHeight: document.documentElement.scrollHeight,
+                        panelTabIndex: panel.getAttribute('tabindex'),
+                        panelOverflowY: getComputedStyle(panel).overflowY,
+                        panelScrollHeight: panel.scrollHeight,
+                        panelClientHeight: panel.clientHeight,
+                        evidenceBeforeLayers: Boolean(
+                          evidence.compareDocumentPosition(layers) &
+                          Node.DOCUMENT_POSITION_FOLLOWING
+                        )
+                      };
+                    }"""
+                )
+                assert layout["evidenceBeforeLayers"]
+                if viewport["width"] >= 720:
+                    assert layout["shellBottom"] == round(layout["viewportHeight"])
+                    assert layout["documentHeight"] == layout["viewportHeight"]
+                    assert layout["panelTabIndex"] == "0"
+                    assert layout["panelOverflowY"] == "auto"
+                    assert layout["panelScrollHeight"] > layout["panelClientHeight"]
                 assert not page.locator(
                     "input[data-layer-toggle='candidate-alternative']"
                 ).is_visible()
@@ -797,12 +826,28 @@ def test_native_map_supports_public_feature_inspection_reset_and_layer_toggle(
                       const coordinate = coordinates[0];
                       const screen = map.project(coordinate);
                       const rect = map.getContainer().getBoundingClientRect();
-                      return {x: screen.x + rect.left, y: screen.y + rect.top};
+                      return {x: screen.x + rect.left, y: screen.y + rect.top,
+                        mapX: screen.x, mapY: screen.y};
                     }"""
                 )
                 assert point is not None
+                if viewport["width"] >= 720:
+                    assert (
+                        page.evaluate(
+                            """() => {
+                          const panel = document.querySelector('.native-panel');
+                          panel.scrollTop = panel.scrollHeight;
+                          return panel.scrollTop;
+                        }"""
+                        )
+                        > 0
+                    )
                 page.mouse.click(point["x"], point["y"])
                 page.wait_for_selector(".maplibregl-popup")
+                if viewport["width"] >= 720:
+                    page.wait_for_function(
+                        "() => document.querySelector('.native-panel').scrollTop === 0"
+                    )
                 assert "selected-alignment" in page.locator("#native-feature-details").inner_text()
                 assert page.locator(".maplibregl-popup").count() == 1
                 page.locator("#native-feature-details summary").click()
@@ -818,6 +863,34 @@ def test_native_map_supports_public_feature_inspection_reset_and_layer_toggle(
                     map_box["x"] + map_box["width"] - 8, map_box["y"] + map_box["height"] - 8
                 )
                 assert "selected-alignment" in page.locator("#native-feature-details").inner_text()
+                if viewport["width"] >= 720:
+                    blank_point = [8, 8]
+                    assert page.evaluate(
+                        "point => window.SATN_NATIVE_MAP.queryRenderedFeatures(point).length === 0",
+                        blank_point,
+                    )
+                    highlighted_point = [point["mapX"], point["mapY"]]
+                    page.wait_for_function(
+                        "point => window.SATN_NATIVE_MAP.queryRenderedFeatures(point, "
+                        "{layers: ['native-highlight-line']}).length > 0",
+                        arg=highlighted_point,
+                    )
+                    page.mouse.click(map_box["x"] + blank_point[0], map_box["y"] + blank_point[1])
+                    page.wait_for_function("() => !document.querySelector('.maplibregl-popup')")
+                    page.wait_for_function(
+                        "point => window.SATN_NATIVE_MAP.queryRenderedFeatures(point, "
+                        "{layers: ['native-highlight-line']}).length === 0",
+                        arg=highlighted_point,
+                    )
+                    assert (
+                        "Hover or select a rendered map feature"
+                        in page.locator("#native-feature-details").inner_text()
+                    )
+                    page.mouse.move(map_box["x"] + point["mapX"], map_box["y"] + point["mapY"])
+                    assert (
+                        "selected-alignment" in page.locator("#native-feature-details").inner_text()
+                    )
+                    assert page.locator(".maplibregl-popup").count() == 0
                 if viewport["width"] < 720:
                     panel_box = page.locator(".native-panel").bounding_box()
                     map_wrap_box = page.locator(".native-map-wrap").bounding_box()
