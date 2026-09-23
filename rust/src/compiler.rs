@@ -180,7 +180,120 @@ pub struct JourneyComparison {
     pub destination: JourneyDestination,
     pub selected: JourneyPath,
     pub retained_alternative: Option<JourneyPath>,
+    #[serde(default)]
+    pub alternative_error: Option<String>,
     pub direct: JourneyPath,
+}
+
+/// The outcome for one community-to-destination batch pair.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum JourneyPairStatus {
+    Success,
+    Unsupported,
+    Error,
+}
+
+/// The scalar terrain and route facts needed in a batch index.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct JourneyBatchPathSummary {
+    pub length_m: f64,
+    pub new_link_length_m: Option<f64>,
+    pub feeder_length_m: Option<f64>,
+    pub shared_suffix_length_m: Option<f64>,
+    pub onward_length_m: Option<f64>,
+    pub network_status: String,
+    pub topography: JourneyBatchTopographySummary,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct JourneyBatchTopographySummary {
+    pub availability: TopographyAvailability,
+    pub forward_ascent_m: Option<f64>,
+    pub forward_descent_m: Option<f64>,
+    pub cumulative_elevation_variation_m: Option<f64>,
+    pub sustained_gradient_pct: Option<f64>,
+}
+
+impl JourneyBatchPathSummary {
+    fn from_path(path: &JourneyPath) -> Self {
+        Self {
+            length_m: path.length_m,
+            new_link_length_m: path.new_link_length_m,
+            feeder_length_m: path.feeder_length_m,
+            shared_suffix_length_m: path.shared_suffix_length_m,
+            onward_length_m: path.onward_length_m,
+            network_status: path.network_status.clone(),
+            topography: JourneyBatchTopographySummary {
+                availability: path.topography.availability,
+                forward_ascent_m: path.topography.forward_ascent_m,
+                forward_descent_m: path.topography.forward_descent_m,
+                cumulative_elevation_variation_m: path.topography.cumulative_elevation_variation_m,
+                sustained_gradient_pct: path
+                    .topography
+                    .sustained_gradient
+                    .as_ref()
+                    .map(|gradient| gradient.gradient_pct),
+            },
+        }
+    }
+}
+
+/// One compact record in the batch summary. Full route geometry and edge IDs
+/// remain in the per-success comparison artifact.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct JourneyBatchPair {
+    pub pair_id: String,
+    pub origin_id: String,
+    pub origin_name: String,
+    pub destination_id: String,
+    pub destination_name: String,
+    pub status: JourneyPairStatus,
+    #[serde(default)]
+    pub artifact_stem: Option<String>,
+    #[serde(default)]
+    pub selected: Option<JourneyBatchPathSummary>,
+    #[serde(default)]
+    pub retained_alternative: Option<JourneyBatchPathSummary>,
+    #[serde(default)]
+    pub alternative_error: Option<String>,
+    #[serde(default)]
+    pub direct: Option<JourneyBatchPathSummary>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct JourneyBatchSummary {
+    pub origin_count: usize,
+    pub destination_count: usize,
+    pub pair_count: usize,
+    pub success_count: usize,
+    pub unsupported_count: usize,
+    pub error_count: usize,
+    pub pairs: Vec<JourneyBatchPair>,
+}
+
+#[derive(Debug, Clone)]
+pub struct JourneyBatchSuccess {
+    pub pair_id: String,
+    pub comparison: JourneyComparison,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct JourneyBatchProgress {
+    pub completed_pair_count: usize,
+    pub total_pair_count: usize,
+    pub pair_id: String,
+    pub origin_name: String,
+    pub destination_name: String,
+    pub status: JourneyPairStatus,
+}
+
+#[derive(Debug, Clone)]
+pub struct JourneyBatchEvaluation {
+    pub summary: JourneyBatchSummary,
+    pub successes: Vec<JourneyBatchSuccess>,
 }
 
 impl JourneyComparison {
@@ -687,6 +800,23 @@ impl PreparedCompilation {
         retained_alternative: Option<&CommunityAccess>,
         destination_name: &str,
     ) -> Result<JourneyComparison> {
+        self.compare_complete_journey_inner(
+            accepted,
+            selected,
+            retained_alternative,
+            destination_name,
+            false,
+        )
+    }
+
+    fn compare_complete_journey_inner(
+        &self,
+        accepted: &[CommunityAccess],
+        selected: &CommunityAccess,
+        retained_alternative: Option<&CommunityAccess>,
+        destination_name: &str,
+        keep_alternative_error: bool,
+    ) -> Result<JourneyComparison> {
         let destination = self.destination(destination_name)?.clone();
         let records = accepted_records(accepted, selected, retained_alternative);
         let selected_to_spine = self.access_to_root(selected, &records)?;
@@ -701,10 +831,19 @@ impl PreparedCompilation {
             "selected-feeder-plus-source-graph-onward",
         );
 
-        let retained_path = retained_alternative.map(|alternative| {
-            self.complete_path("retained-alternative", alternative, &records, &destination)
-        });
-        let retained_path = retained_path.transpose()?;
+        let (retained_path, alternative_error) = match retained_alternative {
+            Some(alternative) => match self.complete_path(
+                "retained-alternative",
+                alternative,
+                &records,
+                &destination,
+            ) {
+                Ok(path) => (Some(path), None),
+                Err(error) if keep_alternative_error => (None, Some(error.to_string())),
+                Err(error) => return Err(error),
+            },
+            None => (None, None),
+        };
 
         let direct_route = self.direct_route(selected, &destination)?;
         let direct_path = self.journey_path(
@@ -721,8 +860,138 @@ impl PreparedCompilation {
             destination,
             selected: selected_path,
             retained_alternative: retained_path,
+            alternative_error,
             direct: direct_path,
         })
+    }
+
+    /// Evaluate every retained primary community against every admitted city
+    /// or town using this prepared graph and elevation index.  Each pair is
+    /// retained in the summary, including unsupported and invalid outcomes;
+    /// successful full comparisons are available for separate artifacts.
+    pub fn compare_all_journeys(
+        &self,
+        accepted: &[CommunityAccess],
+        retained_alternatives: &[CommunityAccess],
+    ) -> JourneyBatchEvaluation {
+        self.compare_all_journeys_with_progress(accepted, retained_alternatives, &mut |_| {})
+    }
+
+    pub fn compare_all_journeys_with_progress(
+        &self,
+        accepted: &[CommunityAccess],
+        retained_alternatives: &[CommunityAccess],
+        progress: &mut dyn FnMut(JourneyBatchProgress),
+    ) -> JourneyBatchEvaluation {
+        let origins = accepted
+            .iter()
+            .filter(|access| access.is_primary)
+            .collect::<Vec<_>>();
+        let total_pair_count = origins.len() * self.destinations.len();
+        let mut completed_pair_count = 0;
+        let mut pairs = Vec::with_capacity(total_pair_count);
+        let mut successes = Vec::new();
+        let mut success_count = 0;
+        let mut unsupported_count = 0;
+        let mut error_count = 0;
+
+        for origin in &origins {
+            let retained_alternative = retained_alternatives
+                .iter()
+                .find(|access| access.community_id == origin.community_id);
+            for destination in &self.destinations {
+                let pair_id = format!("{}::{}", origin.community_id, destination.id);
+                match self.compare_complete_journey_inner(
+                    accepted,
+                    origin,
+                    retained_alternative,
+                    &destination.id,
+                    true,
+                ) {
+                    Ok(comparison) => {
+                        success_count += 1;
+                        pairs.push(JourneyBatchPair {
+                            pair_id: pair_id.clone(),
+                            origin_id: origin.community_id.clone(),
+                            origin_name: origin.name.clone(),
+                            destination_id: destination.id.clone(),
+                            destination_name: destination.name.clone(),
+                            status: JourneyPairStatus::Success,
+                            artifact_stem: None,
+                            selected: Some(JourneyBatchPathSummary::from_path(
+                                &comparison.selected,
+                            )),
+                            retained_alternative: comparison
+                                .retained_alternative
+                                .as_ref()
+                                .map(JourneyBatchPathSummary::from_path),
+                            alternative_error: comparison.alternative_error.clone(),
+                            direct: Some(JourneyBatchPathSummary::from_path(&comparison.direct)),
+                            error: None,
+                        });
+                        successes.push(JourneyBatchSuccess {
+                            pair_id: pair_id.clone(),
+                            comparison,
+                        });
+                        completed_pair_count += 1;
+                        progress(JourneyBatchProgress {
+                            completed_pair_count,
+                            total_pair_count,
+                            pair_id: pair_id.clone(),
+                            origin_name: origin.name.clone(),
+                            destination_name: destination.name.clone(),
+                            status: JourneyPairStatus::Success,
+                        });
+                    }
+                    Err(error) => {
+                        let status = batch_error_status(&error);
+                        match status {
+                            JourneyPairStatus::Unsupported => unsupported_count += 1,
+                            JourneyPairStatus::Error => error_count += 1,
+                            JourneyPairStatus::Success => {
+                                unreachable!("batch error classification cannot return success")
+                            }
+                        }
+                        pairs.push(JourneyBatchPair {
+                            pair_id: pair_id.clone(),
+                            origin_id: origin.community_id.clone(),
+                            origin_name: origin.name.clone(),
+                            destination_id: destination.id.clone(),
+                            destination_name: destination.name.clone(),
+                            status,
+                            artifact_stem: None,
+                            selected: None,
+                            retained_alternative: None,
+                            alternative_error: None,
+                            direct: None,
+                            error: Some(error.to_string()),
+                        });
+                        completed_pair_count += 1;
+                        progress(JourneyBatchProgress {
+                            completed_pair_count,
+                            total_pair_count,
+                            pair_id: pair_id.clone(),
+                            origin_name: origin.name.clone(),
+                            destination_name: destination.name.clone(),
+                            status,
+                        });
+                    }
+                }
+            }
+        }
+
+        JourneyBatchEvaluation {
+            summary: JourneyBatchSummary {
+                origin_count: origins.len(),
+                destination_count: self.destinations.len(),
+                pair_count: pairs.len(),
+                success_count,
+                unsupported_count,
+                error_count,
+                pairs,
+            },
+            successes,
+        }
     }
 
     fn destination(&self, name_or_id: &str) -> Result<&JourneyDestination> {
@@ -1088,6 +1357,18 @@ fn accepted_records(
             .or_insert_with(|| alternative.clone());
     }
     records
+}
+
+fn batch_error_status(error: &SatnError) -> JourneyPairStatus {
+    let message = error.to_string();
+    if message.starts_with("no directed ")
+        || message.contains("no graph attachment")
+        || message.contains("no route endpoint")
+    {
+        JourneyPairStatus::Unsupported
+    } else {
+        JourneyPairStatus::Error
+    }
 }
 
 fn root_access<'a>(
