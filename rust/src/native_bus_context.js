@@ -22,6 +22,28 @@
     if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
     return Object.entries(value).filter(([key]) => key !== 'kind');
   };
+  const propertyArray = value => {
+    if (Array.isArray(value)) return value;
+    if (typeof value !== 'string') return [];
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (_) {
+      return [];
+    }
+  };
+  const readableScheduleTypes = (value, action) => {
+    const descriptions = {
+      '0': `regular scheduled ${action}`,
+      '1': `${action} is not available`,
+      '2': `${action} by prior phone arrangement`,
+      '3': `${action} by arrangement with the driver`
+    };
+    const codes = [...new Set(propertyArray(value).map(code => String(code)))];
+    if (!codes.length) return 'Not reported';
+    const labels = codes.map(code => descriptions[code] || `GTFS code ${code}`);
+    return labels.length > 1 ? `Varies by service pattern: ${labels.join('; ')}` : labels[0];
+  };
   const firstValue = (value, keys) => {
     for (const key of keys) {
       const candidate = value && value[key];
@@ -58,22 +80,31 @@
   const renderFeature = (feature, context) => {
     const properties = feature && feature.properties ? feature.properties : {};
     const isRoute = properties.kind === 'bus-route';
+    const isTransferCandidate = properties.transfer_candidate === true;
     const provenance = collectionProvenance(context);
     const content = document.createElement('div');
     const heading = document.createElement('h3');
-    heading.textContent = isRoute ? 'Bus route service evidence' : 'Bus station or stop group';
+    heading.textContent = isRoute
+      ? 'Bus route service evidence'
+      : isTransferCandidate
+        ? 'Timetable-supported transfer candidate'
+        : 'Bus station or stop group';
     content.append(heading);
     const note = document.createElement('p');
     note.textContent = isRoute
       ? 'Route identifiers and shape are source evidence for the stated service date; they do not establish observed transfers.'
-      : 'This is a source-labelled facility record; it does not establish an observed transfer connection.';
+      : isTransferCandidate
+        ? 'Services share this selected stop on the stated date; interchange designation and connection timing are not verified.'
+        : 'This is a source-labelled facility record; it does not establish an observed transfer connection.';
     content.append(note);
     const sourceRows = [
       ['Source', firstValue(properties, ['source_title', 'source_name', 'source_label', 'source_id']) ||
         firstValue(provenance, ['source_title', 'dataset_title', 'source_name', 'source_id'])],
-      ['Source date', firstValue(provenance, [
-        'source_date', 'dataset_date', 'effective_date', 'service_date'
-      ])],
+      ['Source date', isTransferCandidate
+        ? properties.source_creation_date_time
+        : firstValue(provenance, [
+            'source_date', 'dataset_date', 'effective_date', 'service_date'
+          ])],
       ['Licence', firstValue(provenance, ['licence', 'license'])],
       ['Attribution', firstValue(provenance, ['attribution', 'copyright'])]
     ].filter(([, value]) => value !== undefined);
@@ -84,14 +115,28 @@
           ['Service date', properties.service_date],
           ['Source ID', properties.source_id]
         ]
-      : [
+      : isTransferCandidate
+        ? [
+            ['Stop', properties.name],
+            ['Locality', properties.locality],
+            ['Service date', properties.service_date],
+            ['Routes', propertyArray(properties.route_short_names).join(', ')],
+            ['Boarding', readableScheduleTypes(properties.pickup_type_codes, 'boarding')],
+            ['Alighting', readableScheduleTypes(properties.drop_off_type_codes, 'alighting')],
+            ['Evidence basis', properties.transfer_candidate_basis]
+          ]
+        : [
           ['Facility name', firstValue(properties, ['name', 'facility_name'])],
           ['Facility type', firstValue(properties, ['facility_type', 'interchange_type', 'type'])],
           ['Source ID', properties.source_id]
         ];
     if (sourceRows.length || featureRows.some(([, value]) => value !== undefined)) {
       const evidenceHeading = document.createElement('h4');
-      evidenceHeading.textContent = isRoute ? 'Service evidence' : 'Facility evidence';
+      evidenceHeading.textContent = isRoute
+        ? 'Service evidence'
+        : isTransferCandidate
+          ? 'Transfer evidence'
+          : 'Facility evidence';
       content.append(evidenceHeading);
       appendRows(content, [...featureRows, ...sourceRows].filter(([, value]) => value !== undefined));
     }
@@ -114,7 +159,7 @@
     if (!detail) return;
     detail.replaceChildren(...renderFeature(feature, context).childNodes);
   };
-  const addControl = (kind, label, count, layers) => {
+  const addControl = (kind, label, count, layers, pointCounts = null) => {
     const item = document.createElement('li');
     const control = document.createElement('label');
     const toggle = document.createElement('input');
@@ -126,8 +171,10 @@
     swatch.className = kind === 'routes'
       ? 'swatch bus-route-key'
       : 'marker-key marker-star-key bus-interchange-key';
-    const text = document.createTextNode(label + ' (' + count + (kind === 'routes'
-      ? ' mapped segments, long-dashed line)' : ' source facility records, star marker)'));
+    const countText = kind === 'routes'
+      ? `${count} mapped segments, long-dashed line`
+      : `${count} points (${pointCounts.facilities} facilities, ${pointCounts.transfers} transfer points)`;
+    const text = document.createTextNode(`${label} (${countText})`);
     control.append(toggle, document.createTextNode(' '), swatch, text);
     item.append(control);
     legend.append(item);
@@ -163,6 +210,12 @@
     const routes = context.features.filter(feature => feature.properties?.kind === 'bus-route');
     const interchanges = context.features.filter(
       feature => feature.properties?.kind === 'bus-interchange'
+    );
+    const sourceFacilities = interchanges.filter(
+      feature => feature.properties?.transfer_candidate !== true
+    );
+    const transferCandidates = interchanges.filter(
+      feature => feature.properties?.transfer_candidate === true
     );
     window.SATN_BUS_CONTEXT = context;
     if (routes.length || interchanges.length) {
@@ -230,9 +283,10 @@
         });
         addControl(
           'interchanges',
-          'Bus stations and stop groups',
+          'Bus facilities and transfer points',
           interchanges.length,
-          [interchangeLayer]
+          [interchangeLayer],
+          { facilities: sourceFacilities.length, transfers: transferCandidates.length }
         );
       }
       const interactiveLayers = [

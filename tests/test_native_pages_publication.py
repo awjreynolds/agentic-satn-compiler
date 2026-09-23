@@ -62,6 +62,7 @@ def _write_native_bundle(
     *,
     omit_source_geometry: bool = False,
     omit_departure_geometry: bool = False,
+    include_transfer_candidate: bool = False,
 ) -> None:
     bundle = root / "native-area"
     bundle.mkdir(parents=True, exist_ok=True)
@@ -171,7 +172,7 @@ def _write_native_bundle(
     template = (PROJECT / "rust" / "src" / "native_map_template.html").read_text(encoding="utf-8")
     html = template
     for placeholder, value in {
-        "__BUS_CONTEXT_URL__": "",
+        "__BUS_CONTEXT_URL__": "bus-context.geojson" if include_transfer_candidate else "",
         "__TITLE__": "Native area deployment",
         "__DEPLOYMENT__": "native-area",
         "__BRANCH__": "review-branch",
@@ -190,6 +191,68 @@ def _write_native_bundle(
     }.items():
         html = html.replace(placeholder, value)
     (bundle / "index.html").write_text(html, encoding="utf-8")
+    if include_transfer_candidate:
+        (bundle / "bus-context.geojson").write_text(
+            json.dumps(
+                {
+                    "type": "FeatureCollection",
+                    "service_date": "2026-09-23",
+                    "licence": "Fixture OGL",
+                    "attribution": "Fixture transit data",
+                    "features": [
+                        {
+                            "type": "Feature",
+                            "properties": {
+                                "kind": "bus-route",
+                                "route_ids": ["fixture-route-91"],
+                                "route_short_names": ["X91"],
+                                "service_date": "2026-09-23",
+                                "source_id": "fixture-gtfs-route",
+                            },
+                            "geometry": {
+                                "type": "LineString",
+                                "coordinates": [[-1.68, 51.15], [-1.67, 51.16]],
+                            },
+                        },
+                        {
+                            "type": "Feature",
+                            "properties": {
+                                "kind": "bus-interchange",
+                                "name": "Fixture Bus Station",
+                                "facility_type": "bus station",
+                                "source_id": "fixture-stop-area",
+                            },
+                            "geometry": {"type": "Point", "coordinates": [-1.66, 51.17]},
+                        },
+                        {
+                            "type": "Feature",
+                            "properties": {
+                                "kind": "bus-interchange",
+                                "facility_type": "timetable-supported transfer candidate",
+                                "transfer_candidate": True,
+                                "transfer_candidate_basis": (
+                                    "Multiple distinct active scheduled bus routes serve "
+                                    "this selected stop."
+                                ),
+                                "source_id": "fixture-naptan-stop",
+                                "source_title": "Fixture NaPTAN source",
+                                "service_source_id": "fixture-gtfs",
+                                "atco_code": "0180BAC30834",
+                                "name": "Victoria Hall",
+                                "locality": "Radstock",
+                                "service_date": "2026-09-23",
+                                "route_ids": ["fixture-route-101", "fixture-route-172"],
+                                "route_short_names": ["101", "172"],
+                                "pickup_type_codes": ["0", "1"],
+                                "drop_off_type_codes": ["0"],
+                            },
+                            "geometry": {"type": "Point", "coordinates": [-1.64, 51.18]},
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
     (bundle / "publication.json").write_text(
         json.dumps(
             {
@@ -642,6 +705,30 @@ def test_native_rendering_gate_uses_the_loaded_map_and_public_decision_sections(
     assert validated[0].strategic_spines == 2
     assert validated[0].cross_spine_connectors == 1
     assert validated[0].rendered_strategic_spines == 3
+
+
+@pytest.mark.browser
+def test_native_rendering_gate_checks_readable_transfer_schedule_evidence(
+    tmp_path: Path,
+) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    _write_native_catalogue(catalogue)
+    _write_native_bundle(bundles, include_transfer_candidate=True)
+    result = package_pages(
+        catalogue,
+        bundles,
+        tmp_path / "pages",
+        tmp_path / "satn-pages.zip",
+    )
+    published_bundle = result.pages_directory / "deployments" / "native-area"
+    shutil.copy2(bundles / "native-area" / "bus-context.geojson", published_bundle)
+    shutil.copy2(bundles / "native-area" / "bus-context.js", published_bundle)
+
+    validated = VALIDATOR.validate_pages_rendering(result.pages_directory)
+
+    assert len(validated) == 1
+    assert validated[0].deployment_id == "native-area"
 
 
 @pytest.mark.browser
