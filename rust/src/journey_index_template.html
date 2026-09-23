@@ -121,10 +121,9 @@ th.numeric, td.numeric { text-align: right; white-space: nowrap; }
             <th scope="col" class="numeric">Ascent Δ</th>
             <th scope="col" class="numeric">New rural link</th>
             <th scope="col" class="numeric">Shared branch</th>
-            <th scope="col">Map</th>
           </tr>
         </thead>
-        <tbody id="journey-rows"><tr><td colspan="12" class="empty-state">Loading journey pairs…</td></tr></tbody>
+        <tbody id="journey-rows"><tr><td colspan="11" class="empty-state">Loading journey pairs…</td></tr></tbody>
       </table>
     </div>
     <p id="journey-loading-failure" role="alert" hidden>Unable to load journey index data.</p>
@@ -307,7 +306,7 @@ th.numeric, td.numeric { text-align: right; white-space: nowrap; }
   const renderRows = () => {
     const visible = filteredPairs();
     if (!visible.length) {
-      rowsContainer.innerHTML = '<tr><td colspan="12" class="empty-state">No journey pairs match these filters.</td></tr>';
+      rowsContainer.innerHTML = '<tr><td colspan="11" class="empty-state">No journey pairs match these filters.</td></tr>';
       const filteredNote = summary.querySelector('[data-filtered-summary]');
       if (filteredNote) filteredNote.textContent = 'Showing 0 of ' + pairs.length + ' pairs';
       return;
@@ -320,14 +319,16 @@ th.numeric, td.numeric { text-align: right; white-space: nowrap; }
       const distanceDelta = formatDelta(selectedDistance(pair), directDistance(pair), formatDistance);
       const ascentDelta = formatDelta(selectedAscent(pair), directAscent(pair), formatElevation);
       const link = mapHref(pair);
+      const origin = displayName(pair, 'origin_name');
+      const destination = displayName(pair, 'destination_name');
       const detail = statusDetail(pair);
-      const mapCell = link
-        ? '<a class="map-link" href="' + escapeHtml(link) + '">Open map</a>'
-        : '<span class="unknown">No map</span>';
       const notes = [detail, alternativeNote(pair)].filter(Boolean);
+      const originCell = link
+        ? '<a class="map-link" href="' + escapeHtml(link) + '" aria-label="Open map for ' + escapeHtml(origin + ' → ' + destination) + '"><span class="place">' + escapeHtml(origin) + '</span></a>'
+        : '<span class="place">' + escapeHtml(origin) + '</span>';
       return '<tr>' +
-        '<td><span class="place">' + escapeHtml(displayName(pair, 'origin_name')) + '</span></td>' +
-        '<td><span class="place">' + escapeHtml(displayName(pair, 'destination_name')) + '</span></td>' +
+        '<td>' + originCell + '</td>' +
+        '<td><span class="place">' + escapeHtml(destination) + '</span></td>' +
         '<td><span class="status ' + (available(pair) ? 'status-available' : 'status-unavailable') + '">' + escapeHtml(statusLabel(pair)) + '</span>' + notes.map((note, index) => '<span class="status-detail' + (index === notes.length - 1 && alternativeNote(pair) ? ' optional-note' : '') + '">' + escapeHtml(note) + '</span>').join('') + '</td>' +
         cell(selectedLength, true) +
         cell(directLength, true) +
@@ -337,7 +338,6 @@ th.numeric, td.numeric { text-align: right; white-space: nowrap; }
         cell(ascentDelta, true) +
         cell(formatDistance(pathNewLink(pair)), true) +
         cell(formatDistance(pathSharedBranch(pair)), true) +
-        '<td>' + mapCell + '</td>' +
         '</tr>';
     }).join('');
     const filteredNote = summary.querySelector('[data-filtered-summary]');
