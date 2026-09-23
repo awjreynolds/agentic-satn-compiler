@@ -27,8 +27,8 @@ button:focus-visible, input:focus-visible { outline: 3px solid #2563eb; outline-
 .provisional-key { border-top: 3px dashed #e69f00; filter: drop-shadow(0 0 1px #263238); }
 .unresolved-key { border-top: 3px dotted #cc79a7; }
 .a-road-departure-key { border-top: 5px dashed #d55e00; filter: drop-shadow(0 0 1px #263238); }
-.source-departure-key { border: 0; height: 4px; background: repeating-linear-gradient(90deg, #f0e442 0 8px, transparent 8px 11px, #f0e442 11px 13px, transparent 13px 17px); filter: drop-shadow(0 0 1px #263238); }
-.community-key { border: 0; height: 3px; background: repeating-linear-gradient(90deg, #56b4e9 0 12px, transparent 12px 18px, #56b4e9 18px 21px, transparent 21px 27px); filter: drop-shadow(0 0 1px #263238); }
+.source-departure-key { border: 0; height: 4px; background: #f0e442; filter: drop-shadow(0 0 1px #263238); }
+.community-key { border: 0; height: 3px; background: #56b4e9; filter: drop-shadow(0 0 1px #263238); }
 .bus-route-key { border-top: 3px dashed #cc79a7; }
 .study-boundary-key { height: .75rem; background: rgba(147,197,253,.25); border: 1px dotted #6b7280; }
 .highlight-key { border-top-color: #f0e442; filter: drop-shadow(0 0 1px #263238); }
@@ -86,10 +86,10 @@ code { font-size: .9em; }
       <li><label><input type="checkbox" data-layer-toggle="unresolved-decision" checked> <span class="swatch unresolved-key" aria-hidden="true"></span>Unresolved decision · dotted <span data-layer-count></span></label></li>
       <li><label><input type="checkbox" data-layer-toggle="candidate-alternative" checked> <span class="swatch alternative-key" aria-hidden="true"></span>Candidate alternatives · dashed <span data-layer-count></span></label></li>
       <li><label><input type="checkbox" data-layer-toggle="a-road-departure" checked> <span class="swatch a-road-departure-key" aria-hidden="true"></span>A-road departure · prominent long dash <span data-layer-count></span></label></li>
-      <li><label><input type="checkbox" data-layer-toggle="source-departure" checked> <span class="swatch source-departure-key" aria-hidden="true"></span>Source departure · dash-dot, dark edge <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="source-departure" checked> <span class="swatch source-departure-key" aria-hidden="true"></span>Source departure · solid, dark edge <span data-layer-count></span></label></li>
       <li><label><input type="checkbox" data-layer-toggle="network-place" checked> <span class="marker-key marker-square-key" aria-hidden="true"></span>Network places · square <span data-layer-count></span></label></li>
       <li><label><input type="checkbox" data-layer-toggle="school-context" checked> <span class="marker-key marker-diamond-key school-point-key" aria-hidden="true"></span>Schools · diamond <span data-layer-count></span></label></li>
-      <li><label><input type="checkbox" data-layer-toggle="community-access" checked> <span class="swatch community-key" aria-hidden="true"></span><span class="marker-key marker-pentagon-key community-point-key" aria-hidden="true"></span><span class="marker-key marker-cross-key gap-point-key" aria-hidden="true"></span>Community access · dash-dot, pentagon; X for gaps <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="community-access" checked> <span class="swatch community-key" aria-hidden="true"></span><span class="marker-key marker-pentagon-key community-point-key" aria-hidden="true"></span><span class="marker-key marker-cross-key gap-point-key" aria-hidden="true"></span>Community access · solid, pentagon; X for gaps <span data-layer-count></span></label></li>
       <li><label><input type="checkbox" data-layer-toggle="access-obligation" checked> <span class="marker-key marker-hexagon-key obligation-point-key" aria-hidden="true"></span>Access obligations and gaps · hexagon <span data-layer-count></span></label></li>
     </ul></fieldset>
     <p class="layer-key-note"><span class="swatch study-boundary-key" aria-hidden="true"></span>Study area boundary · pale fill and thin neutral edge &nbsp; <span class="swatch highlight-key" aria-hidden="true"></span><span class="marker-key marker-circle-key highlight-point-key" aria-hidden="true"></span>Inspection highlight · yellow with dark edge</p>
@@ -572,11 +572,11 @@ code { font-size: .9em; }
       line('native-a-road-departure-casing', aRoadDepartureFilter, '#263238', 8, [7.5, 3.75]);
       line('native-a-road-departure', aRoadDepartureFilter, '#d55e00', 6, [10, 5]);
       const sourceDepartureFilter = ['==', ['get', 'kind'], 'source-departure'];
-      line('native-source-departure-casing', sourceDepartureFilter, '#263238', 7, [5.7142857, 2.1428571, 1.4285714, 2.1428571]);
-      line('native-source-departure', sourceDepartureFilter, '#f0e442', 5, [8, 3, 2, 3]);
+      line('native-source-departure-casing', sourceDepartureFilter, '#263238', 7);
+      line('native-source-departure', sourceDepartureFilter, '#f0e442', 5);
       const communityAccessFilter = ['all', ['==', ['get', 'kind'], 'community-access'], ['==', ['geometry-type'], 'LineString']];
-      line('native-community-access-casing', communityAccessFilter, '#263238', 6, [2.6666667, 1.3333333, 0.6666667, 1.3333333]);
-      line('native-community-access', communityAccessFilter, '#56b4e9', 4, [4, 2, 1, 2]);
+      line('native-community-access-casing', communityAccessFilter, '#263238', 6);
+      line('native-community-access', communityAccessFilter, '#56b4e9', 4);
       addMarkerImage('native-marker-selected', 'circle', '#009e73');
       addMarkerImage('native-marker-provisional', 'triangle', '#e69f00');
       addMarkerImage('native-marker-network-place', 'square', '#0072b2');
