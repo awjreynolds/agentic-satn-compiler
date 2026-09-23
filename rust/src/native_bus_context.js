@@ -173,7 +173,7 @@
       : 'marker-key marker-star-key bus-interchange-key';
     const countText = kind === 'routes'
       ? `${count} mapped segments, long-dashed line`
-      : `${count} points (${pointCounts.facilities} facilities, ${pointCounts.transfers} transfer points)`;
+      : `${count} points (${pointCounts.facilities} facilities, ${pointCounts.transfers} transfer points), star markers`;
     const text = document.createTextNode(`${label} (${countText})`);
     control.append(toggle, document.createTextNode(' '), swatch, text);
     item.append(control);

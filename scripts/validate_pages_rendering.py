@@ -434,7 +434,7 @@ def _inspect_native_agentic(
                       expectedCollapsedValues
                     )) failures.push(
                       'bus transfer inspection does not render readable schedule evidence '
-                      'with source IDs collapsed'
+                      + 'with source IDs collapsed'
                     );
                   }
                   return {
