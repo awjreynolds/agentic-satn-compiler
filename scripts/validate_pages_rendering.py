@@ -163,7 +163,14 @@ def _inspect_native_agentic(
                 )
             try:
                 page.wait_for_function(
-                    """() => document.documentElement.dataset.nativeBusContextLoaded === 'true'"""
+                    """() => {
+                      const root = document.documentElement;
+                      const map = window.SATN_NATIVE_MAP;
+                      const featureCount = Number(root.dataset.nativeBusContextRoutes || 0) +
+                        Number(root.dataset.nativeBusContextInterchanges || 0);
+                      return root.dataset.nativeBusContextLoaded === 'true' &&
+                        (!featureCount || map?.isSourceLoaded('native-bus-context'));
+                    }"""
                 )
             except PlaywrightTimeoutError as error:
                 details = page.evaluate(
@@ -262,33 +269,50 @@ def _inspect_native_agentic(
                     }
                     return null;
                   };
-                  const waitForPaint = () => new Promise(resolve =>
-                    requestAnimationFrame(() => requestAnimationFrame(resolve))
-                  );
+                  const waitForIdleAfter = change => new Promise(resolve => {
+                    map.once('idle', resolve);
+                    change();
+                  });
+                  const setBusSourceData = features => new Promise(resolve => {
+                    let sourceLoaded = false;
+                    let mapIdle = false;
+                    const finish = () => {
+                      if (!sourceLoaded || !mapIdle) return;
+                      map.off('sourcedata', onSourceData);
+                      map.off('idle', onIdle);
+                      resolve();
+                    };
+                    const onSourceData = event => {
+                      if (event.sourceId === 'native-bus-context' && event.isSourceLoaded) {
+                        sourceLoaded = true;
+                        finish();
+                      }
+                    };
+                    const onIdle = () => {
+                      mapIdle = true;
+                      finish();
+                    };
+                    map.on('sourcedata', onSourceData);
+                    map.on('idle', onIdle);
+                    map.getSource('native-bus-context').setData({
+                      type: 'FeatureCollection',
+                      features
+                    });
+                  });
                   const inspect = async (feature, layerId, toggle, safetyProbe = false) => {
                     if (!feature || !toggle) return false;
                     toggle.checked = true;
                     toggle.dispatchEvent(new Event('change', {bubbles: true}));
                     const position = firstPosition(feature.geometry?.coordinates);
                     if (!position) return false;
-                    map.jumpTo({center: position, zoom: 15});
-                    await waitForPaint();
-                    const point = map.project(position);
-                    const source = map.getSource('native-bus-context');
+                    await waitForIdleAfter(() => map.jumpTo({center: position, zoom: 15}));
                     const probeValue = '<img data-bus-safety-probe="true">';
                     const probeFeature = safetyProbe
-                      ? context.features.find(candidate =>
-                        candidate.properties?.kind === feature.properties?.kind
-                      )
+                      ? JSON.parse(JSON.stringify(feature))
                       : null;
-                    if (safetyProbe && !probeFeature) return false;
                     if (probeFeature) {
                       probeFeature.properties.__render_safety_probe = probeValue;
-                      source.setData({
-                        type: 'FeatureCollection',
-                        features: [...routes, ...interchanges]
-                      });
-                      await waitForPaint();
+                      await setBusSourceData([probeFeature]);
                     }
                     const currentPoint = map.project(position);
                     const currentFeature = map.queryRenderedFeatures(currentPoint, {
@@ -310,11 +334,7 @@ def _inspect_native_agentic(
                       }
                     }
                     if (probeFeature) {
-                      delete probeFeature.properties.__render_safety_probe;
-                      source.setData({
-                        type: 'FeatureCollection',
-                        features: [...routes, ...interchanges]
-                      });
+                      await setBusSourceData([...routes, ...interchanges]);
                     }
                     return safeText;
                   };
