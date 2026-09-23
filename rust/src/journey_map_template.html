@@ -329,7 +329,7 @@ button[data-route-inspect] { padding: .25rem .5rem; font-size: .88rem; }
     const direct = props.kind === 'direct';
     return [
       ['Full origin → town length', formatDistance(props.length_m)],
-      ['Feeder to spine', direct ? 'Unknown' : formatDistance(props.feeder_length_m)],
+      ['Rural access to terminal', direct ? 'Unknown' : formatDistance(props.feeder_length_m)],
       ['New rural link', direct ? 'Unknown' : formatDistance(props.new_link_length_m)],
       ['Shared branch length', direct ? 'Unknown' : formatDistance(props.shared_suffix_length_m)],
       ['Onward to destination', direct ? 'Unknown' : formatDistance(props.onward_length_m)],

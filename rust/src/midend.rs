@@ -26,7 +26,7 @@ const UNKNOWN: &str = "__unknown__";
 const NEEDS_EVIDENCE: &str = "__needs_evidence__";
 const NONE: &str = "__none__";
 const PLANNING_BRIEF: &str = "Choose the strategic active-travel alignment connecting the named places from the supplied route alternatives. Preserve A-road corridor importance and existing cycle-alignment evidence. Weigh source-supported directness and continuity without invented numeric weights. A role's search cost is not a cross-role quality score. Route selection does not establish provision, safety, access, or adoption. If required evidence is missing, choose an explicit unresolved option.";
-const RURAL_PLANNING_BRIEF: &str = "Choose one admitted rural community access path to the currently accepted frontier. Apply the owner goals to minimise unnecessary added feeder network and prefer a comfortable complete child-to-spine journey, using the supplied measured new-link and complete journey evidence, including ordered elevation variation and sustained gradient where supported. Make a focused qualitative comparison: missing numeric weights alone do not require abstention. If unknown facts or route coverage remain material, or no defensible preference can be stated, the evidence is unsupported and you must choose an explicit unresolved option; do not force a choice. Do not invent numeric weights, facts, safety, provision, access or adoption claims, treat missing evidence as zero, or select a path outside this retained offer.";
+const RURAL_PLANNING_BRIEF: &str = "Choose one admitted rural community access path to the currently accepted frontier, which may be an accepted strategic spine or a useful qualified sourced urban entry. Apply the owner goals to minimise unnecessary added feeder network and prefer a comfortable complete child-to-accepted-terminal journey, using the supplied measured new-link and complete journey evidence, including destination journeys as diagnostic evidence rather than a mandatory city-centre objective, ordered elevation variation and sustained gradient where supported, and the two separately named moving-time scenarios where supplied (the BRouter Trekking estimate and the hill-neutral sensitivity, which is not an e-bike ETA). A qualified OSM place extent is a source-backed urban-entry terminal, not an authority boundary or proof of provision. Make a focused qualitative comparison: missing numeric weights alone do not require abstention. If unknown facts or route coverage remain material, or no defensible preference can be stated, the evidence is unsupported and you must choose an explicit unresolved option; do not force a choice. Do not invent numeric weights, facts, safety, provision, access or adoption claims, treat missing evidence as zero, or select a path outside this retained offer.";
 
 #[derive(Debug)]
 pub enum MidendError {
@@ -388,7 +388,16 @@ impl HistoryStore {
                     existing.base_id, base.base_id
                 )));
             }
-            if serde_json::to_value(&existing.report)? != serde_json::to_value(&base.report)? {
+            // Compare the retained report with the exact representation that
+            // would be written for this incoming report.  Derived floating
+            // point fields can be one ULP away in memory from their persisted
+            // JSON spelling; comparing the in-memory value would reject a
+            // valid resume while comparing a text round-trip preserves strict
+            // binding to the retained report.
+            let incoming_persisted: CompileReport =
+                serde_json::from_str(&serde_json::to_string(&base.report)?)?;
+            if serde_json::to_value(&existing.report)? != serde_json::to_value(&incoming_persisted)?
+            {
                 return Err(MidendError::Invalid(
                     "incoming prepared report differs from the retained planning base".to_string(),
                 ));
@@ -1053,6 +1062,7 @@ fn run_rural_sequence(
                     .map_err(|error| MidendError::Invalid(error.to_string()))?;
                 if accepted.path_edge_ids != retained_candidate.access.path_edge_ids
                     || accepted.parent_community_id != retained_candidate.access.parent_community_id
+                    || accepted.urban_entry != retained_candidate.access.urban_entry
                 {
                     return Err(MidendError::Invalid(format!(
                         "rural candidate {candidate_id} changed while replaying task {}",
@@ -1096,7 +1106,19 @@ fn run_rural_sequence(
             store.append_task(&config.branch, task.clone())?;
         }
 
-        let operation = if let Some(candidate) = mechanical_rural_candidate(&offer) {
+        let has_retained_attempt = store
+            .attempt_result(&config.branch, &format!("attempt:{}:jev", task.task_id))?
+            .is_some()
+            || store
+                .attempt_result(
+                    &config.branch,
+                    &format!("attempt:{}:specialist", task.task_id),
+                )?
+                .is_some();
+        let mechanical_candidate = (!has_retained_attempt)
+            .then(|| mechanical_rural_candidate(&offer))
+            .flatten();
+        let operation = if let Some(candidate) = mechanical_candidate {
             rural_select_operation(
                 &task,
                 "mechanical:rural",
@@ -1179,6 +1201,10 @@ fn run_rural_sequence(
                     || accepted.root_spine_id.as_ref() != root_spine_id.as_ref()
                     || accepted.new_link_length_m != *new_link_length_m
                     || accepted.full_access_length_m != *full_access_length_m
+                    || accepted.urban_entry
+                        != rural_candidate_from_task(&task, candidate_id)?
+                            .access
+                            .urban_entry
                 {
                     return Err(MidendError::Invalid(format!(
                         "rural candidate {candidate_id} changed while accepting task {}",
@@ -1238,6 +1264,7 @@ fn run_rural_sequence(
             id: format!("rural:{}:gap", access.community_id),
             criterion: "unresolved-gap".to_string(),
             access: access.clone(),
+            destination_evidence: Vec::new(),
         };
         let offer = RuralAccessOffer {
             community_id: access.community_id.clone(),
@@ -1506,7 +1533,13 @@ fn make_rural_task(
                     "full_access_length_m": candidate.access.full_access_length_m,
                     "parent_community_id": candidate.access.parent_community_id,
                     "root_spine_id": candidate.access.root_spine_id,
+                    "urban_entry": candidate.access.urban_entry,
                     "topography": topography_summary(candidate.access.full_access_topography.as_ref()),
+                    "destination_evidence": candidate
+                        .destination_evidence
+                        .iter()
+                        .map(compact_destination_evidence)
+                        .collect::<Vec<_>>(),
                 }),
             )
         })
@@ -1695,6 +1728,15 @@ fn rural_classifier_operation(
     ))
 }
 
+fn specialist_decision_reason(payload: &serde_json::Map<String, Value>) -> Option<&str> {
+    payload
+        .get("reason")
+        .or_else(|| payload.get("decision_reason"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|reason| !reason.is_empty())
+}
+
 fn rural_specialist_operation(
     task: &DecisionTask,
     attempt_id: &str,
@@ -1721,7 +1763,7 @@ fn rural_specialist_operation(
             {
                 return None;
             }
-            let reason = payload.get("reason")?.as_str()?.trim();
+            let reason = specialist_decision_reason(payload)?;
             if reason.is_empty() {
                 return None;
             }
@@ -1749,7 +1791,7 @@ fn rural_specialist_operation(
             ))
         }
         "unresolved" => {
-            let reason = payload.get("reason")?.as_str()?.trim();
+            let reason = specialist_decision_reason(payload)?;
             if reason.is_empty() {
                 return None;
             }
@@ -1790,19 +1832,40 @@ fn mechanical_rural_candidate(
             .candidates
             .iter()
             .filter(|other| other.id != candidate.id)
-            .all(|other| rural_dominates(&candidate.access, &other.access))
+            .all(|other| rural_dominates(candidate, other))
     })
 }
 
-fn rural_dominates(left: &CommunityAccess, right: &CommunityAccess) -> bool {
-    let left_profile = left.full_access_topography.as_ref();
-    let right_profile = right.full_access_topography.as_ref();
-    let Some(left_metrics) = rural_metrics(left, left_profile) else {
+fn rural_dominates(
+    left: &crate::compiler::RuralAccessCandidate,
+    right: &crate::compiler::RuralAccessCandidate,
+) -> bool {
+    let left_access = &left.access;
+    let right_access = &right.access;
+    let left_profile = left_access.full_access_topography.as_ref();
+    let right_profile = right_access.full_access_topography.as_ref();
+    let Some(base_left_metrics) = rural_metrics(left_access, left_profile) else {
         return false;
     };
-    let Some(right_metrics) = rural_metrics(right, right_profile) else {
+    let Some(base_right_metrics) = rural_metrics(right_access, right_profile) else {
         return false;
     };
+    let mut left_metrics = base_left_metrics.to_vec();
+    let mut right_metrics = base_right_metrics.to_vec();
+    if let (Some(left_seconds), Some(right_seconds)) = (
+        rural_moving_time_seconds(left_profile),
+        rural_moving_time_seconds(right_profile),
+    ) {
+        left_metrics.push(left_seconds);
+        right_metrics.push(right_seconds);
+    }
+    if let (Some(left_seconds), Some(right_seconds)) = (
+        rural_hill_neutral_seconds(left_profile),
+        rural_hill_neutral_seconds(right_profile),
+    ) {
+        left_metrics.push(left_seconds);
+        right_metrics.push(right_seconds);
+    }
     let no_worse = left_metrics
         .iter()
         .zip(right_metrics.iter())
@@ -1833,6 +1896,25 @@ fn rural_metrics(
         .then_some(metrics)
 }
 
+fn rural_moving_time_seconds(
+    profile: Option<&crate::topography::RouteTopographyProfile>,
+) -> Option<f64> {
+    let profile = profile?;
+    let crate::travel_time::TravelTimeEstimate::Available { seconds, .. } =
+        &profile.estimated_moving_time
+    else {
+        return None;
+    };
+    seconds.is_finite().then_some(*seconds)
+}
+
+fn rural_hill_neutral_seconds(
+    profile: Option<&crate::topography::RouteTopographyProfile>,
+) -> Option<f64> {
+    let seconds = profile?.hill_neutral_moving_time.as_ref()?.seconds;
+    seconds.is_finite().then_some(seconds)
+}
+
 fn topography_summary(profile: Option<&crate::topography::RouteTopographyProfile>) -> Value {
     let Some(profile) = profile else {
         return Value::Null;
@@ -1840,17 +1922,68 @@ fn topography_summary(profile: Option<&crate::topography::RouteTopographyProfile
     json!({
         "availability": profile.availability,
         "reason": profile.reason,
-        "coverage": profile.coverage,
+        "coverage": {
+            "route_length_m": profile.coverage.route_length_m,
+            "start_m": profile.coverage.start_m,
+            "end_m": profile.coverage.end_m,
+            "maximum_gap_m": profile.coverage.maximum_gap_m,
+            "sample_count": profile.coverage.sample_count,
+        },
         "forward_ascent_m": profile.forward_ascent_m,
         "forward_descent_m": profile.forward_descent_m,
         "reverse_ascent_m": profile.reverse_ascent_m,
         "reverse_descent_m": profile.reverse_descent_m,
         "cumulative_elevation_variation_m": profile.cumulative_elevation_variation_m,
-        "sustained_gradient": profile.sustained_gradient,
-        "evidence_refs": profile.evidence_refs,
-        "source_refs": profile.source_refs,
-        "estimated_moving_time": profile.estimated_moving_time,
-        "hill_neutral_moving_time": profile.hill_neutral_moving_time,
+        "sustained_gradient": profile.sustained_gradient.as_ref().map(|gradient| json!({
+            "gradient_pct": gradient.gradient_pct,
+            "absolute_gradient_pct": gradient.absolute_gradient_pct,
+            "interval_length_m": gradient.interval_length_m,
+        })),
+        "estimated_moving_time": compact_travel_time(&profile.estimated_moving_time),
+        "hill_neutral_moving_time": compact_hill_neutral(profile.hill_neutral_moving_time.as_ref()),
+    })
+}
+
+fn compact_travel_time(value: &crate::travel_time::TravelTimeEstimate) -> Value {
+    match value {
+        crate::travel_time::TravelTimeEstimate::Available {
+            seconds,
+            minutes,
+            model,
+        } => json!({
+            "availability": "available",
+            "seconds": seconds,
+            "minutes": minutes,
+            "model": model.name,
+        }),
+        crate::travel_time::TravelTimeEstimate::Unknown { reason, model } => json!({
+            "availability": "unknown",
+            "reason": reason,
+            "model": model.name,
+        }),
+    }
+}
+
+fn compact_hill_neutral(value: Option<&crate::travel_time::HillNeutralMovingTime>) -> Value {
+    let Some(value) = value else {
+        return Value::Null;
+    };
+    json!({
+        "label": value.label,
+        "seconds": value.seconds,
+        "minutes": value.minutes,
+        "model": value.model.name,
+    })
+}
+
+fn compact_destination_evidence(evidence: &crate::compiler::RuralDestinationEvidence) -> Value {
+    json!({
+        "destination_id": evidence.destination_id,
+        "destination_name": evidence.destination_name,
+        "status": evidence.status,
+        "complete_route_length_m": evidence.complete_route_length_m,
+        "topography": topography_summary(evidence.complete_route_topography.as_ref()),
+        "reason": evidence.reason,
     })
 }
 
@@ -1877,6 +2010,7 @@ fn clear_unselected_rural_projection(access: &mut CommunityAccess) {
     access.parent_junction_fraction = None;
     access.parent_junction_remaining_m = None;
     access.root_spine_id = None;
+    access.urban_entry = None;
     access.admission_order = None;
     access.attachment_depth = None;
     access.new_link_length_m = None;
@@ -2217,7 +2351,7 @@ fn specialist_operation(
             if !allow_provisional || payload.get("provisional") != Some(&Value::Bool(true)) {
                 return None;
             }
-            let reason = payload.get("reason")?.as_str()?.trim();
+            let reason = specialist_decision_reason(payload)?;
             if reason.is_empty() {
                 return None;
             }
@@ -2248,7 +2382,7 @@ fn specialist_operation(
             })
         }
         "unresolved" => {
-            let reason = payload.get("reason")?.as_str()?.trim();
+            let reason = specialist_decision_reason(payload)?;
             if reason.is_empty() {
                 return None;
             }
@@ -2661,7 +2795,7 @@ fn specialist_prompt(task: &DecisionTask) -> Result<String, MidendError> {
             ..task.clone()
         };
         return Ok(format!(
-            "You are a SATN planning specialist. Use only the frozen rural task below. Do not call tools, browse, retrieve sources, inspect files, or add facts. Apply the owner goals to minimise unnecessary added feeder network and prefer a comfortable complete child-to-spine journey. Make a defensible qualitative provisional best judgment when the supplied evidence supports a comparative preference, and give a comparative reason plus material uncertainties. Missing numeric weights alone do not require abstention. Unknown facts or route coverage that are material to the choice, or no defensible preference, require unresolved; do not force a choice when the evidence is unsupported. Do not invent numeric weights, facts, safety, provision, access or adoption claims. Planning brief: {planning_brief} Return exactly one JSON object with {{\"proposal\":{{\"operation\":{{\"kind\":\"select-community-access\" or \"unresolved\",\"payload\":{{...}}}}}}}}. A select-community-access payload must copy an offered candidate_id from the options, set community_id when supplied, set provisional true, and include a concise decision reason plus a nonempty uncertainties list. An unresolved payload must include a concise reason and may include uncertainties. Do not include hidden chain of thought.\n\nFrozen rural planning task:\n{}\n",
+            "You are a SATN planning specialist. Use only the frozen rural task below. Do not call tools, browse, retrieve sources, inspect files, or add facts. Apply the owner goals to minimise unnecessary added feeder network and prefer a comfortable complete child-to-accepted-terminal journey, where the terminal may be an accepted strategic spine or a useful qualified sourced urban entry. Treat inside-town onward paths as diagnostic evidence, not a mandatory city-centre objective. Use the supplied ordered elevation evidence and the two separately named moving-time scenarios when present; the hill-neutral sensitivity is not an e-bike ETA. Make a defensible qualitative provisional best judgment when the supplied evidence supports a comparative preference, and give a comparative reason plus material uncertainties. Missing numeric weights alone do not require abstention. Unknown facts or route coverage that are material to the choice, or no defensible preference, require unresolved; do not force a choice when the evidence is unsupported. Do not invent numeric weights, facts, safety, provision, access or adoption claims. Planning brief: {planning_brief} Return exactly one JSON object with {{\"proposal\":{{\"operation\":{{\"kind\":\"select-community-access\" or \"unresolved\",\"payload\":{{...}}}}}}}}. A select-community-access payload must copy an offered candidate_id from the options, set community_id when supplied, set provisional true, and include a concise decision reason plus a nonempty uncertainties list. An unresolved payload must include a concise reason and may include uncertainties. Do not include hidden chain of thought.\n\nFrozen rural planning task:\n{}\n",
             serde_json::to_string_pretty(&frozen_task)?
         ));
     }
@@ -2693,4 +2827,135 @@ fn emit(
         status: status.to_string(),
         elapsed_ms: started.elapsed().as_millis(),
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compiler::{RuralAccessCandidate, RuralDestinationEvidence};
+    use crate::topography::{
+        RouteCoverage, RouteTopographyProfile, SustainedGradient, TopographyPolicy,
+    };
+    use crate::travel_time::{TravelTimeEstimate, brouter_trekking_v1_7_10};
+
+    fn profile(variation: f64, gradient: f64) -> RouteTopographyProfile {
+        RouteTopographyProfile {
+            availability: TopographyAvailability::Available,
+            reason: "fixture".to_string(),
+            evidence_file: "fixture.geojson".to_string(),
+            policy: TopographyPolicy {
+                evidence_tolerance_m: 5.0,
+                maximum_sample_spacing_m: 250.0,
+                minimum_sustained_spacing_m: 10.0,
+            },
+            evidence_refs: Vec::new(),
+            source_refs: Vec::new(),
+            coverage: RouteCoverage {
+                route_length_m: 10.0,
+                start_m: Some(0.0),
+                end_m: Some(10.0),
+                maximum_gap_m: Some(0.0),
+                sample_count: 2,
+            },
+            forward_ascent_m: Some(variation),
+            forward_descent_m: Some(0.0),
+            reverse_ascent_m: Some(0.0),
+            reverse_descent_m: Some(variation),
+            cumulative_elevation_variation_m: Some(variation),
+            sustained_gradient: Some(SustainedGradient {
+                gradient_pct: gradient,
+                absolute_gradient_pct: gradient,
+                interval_length_m: 10.0,
+                evidence_refs: Vec::new(),
+            }),
+            source_resolution_m: None,
+            output_sample_spacing_m: None,
+            vertical_accuracy_m: None,
+            estimated_moving_time: TravelTimeEstimate::Unknown {
+                reason: "fixture".to_string(),
+                model: brouter_trekking_v1_7_10(),
+            },
+            moving_time_boundary_extrapolation: None,
+            hill_neutral_moving_time: None,
+        }
+    }
+
+    fn candidate(id: &str, new_link: f64, full_access: f64) -> RuralAccessCandidate {
+        RuralAccessCandidate {
+            id: id.to_string(),
+            criterion: "fixture".to_string(),
+            access: CommunityAccess {
+                community_id: id.to_string(),
+                source_id: id.to_string(),
+                name: id.to_string(),
+                geometry: [0.0, 0.0],
+                status: "served".to_string(),
+                decision_class: "mechanical".to_string(),
+                is_primary: true,
+                attachment_node: None,
+                attachment_edge_id: None,
+                attachment_point: None,
+                attachment_fraction: None,
+                attachment_distance_m: Some(0.0),
+                parent_community_id: None,
+                parent_community_name: None,
+                parent_junction_node: None,
+                parent_junction_edge_id: None,
+                parent_junction_fraction: None,
+                parent_junction_remaining_m: None,
+                root_spine_id: Some("spine".to_string()),
+                admission_order: None,
+                attachment_depth: Some(0),
+                new_link_length_m: Some(new_link),
+                full_access_length_m: Some(full_access),
+                joined_spine_id: Some("spine".to_string()),
+                urban_entry: None,
+                access_length_m: Some(new_link),
+                path_edge_ids: vec![format!("edge:{id}")],
+                path_start_fraction: Some(0.0),
+                path_end_fraction: Some(1.0),
+                path_geometry: vec![[0.0, 0.0], [1.0, 0.0]],
+                onward_destinations: Vec::new(),
+                onward_benefits: Vec::new(),
+                joined_spine_reference: Some("Spine".to_string()),
+                provision_status: "unknown".to_string(),
+                reason: "fixture".to_string(),
+                new_link_topography: Some(profile(new_link, new_link)),
+                full_access_topography: Some(profile(new_link, new_link)),
+            },
+            destination_evidence: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn rural_mechanical_dominance_ignores_missing_destination_diagnostics() {
+        let mut left = candidate("left", 1.0, 2.0);
+        left.destination_evidence = vec![RuralDestinationEvidence {
+            destination_id: "town".to_string(),
+            destination_name: "Town".to_string(),
+            status: "available".to_string(),
+            complete_route_length_m: Some(10.0),
+            complete_route_topography: Some(profile(1.0, 1.0)),
+            reason: None,
+        }];
+        let mut right = candidate("right", 2.0, 3.0);
+        right.destination_evidence = vec![RuralDestinationEvidence {
+            destination_id: "town".to_string(),
+            destination_name: "Town".to_string(),
+            status: "unavailable".to_string(),
+            complete_route_length_m: None,
+            complete_route_topography: None,
+            reason: Some("diagnostic route unavailable".to_string()),
+        }];
+        let offer = RuralAccessOffer {
+            community_id: "left".to_string(),
+            community_name: "Left".to_string(),
+            candidates: vec![left, right],
+        };
+
+        assert_eq!(
+            mechanical_rural_candidate(&offer).map(|candidate| candidate.id.as_str()),
+            Some("left")
+        );
+    }
 }

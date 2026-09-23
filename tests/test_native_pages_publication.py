@@ -283,6 +283,80 @@ def _make_on_spine_decision_point(bundle: Path, *, include_access: bool) -> None
         path.write_text(json.dumps(document), encoding="utf-8")
 
 
+def _add_serialized_urban_entry_features(bundle: Path) -> None:
+    network_path = bundle / "decision-map.geojson"
+    network = json.loads(network_path.read_text(encoding="utf-8"))
+    urban_entry = {
+        "kind": "urban-entry",
+        "destination_id": "place:bath",
+        "destination_name": "Bath",
+        "extent_source_id": "osm:relation:5342409",
+        "crossing_edge_id": "edge:urban-entry",
+        "crossing_fraction": 0.5,
+        "crossing_point": [-1.75, 51.2],
+    }
+    topography = {
+        "availability": "available",
+        "forward_ascent_m": 120.0,
+        "forward_descent_m": 80.0,
+        "cumulative_elevation_variation_m": 200.0,
+        "estimated_moving_time": {
+            "availability": "available",
+            "minutes": 14.5,
+            "seconds": 870.0,
+            "model": "BRouter Trekking v1.7.10",
+        },
+        "hill_neutral_moving_time": {
+            "label": "Hill-neutral sensitivity (not an e-bike ETA)",
+            "minutes": 11.2,
+            "seconds": 672.0,
+            "model": "BRouter Trekking v1.7.10",
+        },
+    }
+    selected = next(
+        feature
+        for feature in network["features"]
+        if feature["properties"].get("kind") == "selected-alignment"
+    )
+    selected["properties"].update(
+        {
+            "community_id": "community:urban",
+            "community_name": "Englishcombe",
+            "terminal_kind": "urban-entry",
+            "terminal_source_id": "osm:relation:5342409",
+            "urban_entry": json.dumps(urban_entry),
+            "full_access_topography": json.dumps(topography),
+        }
+    )
+    network["features"].append(
+        {
+            "type": "Feature",
+            "properties": {
+                "kind": "community-access",
+                "community_id": "community:urban",
+                "name": "Englishcombe",
+                "status": "served",
+                "decision_class": "mechanical",
+                "is_primary": True,
+                "terminal_kind": "urban-entry",
+                "terminal_source_id": "osm:relation:5342409",
+                "urban_entry": json.dumps(urban_entry),
+                "full_access_topography": json.dumps(topography),
+                "new_link_length_m": 793.964,
+                "full_access_length_m": 793.964,
+                "provision_status": "unknown",
+            },
+            "geometry": {"type": "Point", "coordinates": [-1.75, 51.2]},
+        }
+    )
+    network_path.write_text(json.dumps(network), encoding="utf-8")
+    for filename in ("publication.json", "decision-map.json"):
+        path = bundle / filename
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["counts"]["community_access"] = 1
+        path.write_text(json.dumps(document), encoding="utf-8")
+
+
 def test_package_pages_accepts_a_valid_zero_length_on_spine_decision_point(
     tmp_path: Path,
 ) -> None:
@@ -661,6 +735,98 @@ def test_native_map_supports_public_feature_inspection_reset_and_layer_toggle(
                 )
                 page.close()
                 context.close()
+        finally:
+            browser.close()
+
+
+@pytest.mark.browser
+def test_native_map_labels_serialized_urban_entry_without_spine_claim(
+    tmp_path: Path,
+) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    _write_native_catalogue(catalogue)
+    _write_native_bundle(bundles)
+    _add_serialized_urban_entry_features(bundles / "native-area")
+    result = package_pages(
+        catalogue,
+        bundles,
+        tmp_path / "pages",
+        tmp_path / "satn-pages.zip",
+    )
+
+    with (
+        VALIDATOR._serve(result.pages_directory) as origin,
+        VALIDATOR.sync_playwright() as playwright,
+    ):
+        executable = os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE")
+        browser = playwright.chromium.launch(headless=True, executable_path=executable)
+        try:
+            page = browser.new_page(viewport={"width": 1280, "height": 900})
+            page.goto(f"{origin}/deployments/native-area/index.html", wait_until="domcontentloaded")
+            page.wait_for_function(
+                "() => document.documentElement.dataset.nativeReady === 'true' && "
+                "window.SATN_NATIVE_MAP?.isStyleLoaded()"
+            )
+            page.wait_for_function(
+                "() => window.SATN_NATIVE_MAP.queryRenderedFeatures({layers: "
+                "['native-community-access-point']}).length > 0"
+            )
+
+            def click_feature(layer: str) -> None:
+                page.wait_for_function(
+                    """layer => {
+                      const map = window.SATN_NATIVE_MAP;
+                    return map && !map.isMoving() &&
+                        map.queryRenderedFeatures({layers: [layer]}).length > 0;
+                    }""",
+                    arg=layer,
+                )
+                point = page.evaluate(
+                    """layer => {
+                      const map = window.SATN_NATIVE_MAP;
+                      const feature = map.queryRenderedFeatures({layers: [layer]})[0];
+                      if (!feature) return null;
+                      const coordinates = feature.geometry.type === 'Point'
+                        ? feature.geometry.coordinates
+                        : feature.geometry.coordinates.length === 2
+                          ? [
+                              (feature.geometry.coordinates[0][0] +
+                                feature.geometry.coordinates[1][0]) / 2,
+                              (feature.geometry.coordinates[0][1] +
+                                feature.geometry.coordinates[1][1]) / 2,
+                            ]
+                          : feature.geometry.coordinates[0];
+                      const screen = map.project(coordinates);
+                      if (!map.queryRenderedFeatures(
+                        [screen.x, screen.y], {layers: [layer]}
+                      ).length) return null;
+                      const rect = map.getContainer().getBoundingClientRect();
+                      return {x: screen.x + rect.left, y: screen.y + rect.top};
+                    }""",
+                    layer,
+                )
+                assert point is not None
+                page.mouse.click(point["x"], point["y"])
+                page.wait_for_selector(".maplibregl-popup")
+
+            click_feature("native-community-access-point")
+            community_text = page.locator("#native-feature-details").inner_text()
+            community_popup = page.locator(".maplibregl-popup-content").inner_text()
+            assert "Urban entry to Bath" in community_text
+            assert "Urban extent source" in community_text
+            assert "osm:relation:5342409" in community_text
+            assert "estimated moving time 14.5 min" in community_text
+            assert "Hill-neutral sensitivity (not an e-bike ETA): 11.2 min" in community_text
+            assert "Primary spine access" not in community_text
+            assert "Urban entry to Bath" in community_popup
+
+            page.locator(".maplibregl-popup-close-button").click()
+            page.locator("[data-native-clear]").click()
+            click_feature("native-selected")
+            selected_text = page.locator("#native-feature-details").inner_text()
+            assert "Urban entry to Bath" in selected_text
+            assert "Primary spine access" not in selected_text
         finally:
             browser.close()
 

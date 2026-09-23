@@ -195,6 +195,237 @@ fn prepared_rural_planner_caches_offer_and_accepts_only_offered_path() {
 }
 
 #[test]
+fn rural_offer_exposes_townward_frontier_candidate_and_journey_evidence() {
+    let root = tempfile_root("satn-rs-townward-offer");
+    let snapshot = root.join("snapshot");
+    fs::create_dir_all(&snapshot).expect("snapshot directory");
+    fs::write(
+        root.join("area.yaml"),
+        format!(
+            "area_id: fixture\narea_name: Fixture\nsource:\n  snapshot_dir: {}\n  snapshot_id: snapshot\n  community_place_types: [village]\ncompilation:\n  max_connection_km: 15\n",
+            root.display()
+        ),
+    )
+    .expect("area config");
+
+    let mut edges = Vec::new();
+    // The nearer strategic target points away from the admitted town.
+    add_bidirectional(
+        &mut edges,
+        "community",
+        "wrong-entry",
+        [0.0, 0.0],
+        [0.001, 0.0],
+        5.0,
+        "residential",
+        None,
+        None,
+    );
+    add_bidirectional(
+        &mut edges,
+        "wrong-entry",
+        "wrong-spine",
+        [0.001, 0.0],
+        [0.002, 0.0],
+        5.0,
+        "primary",
+        Some("A1"),
+        None,
+    );
+    // The townward target is farther as a new link, but its onward journey is
+    // the useful complete route.
+    add_bidirectional(
+        &mut edges,
+        "community",
+        "town-entry",
+        [0.0, 0.0],
+        [0.0, 0.001],
+        12.0,
+        "residential",
+        None,
+        None,
+    );
+    add_bidirectional(
+        &mut edges,
+        "town-entry",
+        "town-spine",
+        [0.0, 0.001],
+        [0.001, 0.001],
+        3.0,
+        "primary",
+        Some("A2"),
+        None,
+    );
+    add_bidirectional(
+        &mut edges,
+        "town-spine",
+        "town",
+        [0.001, 0.001],
+        [0.002, 0.001],
+        1.0,
+        "residential",
+        None,
+        None,
+    );
+    write_collection(&snapshot.join("network.geojson"), edges);
+    write_collection(
+        &snapshot.join("places.geojson"),
+        vec![
+            place("community", "Community", "village", [0.0, 0.0]),
+            place("town", "Town", "town", [0.002, 0.001]),
+        ],
+    );
+
+    let prepared = prepare_with_progress(
+        &root.join("area.yaml"),
+        CompileOptions::default(),
+        &mut |_| {},
+    )
+    .expect("prepared destination-aware fixture");
+    let mut planner = prepared.rural_planner();
+    let offer = planner
+        .offer_next()
+        .expect("townward offer result")
+        .expect("townward offer");
+    let townward = offer
+        .candidates
+        .iter()
+        .find(|candidate| candidate.criterion == "townward-destination")
+        .expect("townward candidate should be offered");
+    let evidence = townward
+        .destination_evidence
+        .iter()
+        .find(|evidence| evidence.destination_name == "Town")
+        .expect("townward journey evidence");
+    assert_eq!(evidence.status, "available");
+    assert_eq!(evidence.complete_route_length_m, Some(16.0));
+    assert!(evidence.complete_route_topography.is_some());
+}
+
+#[test]
+fn townward_candidate_stops_at_an_accepted_partial_frontier() {
+    let root = tempfile_root("satn-rs-townward-partial-frontier");
+    let snapshot = root.join("snapshot");
+    fs::create_dir_all(&snapshot).expect("snapshot directory");
+    fs::write(
+        root.join("area.yaml"),
+        format!(
+            "area_id: fixture\narea_name: Fixture\nsource:\n  snapshot_dir: {}\n  snapshot_id: snapshot\n  community_place_types: [village]\ncompilation:\n  max_connection_km: 15\n",
+            root.display()
+        ),
+    )
+    .expect("area config");
+
+    let mut edges = Vec::new();
+    add_bidirectional(
+        &mut edges,
+        "community",
+        "wrong-entry",
+        [0.0, 0.0],
+        [0.001, 0.0],
+        5.0,
+        "residential",
+        None,
+        None,
+    );
+    add_bidirectional(
+        &mut edges,
+        "wrong-entry",
+        "wrong-spine",
+        [0.001, 0.0],
+        [0.002, 0.0],
+        5.0,
+        "primary",
+        Some("A1"),
+        None,
+    );
+    add_bidirectional(
+        &mut edges,
+        "community",
+        "town-entry",
+        [0.0, 0.0],
+        [0.0, 0.001],
+        12.0,
+        "residential",
+        None,
+        None,
+    );
+    add_bidirectional(
+        &mut edges,
+        "town-entry",
+        "town-spine",
+        [0.0, 0.001],
+        [0.001, 0.001],
+        3.0,
+        "primary",
+        Some("A2"),
+        None,
+    );
+    add_bidirectional(
+        &mut edges,
+        "town-spine",
+        "town",
+        [0.001, 0.001],
+        [0.002, 0.001],
+        1.0,
+        "residential",
+        None,
+        None,
+    );
+    write_collection(&snapshot.join("network.geojson"), edges);
+    write_collection(
+        &snapshot.join("places.geojson"),
+        vec![
+            place("community", "Community", "village", [0.0001, 0.0]),
+            place("parent", "Parent", "village", [0.0, 0.00075]),
+            place("town", "Town", "town", [0.002, 0.001]),
+        ],
+    );
+
+    let prepared = prepare_with_progress(
+        &root.join("area.yaml"),
+        CompileOptions::default(),
+        &mut |_| {},
+    )
+    .expect("prepared partial-frontier fixture");
+    let mut planner = prepared.rural_planner();
+    let parent_offer = planner
+        .offer_next()
+        .expect("parent offer result")
+        .expect("parent offer");
+    assert_eq!(parent_offer.community_id, "parent");
+    let parent_id = parent_offer
+        .candidates
+        .iter()
+        .find(|candidate| candidate.criterion == "shortest-new-link")
+        .expect("parent shortest candidate")
+        .id
+        .clone();
+    planner.accept(&parent_id).expect("accept parent");
+
+    let offer = planner
+        .offer_next()
+        .expect("child offer result")
+        .expect("child offer");
+    let townward = offer
+        .candidates
+        .iter()
+        .find(|candidate| candidate.criterion == "townward-destination")
+        .expect("townward candidate");
+    assert_eq!(
+        townward.access.parent_community_id.as_deref(),
+        Some("parent")
+    );
+    assert_eq!(townward.access.new_link_length_m, Some(9.5));
+    let evidence = townward
+        .destination_evidence
+        .iter()
+        .find(|evidence| evidence.destination_name == "Town")
+        .expect("townward journey evidence");
+    assert_eq!(evidence.complete_route_length_m, Some(16.5));
+}
+
+#[test]
 fn rural_access_uses_measured_graph_paths_and_exposes_gaps_without_routing_schools() {
     let root = tempfile_root("satn-rs-rural-access");
     let snapshot = root.join("snapshot");
@@ -1174,6 +1405,136 @@ fn rural_access_attaches_to_nearest_edge_interior_with_measured_partial_length()
     assert_eq!(comparison.direct.length_m, 560.0);
     assert_eq!(comparison.selected.feeder_length_m, Some(500.0));
     assert_eq!(comparison.selected.onward_length_m, Some(60.0));
+}
+
+#[test]
+fn sourced_urban_extent_clips_rural_access_at_first_directed_entry() {
+    let root = tempfile_root("satn-rs-urban-entry-red");
+    let snapshot = root.join("snapshot");
+    fs::create_dir_all(&snapshot).expect("snapshot directory");
+    fs::write(
+        root.join("area.yaml"),
+        format!(
+            "area_id: fixture\narea_name: Fixture\nsource:\n  snapshot_dir: {}\n  snapshot_id: snapshot\n  community_place_types: [village]\ncompilation:\n  max_connection_km: 15\n",
+            root.display()
+        ),
+    )
+    .expect("area config");
+
+    let mut edges = Vec::new();
+    add_bidirectional(
+        &mut edges,
+        "community",
+        "urban-edge",
+        [0.0, 0.0],
+        [0.001, 0.0],
+        100.0,
+        "residential",
+        None,
+        None,
+    );
+    add_bidirectional(
+        &mut edges,
+        "child",
+        "community",
+        [0.0002, 0.0002],
+        [0.0, 0.0],
+        10.0,
+        "residential",
+        None,
+        None,
+    );
+    add_bidirectional(
+        &mut edges,
+        "urban-edge",
+        "spine",
+        [0.001, 0.0],
+        [0.002, 0.0],
+        100.0,
+        "primary",
+        Some("A1"),
+        None,
+    );
+    write_collection(&snapshot.join("network.geojson"), edges);
+    write_collection(
+        &snapshot.join("places.geojson"),
+        vec![
+            place("community", "Community", "village", [0.0, 0.0]),
+            place("child", "Child", "village", [0.0002, 0.0002]),
+        ],
+    );
+    write_collection(
+        &snapshot.join("osm-place-features.geojson"),
+        vec![
+            json!({
+                "type": "Feature",
+                "properties": {"id": 1947201, "name": "Bath", "place": "city", "wikidata": "Q22889"},
+                "geometry": {"type": "Point", "coordinates": [0.001, 0.0]}
+            }),
+            json!({
+                "type": "Feature",
+                "properties": {"id": 5342499, "name": "Bath", "place": "city", "boundary": "administrative", "wikidata": "Q22889"},
+                "geometry": {"type": "Polygon", "coordinates": [[[0.0007, -0.0002], [0.0013, -0.0002], [0.0013, 0.0002], [0.0007, 0.0002], [0.0007, -0.0002]]]}
+            }),
+            json!({
+                "type": "Feature",
+                "properties": {"id": 5342409, "name": "Bath", "place": "city", "boundary": "place", "wikidata": "Q22889"},
+                "geometry": {"type": "Polygon", "coordinates": [[[0.0008, -0.0001], [0.0012, -0.0001], [0.0012, 0.0001], [0.0008, 0.0001], [0.0008, -0.0001]]]}
+            }),
+        ],
+    );
+
+    let report = compile(
+        &root.join("area.yaml"),
+        &root.join("output"),
+        CompileOptions::default(),
+    )
+    .expect("urban entry fixture compiles");
+    let access = report
+        .community_access
+        .iter()
+        .find(|access| access.community_id == "community" && access.is_primary)
+        .expect("primary community access");
+    assert_eq!(access.status, "urban-entry");
+    assert_eq!(access.new_link_length_m, Some(80.0));
+    assert_eq!(access.root_spine_id, None);
+    assert_eq!(access.joined_spine_id, None);
+    assert_eq!(
+        access
+            .urban_entry
+            .as_ref()
+            .map(|entry| entry.destination_id.as_str()),
+        Some("1947201")
+    );
+    assert_eq!(
+        access
+            .urban_entry
+            .as_ref()
+            .map(|entry| entry.extent_source_id.as_str()),
+        Some("5342409")
+    );
+    assert!(
+        (access
+            .urban_entry
+            .as_ref()
+            .expect("urban terminal")
+            .fraction
+            - 0.8)
+            .abs()
+            < 1e-12
+    );
+
+    let child = report
+        .community_access
+        .iter()
+        .find(|access| access.community_id == "child" && access.is_primary)
+        .expect("child access inherited from urban terminal");
+    assert_eq!(child.parent_community_id.as_deref(), Some("community"));
+    assert_eq!(child.root_spine_id, None);
+    assert_eq!(child.joined_spine_id, None);
+    assert_eq!(child.urban_entry, access.urban_entry);
+    assert_eq!(child.new_link_length_m, Some(10.0));
+    assert_eq!(child.full_access_length_m, Some(90.0));
 }
 
 fn place(id: &str, name: &str, class: &str, point: [f64; 2]) -> Value {

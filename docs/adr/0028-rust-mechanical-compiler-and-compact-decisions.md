@@ -100,8 +100,25 @@ Mechanical branch construction alone must not be described as classifier-driven
 comfort selection. The existing classifier and reasoning escalation workflow
 handles unresolved judgments once route evidence is available.
 
-The owner requested estimated cycling moving time alongside route distance and
-terrain comparisons. The initial explicit rider assumption is the published
+The owner's Englishcombe-to-Bath review on 2026-09-23 clarified that rural
+strategic access may terminate at a useful urban entry. It must not require a
+detour to an internal A-road spine or the town centre. Admit graph-bound entries
+from sourced urban extents alongside strategic spines and accepted branches;
+clip the rural connection at its actual directed crossing. Retain terminal kind
+and source, including through shared parent branches. Complete town journeys
+remain diagnostic evidence rather than the strategic access objective.
+
+For the pinned B&NES proof, Bath's OSM place boundary (relation 5342409) is a
+qualified POC extent linked to the admitted city by source identity. It is not
+asserted to be a surveyed built-up edge. Other towns without sourced extents
+remain unknown; an authority boundary or invented buffer is not a substitute.
+Urban onward journeys may use connected cycling-permitted streets without
+promoting every residential street into the strategic backbone. A mapped 20 mph
+limit is source context, not a cycling speed or proof of safe provision. Keep
+added network, time and terrain separate rather than inventing combined weights.
+
+The subsequent travel-time request adds estimated cycling moving time to the
+same comparisons. The initial explicit rider assumption is the published
 [BRouter Trekking v1.7.10 profile](https://github.com/abrensch/brouter/blob/4d2639af77ea5ed9c30d3e400764eb6f9e8522da/misc/profiles2/trekking.brf):
 90 kg total mass, 100 W rider power, 0.225 effective cubic drag coefficient,
 0.01 rolling resistance and 45 km/h maximum speed. These are a named model's
