@@ -347,7 +347,13 @@ def test_package_pages_does_not_replay_compiler_provenance(tmp_path: Path) -> No
 
 def test_pages_workflow_extracts_release_and_runs_browser_gate_before_upload() -> None:
     workflow = (PROJECT / ".github" / "workflows" / "pages.yml").read_text(encoding="utf-8")
-    assert "gh release download" in workflow
+    assert "gh release download" not in workflow
+    assert "gh api \"repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG\" --jq '.id'" in workflow
+    assert "gh api --paginate --slurp \\" in workflow
+    assert '"repos/$GITHUB_REPOSITORY/releases/$release_id/assets"' in workflow
+    assert 'select(.name == "satn-pages.zip")' in workflow
+    assert '"repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"' in workflow
+    assert "-H 'Accept: application/octet-stream'" in workflow
     assert "unzip -q release/satn-pages.zip -d pages" in workflow
     assert "scripts/validate_pages_rendering.py pages" in workflow
     assert workflow.index("scripts/validate_pages_rendering.py pages") < workflow.index(

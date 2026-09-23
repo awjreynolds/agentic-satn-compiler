@@ -48,9 +48,22 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.verify-release.outputs.release_tag }}
-        run: >-
-          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
-          --pattern satn-pages.zip --dir release
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.id')"
+          gh api --paginate --slurp \
+            "repos/$GITHUB_REPOSITORY/releases/$release_id/assets" \
+            > "$RUNNER_TEMP/release-assets.json"
+          asset_id="$(jq --exit-status -r '
+            add
+            | map(select(.name == "satn-pages.zip"))
+            | if length == 1 then .[0].id
+              else error("expected exactly one satn-pages.zip release asset")
+              end
+          ' "$RUNNER_TEMP/release-assets.json")"
+          gh api "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" \
+            -H 'Accept: application/octet-stream' > release/satn-pages.zip
       - name: Extract generated Pages release artifact
         run: unzip -q release/satn-pages.zip -d pages
       - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
