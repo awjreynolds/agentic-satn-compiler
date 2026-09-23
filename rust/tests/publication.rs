@@ -3,8 +3,9 @@ use std::process::Command;
 
 use satn_rs::midend::{MidendRun, PlanningBase, TypedOperation};
 use satn_rs::{
-    AccessObligation, AccountingSummary, Candidate, CommunityAccess, CompileReport, Connection,
-    NetworkPlace, SchoolContext, SourceCorridor, UnknownFact, UrbanEntry, load_retained_report,
+    AccessObligation, AccountingSummary, Candidate, CandidateNeighbourhood,
+    CandidateNeighbourhoodGeometry, CommunityAccess, CompileReport, Connection, NetworkPlace,
+    SchoolContext, SourceCorridor, UnknownFact, UrbanEntry, load_retained_report,
     publish_decision_map,
 };
 use serde_json::{Value, json};
@@ -200,6 +201,7 @@ fn publishes_compact_decision_map_with_real_departure_sections() {
     assert!(html.contains("data-layer-toggle=\"school-context\""));
     assert!(html.contains("native-school-context"));
     assert!(html.contains("data-layer-toggle=\"community-access\""));
+    assert!(!html.contains("data-layer-toggle=\"candidate-neighbourhood\""));
     assert!(html.contains("native-community-access"));
     assert!(html.contains("Parent community"));
     assert!(html.contains("New link distance"));
@@ -303,6 +305,127 @@ fn publication_retains_typed_urban_entry_terminal_fields() {
         );
         assert!(feature["properties"]["root_spine_id"].is_null());
     }
+}
+
+#[test]
+fn publication_preserves_candidate_neighbourhood_polygon_holes_and_provenance() {
+    let root = tempfile_root("satn-rs-publication-candidate-neighbourhood");
+    let mut report = report_fixture();
+    report.candidate_neighbourhoods = vec![CandidateNeighbourhood {
+        id: "candidate-neighbourhood:extent:bath:001".to_string(),
+        urban_extent_source_id: "extent:bath".to_string(),
+        urban_extent_name: "Bath".to_string(),
+        area_m2: 12_345.5,
+        source_dataset_ids: vec!["official-classified-roads".to_string()],
+        source_effective_dates: vec!["2026-08-01".to_string()],
+        source_licences: vec!["Open Government Licence".to_string()],
+        source_classifications: vec![
+            "a-road".to_string(),
+            "b-road".to_string(),
+            "classified-unnumbered".to_string(),
+        ],
+        geometry: CandidateNeighbourhoodGeometry {
+            geometry_type: "Polygon".to_string(),
+            coordinates: vec![
+                vec![
+                    [-2.36, 51.38],
+                    [-2.35, 51.38],
+                    [-2.35, 51.39],
+                    [-2.36, 51.39],
+                    [-2.36, 51.38],
+                ],
+                vec![
+                    [-2.358, 51.382],
+                    [-2.357, 51.382],
+                    [-2.357, 51.383],
+                    [-2.358, 51.383],
+                    [-2.358, 51.382],
+                ],
+            ],
+        },
+    }];
+    let run = MidendRun {
+        branch: "review-branch".to_string(),
+        base_id: "base:fixture:snapshot".to_string(),
+        status: "unresolved".to_string(),
+        task_ids: Vec::new(),
+        operations: Vec::new(),
+        community_access: Vec::new(),
+    };
+
+    publish_decision_map(&root, &report, &run).expect("publish candidate neighbourhood map");
+
+    let geojson: Value = serde_json::from_str(
+        &fs::read_to_string(root.join("decision-map.geojson")).expect("GeoJSON output"),
+    )
+    .expect("valid decision GeoJSON");
+    let feature = geojson["features"]
+        .as_array()
+        .expect("features")
+        .iter()
+        .find(|feature| feature["properties"]["kind"] == "candidate-neighbourhood")
+        .expect("candidate neighbourhood feature");
+    assert_eq!(
+        feature["properties"]["candidate_neighbourhood_id"],
+        "candidate-neighbourhood:extent:bath:001"
+    );
+    assert_eq!(feature["geometry"]["type"], "Polygon");
+    assert_eq!(
+        feature["geometry"]["coordinates"],
+        json!([
+            [
+                [-2.36, 51.38],
+                [-2.35, 51.38],
+                [-2.35, 51.39],
+                [-2.36, 51.39],
+                [-2.36, 51.38]
+            ],
+            [
+                [-2.358, 51.382],
+                [-2.357, 51.382],
+                [-2.357, 51.383],
+                [-2.358, 51.383],
+                [-2.358, 51.382]
+            ]
+        ])
+    );
+    assert_eq!(
+        feature["properties"]["urban_extent_source_id"],
+        "extent:bath"
+    );
+    assert_eq!(feature["properties"]["urban_extent_name"], "Bath");
+    assert_eq!(feature["properties"]["area_m2"], 12_345.5);
+    assert_eq!(
+        feature["properties"]["source_dataset_ids"],
+        json!(["official-classified-roads"])
+    );
+    assert_eq!(
+        feature["properties"]["source_effective_dates"],
+        json!(["2026-08-01"])
+    );
+    assert_eq!(
+        feature["properties"]["source_licences"],
+        json!(["Open Government Licence"])
+    );
+    assert_eq!(
+        feature["properties"]["source_classifications"],
+        json!(["a-road", "b-road", "classified-unnumbered"])
+    );
+    assert_eq!(
+        feature["properties"]["interpretation"],
+        "Candidate enclosure; it does not establish existing low-traffic conditions, safe crossings, or legal access."
+    );
+    assert!(feature["properties"].get("source_road_ids").is_none());
+
+    let html = fs::read_to_string(root.join("index.html")).expect("HTML output");
+    assert!(html.contains("data-layer-toggle=\"candidate-neighbourhood\""));
+    assert!(html.contains("native-candidate-neighbourhood"));
+    assert!(html.contains("native-highlight-polygon"));
+    assert!(html.contains("Official source datasets"));
+    assert!(html.contains("Dataset effective dates"));
+    assert!(html.contains("Dataset licences"));
+    assert!(html.contains("Admitted source classifications"));
+    assert!(html.contains("Measured area"));
 }
 
 #[test]
@@ -829,6 +952,7 @@ fn report_fixture() -> CompileReport {
                 vec!["unresolved-edge"],
             ),
         ],
+        candidate_neighbourhoods: Vec::new(),
         operations: Vec::new(),
     }
 }

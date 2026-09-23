@@ -60,6 +60,10 @@ _Avoid_: colour-only key, hidden help, always-visible unrelated legend
 An urban network area with defined portals and sufficiently permeable low-traffic internal streets or paths that an Alignment Option need not assert one exact centreline through it.
 _Avoid_: single route, Community boundary, guaranteed LTN
 
+**Classified-Road Enclosure**:
+A complete planar area bounded by officially classified roads, proposed as a candidate neighbourhood for review. Its boundary does not establish low traffic, connected internal streets, safe crossings or an adopted scheme. An urban extent selects relevant enclosures without becoming part of their boundary; area is descriptive rather than a size requirement.
+_Avoid_: existing LTN, connected neighbourhood, size-qualified cell
+
 **Candidate Low-Traffic Area**:
 A proposed Low-Traffic Area inferred from a connected unclassified-street fabric enclosed by Urban Main-Road Spines and, where necessary, non-road settlement edges. Existing through traffic creates an intervention need rather than turning an internal street into a spine, and the area does not claim that low-traffic conditions already exist.
 _Avoid_: existing LTN, administrative neighbourhood, quiet-road assumption

@@ -12,6 +12,10 @@ pinned sources and area configuration
 
 Build and run from the repository root, with the configured snapshot present:
 
+Building requires CMake and a C++ compiler as well as Rust. Classified-road
+polygonization uses statically linked GEOS; the first build compiles the bundled
+library, while the resulting executable needs no separate GEOS installation.
+
 ```sh
 cargo build --release --manifest-path rust/Cargo.toml --locked
 ./rust/target/release/satn-rs \
@@ -32,6 +36,13 @@ topology. Candidate generation is recorded separately from alignment selection.
 Urban attachment uses the configured scope. Prepared urban connections come
 from graph adjacency; the legacy rural-backbone distance limit does not cap
 their routed length.
+
+Candidate neighbourhoods are complete planar enclosures formed from official A,
+B and Classified Unnumbered roads, selected where they intersect an admitted
+urban extent. They are not clipped to that extent or subdivided by size. Dataset
+provenance and measured area support inspection; individual boundary-road
+attribution and internal neighbourhood connectivity are not claimed. The layer
+does not alter route selection or establish existing low traffic or safe access.
 
 Each prepared connection searches the same directed graph four times: `direct`
 uses measured edge length, `strategic-spine` uses `0.35 × length` for an A-road

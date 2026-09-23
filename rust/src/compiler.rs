@@ -6,6 +6,7 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::candidate_neighbourhoods::{CandidateNeighbourhood, derive_candidate_neighbourhoods};
 use crate::config::AreaConfig;
 use crate::error::{Result, SatnError};
 use crate::geojson::{
@@ -506,6 +507,8 @@ pub struct CompileReport {
     pub accounting: AccountingSummary,
     pub connections: Vec<Connection>,
     pub candidates: Vec<Candidate>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidate_neighbourhoods: Vec<CandidateNeighbourhood>,
     pub operations: Vec<Operation>,
 }
 
@@ -707,6 +710,12 @@ pub fn prepare_with_progress(
     } else {
         admit_places(&place_labels, boundary_scope.as_ref())
     };
+    let urban_extents = places
+        .iter()
+        .filter_map(|place| place.urban_extent.as_ref().cloned())
+        .collect::<Vec<_>>();
+    let candidate_neighbourhoods =
+        derive_candidate_neighbourhoods(&official_features, &urban_extents)?;
     let network_places = admit_network_places(
         &places_features,
         boundary_scope.as_ref(),
@@ -837,6 +846,7 @@ pub fn prepare_with_progress(
         accounting: AccountingSummary::default(),
         connections,
         candidates,
+        candidate_neighbourhoods,
         operations,
     };
     let report = report.with_community_access(Vec::new());
