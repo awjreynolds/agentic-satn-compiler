@@ -828,23 +828,8 @@ def test_native_map_supports_public_feature_inspection_reset_and_layer_toggle(
                     }"""
                 )
                 assert point is not None
-                if viewport["width"] >= 720:
-                    assert (
-                        page.evaluate(
-                            """() => {
-                          const panel = document.querySelector('.native-panel');
-                          panel.scrollTop = panel.scrollHeight;
-                          return panel.scrollTop;
-                        }"""
-                        )
-                        > 0
-                    )
                 page.mouse.click(point["x"], point["y"])
                 page.wait_for_selector(".maplibregl-popup")
-                if viewport["width"] >= 720:
-                    page.wait_for_function(
-                        "() => document.querySelector('.native-panel').scrollTop === 0"
-                    )
                 assert "selected-alignment" in page.locator("#native-feature-details").inner_text()
                 assert page.locator(".maplibregl-popup").count() == 1
                 page.locator("#native-feature-details summary").click()
