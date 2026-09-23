@@ -167,9 +167,11 @@ def _write_native_bundle(
     assets.mkdir()
     for name in ("maplibre-gl.js", "maplibre-gl.css", "MAPLIBRE-LICENSE.txt"):
         shutil.copy2(PROJECT / "src" / "satn" / "assets" / name, assets / name)
+    shutil.copy2(PROJECT / "rust" / "src" / "native_bus_context.js", bundle / "bus-context.js")
     template = (PROJECT / "rust" / "src" / "native_map_template.html").read_text(encoding="utf-8")
     html = template
     for placeholder, value in {
+        "__BUS_CONTEXT_URL__": "",
         "__TITLE__": "Native area deployment",
         "__DEPLOYMENT__": "native-area",
         "__BRANCH__": "review-branch",

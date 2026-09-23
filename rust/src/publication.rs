@@ -37,6 +37,13 @@ pub struct DecisionMapPublication {
     pub publication_file: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct BusContextPublication {
+    pub route_count: usize,
+    pub interchange_count: usize,
+    pub geojson_file: String,
+}
+
 #[derive(Debug, Clone)]
 enum MapGeometry {
     Line(Vec<[f64; 2]>),
@@ -615,12 +622,249 @@ pub fn publish_decision_map(
     })
 }
 
+/// Add a separately sourced bus context sidecar to an existing native map.
+///
+/// This updates only the viewer and the context sidecar; the planner's GeoJSON
+/// and decision/publication manifests are left untouched.
+pub fn add_bus_context(output_dir: &Path, context_path: &Path) -> Result<BusContextPublication> {
+    let context_bytes = fs::read(context_path)?;
+    let context: Value = serde_json::from_slice(&context_bytes)?;
+    let (route_count, interchange_count) = validate_bus_context(&context)?;
+
+    let publication: Value =
+        serde_json::from_slice(&fs::read(output_dir.join("publication.json"))?)?;
+    if publication["schema"] != "satn-rust-publication/v1"
+        || publication["publication_kind"] != "native-agentic"
+    {
+        return Err(SatnError::InvalidInput(
+            "bus context requires an existing native-agentic publication".to_string(),
+        ));
+    }
+    let network: Value =
+        serde_json::from_slice(&fs::read(output_dir.join("decision-map.geojson"))?)?;
+    feature_collection(&network, "published decision map")?;
+    let html_path = output_dir.join("index.html");
+    let html = fs::read_to_string(&html_path)?;
+    if !html.contains("data-native-publication=\"native-agentic\"") {
+        return Err(SatnError::InvalidInput(
+            "existing publication HTML is not a native-agentic map".to_string(),
+        ));
+    }
+    let html = enable_bus_context_loader(&html)?;
+
+    fs::write(output_dir.join("bus-context.geojson"), context_bytes)?;
+    fs::write(
+        output_dir.join("bus-context.js"),
+        include_str!("native_bus_context.js"),
+    )?;
+    fs::write(html_path, html)?;
+
+    Ok(BusContextPublication {
+        route_count,
+        interchange_count,
+        geojson_file: "bus-context.geojson".to_string(),
+    })
+}
+
+fn validate_bus_context(context: &Value) -> Result<(usize, usize)> {
+    let features = feature_collection(context, "bus context")?;
+    let mut route_count = 0;
+    let mut interchange_count = 0;
+    for (index, feature) in features.iter().enumerate() {
+        if feature.get("type").and_then(Value::as_str) != Some("Feature") {
+            return Err(SatnError::InvalidInput(format!(
+                "bus context item {index} must be a GeoJSON Feature"
+            )));
+        }
+        let properties = feature
+            .get("properties")
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
+                SatnError::InvalidInput(format!(
+                    "bus context feature {index} has no properties object"
+                ))
+            })?;
+        let geometry = feature
+            .get("geometry")
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
+                SatnError::InvalidInput(format!(
+                    "bus context feature {index} has no geometry object"
+                ))
+            })?;
+        match properties.get("kind").and_then(Value::as_str) {
+            Some("bus-route") => {
+                validate_bus_route_properties(properties, index)?;
+                if !matches!(
+                    geometry.get("type").and_then(Value::as_str),
+                    Some("LineString" | "MultiLineString")
+                ) {
+                    return Err(SatnError::InvalidInput(format!(
+                        "bus route feature {index} geometry must be LineString or MultiLineString"
+                    )));
+                }
+                route_count += 1;
+            }
+            Some("bus-interchange") => {
+                validate_interchange_properties(properties, index)?;
+                if geometry.get("type").and_then(Value::as_str) != Some("Point") {
+                    return Err(SatnError::InvalidInput(format!(
+                        "bus interchange feature {index} geometry must be Point"
+                    )));
+                }
+                interchange_count += 1;
+            }
+            _ => {
+                return Err(SatnError::InvalidInput(format!(
+                    "bus context feature {index} kind must be bus-route or bus-interchange"
+                )));
+            }
+        }
+    }
+    Ok((route_count, interchange_count))
+}
+
+fn validate_bus_route_properties(
+    properties: &serde_json::Map<String, Value>,
+    index: usize,
+) -> Result<()> {
+    for key in ["route_ids", "route_short_names"] {
+        if !properties.contains_key(key) {
+            return Err(SatnError::InvalidInput(format!(
+                "bus route feature {index} is missing {key}"
+            )));
+        }
+    }
+    for key in ["service_date", "source_id", "shape_id"] {
+        if !properties
+            .get(key)
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+        {
+            return Err(SatnError::InvalidInput(format!(
+                "bus route feature {index} is missing text {key}"
+            )));
+        }
+    }
+    if !has_nonempty_value(&properties["route_ids"]) {
+        return Err(SatnError::InvalidInput(format!(
+            "bus route feature {index} has no route identifier"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_interchange_properties(
+    properties: &serde_json::Map<String, Value>,
+    index: usize,
+) -> Result<()> {
+    let name = properties
+        .get("name")
+        .or_else(|| properties.get("facility_name"));
+    if !name
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        return Err(SatnError::InvalidInput(format!(
+            "bus interchange feature {index} is missing facility name"
+        )));
+    }
+    let facility_type = properties
+        .get("facility_type")
+        .or_else(|| properties.get("interchange_type"))
+        .or_else(|| properties.get("type"));
+    if !facility_type
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        return Err(SatnError::InvalidInput(format!(
+            "bus interchange feature {index} is missing facility type"
+        )));
+    }
+    let has_source_label = [
+        "source_id",
+        "source_label",
+        "source_name",
+        "source",
+        "dataset",
+    ]
+    .iter()
+    .any(|key| {
+        properties
+            .get(*key)
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+    });
+    if !has_source_label {
+        return Err(SatnError::InvalidInput(format!(
+            "bus interchange feature {index} has no source label"
+        )));
+    }
+    Ok(())
+}
+
+fn has_nonempty_value(value: &Value) -> bool {
+    match value {
+        Value::String(text) => !text.trim().is_empty(),
+        Value::Array(values) => values.iter().any(has_nonempty_value),
+        Value::Null => false,
+        _ => true,
+    }
+}
+
+fn feature_collection<'a>(value: &'a Value, label: &str) -> Result<&'a Vec<Value>> {
+    if value.get("type").and_then(Value::as_str) != Some("FeatureCollection") {
+        return Err(SatnError::InvalidInput(format!(
+            "{label} must be a GeoJSON FeatureCollection"
+        )));
+    }
+    value
+        .get("features")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            SatnError::InvalidInput(format!("{label} FeatureCollection has no features array"))
+        })
+}
+
+fn enable_bus_context_loader(html: &str) -> Result<String> {
+    const MARKER: &str = "data-satn-bus-context";
+    const ACTIVE_URL: &str = "data-context-url=\"bus-context.geojson\"";
+    const SCRIPT: &str = "<script src=\"bus-context.js\" data-satn-bus-context data-context-url=\"bus-context.geojson\"></script>";
+    if html.contains(MARKER) {
+        if html.contains(ACTIVE_URL) {
+            return Ok(html.to_string());
+        }
+        let updated = html.replace(
+            "data-context-url=\"\"",
+            "data-context-url=\"bus-context.geojson\"",
+        );
+        if updated == html {
+            return Err(SatnError::InvalidInput(
+                "existing bus context loader has no context URL marker".to_string(),
+            ));
+        }
+        return Ok(updated);
+    }
+    let closing_body = html.rfind("</body>").ok_or_else(|| {
+        SatnError::InvalidInput("existing publication HTML has no body close tag".to_string())
+    })?;
+    let mut updated = String::with_capacity(html.len() + SCRIPT.len() + 1);
+    updated.push_str(&html[..closing_body]);
+    updated.push_str(SCRIPT);
+    updated.push_str(&html[closing_body..]);
+    Ok(updated)
+}
+
 fn write_viewer_assets(output_dir: &Path) -> Result<()> {
     let assets = output_dir.join("assets");
     fs::create_dir_all(&assets)?;
     fs::write(assets.join("maplibre-gl.js"), MAPLIBRE_JS)?;
     fs::write(assets.join("maplibre-gl.css"), MAPLIBRE_CSS)?;
     fs::write(assets.join("MAPLIBRE-LICENSE.txt"), MAPLIBRE_LICENSE)?;
+    fs::write(
+        output_dir.join("bus-context.js"),
+        include_str!("native_bus_context.js"),
+    )?;
     Ok(())
 }
 
@@ -1193,6 +1437,7 @@ fn render_interactive_html(
         .replace("__STATUS__", &html_escape(&run.status))
         .replace("__ATTRIBUTION__", &attribution)
         .replace("__SOURCE_ATTRIBUTIONS__", &source_attributions)
+        .replace("__BUS_CONTEXT_URL__", "")
         .replace("__SOURCE_COUNT__", &counts.source_baseline.to_string())
         .replace(
             "__PREPARED_CONNECTIONS__",

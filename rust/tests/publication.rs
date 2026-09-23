@@ -5,7 +5,7 @@ use satn_rs::midend::{MidendRun, PlanningBase, TypedOperation};
 use satn_rs::{
     AccessObligation, AccountingSummary, Candidate, CandidateNeighbourhood,
     CandidateNeighbourhoodGeometry, CommunityAccess, CompileReport, Connection, NetworkPlace,
-    SchoolContext, SourceCorridor, UnknownFact, UrbanEntry, load_retained_report,
+    SchoolContext, SourceCorridor, UnknownFact, UrbanEntry, add_bus_context, load_retained_report,
     publish_decision_map,
 };
 use serde_json::{Value, json};
@@ -224,6 +224,119 @@ fn publishes_compact_decision_map_with_real_departure_sections() {
     assert!(root.join("assets/maplibre-gl.js").is_file());
     assert!(root.join("assets/maplibre-gl.css").is_file());
     assert!(root.join("assets/MAPLIBRE-LICENSE.txt").is_file());
+}
+
+#[test]
+fn adds_sourced_bus_context_to_an_existing_publication_without_rewriting_decisions() {
+    let root = tempfile_root("satn-rs-bus-context");
+    fs::create_dir_all(&root).expect("publication root");
+    let report = report_fixture();
+    let run = MidendRun {
+        branch: "bus-context-branch".to_string(),
+        base_id: "base:bus-context:snapshot".to_string(),
+        status: "complete".to_string(),
+        task_ids: Vec::new(),
+        operations: Vec::new(),
+        community_access: Vec::new(),
+    };
+    publish_decision_map(&root, &report, &run).expect("publish decision map");
+    let initial_html = fs::read_to_string(root.join("index.html")).expect("base map HTML");
+    let current_loader =
+        "<script src=\"bus-context.js\" data-satn-bus-context data-context-url=\"\"></script>";
+    assert!(initial_html.contains(current_loader));
+    fs::write(
+        root.join("index.html"),
+        initial_html.replace(current_loader, ""),
+    )
+    .expect("simulate a previously published map without the bus loader");
+    let original_geojson = fs::read(root.join("decision-map.geojson")).expect("base GeoJSON");
+    let original_decisions = fs::read(root.join("decision-map.json")).expect("decision manifest");
+    let original_publication =
+        fs::read(root.join("publication.json")).expect("publication manifest");
+
+    let source_file = root.join("weca-bus-context.geojson");
+    fs::write(
+        &source_file,
+        serde_json::to_vec(&json!({
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {
+                        "kind": "bus-route",
+                        "route_ids": ["weca:route:1"],
+                        "route_short_names": ["1"],
+                        "service_date": "2026-09-23",
+                        "source_id": "weca-gtfs-2026-09",
+                        "shape_id": "shape-1",
+                        "source_title": "WECA <script>alert(1)</script>",
+                        "provenance": {"licence": "OGL", "provider": "WECA"}
+                    },
+                    "geometry": {
+                        "type": "MultiLineString",
+                        "coordinates": [[[-2.36, 51.38], [-2.35, 51.39]], [[-2.35, 51.39], [-2.34, 51.40]]]
+                    }
+                },
+                {
+                    "type": "Feature",
+                    "properties": {
+                        "kind": "bus-interchange",
+                        "name": "Bath Bus Station",
+                        "facility_type": "bus station",
+                        "source_id": "weca-interchange-register",
+                        "source_label": "WECA published interchange facilities"
+                    },
+                    "geometry": {"type": "Point", "coordinates": [-2.36, 51.38]}
+                }
+            ]
+        }))
+        .expect("serialize context"),
+    )
+    .expect("write source context");
+
+    let added = add_bus_context(&root, &source_file).expect("add bus context");
+
+    assert_eq!(added.route_count, 1);
+    assert_eq!(added.interchange_count, 1);
+    assert_eq!(added.geojson_file, "bus-context.geojson");
+    assert_eq!(
+        fs::read(root.join("decision-map.geojson")).expect("base GeoJSON after context"),
+        original_geojson,
+        "the planner's published network remains byte-for-byte unchanged"
+    );
+    assert_eq!(
+        fs::read(root.join("decision-map.json")).expect("decision manifest after context"),
+        original_decisions,
+        "decision metadata remains byte-for-byte unchanged"
+    );
+    assert_eq!(
+        fs::read(root.join("publication.json")).expect("publication manifest after context"),
+        original_publication,
+        "publication metadata remains byte-for-byte unchanged"
+    );
+    let sidecar: Value = serde_json::from_slice(
+        &fs::read(root.join("bus-context.geojson")).expect("bus context sidecar"),
+    )
+    .expect("valid sidecar GeoJSON");
+    assert_eq!(
+        sidecar["features"][0]["properties"]["service_date"],
+        "2026-09-23"
+    );
+    assert_eq!(
+        sidecar["features"][0]["properties"]["provenance"]["licence"], "OGL",
+        "arbitrary provenance survives as data"
+    );
+    assert_eq!(
+        sidecar["features"][1]["properties"]["source_label"],
+        "WECA published interchange facilities"
+    );
+    let html = fs::read_to_string(root.join("index.html")).expect("upgraded map HTML");
+    assert!(html.contains("data-satn-bus-context"));
+    assert!(html.contains("data-context-url=\"bus-context.geojson\""));
+    let viewer = fs::read_to_string(root.join("bus-context.js")).expect("bus context viewer");
+    assert!(viewer.contains("service_date"));
+    assert!(viewer.contains("textContent"));
+    assert!(!viewer.contains("innerHTML"));
 }
 
 #[test]

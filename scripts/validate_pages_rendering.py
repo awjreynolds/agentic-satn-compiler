@@ -120,6 +120,10 @@ def _inspect_native_agentic(
                 f"{deployment_id} native page did not request its declared GeoJSON: "
                 f"{network_geojson}"
             )
+        bus_context_url = page.evaluate(
+            """() => document.querySelector('script[data-satn-bus-context]')
+              ?.dataset.contextUrl || null"""
+        )
         try:
             page.wait_for_function(
                 """() => document.documentElement.dataset.nativeReady === 'true' &&
@@ -147,6 +151,197 @@ def _inspect_native_agentic(
             raise ValueError(
                 f"{deployment_id} native map did not load its GeoJSON: {details}{suffix}"
             ) from error
+
+        if isinstance(bus_context_url, str) and bus_context_url:
+            if not any(
+                url.rsplit("/", 1)[-1] == bus_context_url.rsplit("/", 1)[-1]
+                for url in network_requests
+            ):
+                raise ValueError(
+                    f"{deployment_id} native page did not request its declared bus context: "
+                    f"{bus_context_url}"
+                )
+            try:
+                page.wait_for_function(
+                    """() => document.documentElement.dataset.nativeBusContextLoaded === 'true'"""
+                )
+            except PlaywrightTimeoutError as error:
+                details = page.evaluate(
+                    """() => ({
+                      loaded: document.documentElement.dataset.nativeBusContextLoaded,
+                      error: document.documentElement.dataset.nativeBusContextError,
+                    })"""
+                )
+                raise ValueError(f"{deployment_id} bus context did not load: {details}") from error
+            bus_result = page.evaluate(
+                """async () => {
+                  const failures = [];
+                  const root = document.documentElement;
+                  const map = window.SATN_NATIVE_MAP;
+                  const context = window.SATN_BUS_CONTEXT;
+                  const features = context?.features || [];
+                  const routes = features.filter(
+                    feature => feature.properties?.kind === 'bus-route'
+                  );
+                  const interchanges = features.filter(
+                    feature => feature.properties?.kind === 'bus-interchange'
+                  );
+                  const routeToggle = document.querySelector(
+                    '[data-bus-context-toggle="routes"]'
+                  );
+                  const interchangeToggle = document.querySelector(
+                    '[data-bus-context-toggle="interchanges"]'
+                  );
+                  const routeVisible = () => map.getLayoutProperty(
+                    'native-bus-route', 'visibility'
+                  );
+                  const interchangeVisible = () => map.getLayoutProperty(
+                    'native-bus-interchange', 'visibility'
+                  );
+                  if (!context || context.type !== 'FeatureCollection') {
+                    failures.push('bus context FeatureCollection is unavailable');
+                  }
+                  if (root.dataset.nativeBusContextRoutes !== String(routes.length) ||
+                      root.dataset.nativeBusContextInterchanges !== String(interchanges.length)) {
+                    failures.push('bus context feature counts do not match the sidecar');
+                  }
+                  if (routes.length) {
+                    if (!routeToggle || !map.getLayer('native-bus-route')) {
+                      failures.push('bus route control or layer is missing');
+                    } else {
+                      if (!routeToggle.closest('li')?.textContent.includes(
+                        routes.length + ' mapped segments'
+                      )) failures.push(
+                        'bus route control count is not labelled as mapped segments'
+                      );
+                      if (routeToggle.checked || routeVisible() !== 'none') {
+                        failures.push('bus route context is not off by default');
+                      }
+                      routeToggle.click();
+                      if (routeVisible() !== 'visible') {
+                        failures.push('bus route toggle does not show its layer');
+                      }
+                      routeToggle.click();
+                      if (routeVisible() !== 'none') {
+                        failures.push('bus route toggle does not hide its layer');
+                      }
+                    }
+                  } else if (routeToggle || map.getLayer('native-bus-route')) {
+                    failures.push('empty bus route context has a control or layer');
+                  }
+                  if (interchanges.length) {
+                    if (!interchangeToggle || !map.getLayer('native-bus-interchange')) {
+                      failures.push('bus station and stop-group control or layer is missing');
+                    } else {
+                      if (!interchangeToggle.closest('li')?.textContent.includes(
+                        interchanges.length + ' source facility records'
+                      )) failures.push('bus facility control count is incorrect');
+                      if (interchangeToggle.checked || interchangeVisible() !== 'none') {
+                        failures.push('bus facility context is not off by default');
+                      }
+                      interchangeToggle.click();
+                      if (interchangeVisible() !== 'visible') {
+                        failures.push('bus facility toggle does not show its layer');
+                      }
+                      interchangeToggle.click();
+                      if (interchangeVisible() !== 'none') {
+                        failures.push('bus facility toggle does not hide its layer');
+                      }
+                    }
+                  } else if (interchangeToggle || map.getLayer('native-bus-interchange')) {
+                    failures.push('empty bus facility context has a control or layer');
+                  }
+
+                  const firstPosition = coordinates => {
+                    if (!Array.isArray(coordinates)) return null;
+                    if (coordinates.length >= 2 && typeof coordinates[0] === 'number' &&
+                        typeof coordinates[1] === 'number') return coordinates;
+                    for (const item of coordinates) {
+                      const found = firstPosition(item);
+                      if (found) return found;
+                    }
+                    return null;
+                  };
+                  const waitForPaint = () => new Promise(resolve =>
+                    requestAnimationFrame(() => requestAnimationFrame(resolve))
+                  );
+                  const inspect = async (feature, layerId, toggle, safetyProbe = false) => {
+                    if (!feature || !toggle) return false;
+                    toggle.checked = true;
+                    toggle.dispatchEvent(new Event('change', {bubbles: true}));
+                    const position = firstPosition(feature.geometry?.coordinates);
+                    if (!position) return false;
+                    map.jumpTo({center: position, zoom: 15});
+                    await waitForPaint();
+                    const point = map.project(position);
+                    const source = map.getSource('native-bus-context');
+                    const probeValue = '<img data-bus-safety-probe="true">';
+                    const probeFeature = safetyProbe
+                      ? context.features.find(candidate =>
+                        candidate.properties?.kind === feature.properties?.kind
+                      )
+                      : null;
+                    if (safetyProbe && !probeFeature) return false;
+                    if (probeFeature) {
+                      probeFeature.properties.__render_safety_probe = probeValue;
+                      source.setData({
+                        type: 'FeatureCollection',
+                        features: [...routes, ...interchanges]
+                      });
+                      await waitForPaint();
+                    }
+                    const currentPoint = map.project(position);
+                    const currentFeature = map.queryRenderedFeatures(currentPoint, {
+                      layers: [layerId]
+                    })[0];
+                    let safeText = false;
+                    if (currentFeature) {
+                      map.fire('click', {point: currentPoint, lngLat: map.unproject(currentPoint)});
+                      const detail = document.querySelector('#native-feature-details');
+                      const visibleValue = feature.properties?.service_date ||
+                        feature.properties?.name || feature.properties?.source_id || '';
+                      safeText = Boolean(detail?.textContent.includes(String(visibleValue)));
+                      if (probeFeature) {
+                        safeText = safeText && detail.textContent.includes(probeValue) &&
+                          !detail.querySelector('[data-bus-safety-probe]') &&
+                          !document.querySelector(
+                            '.maplibregl-popup-content [data-bus-safety-probe]'
+                          );
+                      }
+                    }
+                    if (probeFeature) {
+                      delete probeFeature.properties.__render_safety_probe;
+                      source.setData({
+                        type: 'FeatureCollection',
+                        features: [...routes, ...interchanges]
+                      });
+                    }
+                    return safeText;
+                  };
+                  if (routes.length && routeToggle) {
+                    if (!await inspect(routes[0], 'native-bus-route', routeToggle, true)) {
+                      failures.push(
+                        'bus route inspection does not render source fields as safe text'
+                      );
+                    }
+                  }
+                  if (interchanges.length && interchangeToggle) {
+                    if (!await inspect(
+                      interchanges[0], 'native-bus-interchange', interchangeToggle
+                    )) {
+                      failures.push(
+                        'bus facility inspection does not render source fields as safe text'
+                      );
+                    }
+                  }
+                  return {failures, routes: routes.length, interchanges: interchanges.length};
+                }"""
+            )
+            if bus_result["failures"]:
+                raise ValueError(
+                    f"{deployment_id} bus context rendering failed: "
+                    f"{'; '.join(bus_result['failures'])}"
+                )
 
         decision_summary = page.evaluate(
             """async () => {
