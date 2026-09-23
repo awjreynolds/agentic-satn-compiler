@@ -776,8 +776,6 @@ def test_native_map_supports_public_feature_inspection_reset_and_layer_toggle(
                         documentHeight: document.documentElement.scrollHeight,
                         panelTabIndex: panel.getAttribute('tabindex'),
                         panelOverflowY: getComputedStyle(panel).overflowY,
-                        panelScrollHeight: panel.scrollHeight,
-                        panelClientHeight: panel.clientHeight,
                         evidenceBeforeLayers: Boolean(
                           evidence.compareDocumentPosition(layers) &
                           Node.DOCUMENT_POSITION_FOLLOWING
@@ -791,7 +789,6 @@ def test_native_map_supports_public_feature_inspection_reset_and_layer_toggle(
                     assert layout["documentHeight"] == layout["viewportHeight"]
                     assert layout["panelTabIndex"] == "0"
                     assert layout["panelOverflowY"] == "auto"
-                    assert layout["panelScrollHeight"] > layout["panelClientHeight"]
                 assert not page.locator(
                     "input[data-layer-toggle='candidate-alternative']"
                 ).is_visible()
@@ -857,6 +854,21 @@ def test_native_map_supports_public_feature_inspection_reset_and_layer_toggle(
                 assert "[]" not in detail_text
                 assert "[]" not in popup_text
                 assert "[" not in popup_text
+                if viewport["width"] >= 720:
+                    assert (
+                        page.evaluate(
+                            """() => {
+                              const panel = document.querySelector('.native-panel');
+                              panel.scrollTop = panel.scrollHeight;
+                              return panel.scrollTop;
+                            }"""
+                        )
+                        > 0
+                    )
+                    page.mouse.click(point["x"], point["y"])
+                    page.wait_for_function(
+                        "() => document.querySelector('.native-panel').scrollTop === 0"
+                    )
                 map_box = page.locator("#native-map").bounding_box()
                 assert map_box and map_box["width"] > 0 and map_box["height"] > 0
                 page.mouse.move(
