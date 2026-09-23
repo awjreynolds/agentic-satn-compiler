@@ -15,6 +15,10 @@ use serde::{Deserialize, Serialize};
 use crate::error::Result;
 use crate::geojson::{Geometry, number_property, read_feature_collection, string_property};
 use crate::geometry::Projector;
+use crate::travel_time::{
+    ElevationSample, HillNeutralMovingTime, TravelTimeEstimate, brouter_trekking_v1_7_10,
+    estimate_hill_neutral_moving_time, estimate_moving_time,
+};
 
 const EVIDENCE_TOLERANCE_M: f64 = 5.0;
 const MAXIMUM_SAMPLE_SPACING_M: f64 = 250.0;
@@ -36,6 +40,18 @@ pub struct RouteCoverage {
     pub end_m: Option<f64>,
     pub maximum_gap_m: Option<f64>,
     pub sample_count: usize,
+}
+
+/// Compact record of a bounded moving-time endpoint extension.
+///
+/// The extension uses the nearest observed interval's local rise/run slope;
+/// it does not alter the governed coverage or elevation aggregates above.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct MovingTimeBoundaryExtrapolation {
+    pub start_extension_m: Option<f64>,
+    pub start_local_slope: Option<f64>,
+    pub end_extension_m: Option<f64>,
+    pub end_local_slope: Option<f64>,
 }
 
 /// The governed values used to decide whether the route profile is complete.
@@ -87,6 +103,25 @@ pub struct RouteTopographyProfile {
     pub source_resolution_m: Option<f64>,
     pub output_sample_spacing_m: Option<f64>,
     pub vertical_accuracy_m: Option<f64>,
+    /// Moving-time estimate computed from the same ordered samples. The
+    /// result retains its named model even when terrain is incomplete.
+    #[serde(default = "unknown_travel_time_default")]
+    pub estimated_moving_time: TravelTimeEstimate,
+    /// Any bounded endpoint extension used only for moving-time integration.
+    /// The original `coverage` remains the measured evidence coverage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moving_time_boundary_extrapolation: Option<MovingTimeBoundaryExtrapolation>,
+    /// Flat-equivalent route-length sensitivity that remains available when
+    /// terrain input is missing. It is explicitly not an e-bike ETA.
+    #[serde(default)]
+    pub hill_neutral_moving_time: Option<HillNeutralMovingTime>,
+}
+
+fn unknown_travel_time_default() -> TravelTimeEstimate {
+    TravelTimeEstimate::Unknown {
+        reason: "moving-time estimate was not published".to_string(),
+        model: brouter_trekking_v1_7_10(),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -288,6 +323,23 @@ impl ElevationEvidenceIndex {
         }
 
         let observed = normalise_observed_samples(&samples);
+        let travel_time_model = brouter_trekking_v1_7_10();
+        let (estimated_moving_time, moving_time_boundary_extrapolation) =
+            match extend_moving_time_boundaries(&observed, route_length_m) {
+                Ok((travel_time_samples, boundary_extrapolation)) => (
+                    estimate_moving_time(&travel_time_samples, route_length_m, &travel_time_model),
+                    boundary_extrapolation,
+                ),
+                Err(reason) => (
+                    TravelTimeEstimate::Unknown {
+                        reason: reason.to_string(),
+                        model: travel_time_model.clone(),
+                    },
+                    None,
+                ),
+            };
+        let hill_neutral_moving_time =
+            estimate_hill_neutral_moving_time(route_length_m, &travel_time_model);
         let mut forward_ascent_m = 0.0;
         let mut forward_descent_m = 0.0;
         for pair in observed.windows(2) {
@@ -340,6 +392,9 @@ impl ElevationEvidenceIndex {
             source_resolution_m: metadata(&samples, |sample| sample.source_resolution_m),
             output_sample_spacing_m: metadata(&samples, |sample| sample.output_sample_spacing_m),
             vertical_accuracy_m: metadata(&samples, |sample| sample.vertical_accuracy_m),
+            estimated_moving_time,
+            moving_time_boundary_extrapolation,
+            hill_neutral_moving_time,
         })
     }
 }
@@ -400,6 +455,8 @@ fn unknown_profile_from_coverage(
     reason: &str,
     evidence_file: &str,
 ) -> RouteTopographyProfile {
+    let hill_neutral_moving_time =
+        estimate_hill_neutral_moving_time(coverage.route_length_m, &brouter_trekking_v1_7_10());
     RouteTopographyProfile {
         availability: TopographyAvailability::Unknown,
         reason: reason.to_string(),
@@ -417,6 +474,12 @@ fn unknown_profile_from_coverage(
         source_resolution_m: None,
         output_sample_spacing_m: None,
         vertical_accuracy_m: None,
+        estimated_moving_time: TravelTimeEstimate::Unknown {
+            reason: reason.to_string(),
+            model: brouter_trekking_v1_7_10(),
+        },
+        moving_time_boundary_extrapolation: None,
+        hill_neutral_moving_time,
     }
 }
 
@@ -428,6 +491,99 @@ fn with_refs(
     profile.evidence_refs = evidence_refs;
     profile.source_refs = source_refs;
     profile
+}
+
+fn extend_moving_time_boundaries(
+    observed: &[BoundSample],
+    route_length_m: f64,
+) -> std::result::Result<
+    (
+        Vec<ElevationSample>,
+        Option<MovingTimeBoundaryExtrapolation>,
+    ),
+    &'static str,
+> {
+    if observed.len() < 2 {
+        return Err("moving-time profile has too few observed samples");
+    }
+    let first = observed.first().expect("checked sample count");
+    let second = &observed[1];
+    let penultimate = &observed[observed.len() - 2];
+    let last = observed.last().expect("checked sample count");
+    if !route_length_m.is_finite()
+        || !first.distance_m.is_finite()
+        || !last.distance_m.is_finite()
+        || !first.elevation_m.is_finite()
+        || !second.elevation_m.is_finite()
+        || !penultimate.elevation_m.is_finite()
+        || !last.elevation_m.is_finite()
+    {
+        return Err("moving-time profile contains non-finite boundary data");
+    }
+    let start_extension_m = first.distance_m;
+    let end_extension_m = route_length_m - last.distance_m;
+    if start_extension_m < 0.0 || end_extension_m < 0.0 {
+        return Err("moving-time profile extends beyond a route boundary");
+    }
+    if start_extension_m > EVIDENCE_TOLERANCE_M || end_extension_m > EVIDENCE_TOLERANCE_M {
+        return Err("moving-time profile boundary gap exceeds evidence tolerance");
+    }
+
+    let start_local_slope = if start_extension_m > 0.0 {
+        local_slope(first, second)?
+    } else {
+        0.0
+    };
+    let end_local_slope = if end_extension_m > 0.0 {
+        local_slope(penultimate, last)?
+    } else {
+        0.0
+    };
+    let start_elevation_m = first.elevation_m - start_local_slope * start_extension_m;
+    let end_elevation_m = last.elevation_m + end_local_slope * end_extension_m;
+    if !start_elevation_m.is_finite() || !end_elevation_m.is_finite() {
+        return Err("moving-time boundary extrapolation is not finite");
+    }
+
+    let mut samples = Vec::with_capacity(observed.len() + 2);
+    if start_extension_m > 0.0 {
+        samples.push(ElevationSample {
+            distance_m: 0.0,
+            elevation_m: start_elevation_m,
+        });
+    }
+    samples.extend(observed.iter().map(|sample| ElevationSample {
+        distance_m: sample.distance_m,
+        elevation_m: sample.elevation_m,
+    }));
+    if end_extension_m > 0.0 {
+        samples.push(ElevationSample {
+            distance_m: route_length_m,
+            elevation_m: end_elevation_m,
+        });
+    }
+
+    let boundary_extrapolation = (start_extension_m > 0.0 || end_extension_m > 0.0).then(|| {
+        MovingTimeBoundaryExtrapolation {
+            start_extension_m: (start_extension_m > 0.0).then_some(start_extension_m),
+            start_local_slope: (start_extension_m > 0.0).then_some(start_local_slope),
+            end_extension_m: (end_extension_m > 0.0).then_some(end_extension_m),
+            end_local_slope: (end_extension_m > 0.0).then_some(end_local_slope),
+        }
+    });
+    Ok((samples, boundary_extrapolation))
+}
+
+fn local_slope(left: &BoundSample, right: &BoundSample) -> std::result::Result<f64, &'static str> {
+    let distance_m = right.distance_m - left.distance_m;
+    if !distance_m.is_finite() || distance_m <= 0.0 {
+        return Err("moving-time profile boundary interval is not increasing");
+    }
+    let slope = (right.elevation_m - left.elevation_m) / distance_m;
+    slope
+        .is_finite()
+        .then_some(slope)
+        .ok_or("moving-time profile boundary slope is not finite")
 }
 
 fn route_envelope(route: &[[f64; 2]]) -> Option<AABB<[f64; 2]>> {

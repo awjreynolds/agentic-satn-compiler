@@ -17,6 +17,7 @@ use crate::output::write_bundle;
 use crate::topography::{
     ElevationEvidenceIndex, RouteTopographyProfile, TopographyAvailability, unknown_route_profile,
 };
+use crate::travel_time::{HillNeutralMovingTime, TravelTimeEstimate, brouter_trekking_v1_7_10};
 
 #[derive(Debug, Clone, Default)]
 pub struct CompileOptions {
@@ -213,6 +214,17 @@ pub struct JourneyBatchTopographySummary {
     pub forward_descent_m: Option<f64>,
     pub cumulative_elevation_variation_m: Option<f64>,
     pub sustained_gradient_pct: Option<f64>,
+    #[serde(default = "unknown_travel_time_default")]
+    pub estimated_moving_time: TravelTimeEstimate,
+    #[serde(default)]
+    pub hill_neutral_moving_time: Option<HillNeutralMovingTime>,
+}
+
+fn unknown_travel_time_default() -> TravelTimeEstimate {
+    TravelTimeEstimate::Unknown {
+        reason: "moving-time estimate was not published".to_string(),
+        model: brouter_trekking_v1_7_10(),
+    }
 }
 
 impl JourneyBatchPathSummary {
@@ -234,6 +246,8 @@ impl JourneyBatchPathSummary {
                     .sustained_gradient
                     .as_ref()
                     .map(|gradient| gradient.gradient_pct),
+                estimated_moving_time: path.topography.estimated_moving_time.clone(),
+                hill_neutral_moving_time: path.topography.hill_neutral_moving_time.clone(),
             },
         }
     }

@@ -1849,6 +1849,8 @@ fn topography_summary(profile: Option<&crate::topography::RouteTopographyProfile
         "sustained_gradient": profile.sustained_gradient,
         "evidence_refs": profile.evidence_refs,
         "source_refs": profile.source_refs,
+        "estimated_moving_time": profile.estimated_moving_time,
+        "hill_neutral_moving_time": profile.hill_neutral_moving_time,
     })
 }
 

@@ -66,6 +66,7 @@ th.numeric, td.numeric { text-align: right; white-space: nowrap; }
   <section class="index-card" aria-labelledby="journey-index-heading">
     <h2 id="journey-index-heading">All journey pairs</h2>
     <p class="context">Select one measured field at a time when sorting. Distance and ascent deltas are shown separately; there is no combined ranking.</p>
+    <p class="context">Moving time uses the unassisted BRouter Trekking v1.7.10 model where ordered terrain is complete; junction waits remain unknown. Hill-neutral sensitivity uses the same model and route length with slope set to zero; it is not an e-bike ETA.</p>
     <div class="index-controls" aria-label="Journey index filters">
       <div class="control">
         <label for="journey-search">Search origin or destination</label>
@@ -91,6 +92,10 @@ th.numeric, td.numeric { text-align: right; white-space: nowrap; }
           <option value="selected-ascent">Selected forward ascent</option>
           <option value="direct-ascent">Direct forward ascent</option>
           <option value="ascent-delta">Ascent delta (selected − direct)</option>
+          <option value="selected-time">Selected moving time</option>
+          <option value="direct-time">Direct moving time</option>
+          <option value="selected-hill-neutral">Selected hill-neutral sensitivity</option>
+          <option value="direct-hill-neutral">Direct hill-neutral sensitivity</option>
           <option value="new-link">Selected new rural link</option>
           <option value="shared-branch">Selected shared branch</option>
         </select>
@@ -119,11 +124,15 @@ th.numeric, td.numeric { text-align: right; white-space: nowrap; }
             <th scope="col" class="numeric">Selected ascent</th>
             <th scope="col" class="numeric">Direct ascent</th>
             <th scope="col" class="numeric">Ascent Δ</th>
+            <th scope="col" class="numeric">Selected moving time</th>
+            <th scope="col" class="numeric">Direct moving time</th>
+            <th scope="col" class="numeric">Selected hill-neutral</th>
+            <th scope="col" class="numeric">Direct hill-neutral</th>
             <th scope="col" class="numeric">New rural link</th>
             <th scope="col" class="numeric">Shared branch</th>
           </tr>
         </thead>
-        <tbody id="journey-rows"><tr><td colspan="11" class="empty-state">Loading journey pairs…</td></tr></tbody>
+        <tbody id="journey-rows"><tr><td colspan="15" class="empty-state">Loading journey pairs…</td></tr></tbody>
       </table>
     </div>
     <p id="journey-loading-failure" role="alert" hidden>Unable to load journey index data.</p>
@@ -195,6 +204,46 @@ th.numeric, td.numeric { text-align: right; white-space: nowrap; }
   };
   const pathMetric = (pair, pathName, metric) => numberValue(pair && pair[pathName] && pair[pathName][metric]);
   const pathAscent = (pair, pathName) => numberValue(pathTopography(pair && pair[pathName]).forward_ascent_m);
+  const pathMovingRecord = (pair, pathName) => {
+    const path = pair && pair[pathName];
+    if (!path || typeof path !== 'object') return null;
+    const direct = normalizedValue(path.moving_time);
+    if (direct && typeof direct === 'object') return direct;
+    const topography = normalizedValue(path.topography);
+    const nested = topography && typeof topography === 'object'
+      ? normalizedValue(topography.estimated_moving_time)
+      : null;
+    return nested && typeof nested === 'object' ? nested : null;
+  };
+  const pathMovingMinutes = (pair, pathName) => {
+    const record = pathMovingRecord(pair, pathName);
+    if (!record || String(record.availability || '').toLowerCase() !== 'available') return null;
+    return numberValue(record.minutes);
+  };
+  const pathHillNeutralRecord = (pair, pathName) => {
+    const path = pair && pair[pathName];
+    if (!path || typeof path !== 'object') return null;
+    const direct = normalizedValue(path.hill_neutral_moving_time);
+    if (direct && typeof direct === 'object') return direct;
+    const topography = normalizedValue(path.topography);
+    const nested = topography && typeof topography === 'object'
+      ? normalizedValue(topography.hill_neutral_moving_time)
+      : null;
+    return nested && typeof nested === 'object' ? nested : null;
+  };
+  const pathHillNeutralMinutes = (pair, pathName) => {
+    const record = pathHillNeutralRecord(pair, pathName);
+    if (!record || String(record.label || '') !== 'Hill-neutral sensitivity (not an e-bike ETA)') return null;
+    return numberValue(record.minutes);
+  };
+  const formatMovingTime = minutes => {
+    if (minutes === null) return 'Unknown';
+    if (minutes >= 60) {
+      const hours = Math.floor(minutes / 60);
+      return hours + ' h ' + Math.round(minutes - hours * 60) + ' min';
+    }
+    return minutes.toFixed(1) + ' min';
+  };
   const pathNewLink = pair => pathMetric(pair, 'selected', 'new_link_length_m');
   const pathSharedBranch = pair => pathMetric(pair, 'selected', 'shared_suffix_length_m');
   const selectedDistance = pair => pathMetric(pair, 'selected', 'length_m');
@@ -259,6 +308,10 @@ th.numeric, td.numeric { text-align: right; white-space: nowrap; }
     if (key === 'selected-ascent') return selectedAscent(pair);
     if (key === 'direct-ascent') return directAscent(pair);
     if (key === 'ascent-delta') return selectedAscent(pair) === null || directAscent(pair) === null ? null : selectedAscent(pair) - directAscent(pair);
+    if (key === 'selected-time') return pathMovingMinutes(pair, 'selected');
+    if (key === 'direct-time') return pathMovingMinutes(pair, 'direct');
+    if (key === 'selected-hill-neutral') return pathHillNeutralMinutes(pair, 'selected');
+    if (key === 'direct-hill-neutral') return pathHillNeutralMinutes(pair, 'direct');
     if (key === 'new-link') return pathNewLink(pair);
     if (key === 'shared-branch') return pathSharedBranch(pair);
     return null;
@@ -305,7 +358,7 @@ th.numeric, td.numeric { text-align: right; white-space: nowrap; }
   const renderRows = () => {
     const visible = filteredPairs();
     if (!visible.length) {
-      rowsContainer.innerHTML = '<tr><td colspan="11" class="empty-state">No journey pairs match these filters.</td></tr>';
+      rowsContainer.innerHTML = '<tr><td colspan="15" class="empty-state">No journey pairs match these filters.</td></tr>';
       const filteredNote = summary.querySelector('[data-filtered-summary]');
       if (filteredNote) filteredNote.textContent = 'Showing 0 of ' + pairs.length + ' pairs';
       return;
@@ -317,6 +370,10 @@ th.numeric, td.numeric { text-align: right; white-space: nowrap; }
       const directClimb = formatElevation(directAscent(pair));
       const distanceDelta = formatDelta(selectedDistance(pair), directDistance(pair), formatDistance);
       const ascentDelta = formatDelta(selectedAscent(pair), directAscent(pair), formatElevation);
+      const selectedTime = formatMovingTime(pathMovingMinutes(pair, 'selected'));
+      const directTime = formatMovingTime(pathMovingMinutes(pair, 'direct'));
+      const selectedHillNeutral = formatMovingTime(pathHillNeutralMinutes(pair, 'selected'));
+      const directHillNeutral = formatMovingTime(pathHillNeutralMinutes(pair, 'direct'));
       const link = mapHref(pair);
       const origin = displayName(pair, 'origin_name');
       const destination = displayName(pair, 'destination_name');
@@ -335,6 +392,10 @@ th.numeric, td.numeric { text-align: right; white-space: nowrap; }
         cell(selectedClimb, true) +
         cell(directClimb, true) +
         cell(ascentDelta, true) +
+        cell(selectedTime, true) +
+        cell(directTime, true) +
+        cell(selectedHillNeutral, true) +
+        cell(directHillNeutral, true) +
         cell(formatDistance(pathNewLink(pair)), true) +
         cell(formatDistance(pathSharedBranch(pair)), true) +
         '</tr>';
