@@ -153,14 +153,6 @@ def _inspect_native_agentic(
             ) from error
 
         if isinstance(bus_context_url, str) and bus_context_url:
-            if not any(
-                url.rsplit("/", 1)[-1] == bus_context_url.rsplit("/", 1)[-1]
-                for url in network_requests
-            ):
-                raise ValueError(
-                    f"{deployment_id} native page did not request its declared bus context: "
-                    f"{bus_context_url}"
-                )
             try:
                 page.wait_for_function(
                     """() => {
@@ -180,11 +172,27 @@ def _inspect_native_agentic(
                     })"""
                 )
                 raise ValueError(f"{deployment_id} bus context did not load: {details}") from error
+            if not any(
+                url.rsplit("/", 1)[-1] == bus_context_url.rsplit("/", 1)[-1]
+                for url in network_requests
+            ):
+                raise ValueError(
+                    f"{deployment_id} native page did not request its declared bus context: "
+                    f"{bus_context_url}"
+                )
             bus_result = page.evaluate(
                 """async () => {
                   const failures = [];
                   const root = document.documentElement;
                   const map = window.SATN_NATIVE_MAP;
+                  const initialCamera = {
+                    center: map.getCenter().toArray(),
+                    zoom: map.getZoom(),
+                    bearing: map.getBearing(),
+                    pitch: map.getPitch(),
+                    padding: map.getPadding()
+                  };
+                  let cameraChanged = false;
                   const context = window.SATN_BUS_CONTEXT;
                   const features = context?.features || [];
                   const routes = features.filter(
@@ -192,6 +200,12 @@ def _inspect_native_agentic(
                   );
                   const interchanges = features.filter(
                     feature => feature.properties?.kind === 'bus-interchange'
+                  );
+                  const facilities = interchanges.filter(
+                    feature => feature.properties?.transfer_candidate !== true
+                  );
+                  const transferCandidates = interchanges.filter(
+                    feature => feature.properties?.transfer_candidate === true
                   );
                   const routeToggle = document.querySelector(
                     '[data-bus-context-toggle="routes"]'
@@ -240,9 +254,14 @@ def _inspect_native_agentic(
                     if (!interchangeToggle || !map.getLayer('native-bus-interchange')) {
                       failures.push('bus station and stop-group control or layer is missing');
                     } else {
+                      const expectedPointCounts = `${interchanges.length} points (` +
+                        `${facilities.length} facilities, ` +
+                        `${transferCandidates.length} transfer points)`;
                       if (!interchangeToggle.closest('li')?.textContent.includes(
-                        interchanges.length + ' source facility records'
-                      )) failures.push('bus facility control count is incorrect');
+                        expectedPointCounts
+                      )) failures.push(
+                        'bus facility and transfer-point control count is incorrect'
+                      );
                       if (interchangeToggle.checked || interchangeVisible() !== 'none') {
                         failures.push('bus facility context is not off by default');
                       }
@@ -299,12 +318,20 @@ def _inspect_native_agentic(
                       features
                     });
                   });
-                  const inspect = async (feature, layerId, toggle, safetyProbe = false) => {
+                  const inspect = async (
+                    feature,
+                    layerId,
+                    toggle,
+                    safetyProbe = false,
+                    expectedVisibleValues = [],
+                    expectedCollapsedValues = []
+                  ) => {
                     if (!feature || !toggle) return false;
                     toggle.checked = true;
                     toggle.dispatchEvent(new Event('change', {bubbles: true}));
                     const position = firstPosition(feature.geometry?.coordinates);
                     if (!position) return false;
+                    cameraChanged = true;
                     await waitForIdleAfter(() => map.jumpTo({center: position, zoom: 15}));
                     const probeValue = '<img data-bus-safety-probe="true">';
                     const probeFeature = safetyProbe
@@ -324,7 +351,24 @@ def _inspect_native_agentic(
                       const detail = document.querySelector('#native-feature-details');
                       const visibleValue = feature.properties?.service_date ||
                         feature.properties?.name || feature.properties?.source_id || '';
-                      safeText = Boolean(detail?.textContent.includes(String(visibleValue)));
+                      const visibleText = [...(detail?.children || [])]
+                        .filter(child => child.tagName !== 'DETAILS')
+                        .map(child => child.textContent).join(' ');
+                      const sourceDetails = detail?.querySelector('details');
+                      safeText = Boolean(detail && visibleText.includes(String(visibleValue))) &&
+                        expectedVisibleValues.every(value =>
+                          visibleText.includes(String(value))
+                        ) && expectedCollapsedValues.every(value =>
+                          !visibleText.includes(String(value)) &&
+                          sourceDetails?.textContent.includes(String(value))
+                        );
+                      if (expectedCollapsedValues.length) {
+                        safeText = safeText && Boolean(
+                          sourceDetails && !sourceDetails.open &&
+                          sourceDetails.querySelector('summary')?.textContent ===
+                            'All source properties'
+                        );
+                      }
                       if (probeFeature) {
                         safeText = safeText && detail.textContent.includes(probeValue) &&
                           !detail.querySelector('[data-bus-safety-probe]') &&
@@ -354,7 +398,63 @@ def _inspect_native_agentic(
                       );
                     }
                   }
-                  return {failures, routes: routes.length, interchanges: interchanges.length};
+                  const transferArray = value => {
+                    if (Array.isArray(value)) return value;
+                    if (typeof value !== 'string') return [];
+                    try {
+                      const parsed = JSON.parse(value);
+                      return Array.isArray(parsed) ? parsed : [];
+                    } catch (_) {
+                      return [];
+                    }
+                  };
+                  const scheduleLabels = (value, action) => {
+                    const descriptions = {
+                      '0': `regular scheduled ${action}`,
+                      '1': `${action} is not available`,
+                      '2': `${action} by prior phone arrangement`,
+                      '3': `${action} by arrangement with the driver`
+                    };
+                    return [...new Set(transferArray(value).map(code => String(code)))]
+                      .map(code => descriptions[code] || `GTFS code ${code}`);
+                  };
+                  if (transferCandidates.length && interchangeToggle) {
+                    const feature = transferCandidates[0];
+                    const properties = feature.properties || {};
+                    const expectedVisibleValues = [
+                      properties.name,
+                      properties.locality,
+                      properties.service_date,
+                      transferArray(properties.route_short_names)[0],
+                      ...scheduleLabels(properties.pickup_type_codes, 'boarding'),
+                      ...scheduleLabels(properties.drop_off_type_codes, 'alighting'),
+                      properties.transfer_candidate_basis
+                    ].filter(value => value !== undefined && value !== null && value !== '');
+                    const expectedCollapsedValues = [
+                      properties.atco_code,
+                      ...transferArray(properties.route_ids)
+                    ].filter(value => value !== undefined && value !== null && value !== '');
+                    if (!await inspect(
+                      feature,
+                      'native-bus-interchange',
+                      interchangeToggle,
+                      false,
+                      expectedVisibleValues,
+                      expectedCollapsedValues
+                    )) failures.push(
+                      'bus transfer inspection does not render readable schedule evidence '
+                      + 'with source IDs collapsed'
+                    );
+                  }
+                  if (cameraChanged) {
+                    await waitForIdleAfter(() => map.jumpTo(initialCamera));
+                  }
+                  return {
+                    failures,
+                    routes: routes.length,
+                    interchanges: interchanges.length,
+                    transferCandidates: transferCandidates.length
+                  };
                 }"""
             )
             if bus_result["failures"]:
