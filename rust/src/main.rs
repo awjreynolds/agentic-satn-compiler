@@ -4,7 +4,7 @@ use clap::Parser;
 use satn_rs::judgment::{CodexConfig, TypeSafeConfig};
 use satn_rs::midend::{MidendConfig, MidendProgress, ProviderSet, replay, run_prepared};
 use satn_rs::{
-    CompileOptions, ProgressEvent, compile_with_progress, load_retained_report,
+    CompileOptions, ProgressEvent, add_bus_context, compile_with_progress, load_retained_report,
     prepare_with_progress, publish_decision_map,
 };
 
@@ -12,7 +12,7 @@ use satn_rs::{
 #[command(name = "satn-rs", about = "Native SATN mechanical compiler")]
 struct Cli {
     #[arg(long)]
-    config: PathBuf,
+    config: Option<PathBuf>,
     #[arg(long)]
     output: PathBuf,
     #[arg(long, default_value = "mechanical")]
@@ -33,6 +33,9 @@ struct Cli {
     origin: Option<String>,
     #[arg(long)]
     destination: Option<String>,
+    /// Add a GeoJSON bus-context sidecar to an existing native publication.
+    #[arg(long)]
+    bus_context: Option<PathBuf>,
 }
 
 fn main() {
@@ -44,6 +47,30 @@ fn main() {
 
 fn run() -> satn_rs::Result<()> {
     let cli = Cli::parse();
+    if let Some(context_path) = &cli.bus_context {
+        if cli.config.is_some()
+            || cli.history.is_some()
+            || cli.mode != "mechanical"
+            || cli.origin.is_some()
+            || cli.destination.is_some()
+            || cli.allow_provisional
+            || cli.specialist_model.is_some()
+            || cli.specialist_reasoning_effort.is_some()
+        {
+            return Err(satn_rs::SatnError::InvalidInput(
+                "--bus-context operates on an existing publication and cannot be combined with planning options"
+                    .to_string(),
+            ));
+        }
+        let publication = add_bus_context(&cli.output, context_path)?;
+        println!("{}", serde_json::to_string(&publication)?);
+        return Ok(());
+    }
+    let config = cli.config.as_ref().ok_or_else(|| {
+        satn_rs::SatnError::InvalidInput(
+            "--config is required unless --bus-context updates an existing publication".to_string(),
+        )
+    })?;
     if !matches!(
         cli.mode.as_str(),
         "mechanical" | "deterministic" | "live" | "replay"
@@ -100,7 +127,7 @@ fn run() -> satn_rs::Result<()> {
     }
     if cli.mode == "live" {
         let prepared = prepare_with_progress(
-            &cli.config,
+            config,
             CompileOptions {
                 origin: cli.origin.clone(),
                 destination: cli.destination.clone(),
@@ -163,7 +190,7 @@ fn run() -> satn_rs::Result<()> {
         return Ok(());
     }
     let report = compile_with_progress(
-        &cli.config,
+        config,
         &cli.output,
         CompileOptions {
             origin: cli.origin,
