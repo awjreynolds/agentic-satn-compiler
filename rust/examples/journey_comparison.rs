@@ -3,10 +3,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
-use satn_rs::{CommunityAccess, CompileOptions, ProgressEvent, prepare_with_progress};
+use satn_rs::{
+    CommunityAccess, CompileOptions, JourneyBatchEvaluation, JourneyPairStatus, ProgressEvent,
+    prepare_with_progress,
+};
 use serde::Deserialize;
+use serde_json::Value;
 
 const JOURNEY_MAP_TEMPLATE: &str = include_str!("../src/journey_map_template.html");
+const JOURNEY_INDEX_TEMPLATE: &str = include_str!("../src/journey_index_template.html");
 
 #[derive(Debug, Deserialize)]
 struct PlanningDocument {
@@ -19,15 +24,24 @@ struct PlanningDocument {
     about = "Compare a rural feeder to an admitted town"
 )]
 struct Args {
+    #[arg(
+        long,
+        help = "Evaluate every retained primary against every admitted town/city"
+    )]
+    batch: bool,
     #[arg(long, value_name = "AREA.YAML")]
     config: PathBuf,
     #[arg(long, value_name = "PLANNING.JSON")]
     planning: PathBuf,
     #[arg(long, value_name = "NAME_OR_ID")]
-    origin: String,
+    origin: Option<String>,
     #[arg(long, value_name = "NAME_OR_ID")]
-    destination: String,
-    #[arg(long, value_name = "ACCESS.JSON")]
+    destination: Option<String>,
+    #[arg(
+        long,
+        value_name = "ACCESS.JSON",
+        help = "One retained access or a JSON array/document of retained accesses"
+    )]
     retained_alternative: Option<PathBuf>,
     #[arg(long, value_name = "DIR")]
     output: PathBuf,
@@ -38,14 +52,12 @@ struct Args {
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
     let planning: PlanningDocument = serde_json::from_str(&fs::read_to_string(&args.planning)?)?;
-    let selected = find_access(&planning.community_access, &args.origin)?;
-    let retained_alternative = args
+    let retained_alternatives = args
         .retained_alternative
         .as_ref()
-        .map(|path| -> Result<CommunityAccess, Box<dyn Error>> {
-            Ok(serde_json::from_str(&fs::read_to_string(path)?)?)
-        })
-        .transpose()?;
+        .map(|path| read_access_records(path))
+        .transpose()?
+        .unwrap_or_default();
 
     let mut progress = |event: ProgressEvent| {
         eprintln!(
@@ -54,11 +66,53 @@ fn main() -> Result<(), Box<dyn Error>> {
         );
     };
     let prepared = prepare_with_progress(&args.config, CompileOptions::default(), &mut progress)?;
+
+    if args.batch {
+        if args.origin.is_some() || args.destination.is_some() {
+            return Err("--batch cannot be combined with --origin or --destination".into());
+        }
+        let batch = prepared.compare_all_journeys_with_progress(
+            &planning.community_access,
+            &retained_alternatives,
+            &mut |event| {
+                eprintln!(
+                    "journey-batch: {}/{} {} -> {} {}",
+                    event.completed_pair_count,
+                    event.total_pair_count,
+                    event.origin_name,
+                    event.destination_name,
+                    status_label(event.status),
+                );
+            },
+        );
+        write_batch(&args.output, &args.asset_root, batch)?;
+        return Ok(());
+    }
+
+    let origin = args
+        .origin
+        .as_deref()
+        .ok_or("--origin is required unless --batch is set")?;
+    let destination = args
+        .destination
+        .as_deref()
+        .ok_or("--destination is required unless --batch is set")?;
+    let selected = find_access(&planning.community_access, origin)?;
+    let retained_alternative = retained_alternatives
+        .iter()
+        .find(|access| access.community_id == selected.community_id);
+    if args.retained_alternative.is_some() && retained_alternative.is_none() {
+        return Err(format!(
+            "retained alternatives contain no access for origin {:?}",
+            selected.community_id
+        )
+        .into());
+    }
     let comparison = prepared.compare_complete_journey(
         &planning.community_access,
         selected,
-        retained_alternative.as_ref(),
-        &args.destination,
+        retained_alternative,
+        destination,
     )?;
 
     fs::create_dir_all(&args.output)?;
@@ -83,6 +137,99 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
     println!("output={}", args.output.display());
     Ok(())
+}
+
+fn read_access_records(path: &Path) -> Result<Vec<CommunityAccess>, Box<dyn Error>> {
+    let value: Value = serde_json::from_str(&fs::read_to_string(path)?)?;
+    if let Some(records) = value.get("community_access") {
+        return Ok(serde_json::from_value(records.clone())?);
+    }
+    if let Some(records) = value.get("records").and_then(Value::as_array) {
+        return records
+            .iter()
+            .map(|record| {
+                let access = record.get("access").unwrap_or(record);
+                Ok(serde_json::from_value(access.clone())?)
+            })
+            .collect();
+    }
+    if value.is_array() {
+        return Ok(serde_json::from_value(value)?);
+    }
+    Ok(vec![serde_json::from_value(value)?])
+}
+
+fn write_batch(
+    output: &Path,
+    asset_root: &Path,
+    mut batch: JourneyBatchEvaluation,
+) -> Result<(), Box<dyn Error>> {
+    let pairs_dir = output.join("pairs");
+    fs::create_dir_all(&pairs_dir)?;
+    fs::create_dir_all(output)?;
+    fs::write(output.join("index.html"), JOURNEY_INDEX_TEMPLATE)?;
+    fs::write(output.join("journey-map.html"), JOURNEY_MAP_TEMPLATE)?;
+    for (index, success) in batch.successes.iter().enumerate() {
+        let stem = format!("pair-{index}-{}", safe_component(&success.pair_id));
+        let pair_dir = pairs_dir.join(&stem);
+        fs::create_dir_all(&pair_dir)?;
+        fs::write(
+            pair_dir.join("journey-comparison.json"),
+            serde_json::to_vec_pretty(&success.comparison)?,
+        )?;
+        fs::write(
+            pair_dir.join("journey-comparison.geojson"),
+            serde_json::to_vec_pretty(&success.comparison.to_geojson())?,
+        )?;
+        if let Some(pair) = batch
+            .summary
+            .pairs
+            .iter_mut()
+            .find(|pair| pair.pair_id == success.pair_id)
+        {
+            pair.artifact_stem = Some(format!("pairs/{stem}"));
+        }
+    }
+    fs::write(
+        output.join("journey-batch-summary.json"),
+        serde_json::to_vec_pretty(&batch.summary)?,
+    )?;
+    write_assets(output, asset_root)?;
+    println!(
+        "batch: {} pairs, {} success, {} unsupported, {} error; output={}",
+        batch.summary.pair_count,
+        batch.summary.success_count,
+        batch.summary.unsupported_count,
+        batch.summary.error_count,
+        output.display()
+    );
+    Ok(())
+}
+
+fn status_label(status: JourneyPairStatus) -> &'static str {
+    match status {
+        JourneyPairStatus::Success => "success",
+        JourneyPairStatus::Unsupported => "unsupported",
+        JourneyPairStatus::Error => "error",
+    }
+}
+
+fn safe_component(value: &str) -> String {
+    let component = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if component.is_empty() {
+        "pair".to_string()
+    } else {
+        component
+    }
 }
 
 fn find_access<'a>(
@@ -127,9 +274,13 @@ fn print_path(label: &str, path: &satn_rs::JourneyPath) {
 }
 
 fn write_viewer(output: &Path, asset_root: &Path) -> Result<(), Box<dyn Error>> {
+    fs::write(output.join("index.html"), JOURNEY_MAP_TEMPLATE)?;
+    write_assets(output, asset_root)
+}
+
+fn write_assets(output: &Path, asset_root: &Path) -> Result<(), Box<dyn Error>> {
     let assets = output.join("assets");
     fs::create_dir_all(&assets)?;
-    fs::write(output.join("index.html"), JOURNEY_MAP_TEMPLATE)?;
     for name in ["maplibre-gl.css", "maplibre-gl.js", "MAPLIBRE-LICENSE.txt"] {
         fs::copy(asset_root.join(name), assets.join(name))?;
     }
