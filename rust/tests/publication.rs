@@ -420,6 +420,23 @@ fn publication_preserves_candidate_neighbourhood_polygon_holes_and_provenance() 
     let html = fs::read_to_string(root.join("index.html")).expect("HTML output");
     assert!(html.contains("data-layer-toggle=\"candidate-neighbourhood\""));
     assert!(html.contains("native-candidate-neighbourhood"));
+    assert!(html.contains("native-candidate-neighbourhood-boundary"));
+    assert!(html.contains("'line-color': '#000000'"));
+    assert!(html.contains("'line-width': 1"));
+    assert!(html.contains("'line-opacity': 1"));
+    assert!(html.contains("'candidate-neighbourhood': ['native-candidate-neighbourhood', 'native-candidate-neighbourhood-boundary']"));
+    let interactive_layers = html
+        .split("const interactiveLayers = [")
+        .nth(1)
+        .expect("interactive layer list")
+        .split("];")
+        .next()
+        .expect("interactive layer list end");
+    assert!(!interactive_layers.contains("native-candidate-neighbourhood-boundary"));
+    let boundary_layer_position = html
+        .find("id: 'native-candidate-neighbourhood-boundary'")
+        .expect("candidate boundary layer");
+    assert!(boundary_layer_position < html.find("line('native-selected'").expect("route layer"));
     assert!(html.contains("native-highlight-polygon"));
     assert!(html.contains("Official source datasets"));
     assert!(html.contains("Dataset effective dates"));
