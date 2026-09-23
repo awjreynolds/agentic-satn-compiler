@@ -268,10 +268,15 @@ code { font-size: .9em; }
       add('Urban extent', props.urban_extent_name);
       add('Urban extent source', props.urban_extent_source_id);
       add('Measured area', formatArea(props.area_m2));
+      add('Classified-road frontages', props.classified_road_frontages);
+      add('Built-up edge closes remaining boundary', props.urban_edge_closes_boundary ? 'Yes' : 'No');
       add('Official source datasets', props.source_dataset_ids);
       add('Dataset effective dates', props.source_effective_dates);
       add('Dataset licences', props.source_licences);
       add('Admitted source classifications', props.source_classifications);
+      add('Built-up source dataset', props.urban_extent_source_dataset_id);
+      add('Built-up source effective date', props.urban_extent_source_effective_date);
+      add('Built-up source licence', props.urban_extent_source_licence);
       add('Interpretation', props.interpretation);
     }
     if (props.kind === 'community-access') {

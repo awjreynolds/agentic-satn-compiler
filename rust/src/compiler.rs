@@ -6,7 +6,9 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::candidate_neighbourhoods::{CandidateNeighbourhood, derive_candidate_neighbourhoods};
+use crate::candidate_neighbourhoods::{
+    CandidateNeighbourhood, candidate_built_up_areas, derive_candidate_neighbourhoods,
+};
 use crate::config::AreaConfig;
 use crate::error::{Result, SatnError};
 use crate::geojson::{
@@ -701,6 +703,12 @@ pub fn prepare_with_progress(
     let places_features = read_feature_collection(&places_path)?;
     let official_features =
         read_optional_features(&snapshot_path.join("official-road-classification.geojson"))?;
+    let candidate_built_up_areas = config
+        .candidate_built_up_areas_path(config_path)
+        .map(|path| read_feature_collection(&path))
+        .transpose()?
+        .map(|features| candidate_built_up_areas(&features))
+        .unwrap_or_default();
     let boundary_features = read_optional_features(&snapshot_path.join("boundary.geojson"))?;
     let boundary_scope = admit_boundary_scope(&boundary_features);
     let graph_geometry_bindings = graph_geometry_bindings(&network.graph);
@@ -710,12 +718,8 @@ pub fn prepare_with_progress(
     } else {
         admit_places(&place_labels, boundary_scope.as_ref())
     };
-    let urban_extents = places
-        .iter()
-        .filter_map(|place| place.urban_extent.as_ref().cloned())
-        .collect::<Vec<_>>();
     let candidate_neighbourhoods =
-        derive_candidate_neighbourhoods(&official_features, &urban_extents)?;
+        derive_candidate_neighbourhoods(&official_features, &candidate_built_up_areas)?;
     let network_places = admit_network_places(
         &places_features,
         boundary_scope.as_ref(),

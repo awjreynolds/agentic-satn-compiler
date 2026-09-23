@@ -454,6 +454,13 @@ fn publication_preserves_candidate_neighbourhood_polygon_holes_and_provenance() 
             "b-road".to_string(),
             "classified-unnumbered".to_string(),
         ],
+        classified_road_frontages: vec!["a-road A4".to_string(), "b-road B3".to_string()],
+        urban_edge_closes_boundary: true,
+        urban_extent_source_dataset_id: Some("ons-built-up-areas-2022".to_string()),
+        urban_extent_source_effective_date: Some("2022-12".to_string()),
+        urban_extent_source_licence: Some("Open Government Licence v3.0".to_string()),
+        urban_extent_source_url: Some("https://example.test/bua".to_string()),
+        urban_extent_source_attribution: Some("ONS and OS attribution".to_string()),
         geometry: CandidateNeighbourhoodGeometry {
             geometry_type: "Polygon".to_string(),
             coordinates: vec![
@@ -542,6 +549,31 @@ fn publication_preserves_candidate_neighbourhood_polygon_holes_and_provenance() 
         json!(["a-road", "b-road", "classified-unnumbered"])
     );
     assert_eq!(
+        feature["properties"]["classified_road_frontages"],
+        json!(["a-road A4", "b-road B3"])
+    );
+    assert_eq!(feature["properties"]["urban_edge_closes_boundary"], true);
+    assert_eq!(
+        feature["properties"]["urban_extent_source_dataset_id"],
+        "ons-built-up-areas-2022"
+    );
+    assert_eq!(
+        feature["properties"]["urban_extent_source_effective_date"],
+        "2022-12"
+    );
+    assert_eq!(
+        feature["properties"]["urban_extent_source_licence"],
+        "Open Government Licence v3.0"
+    );
+    assert_eq!(
+        feature["properties"]["urban_extent_source_url"],
+        "https://example.test/bua"
+    );
+    assert_eq!(
+        feature["properties"]["urban_extent_source_attribution"],
+        "ONS and OS attribution"
+    );
+    assert_eq!(
         feature["properties"]["interpretation"],
         "Candidate enclosure; it does not establish existing low-traffic conditions, safe crossings, or legal access."
     );
@@ -555,6 +587,9 @@ fn publication_preserves_candidate_neighbourhood_polygon_holes_and_provenance() 
     assert!(html.contains("'line-width': 1"));
     assert!(html.contains("'line-opacity': 1"));
     assert!(html.contains("'candidate-neighbourhood': ['native-candidate-neighbourhood', 'native-candidate-neighbourhood-boundary']"));
+    assert!(html.contains("Classified-road frontages"));
+    assert!(html.contains("Built-up edge closes remaining boundary"));
+    assert!(html.contains("Built-up source licence"));
     let interactive_layers = html
         .split("const interactiveLayers = [")
         .nth(1)
