@@ -250,7 +250,6 @@ th.numeric, td.numeric { text-align: right; white-space: nowrap; }
     if (pair.origin_id) href.searchParams.set('origin_id', String(pair.origin_id));
     if (pair.destination_id) href.searchParams.set('destination_id', String(pair.destination_id));
     if (pair.alternative_error) href.searchParams.set('alternative_unavailable', '1');
-    href.searchParams.set('return', window.location.href);
     return href.href;
   };
   const numericSortValue = (pair, key) => {
