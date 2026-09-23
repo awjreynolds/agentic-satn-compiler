@@ -153,14 +153,6 @@ def _inspect_native_agentic(
             ) from error
 
         if isinstance(bus_context_url, str) and bus_context_url:
-            if not any(
-                url.rsplit("/", 1)[-1] == bus_context_url.rsplit("/", 1)[-1]
-                for url in network_requests
-            ):
-                raise ValueError(
-                    f"{deployment_id} native page did not request its declared bus context: "
-                    f"{bus_context_url}"
-                )
             try:
                 page.wait_for_function(
                     """() => {
@@ -180,6 +172,14 @@ def _inspect_native_agentic(
                     })"""
                 )
                 raise ValueError(f"{deployment_id} bus context did not load: {details}") from error
+            if not any(
+                url.rsplit("/", 1)[-1] == bus_context_url.rsplit("/", 1)[-1]
+                for url in network_requests
+            ):
+                raise ValueError(
+                    f"{deployment_id} native page did not request its declared bus context: "
+                    f"{bus_context_url}"
+                )
             bus_result = page.evaluate(
                 """async () => {
                   const failures = [];
