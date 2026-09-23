@@ -14,6 +14,7 @@ header h1 { margin: 0 0 .35rem; font-size: 1.4rem; line-height: 1.25; }
 header p { margin: .25rem 0; max-width: 70rem; }
 .disclaimer { color: #92400e; font-weight: 650; }
 .context { color: #334155; }
+.optional-note { color: #92400e; font-weight: 650; }
 .journey-shell { display: grid; grid-template-columns: minmax(20rem, 27rem) minmax(0, 1fr); min-height: 70vh; }
 .journey-panel { padding: .9rem 1rem 1.25rem; background: #fff; overflow: auto; max-height: 80vh; }
 .journey-map-wrap { position: relative; min-height: 36rem; border-left: 1px solid #cbd5e1; }
@@ -69,6 +70,8 @@ button[data-route-inspect] { padding: .25rem .5rem; font-size: .88rem; }
   <h1 id="journey-title">Journey comparison</h1>
   <p class="disclaimer">Experimental SATN POC — a mechanical journey comparison, not an adopted plan.</p>
   <p id="journey-context" class="context">Metrics cover the complete origin → town route. Source evidence does not establish provision, safety, or adoption.</p>
+  <p id="journey-alternative-note" class="optional-note" hidden>Retained alternative unavailable; selected and direct comparison remains available.</p>
+  <p id="journey-return" class="context" hidden><a href="index.html">Back to all journeys</a></p>
 </header>
 <main class="journey-shell">
   <aside class="journey-panel" aria-label="Journey comparison controls and measures">
@@ -100,11 +103,18 @@ button[data-route-inspect] { padding: .25rem .5rem; font-size: .88rem; }
 <script>
 (function () {
   const root = document.documentElement;
-  const networkUrl = document.body.dataset.networkUrl;
+  const query = new URLSearchParams(window.location.search);
+  const networkUrl = query.get('data') || document.body.dataset.networkUrl || 'journey-comparison.geojson';
+  const selectedOriginId = query.get('origin_id');
+  const selectedDestinationId = query.get('destination_id');
+  const selectedPairId = query.get('pair_id');
+  const alternativeUnavailable = query.get('alternative_unavailable') === '1';
   const failure = document.getElementById('journey-loading-failure');
   const title = document.getElementById('journey-title');
   const pageTitle = document.getElementById('page-title');
   const context = document.getElementById('journey-context');
+  const alternativeNote = document.getElementById('journey-alternative-note');
+  const returnLink = document.getElementById('journey-return');
   const routeControls = document.getElementById('journey-route-controls');
   const measures = document.getElementById('journey-measures');
   const details = document.getElementById('journey-feature-details');
@@ -149,8 +159,17 @@ button[data-route-inspect] { padding: .25rem .5rem; font-size: .88rem; }
     const numeric = numberValue(value);
     return numeric === null ? 'Unknown' : Math.round(numeric) + ' m';
   };
+  const topographyMetric = (profile, key) => {
+    if (!profile || typeof profile !== 'object') return null;
+    const availability = profile.availability === undefined || profile.availability === null
+      ? '' : String(profile.availability).toLowerCase();
+    return availability && availability !== 'available' ? null : profile[key];
+  };
   const formatGradient = profile => {
     if (!profile || typeof profile !== 'object') return 'Unknown';
+    const availability = profile.availability === undefined || profile.availability === null
+      ? '' : String(profile.availability).toLowerCase();
+    if (availability && availability !== 'available') return 'Unknown';
     const sustained = profile.sustained_gradient;
     if (!sustained || typeof sustained !== 'object') return 'Unknown';
     const gradient = numberValue(sustained.absolute_gradient_pct);
@@ -199,6 +218,27 @@ button[data-route-inspect] { padding: .25rem .5rem; font-size: .88rem; }
     return status.split(/[-_]+/).map(word => word ? word[0].toUpperCase() + word.slice(1) : '').join(' ');
   };
 
+  const pairMatches = feature => {
+    const props = featureProperties(feature);
+    if (selectedPairId && String(props.pair_id || '') === selectedPairId) return true;
+    const originMatches = !selectedOriginId || String(props.origin_id || props.community_id || '') === selectedOriginId;
+    const destinationMatches = !selectedDestinationId || String(props.destination_id || '') === selectedDestinationId;
+    return originMatches && destinationMatches;
+  };
+  const selectPair = data => {
+    if (!selectedPairId && !selectedOriginId && !selectedDestinationId) return data;
+    const features = Array.isArray(data && data.features) ? data.features.filter(pairMatches) : [];
+    if (!features.length) throw new Error('requested journey pair is not present in the published GeoJSON');
+    return { ...data, features };
+  };
+  const showAlternativeNote = data => {
+    const featureNote = Array.isArray(data && data.features) && data.features.some(feature => {
+      const props = featureProperties(feature);
+      return props.alternative_error !== undefined && props.alternative_error !== null && props.alternative_error !== '';
+    });
+    if (alternativeUnavailable || featureNote) alternativeNote.hidden = false;
+  };
+
   const metricRows = feature => {
     const props = featureProperties(feature);
     const profile = props.topography;
@@ -209,8 +249,8 @@ button[data-route-inspect] { padding: .25rem .5rem; font-size: .88rem; }
       ['New rural link', direct ? 'Unknown' : formatDistance(props.new_link_length_m)],
       ['Shared branch length', direct ? 'Unknown' : formatDistance(props.shared_suffix_length_m)],
       ['Onward to destination', direct ? 'Unknown' : formatDistance(props.onward_length_m)],
-      ['Forward ascent', formatElevation(profile && profile.forward_ascent_m)],
-      ['Forward descent', formatElevation(profile && profile.forward_descent_m)],
+      ['Forward ascent', formatElevation(topographyMetric(profile, 'forward_ascent_m'))],
+      ['Forward descent', formatElevation(topographyMetric(profile, 'forward_descent_m'))],
       ['Steepest sampled interval', formatGradient(profile)]
     ];
   };
@@ -413,12 +453,16 @@ button[data-route-inspect] { padding: .25rem .5rem; font-size: .88rem; }
   };
 
   root.dataset.journeyReady = 'false';
+  if (alternativeUnavailable) alternativeNote.hidden = false;
+  if (query.has('data')) returnLink.hidden = false;
   fetch(networkUrl, { cache: 'no-store' }).then(response => {
     if (!response.ok) throw new Error('HTTP ' + response.status);
     return response.json();
   }).then(data => {
     if (!data || data.type !== 'FeatureCollection' || !Array.isArray(data.features)) throw new Error('journey comparison is not a FeatureCollection');
-    initialize(data);
+    const selectedData = selectPair(data);
+    showAlternativeNote(selectedData);
+    initialize(selectedData);
   }).catch(error => {
     failure.hidden = false;
     failure.textContent = 'Unable to load journey comparison data: ' + error.message;

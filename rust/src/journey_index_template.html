@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="en" data-journey-index-ready="false">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title id="page-title">Journey comparison index</title>
+<style>
+:root { color-scheme: light; font: 16px system-ui, sans-serif; color: #17202a; background: #f8fafc; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+header { padding: 1rem 1.25rem .85rem; background: #fff; border-bottom: 1px solid #cbd5e1; }
+header h1 { margin: 0 0 .35rem; font-size: 1.4rem; line-height: 1.25; }
+header p { margin: .25rem 0; max-width: 72rem; }
+.disclaimer { color: #92400e; font-weight: 650; }
+.context { color: #334155; }
+main { padding: 1rem 1.25rem 1.5rem; max-width: 120rem; }
+.index-card { padding: .9rem 1rem 1.1rem; background: #fff; border: 1px solid #cbd5e1; border-radius: .4rem; }
+.index-controls { display: grid; grid-template-columns: minmax(15rem, 2fr) minmax(10rem, 1fr) minmax(13rem, 1.25fr) minmax(9rem, .75fr) auto; gap: .6rem; align-items: end; margin-bottom: .8rem; }
+.control { display: grid; gap: .25rem; }
+.control label { color: #334155; font-size: .84rem; font-weight: 700; }
+input, select, button { padding: .42rem .55rem; border: 1px solid #64748b; border-radius: .3rem; background: #fff; color: #17202a; font: inherit; }
+button { cursor: pointer; }
+button:hover { background: #f1f5f9; }
+button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible { outline: 3px solid #2563eb; outline-offset: 2px; }
+.index-summary { display: flex; flex-wrap: wrap; gap: .45rem 1rem; align-items: baseline; margin: .5rem 0 .8rem; color: #334155; }
+.index-summary strong { color: #17202a; }
+.table-wrap { overflow-x: auto; border: 1px solid #cbd5e1; border-radius: .35rem; }
+table { width: 100%; min-width: 74rem; border-collapse: collapse; font-size: .88rem; }
+caption { text-align: left; padding: .7rem .75rem; font-weight: 700; background: #f8fafc; }
+th, td { padding: .5rem .55rem; border-bottom: 1px solid #e2e8f0; vertical-align: top; text-align: left; }
+thead th { position: sticky; top: 0; z-index: 1; background: #f1f5f9; color: #334155; font-weight: 700; white-space: nowrap; }
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr:hover { background: #f8fafc; }
+th.numeric, td.numeric { text-align: right; white-space: nowrap; }
+.place { font-weight: 650; }
+.pair-id { display: block; color: #64748b; font-size: .76rem; overflow-wrap: anywhere; }
+.status { font-weight: 700; }
+.status-available { color: #166534; }
+.status-unavailable { color: #92400e; }
+.status-detail { display: block; margin-top: .15rem; color: #64748b; font-size: .78rem; font-weight: 400; max-width: 15rem; }
+.optional-note { color: #92400e; }
+.unknown { color: #64748b; }
+.map-link { white-space: nowrap; }
+.empty-state { color: #64748b; margin: .7rem 0; }
+#journey-loading-failure { color: #b91c1c; font-weight: 700; }
+@media (max-width: 900px) {
+  header { padding: .75rem; }
+  main { padding: .75rem; }
+  .index-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .control:first-child { grid-column: 1 / -1; }
+  .index-controls button { align-self: end; }
+}
+@media (max-width: 520px) {
+  .index-controls { grid-template-columns: minmax(0, 1fr); }
+  .control:first-child { grid-column: auto; }
+}
+</style>
+</head>
+<body data-journey-index-url="journey-batch-summary.json">
+<header>
+  <h1 id="journey-title">Area-wide journey comparisons</h1>
+  <p class="disclaimer">Experimental SATN POC — mechanical route comparisons, not an adopted plan.</p>
+  <p id="journey-context" class="context">Search the measured origin → town pairs. A comparison can be unavailable when the prepared graph cannot produce a route.</p>
+</header>
+<main>
+  <section class="index-card" aria-labelledby="journey-index-heading">
+    <h2 id="journey-index-heading">All journey pairs</h2>
+    <p class="context">Select one measured field at a time when sorting. Distance and ascent deltas are shown separately; there is no combined ranking.</p>
+    <div class="index-controls" aria-label="Journey index filters">
+      <div class="control">
+        <label for="journey-search">Search origin or destination</label>
+        <input id="journey-search" type="search" autocomplete="off" placeholder="Type a place name or pair ID">
+      </div>
+      <div class="control">
+        <label for="journey-status">Show</label>
+        <select id="journey-status">
+          <option value="all">All pairs</option>
+          <option value="available">Available comparisons</option>
+          <option value="unavailable">Unavailable comparisons</option>
+        </select>
+      </div>
+      <div class="control">
+        <label for="journey-sort">Sort by</label>
+        <select id="journey-sort">
+          <option value="origin">Origin</option>
+          <option value="destination">Destination</option>
+          <option value="status">Status</option>
+          <option value="selected-distance">Selected distance</option>
+          <option value="direct-distance">Direct distance</option>
+          <option value="distance-delta">Distance delta (selected − direct)</option>
+          <option value="selected-ascent">Selected forward ascent</option>
+          <option value="direct-ascent">Direct forward ascent</option>
+          <option value="ascent-delta">Ascent delta (selected − direct)</option>
+          <option value="new-link">Selected new rural link</option>
+          <option value="shared-branch">Selected shared branch</option>
+        </select>
+      </div>
+      <div class="control">
+        <label for="journey-order">Order</label>
+        <select id="journey-order">
+          <option value="ascending">Ascending</option>
+          <option value="descending">Descending</option>
+        </select>
+      </div>
+      <button type="button" id="journey-clear">Clear filters</button>
+    </div>
+    <div id="journey-summary" class="index-summary" aria-live="polite"><span>Loading journey pairs…</span></div>
+    <div class="table-wrap">
+      <table id="journey-table">
+        <caption>Measured route comparison index</caption>
+        <thead>
+          <tr>
+            <th scope="col">Origin</th>
+            <th scope="col">Destination</th>
+            <th scope="col">Status</th>
+            <th scope="col" class="numeric">Selected distance</th>
+            <th scope="col" class="numeric">Direct distance</th>
+            <th scope="col" class="numeric">Distance Δ</th>
+            <th scope="col" class="numeric">Selected ascent</th>
+            <th scope="col" class="numeric">Direct ascent</th>
+            <th scope="col" class="numeric">Ascent Δ</th>
+            <th scope="col" class="numeric">New rural link</th>
+            <th scope="col" class="numeric">Shared branch</th>
+          </tr>
+        </thead>
+        <tbody id="journey-rows"><tr><td colspan="11" class="empty-state">Loading journey pairs…</td></tr></tbody>
+      </table>
+    </div>
+    <p id="journey-loading-failure" role="alert" hidden>Unable to load journey index data.</p>
+  </section>
+</main>
+<script>
+(function () {
+  const root = document.documentElement;
+  const query = new URLSearchParams(window.location.search);
+  const indexUrl = query.get('data') || document.body.dataset.journeyIndexUrl || 'journey-batch-summary.json';
+  const title = document.getElementById('journey-title');
+  const pageTitle = document.getElementById('page-title');
+  const context = document.getElementById('journey-context');
+  const search = document.getElementById('journey-search');
+  const statusFilter = document.getElementById('journey-status');
+  const sort = document.getElementById('journey-sort');
+  const order = document.getElementById('journey-order');
+  const clear = document.getElementById('journey-clear');
+  const summary = document.getElementById('journey-summary');
+  const rowsContainer = document.getElementById('journey-rows');
+  const failure = document.getElementById('journey-loading-failure');
+  let manifest = null;
+  let pairs = [];
+
+  const escapeHtml = value => String(value === null || value === undefined ? '' : value).replace(/[&<>"']/g, character => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[character]));
+  const numberValue = value => {
+    if (value === null || value === undefined || value === '') return null;
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+  };
+  const normalizedValue = value => {
+    if (typeof value !== 'string') return value;
+    const text = value.trim();
+    const container = (text.startsWith('[') && text.endsWith(']')) ||
+      (text.startsWith('{') && text.endsWith('}'));
+    if (!container) return value;
+    try {
+      const parsed = JSON.parse(text);
+      return parsed && typeof parsed === 'object' ? parsed : value;
+    } catch (_) {
+      return value;
+    }
+  };
+  const formatDistance = value => {
+    const numeric = numberValue(value);
+    if (numeric === null) return 'Unknown';
+    return numeric >= 1000 ? (numeric / 1000).toFixed(2) + ' km' : Math.round(numeric) + ' m';
+  };
+  const formatElevation = value => {
+    const numeric = numberValue(value);
+    return numeric === null ? 'Unknown' : Math.round(numeric) + ' m';
+  };
+  const formatDelta = (left, right, formatter) => {
+    const first = numberValue(left);
+    const second = numberValue(right);
+    if (first === null || second === null) return 'Unknown';
+    const delta = first - second;
+    const value = formatter(delta);
+    return delta > 0 ? '+' + value : value;
+  };
+  const pathTopography = path => {
+    const topography = normalizedValue(path && path.topography);
+    if (!topography || typeof topography !== 'object') return {};
+    const availability = topography.availability === undefined || topography.availability === null
+      ? '' : String(topography.availability).toLowerCase();
+    return availability && availability !== 'available' ? {} : topography;
+  };
+  const pathMetric = (pair, pathName, metric) => numberValue(pair && pair[pathName] && pair[pathName][metric]);
+  const pathAscent = (pair, pathName) => numberValue(pathTopography(pair && pair[pathName]).forward_ascent_m);
+  const pathNewLink = pair => pathMetric(pair, 'selected', 'new_link_length_m');
+  const pathSharedBranch = pair => pathMetric(pair, 'selected', 'shared_suffix_length_m');
+  const selectedDistance = pair => pathMetric(pair, 'selected', 'length_m');
+  const directDistance = pair => pathMetric(pair, 'direct', 'length_m');
+  const selectedAscent = pair => pathAscent(pair, 'selected');
+  const directAscent = pair => pathAscent(pair, 'direct');
+  const statusKey = pair => String(pair && pair.status || '').trim().toLowerCase().replace(/_/g, '-');
+  const available = pair => statusKey(pair) === 'success';
+  const statusLabel = pair => available(pair) ? 'Available' : 'Unavailable';
+  const statusDetail = pair => {
+    const status = statusKey(pair);
+    if (status === 'unsupported') return 'Prepared graph could not route this pair';
+    if (status === 'error') return 'Comparison did not produce a route artifact';
+    if (status === 'success') return '';
+    return 'Published status has no available route';
+  };
+  const alternativeNote = pair => pair && pair.alternative_error
+    ? 'Retained alternative unavailable; selected and direct comparison remains available.'
+    : '';
+  const displayName = (pair, key) => String(pair && pair[key] || 'Unknown');
+  const displaySummary = () => {
+    const count = pairs.length;
+    const successCount = pairs.filter(available).length;
+    const unavailableCount = count - successCount;
+    const values = [
+      '<strong>' + escapeHtml(count) + '</strong> pairs',
+      '<strong>' + escapeHtml(successCount) + '</strong> available',
+      '<strong>' + escapeHtml(unavailableCount) + '</strong> unavailable',
+      '<span data-filtered-summary></span>'
+    ];
+    summary.innerHTML = values.join('<span aria-hidden="true">·</span>');
+  };
+  const candidatePath = pair => {
+    const paths = manifest && manifest.paths && typeof manifest.paths === 'object' ? manifest.paths : {};
+    let candidate = pair && (pair.artifact_path || pair.geojson || pair.map_data);
+    if (!candidate && pair && pair.artifact_stem) {
+      const stem = String(pair.artifact_stem);
+      candidate = /\.(geojson|json)$/i.test(stem) ? stem : stem.replace(/\/$/, '') + '/journey-comparison.geojson';
+      if (paths.geojson_dir) candidate = String(paths.geojson_dir).replace(/\/$/, '') + '/' + candidate;
+    }
+    if (!candidate) candidate = paths.geojson || paths.data;
+    return candidate ? String(candidate) : null;
+  };
+  const mapHref = pair => {
+    if (!available(pair)) return null;
+    const paths = manifest && manifest.paths && typeof manifest.paths === 'object' ? manifest.paths : {};
+    const mapPath = paths.map || paths.viewer || 'journey-map.html';
+    const dataPath = candidatePath(pair);
+    if (!dataPath) return null;
+    const href = new URL(mapPath, document.baseURI);
+    href.searchParams.set('data', new URL(dataPath, document.baseURI).href);
+    if (pair.pair_id) href.searchParams.set('pair_id', String(pair.pair_id));
+    if (pair.origin_id) href.searchParams.set('origin_id', String(pair.origin_id));
+    if (pair.destination_id) href.searchParams.set('destination_id', String(pair.destination_id));
+    if (pair.alternative_error) href.searchParams.set('alternative_unavailable', '1');
+    return href.href;
+  };
+  const numericSortValue = (pair, key) => {
+    if (key === 'selected-distance') return selectedDistance(pair);
+    if (key === 'direct-distance') return directDistance(pair);
+    if (key === 'distance-delta') return selectedDistance(pair) === null || directDistance(pair) === null ? null : selectedDistance(pair) - directDistance(pair);
+    if (key === 'selected-ascent') return selectedAscent(pair);
+    if (key === 'direct-ascent') return directAscent(pair);
+    if (key === 'ascent-delta') return selectedAscent(pair) === null || directAscent(pair) === null ? null : selectedAscent(pair) - directAscent(pair);
+    if (key === 'new-link') return pathNewLink(pair);
+    if (key === 'shared-branch') return pathSharedBranch(pair);
+    return null;
+  };
+  const sortPairs = values => {
+    const key = sort.value;
+    const direction = order.value === 'descending' ? -1 : 1;
+    return values.slice().sort((left, right) => {
+      const leftNumber = numericSortValue(left, key);
+      const rightNumber = numericSortValue(right, key);
+      if (leftNumber !== null || rightNumber !== null) {
+        if (leftNumber === null) return 1;
+        if (rightNumber === null) return -1;
+        return (leftNumber - rightNumber) * direction;
+      }
+      let leftText = '';
+      let rightText = '';
+      if (key === 'destination') {
+        leftText = displayName(left, 'destination_name');
+        rightText = displayName(right, 'destination_name');
+      } else if (key === 'status') {
+        leftText = statusLabel(left);
+        rightText = statusLabel(right);
+      } else {
+        leftText = displayName(left, 'origin_name');
+        rightText = displayName(right, 'origin_name');
+      }
+      return leftText.localeCompare(rightText, undefined, { sensitivity: 'base' }) * direction;
+    });
+  };
+  const filteredPairs = () => {
+    const needle = search.value.trim().toLocaleLowerCase();
+    const status = statusFilter.value;
+    return sortPairs(pairs.filter(pair => {
+      const haystack = [pair.origin_name, pair.destination_name, pair.origin_id, pair.destination_id, pair.pair_id]
+        .map(value => String(value || '').toLocaleLowerCase()).join(' ');
+      if (needle && !haystack.includes(needle)) return false;
+      if (status === 'available' && !available(pair)) return false;
+      if (status === 'unavailable' && available(pair)) return false;
+      return true;
+    }));
+  };
+  const cell = (value, numeric) => '<td class="' + (numeric ? 'numeric ' : '') + (value === 'Unknown' ? 'unknown' : '') + '">' + escapeHtml(value) + '</td>';
+  const renderRows = () => {
+    const visible = filteredPairs();
+    if (!visible.length) {
+      rowsContainer.innerHTML = '<tr><td colspan="11" class="empty-state">No journey pairs match these filters.</td></tr>';
+      const filteredNote = summary.querySelector('[data-filtered-summary]');
+      if (filteredNote) filteredNote.textContent = 'Showing 0 of ' + pairs.length + ' pairs';
+      return;
+    }
+    rowsContainer.innerHTML = visible.map(pair => {
+      const selectedLength = formatDistance(selectedDistance(pair));
+      const directLength = formatDistance(directDistance(pair));
+      const selectedClimb = formatElevation(selectedAscent(pair));
+      const directClimb = formatElevation(directAscent(pair));
+      const distanceDelta = formatDelta(selectedDistance(pair), directDistance(pair), formatDistance);
+      const ascentDelta = formatDelta(selectedAscent(pair), directAscent(pair), formatElevation);
+      const link = mapHref(pair);
+      const origin = displayName(pair, 'origin_name');
+      const destination = displayName(pair, 'destination_name');
+      const detail = statusDetail(pair);
+      const notes = [detail, alternativeNote(pair)].filter(Boolean);
+      const originCell = link
+        ? '<a class="map-link" href="' + escapeHtml(link) + '" aria-label="Open map for ' + escapeHtml(origin + ' → ' + destination) + '"><span class="place">' + escapeHtml(origin) + '</span></a>'
+        : '<span class="place">' + escapeHtml(origin) + '</span>';
+      return '<tr>' +
+        '<td>' + originCell + '</td>' +
+        '<td><span class="place">' + escapeHtml(destination) + '</span></td>' +
+        '<td><span class="status ' + (available(pair) ? 'status-available' : 'status-unavailable') + '">' + escapeHtml(statusLabel(pair)) + '</span>' + notes.map((note, index) => '<span class="status-detail' + (index === notes.length - 1 && alternativeNote(pair) ? ' optional-note' : '') + '">' + escapeHtml(note) + '</span>').join('') + '</td>' +
+        cell(selectedLength, true) +
+        cell(directLength, true) +
+        cell(distanceDelta, true) +
+        cell(selectedClimb, true) +
+        cell(directClimb, true) +
+        cell(ascentDelta, true) +
+        cell(formatDistance(pathNewLink(pair)), true) +
+        cell(formatDistance(pathSharedBranch(pair)), true) +
+        '</tr>';
+    }).join('');
+    const filteredNote = summary.querySelector('[data-filtered-summary]');
+    if (filteredNote) filteredNote.textContent = 'Showing ' + visible.length + ' of ' + pairs.length + ' pairs';
+  };
+  const load = data => {
+    const summaryData = data && data.summary && typeof data.summary === 'object' ? data.summary : data;
+    const sourcePairs = Array.isArray(summaryData && summaryData.pairs)
+      ? summaryData.pairs
+      : Array.isArray(data && data.pairs) ? data.pairs : [];
+    if (!sourcePairs.length && !(summaryData && Number(summaryData.pair_count) === 0)) throw new Error('journey index has no pair records');
+    manifest = { ...data, summary: summaryData, paths: data && data.paths && typeof data.paths === 'object' ? data.paths : {} };
+    pairs = sourcePairs;
+    const indexTitle = data && data.title ? String(data.title) : 'Area-wide journey comparisons';
+    title.textContent = indexTitle;
+    pageTitle.textContent = indexTitle;
+    context.textContent = 'Search the measured origin → town pairs. Source evidence does not establish provision, safety, or adoption.';
+    displaySummary();
+    renderRows();
+    root.dataset.journeyIndexLoaded = 'true';
+  };
+  [search, statusFilter, sort, order].forEach(control => control.addEventListener('input', renderRows));
+  [statusFilter, sort, order].forEach(control => control.addEventListener('change', renderRows));
+  clear.addEventListener('click', () => {
+    search.value = '';
+    statusFilter.value = 'all';
+    sort.value = 'origin';
+    order.value = 'ascending';
+    renderRows();
+  });
+  root.dataset.journeyIndexReady = 'false';
+  fetch(indexUrl, { cache: 'no-store' }).then(response => {
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    return response.json();
+  }).then(load).catch(error => {
+    failure.hidden = false;
+    failure.textContent = 'Unable to load journey index data: ' + error.message;
+    root.dataset.journeyIndexReady = 'false';
+  });
+}());
+</script>
+</body>
+</html>
