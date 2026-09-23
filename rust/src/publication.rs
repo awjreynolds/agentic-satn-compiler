@@ -41,6 +41,7 @@ pub struct DecisionMapPublication {
 enum MapGeometry {
     Line(Vec<[f64; 2]>),
     Point([f64; 2]),
+    Polygon(Vec<Vec<[f64; 2]>>),
 }
 
 #[derive(Debug, Clone)]
@@ -675,6 +676,27 @@ fn baseline_features(report: &CompileReport) -> Vec<MapFeature> {
             });
         }
     }
+    for candidate in &report.candidate_neighbourhoods {
+        features.push(MapFeature {
+            kind: "candidate-neighbourhood".to_string(),
+            geometry: Some(MapGeometry::Polygon(
+                candidate.geometry.coordinates.clone(),
+            )),
+            properties: json!({
+                "kind": "candidate-neighbourhood",
+                "candidate_neighbourhood_id": candidate.id,
+                "label": format!("{} candidate enclosure", candidate.urban_extent_name),
+                "urban_extent_source_id": candidate.urban_extent_source_id,
+                "urban_extent_name": candidate.urban_extent_name,
+                "area_m2": candidate.area_m2,
+                "source_dataset_ids": candidate.source_dataset_ids,
+                "source_effective_dates": candidate.source_effective_dates,
+                "source_licences": candidate.source_licences,
+                "source_classifications": candidate.source_classifications,
+                "interpretation": "Candidate enclosure; it does not establish existing low-traffic conditions, safe crossings, or legal access.",
+            }),
+        });
+    }
     for place in &report.network_places {
         features.push(MapFeature {
             kind: "network-place".to_string(),
@@ -1119,6 +1141,10 @@ fn feature_json(feature: &MapFeature) -> Value {
             "type": "Point",
             "coordinates": coordinates,
         }),
+        Some(MapGeometry::Polygon(rings)) => json!({
+            "type": "Polygon",
+            "coordinates": rings,
+        }),
         None => Value::Null,
     };
     json!({
@@ -1148,8 +1174,17 @@ fn render_interactive_html(
     });
     let attribution = html_escape(&report.attribution);
     let source_attributions = html_escape(&report.source_attributions.join("; "));
+    let candidate_neighbourhood_layer_control = if report.candidate_neighbourhoods.is_empty() {
+        String::new()
+    } else {
+        "<li><label><input type=\"checkbox\" data-layer-toggle=\"candidate-neighbourhood\"> <span class=\"swatch candidate-key\"></span>Candidate neighbourhoods <span data-layer-count></span></label></li>".to_string()
+    };
     let template = include_str!("native_map_template.html");
     template
+        .replace(
+            "__CANDIDATE_NEIGHBOURHOOD_LAYER_CONTROL__",
+            &candidate_neighbourhood_layer_control,
+        )
         .replace("__TITLE__", &title)
         .replace("__DEPLOYMENT__", &deployment_id)
         .replace("__BRANCH__", &branch)

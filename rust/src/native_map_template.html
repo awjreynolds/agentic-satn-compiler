@@ -24,6 +24,7 @@ button:focus-visible, input:focus-visible { outline: 3px solid #2563eb; outline-
 .selected-key { background: #15803d; } .provisional-key { background: #d97706; }
 .unresolved-key { background: #7c3aed; } .departure-key { background: #dc2626; }
 .community-key { background: #0891b2; }
+.candidate-key { height: .9rem; background: rgba(52,211,153,.32); border: 1px solid #047857; }
 .native-details { border: 1px solid #cbd5e1; border-radius: .3rem; padding: .6rem; background: #f8fafc; min-height: 5rem; }
 .native-details h3 { margin: 0 0 .35rem; font-size: 1rem; }
 .native-details dl { margin: 0; }
@@ -53,6 +54,7 @@ code { font-size: .9em; }
     <fieldset><legend>Layers</legend><ul class="key">
       <li><label><input type="checkbox" data-layer-toggle="source-strategic" checked> <span class="swatch source-key"></span>Strategic source baseline <span data-layer-count></span></label></li>
       <li><label><input type="checkbox" data-layer-toggle="source-context"> <span class="swatch context-key"></span>Context sources <span data-layer-count></span></label></li>
+      __CANDIDATE_NEIGHBOURHOOD_LAYER_CONTROL__
       <li><label><input type="checkbox" data-layer-toggle="selected-alignment" checked> <span class="swatch selected-key"></span>Selected alignment <span data-layer-count></span></label></li>
       <li><label><input type="checkbox" data-layer-toggle="provisional-alignment" checked> <span class="swatch provisional-key"></span>Provisional alignment <span data-layer-count></span></label></li>
       <li><label><input type="checkbox" data-layer-toggle="unresolved-decision" checked> <span class="swatch unresolved-key"></span>Unresolved decision <span data-layer-count></span></label></li>
@@ -81,6 +83,7 @@ code { font-size: .9em; }
   const interactiveLayers = [
     'native-selected', 'native-selected-point', 'native-provisional', 'native-provisional-point',
     'native-unresolved', 'native-alternative',
+    'native-candidate-neighbourhood',
     'native-a-road-departure', 'native-source-departure', 'native-source-strategic',
     'native-source-context', 'native-network-place', 'native-school-context',
     'native-community-access', 'native-community-access-point', 'native-community-access-gap', 'native-access-obligation'
@@ -88,6 +91,7 @@ code { font-size: .9em; }
   const layerGroups = {
     'source-strategic': ['native-source-strategic'],
     'source-context': ['native-source-context'],
+    'candidate-neighbourhood': ['native-candidate-neighbourhood'],
     'selected-alignment': ['native-selected', 'native-selected-point'],
     'provisional-alignment': ['native-provisional', 'native-provisional-point'],
     'unresolved-decision': ['native-unresolved'],
@@ -143,6 +147,11 @@ code { font-size: .9em; }
     const metres = Number(value);
     if (!Number.isFinite(metres)) return '';
     return metres >= 1000 ? (metres / 1000).toFixed(1) + ' km' : Math.round(metres) + ' m';
+  };
+  const formatArea = value => {
+    if (value === null || value === undefined || value === '') return '';
+    const area = Number(value);
+    return Number.isFinite(area) ? Math.round(area).toLocaleString('en-GB') + ' m²' : '';
   };
   const formatSaving = value => {
     if (value === null || value === undefined || value === '') return '';
@@ -225,6 +234,17 @@ code { font-size: .9em; }
     add('Source', props.source_reference);
     if (props.kind === 'school-context') add('School', props.name);
     else add('Place', props.name);
+    if (props.kind === 'candidate-neighbourhood') {
+      add('Candidate neighbourhood', props.candidate_neighbourhood_id);
+      add('Urban extent', props.urban_extent_name);
+      add('Urban extent source', props.urban_extent_source_id);
+      add('Measured area', formatArea(props.area_m2));
+      add('Official source datasets', props.source_dataset_ids);
+      add('Dataset effective dates', props.source_effective_dates);
+      add('Dataset licences', props.source_licences);
+      add('Admitted source classifications', props.source_classifications);
+      add('Interpretation', props.interpretation);
+    }
     if (props.kind === 'community-access') {
       add('Access status', props.status);
       const urbanEntry = urbanEntryValue(props);
@@ -343,6 +363,7 @@ code { font-size: .9em; }
     const featureCounts = {
       'source-strategic': network.features.filter(feature => feature.properties?.kind === 'source-baseline' && feature.properties?.baseline_layer !== 'source-context').length,
       'source-context': network.features.filter(feature => feature.properties?.kind === 'source-baseline' && feature.properties?.baseline_layer === 'source-context').length,
+      'candidate-neighbourhood': network.features.filter(feature => feature.properties?.kind === 'candidate-neighbourhood').length,
       'selected-alignment': network.features.filter(feature => feature.properties?.kind === 'selected-alignment').length,
       'provisional-alignment': network.features.filter(feature => feature.properties?.kind === 'provisional-alignment').length,
       'unresolved-decision': network.features.filter(feature => feature.properties?.kind === 'unresolved-decision').length,
@@ -432,6 +453,9 @@ code { font-size: .9em; }
         map.addLayer(layer);
       };
       map.addLayer({ id: 'native-boundary-fill', type: 'fill', source: 'native-network', filter: ['==', ['get', 'kind'], 'boundary-scope'], paint: { 'fill-color': '#93c5fd', 'fill-opacity': 0.14 } });
+      if (network.features.some(feature => feature.properties?.kind === 'candidate-neighbourhood')) {
+        map.addLayer({ id: 'native-candidate-neighbourhood', type: 'fill', source: 'native-network', filter: ['==', ['get', 'kind'], 'candidate-neighbourhood'], paint: { 'fill-color': '#34d399', 'fill-opacity': 0.22, 'fill-outline-color': '#047857' } });
+      }
       map.addLayer({ id: 'native-boundary-line', type: 'line', source: 'native-network', filter: ['==', ['get', 'kind'], 'boundary-scope'], paint: { 'line-color': '#2563eb', 'line-width': 2 } });
       line('native-source-context', ['all', ['==', ['get', 'kind'], 'source-baseline'], ['==', ['get', 'baseline_layer'], 'source-context']], '#94a3b8', 2, [3, 3]);
       line('native-source-strategic', ['all', ['==', ['get', 'kind'], 'source-baseline'], ['!=', ['get', 'baseline_layer'], 'source-context']], '#475569', 3);
@@ -450,6 +474,7 @@ code { font-size: .9em; }
       map.addLayer({ id: 'native-community-access-gap', type: 'circle', source: 'native-network', filter: ['all', ['==', ['get', 'kind'], 'community-access'], ['==', ['geometry-type'], 'Point'], ['==', ['get', 'status'], 'network-gap']], paint: { 'circle-radius': 6, 'circle-color': '#b91c1c', 'circle-stroke-color': '#fff', 'circle-stroke-width': 1 } });
       map.addLayer({ id: 'native-access-obligation', type: 'circle', source: 'native-network', filter: ['==', ['get', 'kind'], 'access-obligation'], paint: { 'circle-radius': 6, 'circle-color': '#dc2626', 'circle-stroke-color': '#fff', 'circle-stroke-width': 1 } });
       map.addLayer({ id: 'native-highlight-line', type: 'line', source: 'native-highlight', filter: ['==', ['geometry-type'], 'LineString'], paint: { 'line-color': '#f59e0b', 'line-width': 8, 'line-opacity': 0.8 } });
+      map.addLayer({ id: 'native-highlight-polygon', type: 'fill', source: 'native-highlight', filter: ['==', ['geometry-type'], 'Polygon'], paint: { 'fill-color': '#f59e0b', 'fill-opacity': 0.35, 'fill-outline-color': '#d97706' } });
       map.addLayer({ id: 'native-highlight-point', type: 'circle', source: 'native-highlight', filter: ['==', ['geometry-type'], 'Point'], paint: { 'circle-radius': 9, 'circle-color': '#f59e0b', 'circle-stroke-color': '#fff', 'circle-stroke-width': 2 } });
       const bounds = boundsFor(network);
       if (bounds) map.fitBounds(bounds, { padding: 40, duration: 0 });

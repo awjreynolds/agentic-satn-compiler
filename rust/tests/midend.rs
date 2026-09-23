@@ -96,6 +96,7 @@ fn base() -> CompileReport {
             candidate("candidate-a", 100.0),
             candidate("candidate-b", 120.0),
         ],
+        candidate_neighbourhoods: Vec::new(),
         operations: vec![
             Operation {
                 id: "operation:candidate-a".to_string(),

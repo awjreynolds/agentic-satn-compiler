@@ -1,3 +1,4 @@
+mod candidate_neighbourhoods;
 mod compiler;
 mod config;
 mod error;
@@ -11,6 +12,7 @@ pub mod publication;
 pub mod topography;
 pub mod travel_time;
 
+pub use candidate_neighbourhoods::{CandidateNeighbourhood, CandidateNeighbourhoodGeometry};
 pub use compiler::{
     AccessObligation, AccountingSummary, Candidate, CommunityAccess, CommunityAccessBenefit,
     CompileOptions, CompileReport, Connection, JourneyBatchEvaluation, JourneyBatchPair,
