@@ -123,9 +123,11 @@
     toggle.checked = false;
     toggle.setAttribute('aria-label', 'Show ' + label.toLowerCase());
     const swatch = document.createElement('span');
-    swatch.className = 'swatch ' + (kind === 'routes' ? 'bus-route-key' : 'bus-interchange-key');
+    swatch.className = kind === 'routes'
+      ? 'swatch bus-route-key'
+      : 'marker-key marker-star-key bus-interchange-key';
     const text = document.createTextNode(label + ' (' + count + (kind === 'routes'
-      ? ' mapped segments)' : ' source facility records)'));
+      ? ' mapped segments, long-dashed line)' : ' source facility records, star marker)'));
     control.append(toggle, document.createTextNode(' '), swatch, text);
     item.append(control);
     legend.append(item);
@@ -174,31 +176,56 @@
           type: 'line',
           source: 'native-bus-context',
           filter: ['==', ['get', 'kind'], 'bus-route'],
-          layout: { visibility: 'none' },
-          paint: { 'line-color': '#f8fafc', 'line-width': 6 }
+          layout: { visibility: 'none', 'line-cap': 'round' },
+          paint: { 'line-color': '#f8fafc', 'line-width': 6, 'line-dasharray': [3.5, 1.75] }
         });
         map.addLayer({
           id: routeLayer,
           type: 'line',
           source: 'native-bus-context',
           filter: ['==', ['get', 'kind'], 'bus-route'],
-          layout: { visibility: 'none' },
-          paint: { 'line-color': '#0e7490', 'line-width': 3.5 }
+          layout: { visibility: 'none', 'line-cap': 'round' },
+          paint: { 'line-color': '#cc79a7', 'line-width': 3.5, 'line-dasharray': [6, 3] }
         });
         addControl('routes', 'Bus route segments', routes.length, [routeCasingLayer, routeLayer]);
       }
       if (interchanges.length) {
+        const markerSize = 28;
+        const marker = document.createElement('canvas');
+        marker.width = marker.height = markerSize;
+        const markerContext = marker.getContext('2d');
+        const center = markerSize / 2;
+        markerContext.beginPath();
+        for (let index = 0; index < 10; index += 1) {
+          const radius = index % 2 === 0 ? 11 : 5;
+          const angle = -Math.PI / 2 + (Math.PI * index) / 5;
+          const x = center + Math.cos(angle) * radius;
+          const y = center + Math.sin(angle) * radius;
+          if (index === 0) markerContext.moveTo(x, y);
+          else markerContext.lineTo(x, y);
+        }
+        markerContext.closePath();
+        markerContext.fillStyle = '#d55e00';
+        markerContext.strokeStyle = '#263238';
+        markerContext.lineWidth = 2;
+        markerContext.fill();
+        markerContext.stroke();
+        map.addImage(
+          'native-bus-interchange-star',
+          markerContext.getImageData(0, 0, markerSize, markerSize),
+          { pixelRatio: 2 }
+        );
         map.addLayer({
           id: interchangeLayer,
-          type: 'circle',
+          type: 'symbol',
           source: 'native-bus-context',
           filter: ['==', ['get', 'kind'], 'bus-interchange'],
-          layout: { visibility: 'none' },
-          paint: {
-            'circle-radius': 7,
-            'circle-color': '#c2410c',
-            'circle-stroke-color': '#fff',
-            'circle-stroke-width': 1.5
+          layout: {
+            visibility: 'none',
+            'icon-image': 'native-bus-interchange-star',
+            'icon-size': 1,
+            'icon-allow-overlap': true,
+            'icon-ignore-placement': true
           }
         });
         addControl(

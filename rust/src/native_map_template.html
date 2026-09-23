@@ -19,14 +19,38 @@ button { padding: .4rem .65rem; border: 1px solid #64748b; border-radius: .25rem
 button:focus-visible, input:focus-visible { outline: 3px solid #2563eb; outline-offset: 2px; }
 .key { list-style: none; margin: .5rem 0 1rem; padding: 0; }
 .key li { margin: .4rem 0; }
-.swatch { display: inline-block; width: 1.8rem; height: .35rem; vertical-align: middle; margin: 0 .25rem; }
-.source-key { background: #475569; } .context-key { background: #94a3b8; }
-.selected-key { background: #15803d; } .provisional-key { background: #d97706; }
-.unresolved-key { background: #7c3aed; } .departure-key { background: #dc2626; }
-.community-key { background: #0891b2; }
-.bus-route-key { background: #0e7490; }
-.bus-interchange-key { width: .75rem; height: .75rem; background: #c2410c; border-radius: 50%; }
-.candidate-key { height: .9rem; background: rgba(52,211,153,.32); border: 1px solid #047857; }
+.swatch { display: inline-block; width: 1.8rem; height: 0; vertical-align: middle; margin: 0 .25rem; border-top: 3px solid transparent; }
+.source-key { border-top-color: #0072b2; }
+.context-key { border-top: 2px dotted #4b5563; }
+.alternative-key { border-top: 2px dashed #4b5563; }
+.selected-key { border-top-color: #009e73; }
+.provisional-key { border-top: 3px dashed #e69f00; filter: drop-shadow(0 0 1px #263238); }
+.unresolved-key { border-top: 3px dotted #cc79a7; }
+.a-road-departure-key { border-top: 5px dashed #d55e00; filter: drop-shadow(0 0 1px #263238); }
+.source-departure-key { border: 0; height: 4px; background: repeating-linear-gradient(90deg, #f0e442 0 8px, transparent 8px 11px, #f0e442 11px 13px, transparent 13px 17px); filter: drop-shadow(0 0 1px #263238); }
+.community-key { border: 0; height: 3px; background: repeating-linear-gradient(90deg, #56b4e9 0 12px, transparent 12px 18px, #56b4e9 18px 21px, transparent 21px 27px); filter: drop-shadow(0 0 1px #263238); }
+.bus-route-key { border-top: 3px dashed #cc79a7; }
+.study-boundary-key { height: .75rem; background: rgba(147,197,253,.25); border: 1px dotted #6b7280; }
+.highlight-key { border-top-color: #f0e442; filter: drop-shadow(0 0 1px #263238); }
+.marker-key { display: inline-block; width: .8rem; height: .8rem; vertical-align: middle; margin: 0 .3rem; background: transparent; border: 2px solid #263238; }
+.marker-circle-key { border-radius: 50%; }
+.marker-square-key { background: #0072b2; }
+.marker-triangle-key { background: #e69f00; border: 0; clip-path: polygon(50% 0, 100% 100%, 0 100%); filter: drop-shadow(0 0 1px #263238); }
+.marker-diamond-key { background: #cc79a7; border: 0; clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); filter: drop-shadow(0 0 1px #263238); }
+.marker-pentagon-key { background: #56b4e9; border: 0; clip-path: polygon(50% 0, 100% 38%, 81% 100%, 19% 100%, 0 38%); filter: drop-shadow(0 0 1px #263238); }
+.marker-cross-key { position: relative; border: 0; margin: 0 .3rem; }
+.marker-cross-key::before { content: '×'; position: absolute; inset: -.32rem 0 0; color: #d55e00; font: 900 1.25rem/1 system-ui, sans-serif; text-shadow: -1px 0 #263238, 1px 0 #263238, 0 -1px #263238, 0 1px #263238; }
+.marker-hexagon-key { background: #f0e442; border: 0; clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%); filter: drop-shadow(0 0 1px #263238); }
+.marker-star-key { background: #d55e00; border: 0; clip-path: polygon(50% 0, 62% 34%, 98% 35%, 69% 57%, 80% 92%, 50% 71%, 20% 92%, 31% 57%, 2% 35%, 38% 34%); filter: drop-shadow(0 0 1px #263238); }
+.selected-point-key { background: #009e73; }
+.provisional-point-key { background: #e69f00; }
+.school-point-key { background: #cc79a7; }
+.community-point-key { background: #56b4e9; }
+.gap-point-key { background: transparent; }
+.obligation-point-key { background: #f0e442; }
+.highlight-point-key { background: #f0e442; }
+.bus-interchange-key { background: #d55e00; }
+.candidate-key { height: .9rem; background: rgba(52,211,153,.32); border: 1px solid #000; }
 .native-details { border: 1px solid #cbd5e1; border-radius: .3rem; padding: .6rem; background: #f8fafc; min-height: 5rem; }
 .native-details h3 { margin: 0 0 .35rem; font-size: 1rem; }
 .native-details dl { margin: 0; }
@@ -54,20 +78,21 @@ code { font-size: .9em; }
   <aside class="native-panel" aria-label="Decision map controls and evidence">
     <div class="map-actions"><button type="button" data-native-reset>Reset to network</button><button type="button" data-native-clear>Clear inspection</button></div>
     <fieldset><legend>Layers</legend><ul class="key">
-      <li><label><input type="checkbox" data-layer-toggle="source-strategic" checked> <span class="swatch source-key"></span>Strategic source baseline <span data-layer-count></span></label></li>
-      <li><label><input type="checkbox" data-layer-toggle="source-context"> <span class="swatch context-key"></span>Context sources <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="source-strategic" checked> <span class="swatch source-key" aria-hidden="true"></span>Strategic source baseline · solid <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="source-context"> <span class="swatch context-key" aria-hidden="true"></span>Context sources · dotted <span data-layer-count></span></label></li>
       __CANDIDATE_NEIGHBOURHOOD_LAYER_CONTROL__
-      <li><label><input type="checkbox" data-layer-toggle="selected-alignment" checked> <span class="swatch selected-key"></span>Selected alignment <span data-layer-count></span></label></li>
-      <li><label><input type="checkbox" data-layer-toggle="provisional-alignment" checked> <span class="swatch provisional-key"></span>Provisional alignment <span data-layer-count></span></label></li>
-      <li><label><input type="checkbox" data-layer-toggle="unresolved-decision" checked> <span class="swatch unresolved-key"></span>Unresolved decision <span data-layer-count></span></label></li>
-      <li><label><input type="checkbox" data-layer-toggle="candidate-alternative" checked> Candidate alternatives <span data-layer-count></span></label></li>
-      <li><label><input type="checkbox" data-layer-toggle="a-road-departure" checked> <span class="swatch departure-key"></span>A-road departure <span data-layer-count></span></label></li>
-      <li><label><input type="checkbox" data-layer-toggle="source-departure" checked> <span class="swatch departure-key"></span>Source departure <span data-layer-count></span></label></li>
-      <li><label><input type="checkbox" data-layer-toggle="network-place" checked> Network places <span data-layer-count></span></label></li>
-      <li><label><input type="checkbox" data-layer-toggle="school-context" checked> Schools <span data-layer-count></span></label></li>
-      <li><label><input type="checkbox" data-layer-toggle="community-access" checked> Community access <span data-layer-count></span></label></li>
-      <li><label><input type="checkbox" data-layer-toggle="access-obligation" checked> Access obligations and gaps <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="selected-alignment" checked> <span class="swatch selected-key" aria-hidden="true"></span><span class="marker-key marker-circle-key selected-point-key" aria-hidden="true"></span>Selected alignment · solid, circle <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="provisional-alignment" checked> <span class="swatch provisional-key" aria-hidden="true"></span><span class="marker-key marker-triangle-key provisional-point-key" aria-hidden="true"></span>Provisional alignment · dashed, triangle <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="unresolved-decision" checked> <span class="swatch unresolved-key" aria-hidden="true"></span>Unresolved decision · dotted <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="candidate-alternative" checked> <span class="swatch alternative-key" aria-hidden="true"></span>Candidate alternatives · dashed <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="a-road-departure" checked> <span class="swatch a-road-departure-key" aria-hidden="true"></span>A-road departure · prominent long dash <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="source-departure" checked> <span class="swatch source-departure-key" aria-hidden="true"></span>Source departure · dash-dot, dark edge <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="network-place" checked> <span class="marker-key marker-square-key" aria-hidden="true"></span>Network places · square <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="school-context" checked> <span class="marker-key marker-diamond-key school-point-key" aria-hidden="true"></span>Schools · diamond <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="community-access" checked> <span class="swatch community-key" aria-hidden="true"></span><span class="marker-key marker-pentagon-key community-point-key" aria-hidden="true"></span><span class="marker-key marker-cross-key gap-point-key" aria-hidden="true"></span>Community access · dash-dot, pentagon; X for gaps <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="access-obligation" checked> <span class="marker-key marker-hexagon-key obligation-point-key" aria-hidden="true"></span>Access obligations and gaps · hexagon <span data-layer-count></span></label></li>
     </ul></fieldset>
+    <p class="layer-key-note"><span class="swatch study-boundary-key" aria-hidden="true"></span>Study area boundary · pale fill and thin neutral edge &nbsp; <span class="swatch highlight-key" aria-hidden="true"></span><span class="marker-key marker-circle-key highlight-point-key" aria-hidden="true"></span>Inspection highlight · yellow with dark edge</p>
     <section class="native-details" id="native-feature-details" aria-live="polite"><h3>Evidence</h3><p>Hover or select a rendered map feature to inspect its public evidence.</p></section>
     <p>__SOURCE_COUNT__ source baseline sections · __PREPARED_CONNECTIONS__ prepared connections · __PENDING_CONNECTIONS__ pending connections · __CANDIDATE_COUNT__ generated candidates · __DECISION_COUNT__ decisions · __UNRESOLVED_FACTS__ unresolved facts · __UNRESOLVED_ACCESS__ unresolved access obligations · __COMMUNITY_ACCESS__ community access records · __COMMUNITY_GAPS__ community gaps</p>
     <p id="native-loading-failure" role="alert" hidden>Unable to load public network data.</p>
@@ -83,26 +108,28 @@ code { font-size: .9em; }
   const failure = document.getElementById('native-loading-failure');
   const detail = document.getElementById('native-feature-details');
   const interactiveLayers = [
-    'native-selected', 'native-selected-point', 'native-provisional', 'native-provisional-point',
+    'native-selected', 'native-selected-point', 'native-provisional-casing', 'native-provisional', 'native-provisional-point',
     'native-unresolved', 'native-alternative',
     'native-candidate-neighbourhood',
-    'native-a-road-departure', 'native-source-departure', 'native-source-strategic',
+    'native-a-road-departure-casing', 'native-a-road-departure',
+    'native-source-departure-casing', 'native-source-departure', 'native-source-strategic',
     'native-source-context', 'native-network-place', 'native-school-context',
-    'native-community-access', 'native-community-access-point', 'native-community-access-gap', 'native-access-obligation'
+    'native-community-access-casing', 'native-community-access', 'native-community-access-point',
+    'native-community-access-gap', 'native-access-obligation'
   ];
   const layerGroups = {
     'source-strategic': ['native-source-strategic'],
     'source-context': ['native-source-context'],
     'candidate-neighbourhood': ['native-candidate-neighbourhood', 'native-candidate-neighbourhood-boundary'],
     'selected-alignment': ['native-selected', 'native-selected-point'],
-    'provisional-alignment': ['native-provisional', 'native-provisional-point'],
+    'provisional-alignment': ['native-provisional-casing', 'native-provisional', 'native-provisional-point'],
     'unresolved-decision': ['native-unresolved'],
     'candidate-alternative': ['native-alternative'],
-    'a-road-departure': ['native-a-road-departure'],
-    'source-departure': ['native-source-departure'],
+    'a-road-departure': ['native-a-road-departure-casing', 'native-a-road-departure'],
+    'source-departure': ['native-source-departure-casing', 'native-source-departure'],
     'network-place': ['native-network-place'],
     'school-context': ['native-school-context'],
-    'community-access': ['native-community-access', 'native-community-access-point', 'native-community-access-gap'],
+    'community-access': ['native-community-access-casing', 'native-community-access', 'native-community-access-point', 'native-community-access-gap'],
     'access-obligation': ['native-access-obligation']
   };
   const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({
@@ -450,35 +477,119 @@ code { font-size: .9em; }
       map.addSource('native-network', { type: 'geojson', data: network });
       map.addSource('native-highlight', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
       const line = (id, filter, color, width, dash) => {
-        const layer = { id, type: 'line', source: 'native-network', filter, paint: { 'line-color': color, 'line-width': width } };
+        const layer = {
+          id,
+          type: 'line',
+          source: 'native-network',
+          filter,
+          layout: { 'line-cap': 'round' },
+          paint: { 'line-color': color, 'line-width': width }
+        };
         if (dash) layer.paint['line-dasharray'] = dash;
         map.addLayer(layer);
       };
+      const addMarkerImage = (name, shape, color) => {
+        const size = 28;
+        const center = size / 2;
+        const canvas = document.createElement('canvas');
+        canvas.width = canvas.height = size;
+        const context = canvas.getContext('2d');
+        context.beginPath();
+        if (shape === 'circle') {
+          context.arc(center, center, 10, 0, Math.PI * 2);
+        } else if (shape === 'cross') {
+          context.lineCap = 'round';
+          context.strokeStyle = '#263238';
+          context.lineWidth = 7;
+          context.moveTo(5, 5);
+          context.lineTo(size - 5, size - 5);
+          context.moveTo(size - 5, 5);
+          context.lineTo(5, size - 5);
+          context.stroke();
+          context.beginPath();
+          context.strokeStyle = color;
+          context.lineWidth = 4;
+          context.moveTo(5, 5);
+          context.lineTo(size - 5, size - 5);
+          context.moveTo(size - 5, 5);
+          context.lineTo(5, size - 5);
+          context.stroke();
+          map.addImage(name, context.getImageData(0, 0, size, size), { pixelRatio: 2 });
+          return;
+        } else {
+          const vertices = {
+            triangle: [[14, 3], [25, 24], [3, 24]],
+            square: [[5, 5], [23, 5], [23, 23], [5, 23]],
+            diamond: [[14, 3], [25, 14], [14, 25], [3, 14]],
+            pentagon: [[14, 3], [25, 11], [21, 24], [7, 24], [3, 11]],
+            hexagon: [[8, 4], [20, 4], [25, 14], [20, 24], [8, 24], [3, 14]]
+          }[shape];
+          vertices.forEach(([x, y], index) => {
+            if (index === 0) context.moveTo(x, y);
+            else context.lineTo(x, y);
+          });
+          context.closePath();
+        }
+        context.fillStyle = color;
+        context.strokeStyle = '#263238';
+        context.lineWidth = 2;
+        context.fill();
+        context.stroke();
+        map.addImage(name, context.getImageData(0, 0, size, size), { pixelRatio: 2 });
+      };
+      const marker = (id, filter, image, size) => map.addLayer({
+        id,
+        type: 'symbol',
+        source: 'native-network',
+        filter,
+        layout: {
+          'icon-image': image,
+          'icon-size': size,
+          'icon-allow-overlap': true,
+          'icon-ignore-placement': true
+        }
+      });
       map.addLayer({ id: 'native-boundary-fill', type: 'fill', source: 'native-network', filter: ['==', ['get', 'kind'], 'boundary-scope'], paint: { 'fill-color': '#93c5fd', 'fill-opacity': 0.14 } });
       if (network.features.some(feature => feature.properties?.kind === 'candidate-neighbourhood')) {
         map.addLayer({ id: 'native-candidate-neighbourhood', type: 'fill', source: 'native-network', filter: ['==', ['get', 'kind'], 'candidate-neighbourhood'], paint: { 'fill-color': '#34d399', 'fill-opacity': 0.22 } });
         map.addLayer({ id: 'native-candidate-neighbourhood-boundary', type: 'line', source: 'native-network', filter: ['==', ['get', 'kind'], 'candidate-neighbourhood'], paint: { 'line-color': '#000000', 'line-width': 1, 'line-opacity': 1 } });
       }
-      map.addLayer({ id: 'native-boundary-line', type: 'line', source: 'native-network', filter: ['==', ['get', 'kind'], 'boundary-scope'], paint: { 'line-color': '#2563eb', 'line-width': 2 } });
-      line('native-source-context', ['all', ['==', ['get', 'kind'], 'source-baseline'], ['==', ['get', 'baseline_layer'], 'source-context']], '#94a3b8', 2, [3, 3]);
-      line('native-source-strategic', ['all', ['==', ['get', 'kind'], 'source-baseline'], ['!=', ['get', 'baseline_layer'], 'source-context']], '#475569', 3);
-      line('native-alternative', ['==', ['get', 'kind'], 'candidate-alternative'], '#64748b', 2, [5, 4]);
-      line('native-selected', ['==', ['get', 'kind'], 'selected-alignment'], '#15803d', 5);
-      line('native-provisional', ['==', ['get', 'kind'], 'provisional-alignment'], '#d97706', 5, [8, 5]);
-      line('native-unresolved', ['==', ['get', 'kind'], 'unresolved-decision'], '#7c3aed', 4, [2, 4]);
-      line('native-a-road-departure', ['==', ['get', 'kind'], 'a-road-departure'], '#dc2626', 6, [10, 5]);
-      line('native-source-departure', ['==', ['get', 'kind'], 'source-departure'], '#be123c', 5, [8, 5]);
-      map.addLayer({ id: 'native-selected-point', type: 'circle', source: 'native-network', filter: ['all', ['==', ['get', 'kind'], 'selected-alignment'], ['==', ['geometry-type'], 'Point']], paint: { 'circle-radius': 7, 'circle-color': '#15803d', 'circle-stroke-color': '#fff', 'circle-stroke-width': 1 } });
-      map.addLayer({ id: 'native-provisional-point', type: 'circle', source: 'native-network', filter: ['all', ['==', ['get', 'kind'], 'provisional-alignment'], ['==', ['geometry-type'], 'Point']], paint: { 'circle-radius': 7, 'circle-color': '#d97706', 'circle-stroke-color': '#fff', 'circle-stroke-width': 1 } });
-      map.addLayer({ id: 'native-network-place', type: 'circle', source: 'native-network', filter: ['==', ['get', 'kind'], 'network-place'], paint: { 'circle-radius': 5, 'circle-color': '#2563eb', 'circle-stroke-color': '#fff', 'circle-stroke-width': 1 } });
-      map.addLayer({ id: 'native-school-context', type: 'circle', source: 'native-network', filter: ['==', ['get', 'kind'], 'school-context'], paint: { 'circle-radius': 6, 'circle-color': '#9333ea', 'circle-stroke-color': '#fff', 'circle-stroke-width': 1 } });
-      map.addLayer({ id: 'native-community-access', type: 'line', source: 'native-network', filter: ['all', ['==', ['get', 'kind'], 'community-access'], ['==', ['geometry-type'], 'LineString']], paint: { 'line-color': '#0891b2', 'line-width': 4 } });
-      map.addLayer({ id: 'native-community-access-point', type: 'circle', source: 'native-network', filter: ['all', ['==', ['get', 'kind'], 'community-access'], ['==', ['geometry-type'], 'Point'], ['!=', ['get', 'status'], 'network-gap']], paint: { 'circle-radius': 6, 'circle-color': '#0891b2', 'circle-stroke-color': '#fff', 'circle-stroke-width': 1 } });
-      map.addLayer({ id: 'native-community-access-gap', type: 'circle', source: 'native-network', filter: ['all', ['==', ['get', 'kind'], 'community-access'], ['==', ['geometry-type'], 'Point'], ['==', ['get', 'status'], 'network-gap']], paint: { 'circle-radius': 6, 'circle-color': '#b91c1c', 'circle-stroke-color': '#fff', 'circle-stroke-width': 1 } });
-      map.addLayer({ id: 'native-access-obligation', type: 'circle', source: 'native-network', filter: ['==', ['get', 'kind'], 'access-obligation'], paint: { 'circle-radius': 6, 'circle-color': '#dc2626', 'circle-stroke-color': '#fff', 'circle-stroke-width': 1 } });
-      map.addLayer({ id: 'native-highlight-line', type: 'line', source: 'native-highlight', filter: ['==', ['geometry-type'], 'LineString'], paint: { 'line-color': '#f59e0b', 'line-width': 8, 'line-opacity': 0.8 } });
-      map.addLayer({ id: 'native-highlight-polygon', type: 'fill', source: 'native-highlight', filter: ['==', ['geometry-type'], 'Polygon'], paint: { 'fill-color': '#f59e0b', 'fill-opacity': 0.35, 'fill-outline-color': '#d97706' } });
-      map.addLayer({ id: 'native-highlight-point', type: 'circle', source: 'native-highlight', filter: ['==', ['geometry-type'], 'Point'], paint: { 'circle-radius': 9, 'circle-color': '#f59e0b', 'circle-stroke-color': '#fff', 'circle-stroke-width': 2 } });
+      line('native-boundary-line', ['==', ['get', 'kind'], 'boundary-scope'], '#6b7280', 1, [2, 3]);
+      line('native-source-context', ['all', ['==', ['get', 'kind'], 'source-baseline'], ['==', ['get', 'baseline_layer'], 'source-context']], '#4b5563', 2, [1, 3]);
+      line('native-source-strategic', ['all', ['==', ['get', 'kind'], 'source-baseline'], ['!=', ['get', 'baseline_layer'], 'source-context']], '#0072b2', 3);
+      line('native-alternative', ['==', ['get', 'kind'], 'candidate-alternative'], '#4b5563', 2, [5, 4]);
+      line('native-selected', ['==', ['get', 'kind'], 'selected-alignment'], '#009e73', 5);
+      const provisionalFilter = ['==', ['get', 'kind'], 'provisional-alignment'];
+      line('native-provisional-casing', provisionalFilter, '#263238', 7, [5.7142857, 3.5714286]);
+      line('native-provisional', provisionalFilter, '#e69f00', 5, [8, 5]);
+      line('native-unresolved', ['==', ['get', 'kind'], 'unresolved-decision'], '#cc79a7', 4, [1, 3]);
+      const aRoadDepartureFilter = ['==', ['get', 'kind'], 'a-road-departure'];
+      line('native-a-road-departure-casing', aRoadDepartureFilter, '#263238', 8, [7.5, 3.75]);
+      line('native-a-road-departure', aRoadDepartureFilter, '#d55e00', 6, [10, 5]);
+      const sourceDepartureFilter = ['==', ['get', 'kind'], 'source-departure'];
+      line('native-source-departure-casing', sourceDepartureFilter, '#263238', 7, [5.7142857, 2.1428571, 1.4285714, 2.1428571]);
+      line('native-source-departure', sourceDepartureFilter, '#f0e442', 5, [8, 3, 2, 3]);
+      const communityAccessFilter = ['all', ['==', ['get', 'kind'], 'community-access'], ['==', ['geometry-type'], 'LineString']];
+      line('native-community-access-casing', communityAccessFilter, '#263238', 6, [2.6666667, 1.3333333, 0.6666667, 1.3333333]);
+      line('native-community-access', communityAccessFilter, '#56b4e9', 4, [4, 2, 1, 2]);
+      addMarkerImage('native-marker-selected', 'circle', '#009e73');
+      addMarkerImage('native-marker-provisional', 'triangle', '#e69f00');
+      addMarkerImage('native-marker-network-place', 'square', '#0072b2');
+      addMarkerImage('native-marker-school', 'diamond', '#cc79a7');
+      addMarkerImage('native-marker-community-access', 'pentagon', '#56b4e9');
+      addMarkerImage('native-marker-community-gap', 'cross', '#d55e00');
+      addMarkerImage('native-marker-access-obligation', 'hexagon', '#f0e442');
+      marker('native-selected-point', ['all', ['==', ['get', 'kind'], 'selected-alignment'], ['==', ['geometry-type'], 'Point']], 'native-marker-selected', 1);
+      marker('native-provisional-point', ['all', ['==', ['get', 'kind'], 'provisional-alignment'], ['==', ['geometry-type'], 'Point']], 'native-marker-provisional', 1);
+      marker('native-network-place', ['==', ['get', 'kind'], 'network-place'], 'native-marker-network-place', 0.72);
+      marker('native-school-context', ['==', ['get', 'kind'], 'school-context'], 'native-marker-school', 0.86);
+      marker('native-community-access-point', ['all', ['==', ['get', 'kind'], 'community-access'], ['==', ['geometry-type'], 'Point'], ['!=', ['get', 'status'], 'network-gap']], 'native-marker-community-access', 0.86);
+      marker('native-community-access-gap', ['all', ['==', ['get', 'kind'], 'community-access'], ['==', ['geometry-type'], 'Point'], ['==', ['get', 'status'], 'network-gap']], 'native-marker-community-gap', 0.86);
+      marker('native-access-obligation', ['==', ['get', 'kind'], 'access-obligation'], 'native-marker-access-obligation', 0.86);
+      map.addLayer({ id: 'native-highlight-line-casing', type: 'line', source: 'native-highlight', filter: ['==', ['geometry-type'], 'LineString'], layout: { 'line-cap': 'round' }, paint: { 'line-color': '#263238', 'line-width': 10, 'line-opacity': 0.9 } });
+      map.addLayer({ id: 'native-highlight-line', type: 'line', source: 'native-highlight', filter: ['==', ['geometry-type'], 'LineString'], layout: { 'line-cap': 'round' }, paint: { 'line-color': '#f0e442', 'line-width': 8, 'line-opacity': 0.9 } });
+      map.addLayer({ id: 'native-highlight-polygon', type: 'fill', source: 'native-highlight', filter: ['==', ['geometry-type'], 'Polygon'], paint: { 'fill-color': '#f0e442', 'fill-opacity': 0.35, 'fill-outline-color': '#263238' } });
+      map.addLayer({ id: 'native-highlight-point', type: 'circle', source: 'native-highlight', filter: ['==', ['geometry-type'], 'Point'], paint: { 'circle-radius': 9, 'circle-color': '#f0e442', 'circle-stroke-color': '#263238', 'circle-stroke-width': 2 } });
       const bounds = boundsFor(network);
       if (bounds) map.fitBounds(bounds, { padding: 40, duration: 0 });
       installControls(map, bounds, network);
