@@ -554,12 +554,16 @@ The single Community Connection added where Spine Access Branches rooted in diff
 _Avoid_: general cross-link, redundant connector, branch overlap
 
 **Spine Access Point**:
-The canonical point where a rural Access Obligation reaches a Strategic Spine, selected by the shortest reachable plausible cycling alignment rather than straight-line proximity.
+The canonical point where a rural Access Obligation reaches a Strategic Spine. Candidate access points are reached through plausible cycling alignments; selection considers added network, shared access, estimated moving time and terrain rather than straight-line proximity alone. An Urban Entry is a separate possible terminal for rural access.
 _Avoid_: nearest geometric point, destination, arbitrary junction
 
 **Spine Access Connection**:
-The bounded connection from a rural Access Obligation to its nearest reachable Strategic Spine, Cross-Spine Connector or already-served Community with onward backbone access.
+The bounded connection from a rural Access Obligation to a reachable Strategic Spine, Cross-Spine Connector, Urban Entry or already-served Community with onward access. Reaching a useful Urban Entry does not require continuing to a spine inside the urban area.
 _Avoid_: arbitrary point-to-point route, complete journey, spine segment
+
+**Urban Entry**:
+A source-bound crossing where a cycling-permitted connection enters an admitted urban extent and can terminate rural strategic access. Its edge position, direction and extent source remain explicit. An OSM place extent used for the POC is identified as such, not claimed to be a verified built-up edge. Internal urban permeability and complete journeys are separate from the rural connection.
+_Avoid_: authority boundary, inferred safe provision, city-centre destination, invented spine
 
 **Spine Access Candidate Preparation**:
 The bounded generation and pre-admission audit of finite routing alternatives for already-compiled chained Community-to-Community Spine Access Connections, together with an exhaustive disposition roster. A direct Strategic Spine attachment remains Spine Access and is retained as explicitly out of scope rather than analysed as a two-place alternative; an unresolved row remains an explicit preparation gap.

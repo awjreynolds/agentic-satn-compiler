@@ -86,10 +86,26 @@ pub(crate) struct Graph {
 #[derive(Debug, Clone)]
 pub(crate) struct FrontierTarget {
     pub key: String,
-    pub spine_id: String,
+    pub terminal: FrontierTerminal,
     pub community_id: Option<String>,
     pub junction_node: String,
     pub remaining_access_length_m: f64,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum FrontierTerminal {
+    Spine(String),
+    UrbanEntry(UrbanEntryTarget),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct UrbanEntryTarget {
+    pub destination_id: String,
+    pub destination_name: String,
+    pub extent_source_id: String,
+    pub edge_id: String,
+    pub fraction: f64,
+    pub point: [f64; 2],
 }
 
 #[derive(Debug, Clone)]
@@ -479,7 +495,7 @@ impl Graph {
                 self.empty_route(),
                 FrontierTarget {
                     key: format!("spine-edge:{spine_id}:{}", attachment.edge_id),
-                    spine_id: spine_id.clone(),
+                    terminal: FrontierTerminal::Spine(spine_id.clone()),
                     community_id: None,
                     junction_node: format!("attachment:{}", attachment.edge_id),
                     remaining_access_length_m: 0.0,

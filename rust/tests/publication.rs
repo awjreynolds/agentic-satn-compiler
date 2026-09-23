@@ -4,7 +4,7 @@ use std::process::Command;
 use satn_rs::midend::{MidendRun, PlanningBase, TypedOperation};
 use satn_rs::{
     AccessObligation, AccountingSummary, Candidate, CommunityAccess, CompileReport, Connection,
-    NetworkPlace, SchoolContext, SourceCorridor, UnknownFact, load_retained_report,
+    NetworkPlace, SchoolContext, SourceCorridor, UnknownFact, UrbanEntry, load_retained_report,
     publish_decision_map,
 };
 use serde_json::{Value, json};
@@ -225,6 +225,87 @@ fn publishes_compact_decision_map_with_real_departure_sections() {
 }
 
 #[test]
+fn publication_retains_typed_urban_entry_terminal_fields() {
+    let root = tempfile_root("satn-rs-publication-urban-entry");
+    let mut report = report_fixture();
+    let access = report
+        .community_access
+        .first_mut()
+        .expect("community access fixture");
+    access.status = "urban-entry".to_string();
+    access.root_spine_id = None;
+    access.joined_spine_id = None;
+    access.joined_spine_reference = None;
+    access.urban_entry = Some(UrbanEntry {
+        destination_id: "1947201".to_string(),
+        destination_name: "Bath".to_string(),
+        extent_source_id: "5342409".to_string(),
+        edge_id: "edge:urban-crossing".to_string(),
+        fraction: 0.25,
+        point: [0.75, 0.25],
+    });
+    let run = MidendRun {
+        branch: "urban-review".to_string(),
+        base_id: "base:fixture:snapshot".to_string(),
+        status: "completed".to_string(),
+        task_ids: vec!["task:rural:village-1".to_string()],
+        operations: vec![TypedOperation::SelectCommunityAccess {
+            id: "decision:rural:village-1".to_string(),
+            task_id: "task:rural:village-1".to_string(),
+            attempt_id: "attempt:rural:village-1".to_string(),
+            community_id: "village-1".to_string(),
+            candidate_id: "rural:village-1:urban-entry".to_string(),
+            decision_class: "mechanical".to_string(),
+            provisional: false,
+            reason: None,
+            uncertainties: Vec::new(),
+            parent_community_id: None,
+            root_spine_id: None,
+            new_link_length_m: Some(120.0),
+            full_access_length_m: Some(120.0),
+        }],
+        community_access: Vec::new(),
+    };
+
+    publish_decision_map(&root, &report, &run).expect("publish urban-entry map");
+    let geojson: Value = serde_json::from_str(
+        &fs::read_to_string(root.join("decision-map.geojson")).expect("GeoJSON output"),
+    )
+    .expect("valid GeoJSON");
+    let features = geojson["features"].as_array().expect("features");
+    for kind in ["community-access", "selected-alignment"] {
+        let feature = features
+            .iter()
+            .find(|feature| feature["properties"]["kind"] == kind)
+            .unwrap_or_else(|| panic!("{kind} feature"));
+        assert_eq!(feature["properties"]["terminal_kind"], "urban-entry");
+        assert_eq!(feature["properties"]["terminal_source_id"], "5342409");
+        assert_eq!(feature["properties"]["urban_entry"]["kind"], "urban-entry");
+        assert_eq!(
+            feature["properties"]["urban_entry"]["destination_name"],
+            "Bath"
+        );
+        assert_eq!(
+            feature["properties"]["urban_entry"]["extent_source_id"],
+            "5342409"
+        );
+        assert_eq!(
+            feature["properties"]["urban_entry"]["crossing_edge_id"],
+            "edge:urban-crossing"
+        );
+        assert_eq!(
+            feature["properties"]["urban_entry"]["crossing_fraction"],
+            0.25
+        );
+        assert_eq!(
+            feature["properties"]["urban_entry"]["crossing_point"],
+            json!([0.75, 0.25])
+        );
+        assert!(feature["properties"]["root_spine_id"].is_null());
+    }
+}
+
+#[test]
 fn publication_uses_accepted_rural_path_with_compact_elevation_evidence() {
     let root = tempfile_root("satn-rs-publication-rural");
     let mut report = report_fixture();
@@ -263,6 +344,48 @@ fn publication_uses_accepted_rural_path_with_compact_elevation_evidence() {
             "absolute_gradient_pct": 2.0,
             "interval_length_m": 30.0,
             "evidence_refs": ["elevation:1", "elevation:2"]
+        },
+        "estimated_moving_time": {
+            "availability": "available",
+            "seconds": 37.5,
+            "minutes": 0.625,
+            "model": {
+                "name": "BRouter Trekking v1.7.10",
+                "source_commit": "fixture-brouter-commit",
+                "profile_source": "fixture-profile-source",
+                "solver_source": "fixture-solver-source",
+                "total_mass_kg": 90.0,
+                "max_speed_kmh": 45.0,
+                "aero_drag_coefficient_w_s3_per_m3": 0.225,
+                "rolling_resistance": 0.01,
+                "biker_power_w": 100.0,
+                "gravity_mps2": 9.81
+            }
+        },
+        "moving_time_boundary_extrapolation": {
+            "start_extension_m": 3.0,
+            "start_local_slope": 0.02,
+            "end_extension_m": 4.0,
+            "end_local_slope": -0.01
+        },
+        "hill_neutral_moving_time": {
+            "label": "Hill-neutral sensitivity (not an e-bike ETA)",
+            "rationale": "Fixture flat-equivalent sensitivity",
+            "source_url": "https://example.test/flat-equivalent",
+            "seconds": 31.0,
+            "minutes": 0.5166666667,
+            "model": {
+                "name": "BRouter Trekking v1.7.10",
+                "source_commit": "fixture-brouter-commit",
+                "profile_source": "fixture-profile-source",
+                "solver_source": "fixture-solver-source",
+                "total_mass_kg": 90.0,
+                "max_speed_kmh": 45.0,
+                "aero_drag_coefficient_w_s3_per_m3": 0.225,
+                "rolling_resistance": 0.01,
+                "biker_power_w": 100.0,
+                "gravity_mps2": 9.81
+            }
         },
         "source_resolution_m": 10.0,
         "output_sample_spacing_m": 10.0,
@@ -316,6 +439,30 @@ fn publication_uses_accepted_rural_path_with_compact_elevation_evidence() {
     assert_eq!(
         selected["properties"]["full_access_topography"]["cumulative_elevation_variation_m"],
         8.0
+    );
+    assert_eq!(
+        selected["properties"]["full_access_topography"]["estimated_moving_time"]["availability"],
+        "available"
+    );
+    assert_eq!(
+        selected["properties"]["full_access_topography"]["estimated_moving_time"]["minutes"],
+        0.625
+    );
+    assert_eq!(
+        selected["properties"]["full_access_topography"]["estimated_moving_time"]["model"]["name"],
+        "BRouter Trekking v1.7.10"
+    );
+    assert_eq!(
+        selected["properties"]["full_access_topography"]["moving_time_boundary_extrapolation"]["end_extension_m"],
+        4.0
+    );
+    assert_eq!(
+        selected["properties"]["full_access_topography"]["hill_neutral_moving_time"]["label"],
+        "Hill-neutral sensitivity (not an e-bike ETA)"
+    );
+    assert_eq!(
+        selected["properties"]["full_access_topography"]["hill_neutral_moving_time"]["minutes"],
+        0.5166666667
     );
     assert_eq!(
         selected["geometry"]["coordinates"],
@@ -614,6 +761,7 @@ fn report_fixture() -> CompileReport {
             new_link_length_m: Some(120.0),
             full_access_length_m: Some(120.0),
             joined_spine_id: Some("source:a-road".to_string()),
+            urban_entry: None,
             access_length_m: Some(120.0),
             path_edge_ids: vec!["edge-access".to_string()],
             path_start_fraction: Some(0.0),

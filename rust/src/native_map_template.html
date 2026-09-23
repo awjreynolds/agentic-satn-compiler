@@ -102,10 +102,6 @@ code { font-size: .9em; }
   const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   }[character]));
-  const featureLabel = feature => {
-    const props = feature && feature.properties ? feature.properties : {};
-    return props.connection_label || props.source_reference || props.name || props.label || props.kind || 'Public feature';
-  };
   const normalizedValue = value => {
     if (typeof value !== 'string') return value;
     const text = value.trim();
@@ -118,6 +114,23 @@ code { font-size: .9em; }
     } catch (_) {
       return value;
     }
+  };
+  const urbanEntryValue = props => {
+    const value = normalizedValue(props.urban_entry);
+    if (value && typeof value === 'object' && !Array.isArray(value) &&
+      (value.kind === 'urban-entry' || props.terminal_kind === 'urban-entry')) return value;
+    return props.terminal_kind === 'urban-entry' ? {kind: 'urban-entry'} : null;
+  };
+  const urbanEntryLabel = (props, entry = urbanEntryValue(props)) => {
+    if (!entry) return '';
+    const destination = entry.destination_name || entry.destination_id ||
+      props.destination_name || props.terminal_destination_name || 'qualified urban extent';
+    return 'Urban entry to ' + destination;
+  };
+  const featureLabel = feature => {
+    const props = feature && feature.properties ? feature.properties : {};
+    return urbanEntryLabel(props) || props.connection_label || props.source_reference ||
+      props.name || props.label || props.kind || 'Public feature';
   };
   const valueText = value => {
     const normalized = normalizedValue(value);
@@ -178,6 +191,23 @@ code { font-size: .9em; }
     const sustained = profile.sustained_gradient && typeof profile.sustained_gradient === 'object'
       ? numeric(profile.sustained_gradient.absolute_gradient_pct) : NaN;
     if (Number.isFinite(sustained)) facts.push('sustained grade ' + sustained.toFixed(1) + '%');
+    const movingTime = profile.estimated_moving_time &&
+      typeof profile.estimated_moving_time === 'object'
+      ? profile.estimated_moving_time : null;
+    if (movingTime && movingTime.availability === 'available') {
+      const minutes = numeric(movingTime.minutes);
+      if (Number.isFinite(minutes)) facts.push('estimated moving time ' + minutes.toFixed(1) + ' min');
+    } else if (movingTime && movingTime.availability === 'unknown') {
+      facts.push('estimated moving time unknown');
+    }
+    const hillNeutral = profile.hill_neutral_moving_time &&
+      typeof profile.hill_neutral_moving_time === 'object'
+      ? profile.hill_neutral_moving_time : null;
+    if (hillNeutral) {
+      const minutes = numeric(hillNeutral.minutes);
+      const label = hillNeutral.label || 'Hill-neutral sensitivity (not an e-bike ETA)';
+      facts.push(label + (Number.isFinite(minutes) ? ': ' + minutes.toFixed(1) + ' min' : ''));
+    }
     if (profile.reason) facts.push(String(profile.reason));
     return facts.join('; ');
   };
@@ -197,8 +227,15 @@ code { font-size: .9em; }
     else add('Place', props.name);
     if (props.kind === 'community-access') {
       add('Access status', props.status);
-      add('Access role', props.is_primary ? 'Primary spine access' : 'Additional destination access');
-      add('Root spine', props.joined_spine_reference);
+      const urbanEntry = urbanEntryValue(props);
+      add('Access role', urbanEntry
+        ? urbanEntryLabel(props, urbanEntry)
+        : (props.is_primary ? 'Primary spine access' : 'Additional destination access'));
+      if (urbanEntry) {
+        add('Urban extent source', urbanEntry.extent_source_id || props.terminal_source_id);
+      } else {
+        add('Root spine', props.joined_spine_reference);
+      }
       add('Parent community', props.parent_community_name || props.parent_community_id);
       add('New link distance', formatDistance(props.new_link_length_m || props.access_length_m));
       add('Complete access distance', formatDistance(props.full_access_length_m));
@@ -208,9 +245,17 @@ code { font-size: .9em; }
       add('Onward comparison', formatBenefits(props.onward_benefits));
     }
     if (props.community_id && props.kind !== 'community-access') {
+      const urbanEntry = urbanEntryValue(props);
       add('Community', props.community_name || props.community_id);
       add('Parent community', props.parent_community_name || props.parent_community_id);
-      add('Root spine', props.root_spine_reference || props.root_spine_id);
+      add('Access role', urbanEntry
+        ? urbanEntryLabel(props, urbanEntry)
+        : (props.is_primary ? 'Primary spine access' : ''));
+      if (urbanEntry) {
+        add('Urban extent source', urbanEntry.extent_source_id || props.terminal_source_id);
+      } else {
+        add('Root spine', props.root_spine_reference || props.root_spine_id);
+      }
       add('New link distance', formatDistance(props.new_link_length_m));
       add('Complete access distance', formatDistance(props.full_access_length_m));
       add('New link elevation', formatTopography(props.new_link_topography));
@@ -238,8 +283,22 @@ code { font-size: .9em; }
       'admission_order', 'attachment_depth', 'parent_junction_remaining_m', 'attachment_edge_id',
       'attachment_distance_m', 'attachment_fraction', 'path_start_fraction', 'path_end_fraction'
     ]);
-    return Object.keys(props).filter(key => technicalKeys.has(key) && valueText(props[key]).trim())
+    const rows = Object.keys(props).filter(key => technicalKeys.has(key) && valueText(props[key]).trim())
       .map(key => [key.replaceAll('_', ' '), valueText(props[key])]);
+    const urbanEntry = urbanEntryValue(props);
+    if (urbanEntry) {
+      const add = (label, value) => {
+        const text = valueText(value).trim();
+        if (text) rows.push([label, text]);
+      };
+      add('terminal kind', props.terminal_kind || urbanEntry.kind);
+      add('terminal source id', props.terminal_source_id || urbanEntry.extent_source_id);
+      add('urban destination id', urbanEntry.destination_id);
+      add('urban crossing edge id', urbanEntry.crossing_edge_id);
+      add('urban crossing fraction', urbanEntry.crossing_fraction);
+      add('urban crossing point', urbanEntry.crossing_point);
+    }
+    return rows;
   };
   const showFeature = feature => {
     const props = feature && feature.properties ? feature.properties : {};

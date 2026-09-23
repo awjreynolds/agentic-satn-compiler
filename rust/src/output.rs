@@ -141,6 +141,9 @@ fn community_access_feature(access: &CommunityAccess) -> Value {
             "full_access_length_m": access.full_access_length_m,
             "joined_spine_id": access.joined_spine_id,
             "joined_spine_reference": access.joined_spine_reference,
+            "terminal_kind": terminal_kind(access),
+            "terminal_source_id": terminal_source_id(access),
+            "urban_entry": urban_entry_properties(access),
             "access_length_m": access.access_length_m,
             "path_edge_count": access.path_edge_ids.len(),
             "onward_destinations": access.onward_destinations,
@@ -149,6 +152,40 @@ fn community_access_feature(access: &CommunityAccess) -> Value {
             "reason": access.reason
         },
         "geometry": geometry
+    })
+}
+
+fn terminal_kind(access: &CommunityAccess) -> Option<&'static str> {
+    if access.urban_entry.is_some() {
+        Some("urban-entry")
+    } else if access.root_spine_id.is_some() || access.joined_spine_id.is_some() {
+        Some("strategic-spine")
+    } else {
+        None
+    }
+}
+
+fn terminal_source_id(access: &CommunityAccess) -> Option<&str> {
+    access
+        .urban_entry
+        .as_ref()
+        .map(|entry| entry.extent_source_id.as_str())
+        .or(access.root_spine_id.as_deref())
+        .or(access.joined_spine_id.as_deref())
+}
+
+fn urban_entry_properties(access: &CommunityAccess) -> Value {
+    let Some(entry) = access.urban_entry.as_ref() else {
+        return Value::Null;
+    };
+    json!({
+        "kind": "urban-entry",
+        "destination_id": entry.destination_id,
+        "destination_name": entry.destination_name,
+        "extent_source_id": entry.extent_source_id,
+        "crossing_edge_id": entry.edge_id,
+        "crossing_fraction": entry.fraction,
+        "crossing_point": entry.point,
     })
 }
 
@@ -363,6 +400,12 @@ fn render_svg(report: &CompileReport) -> String {
     }
     for access in &report.community_access {
         if access.path_geometry.len() >= 2 {
+            let terminal_label = access
+                .urban_entry
+                .as_ref()
+                .map(|entry| format!("urban entry to {}", entry.destination_name))
+                .or_else(|| access.joined_spine_reference.clone())
+                .unwrap_or_else(|| "strategic spine".to_string());
             elements.push(format!(
                 "<polyline class=\"community-access\" points=\"{}\" aria-label=\"Community access {} to {}\" />",
                 access
@@ -373,7 +416,7 @@ fn render_svg(report: &CompileReport) -> String {
                     .collect::<Vec<_>>()
                     .join(" "),
                 html_escape(&access.name),
-                html_escape(access.joined_spine_reference.as_deref().unwrap_or("strategic spine"))
+                html_escape(&terminal_label)
             ));
         } else {
             let point = project(access.geometry);

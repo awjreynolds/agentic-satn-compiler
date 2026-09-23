@@ -738,6 +738,9 @@ fn baseline_features(report: &CompileReport) -> Vec<MapFeature> {
                 "full_access_length_m": access.full_access_length_m,
                 "joined_spine_id": access.joined_spine_id,
                 "joined_spine_reference": access.joined_spine_reference,
+                "terminal_kind": terminal_kind(access),
+                "terminal_source_id": terminal_source_id(access),
+                "urban_entry": urban_entry_properties(access),
                 "access_length_m": access.access_length_m,
                 "path_edge_count": access.path_edge_ids.len(),
                 "onward_destinations": access.onward_destinations,
@@ -807,6 +810,9 @@ fn rural_decision_feature(
             "access_status": access.status,
             "root_spine_id": access.root_spine_id,
             "root_spine_reference": access.joined_spine_reference,
+            "terminal_kind": terminal_kind(access),
+            "terminal_source_id": terminal_source_id(access),
+            "urban_entry": urban_entry_properties(access),
             "new_link_length_m": access.new_link_length_m,
             "full_access_length_m": access.full_access_length_m,
             "new_link_topography": topography_summary(access.new_link_topography.as_ref()),
@@ -818,6 +824,40 @@ fn rural_decision_feature(
             "base_id": base_id,
         }),
     }
+}
+
+fn terminal_kind(access: &CommunityAccess) -> Option<&'static str> {
+    if access.urban_entry.is_some() {
+        Some("urban-entry")
+    } else if access.root_spine_id.is_some() || access.joined_spine_id.is_some() {
+        Some("strategic-spine")
+    } else {
+        None
+    }
+}
+
+fn terminal_source_id(access: &CommunityAccess) -> Option<&str> {
+    access
+        .urban_entry
+        .as_ref()
+        .map(|entry| entry.extent_source_id.as_str())
+        .or(access.root_spine_id.as_deref())
+        .or(access.joined_spine_id.as_deref())
+}
+
+fn urban_entry_properties(access: &CommunityAccess) -> Value {
+    let Some(entry) = access.urban_entry.as_ref() else {
+        return Value::Null;
+    };
+    json!({
+        "kind": "urban-entry",
+        "destination_id": entry.destination_id,
+        "destination_name": entry.destination_name,
+        "extent_source_id": entry.extent_source_id,
+        "crossing_edge_id": entry.edge_id,
+        "crossing_fraction": entry.fraction,
+        "crossing_point": entry.point,
+    })
 }
 
 fn topography_summary(profile: Option<&crate::topography::RouteTopographyProfile>) -> Value {
@@ -834,6 +874,9 @@ fn topography_summary(profile: Option<&crate::topography::RouteTopographyProfile
         "reverse_descent_m": profile.reverse_descent_m,
         "cumulative_elevation_variation_m": profile.cumulative_elevation_variation_m,
         "sustained_gradient": profile.sustained_gradient,
+        "estimated_moving_time": profile.estimated_moving_time,
+        "moving_time_boundary_extrapolation": profile.moving_time_boundary_extrapolation,
+        "hill_neutral_moving_time": profile.hill_neutral_moving_time,
         "evidence_refs": profile.evidence_refs,
         "source_refs": profile.source_refs,
     })

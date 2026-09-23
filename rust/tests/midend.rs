@@ -776,9 +776,21 @@ impl ChoiceProvider for RuralChoiceJev {
         );
         let brief = request.instructions.as_str().expect("rural policy brief");
         assert!(brief.contains("minimise unnecessary added feeder network"));
-        assert!(brief.contains("comfortable complete child-to-spine journey"));
+        assert!(brief.contains("comfortable complete child-to-accepted-terminal journey"));
+        assert!(brief.contains("qualified sourced urban entry"));
+        assert!(
+            brief.contains("diagnostic evidence rather than a mandatory city-centre objective")
+        );
+        assert!(brief.contains("hill-neutral sensitivity"));
         assert!(brief.contains("missing numeric weights alone do not require abstention"));
         assert!(brief.contains("unsupported"));
+        assert!(
+            request
+                .options
+                .iter()
+                .filter(|(id, _)| !id.starts_with("__"))
+                .all(|(_, option)| option.get("destination_evidence").is_some())
+        );
         for marker in ["__unknown__", "__needs_evidence__", "__none__"] {
             assert!(request.options.contains_key(marker));
         }
@@ -838,6 +850,87 @@ impl ChoiceProvider for RuralUnknownJev {
                 "jev-rural-fixture",
                 "{\"choice\":\"__unknown__\"}",
             ),
+        }
+    }
+}
+
+struct TownwardChoiceJev {
+    calls: usize,
+    choices: Vec<String>,
+}
+
+impl ChoiceProvider for TownwardChoiceJev {
+    fn classify_choice(&mut self, request: &satn_rs::judgment::ChoiceRequest) -> ChoiceAttempt {
+        self.calls += 1;
+        assert_eq!(request.state["schema"], "satn-rust-rural-task/v1");
+        let townward = request
+            .options
+            .iter()
+            .find(|(id, option)| {
+                id.contains(":townward:town")
+                    && option["destination_evidence"]
+                        .as_array()
+                        .is_some_and(|evidence| {
+                            evidence.iter().any(|item| {
+                                item["destination_name"] == "Town"
+                                    && item["status"] == "available"
+                                    && item["complete_route_length_m"].is_number()
+                            })
+                        })
+            })
+            .map(|(id, _)| id.clone());
+        let choice = townward
+            .or_else(|| {
+                request
+                    .options
+                    .keys()
+                    .find(|id| id.ends_with(":shortest"))
+                    .cloned()
+            })
+            .expect("townward or shortest rural candidate");
+        self.choices.push(choice.clone());
+        ChoiceAttempt {
+            result: Some(ChoiceResult {
+                model: "jev-townward-fixture".to_string(),
+                choice,
+                probabilities: BTreeMap::new(),
+                confidence: 0.0,
+            }),
+            receipt: receipt(
+                "typesafe",
+                "jev-townward-fixture",
+                "{\"choice\":\"townward\"}",
+            ),
+        }
+    }
+}
+
+struct CapturingRuralJev {
+    packet: Option<Value>,
+}
+
+impl ChoiceProvider for CapturingRuralJev {
+    fn classify_choice(&mut self, request: &satn_rs::judgment::ChoiceRequest) -> ChoiceAttempt {
+        self.packet = Some(json!({
+            "state": request.state.clone(),
+            "question_id": request.question_id.clone(),
+            "instructions": request.instructions.clone(),
+            "options": request.options.clone(),
+        }));
+        let choice = request
+            .options
+            .keys()
+            .find(|option| !option.starts_with("__"))
+            .expect("rural candidate option")
+            .clone();
+        ChoiceAttempt {
+            result: Some(ChoiceResult {
+                model: "jev-packet-fixture".to_string(),
+                choice,
+                probabilities: BTreeMap::new(),
+                confidence: 0.0,
+            }),
+            receipt: receipt("typesafe", "jev-packet-fixture", "{\"choice\":\"rural\"}"),
         }
     }
 }
@@ -951,6 +1044,414 @@ fn prepared_rural_choice_binds_the_next_offer_to_the_selected_parent_path() {
             .count(),
         2
     );
+}
+
+#[test]
+fn prepared_rural_choice_exposes_townward_evidence_and_replays_without_provider() {
+    let root = rural_destination_fixture("townward-runtime");
+    let prepared = prepare_with_progress(
+        &root.join("area.yaml"),
+        CompileOptions::default(),
+        &mut |_event| {},
+    )
+    .expect("prepared townward fixture");
+    let history = root.join("history");
+    let mut jev = TownwardChoiceJev {
+        calls: 0,
+        choices: Vec::new(),
+    };
+    let first = run_prepared(
+        &history,
+        &prepared,
+        MidendConfig::live(false),
+        ProviderSet {
+            classifier: Some(&mut jev),
+            specialist: None,
+        },
+        &mut |_event| {},
+    )
+    .expect("townward rural run");
+    assert!(jev.calls > 0);
+    assert!(jev.choices[0].contains(":townward:town"));
+    let parent = first
+        .community_access
+        .iter()
+        .find(|access| access.community_id == "parent" && access.is_primary)
+        .expect("townward parent access");
+    assert_eq!(
+        parent.root_spine_id.as_deref(),
+        Some("source:network:a-road:A2")
+    );
+
+    let replayed = replay(&history, "main", &mut |_event| {}).expect("townward replay");
+    assert_eq!(replayed.operations, first.operations);
+    assert_eq!(replayed.community_access, first.community_access);
+}
+
+#[test]
+fn rural_provider_packet_is_compact_but_retains_full_offer_for_replay() {
+    let root = rural_destination_fixture("compact-provider-packet");
+    let prepared = prepare_with_progress(
+        &root.join("area.yaml"),
+        CompileOptions::default(),
+        &mut |_event| {},
+    )
+    .expect("prepared compact-packet fixture");
+    let history = root.join("history");
+    let mut jev = CapturingRuralJev { packet: None };
+    run_prepared(
+        &history,
+        &prepared,
+        MidendConfig::live(false),
+        ProviderSet {
+            classifier: Some(&mut jev),
+            specialist: None,
+        },
+        &mut |_event| {},
+    )
+    .expect("compact-packet rural run");
+
+    let packet = jev.packet.expect("captured provider packet");
+    let packet_bytes = serde_json::to_vec(&packet).expect("provider packet bytes");
+    eprintln!("rural provider packet bytes: {}", packet_bytes.len());
+    let options = packet["options"].as_object().expect("provider options");
+    let candidate = options
+        .iter()
+        .find(|(id, _)| !id.starts_with("__"))
+        .map(|(_, option)| option)
+        .expect("candidate option");
+    let evidence = candidate["destination_evidence"]
+        .as_array()
+        .expect("destination evidence summary");
+    assert!(!evidence.is_empty());
+    assert!(evidence.iter().all(|item| {
+        let topography = &item["topography"];
+        item["destination_name"].is_string()
+            && item["status"].is_string()
+            && item["complete_route_length_m"].is_number()
+            && (topography.is_null()
+                || (topography["availability"].is_string()
+                    && topography["estimated_moving_time"]["availability"].is_string()
+                    && topography.get("evidence_refs").is_none()
+                    && topography.get("source_refs").is_none()))
+    }));
+
+    let retained_task = fs::read_to_string(history.join("events.jsonl"))
+        .expect("retained events")
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|event| {
+            event["kind"] == "task"
+                && event["task_id"]
+                    .as_str()
+                    .is_some_and(|task_id| task_id.starts_with("task:rural:"))
+        })
+        .expect("retained rural task");
+    let retained_evidence = retained_task["task"]["state"]["offer"]["candidates"]
+        .as_array()
+        .expect("retained offer candidates")
+        .iter()
+        .flat_map(|candidate| candidate["destination_evidence"].as_array())
+        .flat_map(|items| items.iter())
+        .find(|item| item["complete_route_topography"].is_object())
+        .expect("full retained destination profile");
+    assert!(retained_evidence["complete_route_topography"]["evidence_refs"].is_array());
+}
+
+#[test]
+fn sourced_urban_entry_choice_replays_without_provider() {
+    let root = urban_entry_fixture("urban-replay");
+    let prepared = prepare_with_progress(
+        &root.join("area.yaml"),
+        CompileOptions::default(),
+        &mut |_event| {},
+    )
+    .expect("prepared urban-entry fixture");
+    let history = root.join("history");
+    let first = run_prepared(
+        &history,
+        &prepared,
+        MidendConfig::deterministic(false),
+        ProviderSet {
+            classifier: None,
+            specialist: None,
+        },
+        &mut |_event| {},
+    )
+    .expect("urban-entry run");
+    assert!(first.operations.iter().any(TypedOperation::is_rural));
+    let community = first
+        .community_access
+        .iter()
+        .find(|access| access.community_id == "community" && access.is_primary)
+        .expect("urban-entry community");
+    assert_eq!(community.status, "urban-entry");
+    assert_eq!(community.root_spine_id, None);
+    assert_eq!(community.joined_spine_id, None);
+    assert_eq!(
+        community
+            .urban_entry
+            .as_ref()
+            .map(|entry| entry.extent_source_id.as_str()),
+        Some("5342409")
+    );
+    let child = first
+        .community_access
+        .iter()
+        .find(|access| access.community_id == "child" && access.is_primary)
+        .expect("child urban-entry inheritance");
+    assert_eq!(child.parent_community_id.as_deref(), Some("community"));
+    assert_eq!(child.urban_entry, community.urban_entry);
+
+    let replayed = replay(&history, "main", &mut |_event| {}).expect("urban-entry replay");
+    assert_eq!(replayed.operations, first.operations);
+    assert_eq!(replayed.community_access, first.community_access);
+}
+
+#[test]
+fn saved_specialist_result_precedes_a_new_mechanical_shortcut() {
+    let root = urban_entry_fixture("saved-specialist-priority");
+    let prepared = prepare_with_progress(
+        &root.join("area.yaml"),
+        CompileOptions::default(),
+        &mut |_event| {},
+    )
+    .expect("prepared urban-entry fixture");
+    let history = root.join("history");
+
+    // Seed the retained task and offer without retaining its deterministic
+    // decision. The synthetic provider records below model a completed Jev
+    // abstention followed by a completed specialist answer at that checkpoint.
+    run_prepared(
+        &history,
+        &prepared,
+        MidendConfig::deterministic(false),
+        ProviderSet {
+            classifier: None,
+            specialist: None,
+        },
+        &mut |_event| {},
+    )
+    .expect("seed deterministic rural task");
+    let events_path = history.join("events.jsonl");
+    let mut events = fs::read_to_string(&events_path)
+        .expect("seed events")
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("event JSON"))
+        .collect::<Vec<_>>();
+    let task_event = events
+        .iter()
+        .find(|event| event["kind"] == "task" && event["task_id"].is_string())
+        .cloned()
+        .expect("retained rural task");
+    let task_id = task_event["task_id"].as_str().expect("task id");
+    let task = &task_event["task"];
+    let community_id = task["state"]["community"]["id"]
+        .as_str()
+        .expect("community id");
+    let candidate_id = task["state"]["offer"]["candidates"][0]["id"]
+        .as_str()
+        .expect("candidate id")
+        .to_string();
+    let task_event_id = task_event["id"].as_str().expect("task event id");
+    let started_id = "event:main:saved-specialist-started";
+    let result_id = "event:main:saved-jev-result";
+    let jev_attempt_id = format!("attempt:{task_id}:jev");
+    let specialist_attempt_id = format!("attempt:{task_id}:specialist");
+    let jev_receipt = json!({
+        "provider": "typesafe",
+        "requested_model": "jev-fixture",
+        "observed_model": "jev-fixture",
+        "status": "answered",
+        "request_body": "{\"saved\":true}",
+        "response_body": "{\"choice\":\"__unknown__\"}",
+        "error": null,
+        "usage": null
+    });
+    let specialist_response = json!({
+        "proposal": {"operation": {"kind": "select-community-access", "payload": {
+            "candidate_id": candidate_id,
+            "community_id": community_id,
+            "provisional": true,
+            "decision_reason": "Retained specialist evidence remains the selected answer.",
+            "uncertainties": ["Provision remains unknown."]
+        }}}
+    });
+    let specialist_receipt = json!({
+        "provider": "codex-exec",
+        "requested_model": "gpt-5.6-luna",
+        "observed_model": "gpt-5.6-luna",
+        "status": "answered",
+        "request_body": "saved specialist prompt",
+        "response_body": specialist_response.to_string(),
+        "error": null,
+        "usage": null
+    });
+
+    // Rewind the branch to the task event, leaving later seed events in the
+    // append-only file but outside the branch chain.
+    let mut branches = json!({"main": {"head": task_event_id}});
+    fs::write(
+        &events_path,
+        events
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n",
+    )
+    .expect("rewind seed decision");
+    events.push(json!({
+        "id": started_id,
+        "branch": "main",
+        "parent": task_event_id,
+        "kind": "attempt-started",
+        "task_id": task_id,
+        "task": null,
+        "attempt_id": jev_attempt_id,
+        "attempt": {
+            "id": jev_attempt_id,
+            "task_id": task_id,
+            "actor": "classifier",
+            "status": "started",
+            "choice": null,
+            "proposal": null,
+            "receipt": {
+                "provider": "typesafe",
+                "requested_model": "jev-fixture",
+                "observed_model": null,
+                "status": "started",
+                "request_body": "",
+                "response_body": null,
+                "error": null,
+                "usage": null
+            }
+        },
+        "operation": null
+    }));
+    events.push(json!({
+        "id": result_id,
+        "branch": "main",
+        "parent": started_id,
+        "kind": "attempt-result",
+        "task_id": task_id,
+        "task": null,
+        "attempt_id": jev_attempt_id,
+        "attempt": {
+            "id": jev_attempt_id,
+            "task_id": task_id,
+            "actor": "classifier",
+            "status": "answered",
+            "choice": {
+                "model": "jev-fixture",
+                "choice": "__unknown__",
+                "probabilities": {"__unknown__": 1.0},
+                "confidence": 0.0
+            },
+            "proposal": null,
+            "receipt": jev_receipt
+        },
+        "operation": null
+    }));
+    let specialist_started_id = "event:main:saved-specialist-started-specialist";
+    events.push(json!({
+        "id": specialist_started_id,
+        "branch": "main",
+        "parent": result_id,
+        "kind": "attempt-started",
+        "task_id": task_id,
+        "task": null,
+        "attempt_id": specialist_attempt_id,
+        "attempt": {
+            "id": specialist_attempt_id,
+            "task_id": task_id,
+            "actor": "agent",
+            "status": "started",
+            "choice": null,
+            "proposal": null,
+            "receipt": {
+                "provider": "codex-exec",
+                "requested_model": "gpt-5.6-luna",
+                "observed_model": null,
+                "status": "started",
+                "request_body": "",
+                "response_body": null,
+                "error": null,
+                "usage": null
+            }
+        },
+        "operation": null
+    }));
+    let specialist_result_id = "event:main:saved-specialist-result";
+    events.push(json!({
+        "id": specialist_result_id,
+        "branch": "main",
+        "parent": specialist_started_id,
+        "kind": "attempt-result",
+        "task_id": task_id,
+        "task": null,
+        "attempt_id": specialist_attempt_id,
+        "attempt": {
+            "id": specialist_attempt_id,
+            "task_id": task_id,
+            "actor": "agent",
+            "status": "answered",
+            "choice": null,
+            "proposal": specialist_response,
+            "receipt": specialist_receipt
+        },
+        "operation": null
+    }));
+    branches["main"]["head"] = specialist_result_id.into();
+    fs::write(
+        history.join("events.jsonl"),
+        events
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n",
+    )
+    .expect("write saved attempts");
+    fs::write(
+        history.join("branches.json"),
+        serde_json::to_string(&branches).expect("branches JSON"),
+    )
+    .expect("write saved branch");
+
+    let mut jev = PanicJev;
+    let response = json!({
+        "proposal": {"operation": {"kind": "select-community-access", "payload": {
+            "candidate_id": candidate_id,
+            "community_id": community_id,
+            "provisional": true,
+            "decision_reason": "unused provider",
+            "uncertainties": ["unused provider"]
+        }}}
+    });
+    let mut specialist = RuralSpecialist { response, calls: 0 };
+    let resumed = run_prepared(
+        &history,
+        &prepared,
+        MidendConfig::live(true),
+        ProviderSet {
+            classifier: Some(&mut jev),
+            specialist: Some(&mut specialist),
+        },
+        &mut |_event| {},
+    )
+    .expect("resume from saved attempts");
+    assert_eq!(specialist.calls, 0, "saved specialist must be reused");
+    assert!(matches!(
+        resumed.operations.first(),
+        Some(TypedOperation::SelectCommunityAccess {
+            decision_class,
+            provisional: true,
+            reason: Some(reason),
+            ..
+        }) if decision_class == "agent"
+            && reason == "Retained specialist evidence remains the selected answer."
+    ));
 }
 
 #[test]
@@ -1110,7 +1611,7 @@ fn unknown_rural_jev_escalates_to_typed_provisional_specialist_choice() {
             "candidate_id": "rural:parent:comfort",
             "community_id": "parent",
             "provisional": true,
-            "reason": "The flatter complete journey is the supported best guess.",
+            "decision_reason": "The flatter complete journey is the supported best guess.",
             "uncertainties": ["Provision remains unknown."]
         }}}
     });
@@ -1136,12 +1637,41 @@ fn unknown_rural_jev_escalates_to_typed_provisional_specialist_choice() {
             candidate_id,
             decision_class,
             provisional: true,
+            reason: Some(reason),
+            uncertainties,
             ..
         }) if community_id == "parent"
             && candidate_id == "rural:parent:comfort"
             && decision_class == "agent"
+            && reason == "The flatter complete journey is the supported best guess."
+            && uncertainties == &["Provision remains unknown.".to_string()]
     ));
     assert_eq!(result.operations.len(), 2);
+
+    let saved_attempt = fs::read_to_string(root.join("history/events.jsonl"))
+        .expect("specialist history")
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|event| {
+            event["kind"] == "attempt-result"
+                && event["attempt"]["actor"] == "agent"
+                && event["attempt"]["proposal"]["proposal"]["operation"]["kind"]
+                    == "select-community-access"
+        })
+        .expect("saved specialist attempt");
+    assert_eq!(
+        saved_attempt["attempt"]["proposal"]["proposal"]["operation"]["payload"]["decision_reason"],
+        "The flatter complete journey is the supported best guess."
+    );
+    assert_eq!(
+        saved_attempt["attempt"]["proposal"]["proposal"]["operation"]["payload"]["uncertainties"]
+            [0],
+        "Provision remains unknown."
+    );
+    assert_eq!(
+        saved_attempt["attempt"]["proposal"]["proposal"]["operation"]["payload"]["provisional"],
+        true
+    );
 }
 
 #[test]
@@ -1325,6 +1855,137 @@ fn rural_prepared_fixture(label: &str) -> PathBuf {
             elevation_feature("flat-spine-8", [0.016, 0.002], 1.8),
             elevation_feature("flat-spine-9", [0.018, 0.001], 1.9),
             elevation_feature("flat-spine-10", [0.02, 0.0], 2.0),
+        ],
+    );
+    root
+}
+
+fn rural_destination_fixture(label: &str) -> PathBuf {
+    let root = rural_prepared_fixture(label);
+    let network_path = root.join("snapshot/network.geojson");
+    let mut network: Value =
+        serde_json::from_str(&fs::read_to_string(&network_path).expect("network")).expect("json");
+    add_bidirectional(
+        network["features"].as_array_mut().expect("features"),
+        "parent",
+        "town-entry",
+        [0.0, 0.0],
+        [0.0, -0.01],
+        12.0,
+        "residential",
+        None,
+    );
+    add_bidirectional(
+        network["features"].as_array_mut().expect("features"),
+        "town-entry",
+        "town-spine",
+        [0.0, -0.01],
+        [0.02, -0.01],
+        3.0,
+        "primary",
+        Some("A2"),
+    );
+    add_bidirectional(
+        network["features"].as_array_mut().expect("features"),
+        "town-spine",
+        "town",
+        [0.02, -0.01],
+        [0.02, -0.02],
+        1.0,
+        "residential",
+        None,
+    );
+    fs::write(
+        &network_path,
+        serde_json::to_vec(&network).expect("network json"),
+    )
+    .expect("write network");
+
+    let places_path = root.join("snapshot/places.geojson");
+    let mut places: Value =
+        serde_json::from_str(&fs::read_to_string(&places_path).expect("places")).expect("json");
+    places["features"]
+        .as_array_mut()
+        .expect("place features")
+        .push(place_feature("town", "Town", "town", [0.02, -0.02]));
+    fs::write(
+        &places_path,
+        serde_json::to_vec(&places).expect("places json"),
+    )
+    .expect("write places");
+    root
+}
+
+fn urban_entry_fixture(label: &str) -> PathBuf {
+    let root = std::env::temp_dir().join(format!(
+        "satn-rust-midend-urban-entry-{label}-{}",
+        std::process::id()
+    ));
+    if root.exists() {
+        fs::remove_dir_all(&root).expect("clean urban-entry fixture");
+    }
+    let snapshot = root.join("snapshot");
+    fs::create_dir_all(&snapshot).expect("urban-entry snapshot");
+    fs::write(
+        root.join("area.yaml"),
+        format!(
+            "area_id: fixture\narea_name: Fixture\nsource:\n  snapshot_dir: {}\n  snapshot_id: snapshot\n  community_place_types: [village]\ncompilation:\n  max_connection_km: 15\n",
+            root.display()
+        ),
+    )
+    .expect("urban-entry config");
+    let mut edges = Vec::new();
+    add_bidirectional(
+        &mut edges,
+        "community",
+        "urban-edge",
+        [0.0, 0.0],
+        [0.001, 0.0],
+        100.0,
+        "residential",
+        None,
+    );
+    add_bidirectional(
+        &mut edges,
+        "child",
+        "community",
+        [0.0002, 0.0002],
+        [0.0, 0.0],
+        10.0,
+        "residential",
+        None,
+    );
+    add_bidirectional(
+        &mut edges,
+        "urban-edge",
+        "spine",
+        [0.001, 0.0],
+        [0.002, 0.0],
+        100.0,
+        "primary",
+        Some("A1"),
+    );
+    write_collection(&snapshot.join("network.geojson"), edges);
+    write_collection(
+        &snapshot.join("places.geojson"),
+        vec![
+            place_feature("community", "Community", "village", [0.0, 0.0]),
+            place_feature("child", "Child", "village", [0.0002, 0.0002]),
+        ],
+    );
+    write_collection(
+        &snapshot.join("osm-place-features.geojson"),
+        vec![
+            json!({
+                "type": "Feature",
+                "properties": {"id": 1947201, "name": "Bath", "place": "city", "wikidata": "Q22889"},
+                "geometry": {"type": "Point", "coordinates": [0.001, 0.0]}
+            }),
+            json!({
+                "type": "Feature",
+                "properties": {"id": 5342409, "name": "Bath", "place": "city", "boundary": "place", "wikidata": "Q22889"},
+                "geometry": {"type": "Polygon", "coordinates": [[[0.0008, -0.0001], [0.0012, -0.0001], [0.0012, 0.0001], [0.0008, 0.0001], [0.0008, -0.0001]]]}
+            }),
         ],
     );
     root

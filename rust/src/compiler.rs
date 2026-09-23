@@ -12,7 +12,10 @@ use crate::geojson::{
     Feature, Geometry, canonical_tag_values, read_feature_collection, string_property,
 };
 use crate::geometry::enrich_network_edges;
-use crate::graph::{EdgeAttachment, FrontierEdgeTarget, FrontierTarget, Graph, GraphEdge, Route};
+use crate::graph::{
+    EdgeAttachment, FrontierEdgeTarget, FrontierTarget, FrontierTerminal, Graph, GraphEdge, Route,
+    UrbanEntryTarget,
+};
 use crate::output::write_bundle;
 use crate::topography::{
     ElevationEvidenceIndex, RouteTopographyProfile, TopographyAvailability, unknown_route_profile,
@@ -68,6 +71,28 @@ pub struct NetworkPlace {
     pub geometry: [f64; 2],
 }
 
+/// A sourced OSM place extent used as a qualified urban-entry POC. This is
+/// retained separately from governed authority boundaries and may include
+/// polygon holes.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct UrbanExtent {
+    pub source_id: String,
+    pub name: String,
+    pub geometry: Vec<Vec<Vec<[f64; 2]>>>,
+}
+
+/// The directed graph crossing where rural access may terminate at a sourced
+/// urban extent.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct UrbanEntry {
+    pub destination_id: String,
+    pub destination_name: String,
+    pub extent_source_id: String,
+    pub edge_id: String,
+    pub fraction: f64,
+    pub point: [f64; 2],
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SchoolContext {
     pub id: String,
@@ -82,6 +107,22 @@ pub struct CommunityAccessBenefit {
     pub destination_name: String,
     pub full_route_length_m: f64,
     pub primary_access_plus_onward_m: Option<f64>,
+}
+
+/// Complete, directed journey evidence attached to one offered rural access
+/// path.  A missing route or terrain profile stays explicit in the offer so a
+/// decision boundary cannot treat absent evidence as a zero-cost result.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RuralDestinationEvidence {
+    pub destination_id: String,
+    pub destination_name: String,
+    pub status: String,
+    #[serde(default)]
+    pub complete_route_length_m: Option<f64>,
+    #[serde(default)]
+    pub complete_route_topography: Option<RouteTopographyProfile>,
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -125,6 +166,8 @@ pub struct CommunityAccess {
     #[serde(default)]
     pub full_access_length_m: Option<f64>,
     pub joined_spine_id: Option<String>,
+    #[serde(default)]
+    pub urban_entry: Option<UrbanEntry>,
     pub access_length_m: Option<f64>,
     pub path_edge_ids: Vec<String>,
     #[serde(default)]
@@ -155,6 +198,8 @@ pub struct JourneyDestination {
     pub name: String,
     pub geometry: [f64; 2],
     pub node: String,
+    #[serde(default)]
+    pub urban_extent: Option<UrbanExtent>,
 }
 
 /// One measured, directed path in a complete journey comparison.
@@ -493,6 +538,15 @@ struct Place {
     id: String,
     name: String,
     point: [f64; 2],
+    urban_extent: Option<UrbanExtent>,
+}
+
+#[derive(Debug, Clone)]
+struct UrbanExtentRecord {
+    id: String,
+    place_class: String,
+    wikidata: Option<String>,
+    extent: UrbanExtent,
 }
 
 #[derive(Debug, Clone)]
@@ -536,6 +590,8 @@ pub struct RuralAccessCandidate {
     pub id: String,
     pub criterion: String,
     pub access: CommunityAccess,
+    #[serde(default)]
+    pub destination_evidence: Vec<RuralDestinationEvidence>,
 }
 
 /// The next globally nearest rural community and the paths currently available
@@ -553,10 +609,12 @@ pub struct RuralAccessOffer {
 pub struct RuralAccessPlanner<'a> {
     graph: &'a Graph,
     source_inventory: &'a [SourceCorridor],
+    destinations: &'a [JourneyDestination],
     elevation: Option<&'a ElevationEvidenceIndex>,
     elevation_file: String,
     target_nodes: HashMap<String, String>,
     target_edges: HashMap<String, String>,
+    urban_entry_targets: Vec<FrontierEdgeTarget>,
     pending: BTreeMap<String, PendingCommunity>,
     primary_records: BTreeMap<String, CommunityAccess>,
     records: Vec<CommunityAccess>,
@@ -667,6 +725,7 @@ pub fn prepare_with_progress(
                 name: place.name.clone(),
                 geometry: place.point,
                 node,
+                urban_extent: place.urban_extent.clone(),
             })
         })
         .collect::<Vec<_>>();
@@ -798,6 +857,7 @@ impl PreparedCompilation {
             &self.network_places,
             &self.graph,
             &self.source_inventory,
+            &self.destinations,
             self.elevation.as_ref(),
             &self.elevation_file,
         )
@@ -1581,17 +1641,49 @@ fn emit(
 }
 
 fn admit_places(features: &[Feature], boundary: Option<&BoundaryScope>) -> Vec<Place> {
+    let extents = features
+        .iter()
+        .filter_map(|feature| {
+            let geometry = match &feature.geometry {
+                Geometry::Polygon(rings) => vec![rings.clone()],
+                Geometry::MultiPolygon(polygons) => polygons.clone(),
+                Geometry::Point(_) | Geometry::LineString(_) | Geometry::MultiLineString(_) => {
+                    return None;
+                }
+            };
+            let place_class = place_class(&feature.properties);
+            if place_class != "city" && place_class != "town" {
+                return None;
+            }
+            let boundary = string_property(&feature.properties, "boundary")
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if boundary != "place" {
+                return None;
+            }
+            let id = string_property(&feature.properties, "place_id")
+                .or_else(|| string_property(&feature.properties, "source_id"))
+                .or_else(|| string_property(&feature.properties, "id"))?;
+            let name = string_property(&feature.properties, "name").unwrap_or_else(|| id.clone());
+            Some(UrbanExtentRecord {
+                id: id.clone(),
+                place_class,
+                wikidata: string_property(&feature.properties, "wikidata"),
+                extent: UrbanExtent {
+                    source_id: id,
+                    name,
+                    geometry,
+                },
+            })
+        })
+        .collect::<Vec<_>>();
     let mut places = features
         .iter()
         .filter_map(|feature| {
             let Geometry::Point(point) = feature.geometry else {
                 return None;
             };
-            let class = string_property(&feature.properties, "place_class")
-                .or_else(|| string_property(&feature.properties, "place"))
-                .or_else(|| string_property(&feature.properties, "kind"))
-                .unwrap_or_default()
-                .to_ascii_lowercase();
+            let class = place_class(&feature.properties);
             // The preparation contract is city/town adjacency. Community eligibility is
             // retained as source evidence, but it does not create a Cartesian roster.
             if class != "city" && class != "town" {
@@ -1604,11 +1696,32 @@ fn admit_places(features: &[Feature], boundary: Option<&BoundaryScope>) -> Vec<P
             if boundary.is_some_and(|boundary| !boundary_contains(boundary, point)) {
                 return None;
             }
-            Some(Place { id, name, point })
+            let wikidata = string_property(&feature.properties, "wikidata");
+            let urban_extent = extents
+                .iter()
+                .find(|extent| {
+                    extent.place_class == class
+                        && ((wikidata.is_some() && wikidata == extent.wikidata) || id == extent.id)
+                })
+                .map(|extent| extent.extent.clone());
+            Some(Place {
+                id,
+                name,
+                point,
+                urban_extent,
+            })
         })
         .collect::<Vec<_>>();
     places.sort_by(|left, right| left.id.cmp(&right.id));
     places
+}
+
+fn place_class(properties: &std::collections::BTreeMap<String, Value>) -> String {
+    string_property(properties, "place_class")
+        .or_else(|| string_property(properties, "place"))
+        .or_else(|| string_property(properties, "kind"))
+        .unwrap_or_default()
+        .to_ascii_lowercase()
 }
 
 fn admit_source_inventory(
@@ -1946,10 +2059,12 @@ impl<'a> RuralAccessPlanner<'a> {
         network_places: &[NetworkPlace],
         graph: &'a Graph,
         source_inventory: &'a [SourceCorridor],
+        destinations: &'a [JourneyDestination],
         elevation: Option<&'a ElevationEvidenceIndex>,
         elevation_file: &str,
     ) -> Self {
         let (target_nodes, target_edges) = strategic_spine_targets(graph, source_inventory);
+        let urban_entry_targets = urban_entry_targets(graph, destinations);
         let pending = network_places
             .iter()
             .filter(|place| is_rural_community(place))
@@ -1966,10 +2081,12 @@ impl<'a> RuralAccessPlanner<'a> {
         Self {
             graph,
             source_inventory,
+            destinations,
             elevation,
             elevation_file: elevation_file.to_string(),
             target_nodes,
             target_edges,
+            urban_entry_targets,
             pending,
             primary_records: BTreeMap::new(),
             records: Vec::new(),
@@ -1996,8 +2113,12 @@ impl<'a> RuralAccessPlanner<'a> {
     }
 
     fn compute_offer(&self) -> Option<RuralAccessOffer> {
-        let (frontier_nodes, partial_targets) =
-            frontier_targets(&self.target_nodes, &self.primary_records, self.graph);
+        let (frontier_nodes, partial_targets) = frontier_targets(
+            &self.target_nodes,
+            &self.primary_records,
+            self.graph,
+            &self.urban_entry_targets,
+        );
         let search = self
             .graph
             .frontier_search(&frontier_nodes, &partial_targets);
@@ -2038,13 +2159,17 @@ impl<'a> RuralAccessPlanner<'a> {
         let shortest = best?;
         let pending = self.pending.get(&shortest.community_id)?;
         let shortest_reason = rural_primary_reason(&shortest, &self.primary_records);
-        let shortest_candidate = self.plan_candidate(
+        let mut shortest_candidate = self.plan_candidate(
             &shortest,
             &pending.place,
             "shortest-new-link",
             &shortest_reason,
         );
+        shortest_candidate.destination_evidence = self.destination_evidence(&shortest);
+        shortest_candidate.id = format!("rural:{}:shortest", shortest.community_id);
         let mut candidates = vec![shortest_candidate];
+        let mut offered_paths = BTreeSet::new();
+        offered_paths.insert(shortest.route.edge_ids.clone());
 
         if self.elevation.is_some() && !shortest.route.edge_ids.is_empty() {
             let mut comfort_candidates = Vec::new();
@@ -2072,12 +2197,13 @@ impl<'a> RuralAccessPlanner<'a> {
                     route,
                     target,
                 };
-                let planned = self.plan_candidate(
+                let mut planned = self.plan_candidate(
                     &alternate,
                     &pending.place,
                     "least-climbing-detour",
                     "Best generated edge-exclusion detour by measured full-journey elevation variation; the shortest baseline is reported separately.",
                 );
+                planned.destination_evidence = self.destination_evidence(&alternate);
                 if planned
                     .access
                     .full_access_topography
@@ -2114,25 +2240,222 @@ impl<'a> RuralAccessPlanner<'a> {
                     .then_with(|| left.access.path_edge_ids.cmp(&right.access.path_edge_ids))
             });
             if let Some(best_comfort) = comfort_candidates.into_iter().next() {
+                let mut best_comfort = best_comfort;
+                offered_paths.insert(best_comfort.access.path_edge_ids.clone());
+                best_comfort.id = format!("rural:{}:comfort", shortest.community_id);
                 candidates.push(best_comfort);
             }
         }
+
+        // Keep the nearest-frontier ordering mechanical, then evaluate only
+        // that offered community against configured city/town destinations.
+        // A townward route becomes an option only at its first actual frontier
+        // intersection; its onward route is evidence, not an automatic feeder.
+        for destination in self.destinations {
+            let Some(townward) = self.destination_frontier_candidate(
+                &shortest.attachment,
+                destination,
+                &frontier_nodes,
+                &partial_targets,
+            ) else {
+                continue;
+            };
+            let signature = townward.route.edge_ids.clone();
+            if !offered_paths.insert(signature) {
+                continue;
+            }
+            let mut planned = self.plan_candidate(
+                &townward,
+                &pending.place,
+                "townward-destination",
+                &format!(
+                    "Directed route toward {} first reaches the admitted strategic frontier; complete journey evidence is supplied for comparison.",
+                    destination.name
+                ),
+            );
+            planned.destination_evidence = self.destination_evidence(&townward);
+            planned.id = format!(
+                "rural:{}:townward:{}",
+                shortest.community_id, destination.id
+            );
+            candidates.push(planned);
+        }
+
         Some(RuralAccessOffer {
             community_id: shortest.community_id,
             community_name: pending.place.name.clone(),
-            candidates: candidates
-                .into_iter()
-                .enumerate()
-                .map(|(index, mut candidate)| {
-                    candidate.id = format!(
-                        "rural:{}:{}",
-                        candidate.access.community_id,
-                        if index == 0 { "shortest" } else { "comfort" }
-                    );
-                    candidate
-                })
-                .collect(),
+            candidates,
         })
+    }
+
+    fn destination_frontier_candidate(
+        &self,
+        attachment: &EdgeAttachment,
+        destination: &JourneyDestination,
+        frontier_nodes: &HashMap<String, FrontierTarget>,
+        partial_targets: &[FrontierEdgeTarget],
+    ) -> Option<FrontierCandidate> {
+        let route = self
+            .graph
+            .cycling_route_from_attachment(attachment, &destination.node)?;
+        if attachment.node.is_none() {
+            if let Some(spine_id) = self.target_edges.get(&attachment.edge_id) {
+                return Some(FrontierCandidate {
+                    community_id: String::new(),
+                    attachment: attachment.clone(),
+                    route: self.graph.empty_route(),
+                    target: FrontierTarget {
+                        key: format!(
+                            "spine-edge:{spine_id}:{}@{:.12}",
+                            attachment.edge_id, attachment.fraction
+                        ),
+                        terminal: FrontierTerminal::Spine(spine_id.clone()),
+                        community_id: None,
+                        junction_node: format!(
+                            "edge:{}@{:.12}",
+                            attachment.edge_id, attachment.fraction
+                        ),
+                        remaining_access_length_m: 0.0,
+                    },
+                });
+            }
+        }
+        let node_candidate = route
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(node_index, node)| {
+                if node.starts_with("attachment:") {
+                    return None;
+                }
+                let target = frontier_nodes.get(node)?.clone();
+                Some(FrontierCandidate {
+                    community_id: String::new(),
+                    attachment: attachment.clone(),
+                    route: self.graph.prefix_route(&route, node_index),
+                    target,
+                })
+            });
+        let partial_candidate = partial_targets.iter().filter_map(|partial| {
+            let route = self.route_to_partial_frontier(&route, attachment, partial)?;
+            Some(FrontierCandidate {
+                community_id: String::new(),
+                attachment: attachment.clone(),
+                route,
+                target: partial.target.clone(),
+            })
+        });
+        node_candidate
+            .chain(partial_candidate)
+            .min_by(|left, right| {
+                left.route
+                    .length_m
+                    .partial_cmp(&right.route.length_m)
+                    .unwrap_or(Ordering::Equal)
+                    .then_with(|| left.target.key.cmp(&right.target.key))
+                    .then_with(|| left.route.edge_ids.cmp(&right.route.edge_ids))
+            })
+    }
+
+    fn route_to_partial_frontier(
+        &self,
+        route: &Route,
+        attachment: &EdgeAttachment,
+        partial: &FrontierEdgeTarget,
+    ) -> Option<Route> {
+        for (edge_index, route_edge_id) in route.edge_ids.iter().enumerate() {
+            let Some(target_fraction) = self.graph.normalize_edge_fraction(
+                &partial.edge_id,
+                partial.fraction,
+                route_edge_id,
+            ) else {
+                continue;
+            };
+            let start_fraction = if edge_index == 0 && attachment.node.is_none() {
+                self.graph
+                    .attachment_fraction_on_edge(attachment, route_edge_id)?
+            } else {
+                0.0
+            };
+            if target_fraction < start_fraction {
+                continue;
+            }
+            let prefix = self.graph.prefix_route(route, edge_index);
+            let start_point = if edge_index == 0 && attachment.node.is_none() {
+                attachment.point
+            } else {
+                self.graph
+                    .edge_point_at_fraction(route_edge_id, start_fraction)?
+            };
+            let end_point = self
+                .graph
+                .edge_point_at_fraction(route_edge_id, target_fraction)?;
+            let partial_route = self.graph.partial_edge_route(
+                route_edge_id,
+                start_fraction,
+                target_fraction,
+                start_point,
+                end_point,
+            )?;
+            return Some(combine_routes(&prefix, &partial_route));
+        }
+        None
+    }
+
+    fn onward_route_from_target(
+        &self,
+        target: &FrontierTarget,
+        destination: &JourneyDestination,
+    ) -> Option<Route> {
+        if let Some(value) = target.junction_node.strip_prefix("edge:") {
+            let (edge_id, fraction_text) = value.rsplit_once('@')?;
+            let fraction = fraction_text.parse::<f64>().ok()?;
+            let point = self.graph.edge_point_at_fraction(edge_id, fraction)?;
+            let attachment = self.graph.nearest_edge_attachment(point)?;
+            self.graph
+                .normalize_edge_fraction(edge_id, fraction, &attachment.edge_id)?;
+            self.graph
+                .cycling_route_from_attachment(&attachment, &destination.node)
+        } else {
+            self.graph
+                .cycling_route(&target.junction_node, &destination.node)
+        }
+    }
+
+    fn destination_evidence(&self, candidate: &FrontierCandidate) -> Vec<RuralDestinationEvidence> {
+        self.destinations
+            .iter()
+            .map(|destination| {
+                let Some(onward) = self.onward_route_from_target(&candidate.target, destination)
+                else {
+                    return RuralDestinationEvidence {
+                        destination_id: destination.id.clone(),
+                        destination_name: destination.name.clone(),
+                        status: "unavailable".to_string(),
+                        complete_route_length_m: None,
+                        complete_route_topography: None,
+                        reason: Some(format!(
+                            "No directed cycling route from the offered frontier to {}.",
+                            destination.name
+                        )),
+                    };
+                };
+                let complete = combine_routes(&candidate.route, &onward);
+                let topography = self.profile_for_route(
+                    &complete.geometry,
+                    complete.length_m,
+                    "No governed elevation profile is available for this complete destination journey.",
+                );
+                RuralDestinationEvidence {
+                    destination_id: destination.id.clone(),
+                    destination_name: destination.name.clone(),
+                    status: "available".to_string(),
+                    complete_route_length_m: Some(complete.length_m),
+                    complete_route_topography: Some(topography),
+                    reason: None,
+                }
+            })
+            .collect()
     }
 
     pub fn accept(&mut self, candidate_id: &str) -> Result<CommunityAccess> {
@@ -2218,13 +2541,16 @@ impl<'a> RuralAccessPlanner<'a> {
         let parent = parent_community_id
             .as_ref()
             .and_then(|id| self.primary_records.get(id));
-        let root_spine_id = candidate.target.spine_id.clone();
+        let root_spine_id = frontier_target_spine_id(&candidate.target);
+        let urban_entry = frontier_target_urban_entry(&candidate.target);
         let attachment_depth = parent
             .and_then(|record| record.attachment_depth)
             .map_or(0, |depth| depth + 1);
         let full_access_length_m =
             Some(candidate.route.length_m + candidate.target.remaining_access_length_m);
-        let status = if parent_community_id.is_none() && candidate.route.edge_ids.is_empty() {
+        let status = if urban_entry.is_some() && parent_community_id.is_none() {
+            "urban-entry"
+        } else if parent_community_id.is_none() && candidate.route.edge_ids.is_empty() {
             "on-spine"
         } else {
             "served"
@@ -2254,7 +2580,7 @@ impl<'a> RuralAccessPlanner<'a> {
         let full_access_topography = self.profile_for_route(
             &self.full_access_geometry(candidate),
             full_access_length_m_value,
-            "No governed elevation profile is available for the complete community-to-spine journey.",
+            "No governed elevation profile is available for the complete community-to-terminal journey.",
         );
         let access = CommunityAccess {
             community_id: place.id.clone(),
@@ -2301,12 +2627,13 @@ impl<'a> RuralAccessPlanner<'a> {
                 .community_id
                 .as_ref()
                 .map(|_| candidate.target.remaining_access_length_m),
-            root_spine_id: Some(root_spine_id.clone()),
+            root_spine_id: root_spine_id.clone(),
             admission_order: Some(self.admission_order),
             attachment_depth: Some(attachment_depth),
             new_link_length_m: Some(candidate.route.length_m),
             full_access_length_m,
-            joined_spine_id: Some(root_spine_id.clone()),
+            joined_spine_id: root_spine_id.clone(),
+            urban_entry,
             access_length_m: Some(candidate.route.length_m),
             path_edge_ids: candidate.route.edge_ids.clone(),
             path_start_fraction,
@@ -2314,7 +2641,9 @@ impl<'a> RuralAccessPlanner<'a> {
             path_geometry: candidate.route.geometry.clone(),
             onward_destinations: Vec::new(),
             onward_benefits: Vec::new(),
-            joined_spine_reference: joined_spine_reference(&root_spine_id, self.source_inventory),
+            joined_spine_reference: root_spine_id
+                .as_deref()
+                .and_then(|id| joined_spine_reference(id, self.source_inventory)),
             provision_status: "unknown".to_string(),
             reason: reason.to_string(),
             new_link_topography: Some(new_link_topography),
@@ -2324,6 +2653,7 @@ impl<'a> RuralAccessPlanner<'a> {
             id: String::new(),
             criterion: criterion.to_string(),
             access,
+            destination_evidence: Vec::new(),
         }
     }
 
@@ -2433,12 +2763,11 @@ fn suffix_after_target(
 
     if let Some(parent_id) = access.parent_community_id.as_ref() {
         let parent = records.get(parent_id)?;
+        let terminal = frontier_terminal_from_access(access)
+            .or_else(|| frontier_terminal_from_access(parent))?;
         let parent_target = FrontierTarget {
             key: format!("community:{}:suffix", parent_id),
-            spine_id: access
-                .root_spine_id
-                .clone()
-                .or_else(|| parent.root_spine_id.clone())?,
+            terminal,
             community_id: Some(parent_id.clone()),
             junction_node: access.parent_junction_node.clone().or_else(|| {
                 access
@@ -2463,17 +2792,215 @@ fn append_geometry(target: &mut Vec<[f64; 2]>, source: Vec<[f64; 2]>) {
     }
 }
 
+fn frontier_target_spine_id(target: &FrontierTarget) -> Option<String> {
+    match &target.terminal {
+        FrontierTerminal::Spine(spine_id) => Some(spine_id.clone()),
+        FrontierTerminal::UrbanEntry(_) => None,
+    }
+}
+
+fn frontier_target_urban_entry(target: &FrontierTarget) -> Option<UrbanEntry> {
+    let FrontierTerminal::UrbanEntry(entry) = &target.terminal else {
+        return None;
+    };
+    Some(UrbanEntry {
+        destination_id: entry.destination_id.clone(),
+        destination_name: entry.destination_name.clone(),
+        extent_source_id: entry.extent_source_id.clone(),
+        edge_id: entry.edge_id.clone(),
+        fraction: entry.fraction,
+        point: entry.point,
+    })
+}
+
+fn frontier_terminal_from_access(access: &CommunityAccess) -> Option<FrontierTerminal> {
+    access
+        .root_spine_id
+        .as_ref()
+        .or(access.joined_spine_id.as_ref())
+        .map(|spine_id| FrontierTerminal::Spine(spine_id.clone()))
+        .or_else(|| {
+            access.urban_entry.as_ref().map(|entry| {
+                FrontierTerminal::UrbanEntry(UrbanEntryTarget {
+                    destination_id: entry.destination_id.clone(),
+                    destination_name: entry.destination_name.clone(),
+                    extent_source_id: entry.extent_source_id.clone(),
+                    edge_id: entry.edge_id.clone(),
+                    fraction: entry.fraction,
+                    point: entry.point,
+                })
+            })
+        })
+}
+
+fn urban_entry_targets(
+    graph: &Graph,
+    destinations: &[JourneyDestination],
+) -> Vec<FrontierEdgeTarget> {
+    let mut targets = destinations
+        .iter()
+        .filter_map(|destination| {
+            destination
+                .urban_extent
+                .as_ref()
+                .map(|extent| (destination, extent))
+        })
+        .flat_map(|(destination, extent)| {
+            graph.edges.iter().filter_map(move |edge| {
+                if !edge.cycling_allowed() {
+                    return None;
+                }
+                let (fraction, point) = first_extent_entry(&edge.geometry, extent)?;
+                let entry = UrbanEntryTarget {
+                    destination_id: destination.id.clone(),
+                    destination_name: destination.name.clone(),
+                    extent_source_id: extent.source_id.clone(),
+                    edge_id: edge.id.clone(),
+                    fraction,
+                    point,
+                };
+                Some(FrontierEdgeTarget {
+                    edge_id: edge.id.clone(),
+                    fraction,
+                    point,
+                    target: FrontierTarget {
+                        key: format!("urban-entry:{}:{}@{fraction:.12}", destination.id, edge.id),
+                        terminal: FrontierTerminal::UrbanEntry(entry),
+                        community_id: None,
+                        junction_node: format!("edge:{}@{fraction:.12}", edge.id),
+                        remaining_access_length_m: 0.0,
+                    },
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    targets.sort_by(|left, right| left.target.key.cmp(&right.target.key));
+    targets
+}
+
+fn first_extent_entry(geometry: &[[f64; 2]], extent: &UrbanExtent) -> Option<(f64, [f64; 2])> {
+    let first = *geometry.first()?;
+    if point_in_extent(extent, first) {
+        return None;
+    }
+    let total_length_m = geometry
+        .windows(2)
+        .map(|segment| coordinate_distance_m(segment[0], segment[1]))
+        .sum::<f64>();
+    if total_length_m <= 0.0 {
+        return None;
+    }
+    let mut travelled_m = 0.0;
+    for segment in geometry.windows(2) {
+        let segment_length_m = coordinate_distance_m(segment[0], segment[1]);
+        if segment_length_m <= 0.0 {
+            continue;
+        }
+        let mut cuts = vec![0.0, 1.0];
+        for polygon in &extent.geometry {
+            for ring in polygon {
+                for boundary in ring.windows(2) {
+                    if let Some(fraction) = segment_intersection_fraction(
+                        segment[0],
+                        segment[1],
+                        boundary[0],
+                        boundary[1],
+                    ) {
+                        cuts.push(fraction);
+                    }
+                }
+            }
+        }
+        cuts.sort_by(|left, right| left.partial_cmp(right).unwrap_or(Ordering::Equal));
+        let mut was_inside = point_in_extent(extent, segment[0]);
+        for pair in cuts.windows(2) {
+            let start = pair[0];
+            let end = pair[1];
+            if end <= start {
+                continue;
+            }
+            let midpoint = (start + end) / 2.0;
+            let inside = point_in_extent(extent, interpolate(segment[0], segment[1], midpoint));
+            if inside && !was_inside {
+                let fraction = (travelled_m + segment_length_m * start) / total_length_m;
+                return Some((fraction, interpolate(segment[0], segment[1], start)));
+            }
+            was_inside = inside;
+        }
+        travelled_m += segment_length_m;
+    }
+    None
+}
+
+fn point_in_extent(extent: &UrbanExtent, point: [f64; 2]) -> bool {
+    extent.geometry.iter().any(|polygon| {
+        let Some(outer) = polygon.first() else {
+            return false;
+        };
+        point_in_ring(outer, point)
+            && !polygon
+                .iter()
+                .skip(1)
+                .any(|hole| point_in_ring(hole, point))
+    })
+}
+
+fn segment_intersection_fraction(
+    start: [f64; 2],
+    end: [f64; 2],
+    boundary_start: [f64; 2],
+    boundary_end: [f64; 2],
+) -> Option<f64> {
+    let direction = [end[0] - start[0], end[1] - start[1]];
+    let boundary = [
+        boundary_end[0] - boundary_start[0],
+        boundary_end[1] - boundary_start[1],
+    ];
+    let denominator = cross_product(direction, boundary);
+    if denominator == 0.0 {
+        return None;
+    }
+    let delta = [boundary_start[0] - start[0], boundary_start[1] - start[1]];
+    let segment_fraction = cross_product(delta, boundary) / denominator;
+    let boundary_fraction = cross_product(delta, direction) / denominator;
+    if (0.0..=1.0).contains(&segment_fraction) && (0.0..=1.0).contains(&boundary_fraction) {
+        Some(segment_fraction.clamp(0.0, 1.0))
+    } else {
+        None
+    }
+}
+
+fn cross_product(left: [f64; 2], right: [f64; 2]) -> f64 {
+    left[0] * right[1] - left[1] * right[0]
+}
+
+fn interpolate(start: [f64; 2], end: [f64; 2], fraction: f64) -> [f64; 2] {
+    [
+        start[0] + (end[0] - start[0]) * fraction,
+        start[1] + (end[1] - start[1]) * fraction,
+    ]
+}
+
+fn coordinate_distance_m(left: [f64; 2], right: [f64; 2]) -> f64 {
+    let earth_radius_m = 6_371_008.8;
+    let latitude_scale = ((left[1] + right[1]) / 2.0).to_radians().cos();
+    let longitude = (right[0] - left[0]).to_radians() * latitude_scale;
+    let latitude = (right[1] - left[1]).to_radians();
+    earth_radius_m * (longitude * longitude + latitude * latitude).sqrt()
+}
+
 fn frontier_targets(
     spine_nodes: &HashMap<String, String>,
     primary_records: &BTreeMap<String, CommunityAccess>,
     graph: &Graph,
+    urban_entry_targets: &[FrontierEdgeTarget],
 ) -> (HashMap<String, FrontierTarget>, Vec<FrontierEdgeTarget>) {
     let mut targets = HashMap::new();
-    let mut partial_targets = Vec::new();
+    let mut partial_targets = urban_entry_targets.to_vec();
     for (node, spine_id) in spine_nodes {
         let target = FrontierTarget {
             key: format!("spine:{spine_id}:{node}"),
-            spine_id: spine_id.clone(),
+            terminal: FrontierTerminal::Spine(spine_id.clone()),
             community_id: None,
             junction_node: node.clone(),
             remaining_access_length_m: 0.0,
@@ -2481,11 +3008,7 @@ fn frontier_targets(
         insert_frontier_target(&mut targets, node.clone(), target);
     }
     for access in primary_records.values() {
-        let Some(root_spine_id) = access
-            .root_spine_id
-            .as_ref()
-            .or(access.joined_spine_id.as_ref())
-        else {
+        let Some(terminal) = frontier_terminal_from_access(access) else {
             continue;
         };
         if let (Some(edge_id), Some(fraction), Some(point), Some(remaining)) = (
@@ -2504,7 +3027,7 @@ fn frontier_targets(
                             "community:{}:edge:{}@{fraction:.12}",
                             access.community_id, edge_id
                         ),
-                        spine_id: root_spine_id.clone(),
+                        terminal: terminal.clone(),
                         community_id: Some(access.community_id.clone()),
                         junction_node: format!("edge:{edge_id}@{fraction:.12}"),
                         remaining_access_length_m: remaining,
@@ -2518,7 +3041,7 @@ fn frontier_targets(
                 node.clone(),
                 FrontierTarget {
                     key: format!("community:{}:{node}", access.community_id),
-                    spine_id: root_spine_id.clone(),
+                    terminal: terminal.clone(),
                     community_id: Some(access.community_id.clone()),
                     junction_node: node.clone(),
                     remaining_access_length_m,
@@ -2555,11 +3078,7 @@ fn accepted_interval_route(
 ) -> Option<(Route, FrontierTarget)> {
     let mut best: Option<(Route, FrontierTarget)> = None;
     for access in primary_records.values() {
-        let Some(root_spine_id) = access
-            .root_spine_id
-            .as_ref()
-            .or(access.joined_spine_id.as_ref())
-        else {
+        let Some(terminal) = frontier_terminal_from_access(access) else {
             continue;
         };
         let ancestor_length = access
@@ -2658,7 +3177,7 @@ fn accepted_interval_route(
                     "community:{}:edge:{}@{:.12}",
                     access.community_id, edge.id, junction_fraction
                 ),
-                spine_id: root_spine_id.clone(),
+                terminal: terminal.clone(),
                 community_id: Some(access.community_id.clone()),
                 junction_node: format!("edge:{}@{:.12}", edge.id, junction_fraction),
                 remaining_access_length_m: remaining,
@@ -2795,6 +3314,7 @@ fn community_access_gap(
         reason: reason.to_string(),
         new_link_topography: None,
         full_access_topography: None,
+        urban_entry: None,
     }
 }
 
@@ -2833,8 +3353,20 @@ fn rural_primary_reason(
             .get(parent_id)
             .map(|record| record.name.as_str())
             .unwrap_or(parent_id.as_str());
+        if let Some(entry) = frontier_target_urban_entry(&candidate.target) {
+            return format!(
+                "Shortest measured new link reaches the accepted {parent_name} branch junction; the sourced urban extent for {} remains reachable through that accepted branch.",
+                entry.destination_name
+            );
+        }
         return format!(
             "Shortest measured new link reaches the accepted {parent_name} branch junction; its root spine remains reachable through the accepted branch."
+        );
+    }
+    if let Some(entry) = frontier_target_urban_entry(&candidate.target) {
+        return format!(
+            "Shortest measured new link reaches the sourced urban extent for {} at its first directed cycling entry.",
+            entry.destination_name
         );
     }
     if candidate.route.edge_ids.is_empty() {
@@ -2906,7 +3438,7 @@ fn build_access_obligations(
                 .find(|access| access.is_primary && access.community_id == place.id)
             {
                 let disposition = match access.status.as_str() {
-                    "served" | "on-spine" => "served",
+                    "served" | "on-spine" | "urban-entry" => "served",
                     "network-gap" => "network-gap",
                     _ => "unresolved",
                 };
