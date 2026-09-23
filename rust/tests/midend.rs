@@ -606,6 +606,39 @@ fn resume_rejects_a_different_prepared_report_with_the_same_base_id() {
 }
 
 #[test]
+fn resume_accepts_the_report_float_that_was_persisted_as_json() {
+    let history = root("retained-float-roundtrip");
+    let mut report = base();
+    report.candidates[0].a_road_share = 0.009418363318192279_f64;
+    let mut jev = FakeJev {
+        choice: "candidate-a".to_string(),
+        calls: 0,
+    };
+    run_fixture(
+        &history,
+        report.clone(),
+        MidendConfig::live(false),
+        ProviderSet {
+            classifier: Some(&mut jev),
+            specialist: None,
+        },
+    );
+
+    let mut panic_provider = PanicJev;
+    run(
+        &history,
+        report,
+        MidendConfig::deterministic(false),
+        ProviderSet {
+            classifier: Some(&mut panic_provider),
+            specialist: None,
+        },
+        &mut |_event| {},
+    )
+    .expect("persisted report should compare equal after JSON round-trip");
+}
+
+#[test]
 fn unresolved_jev_escalates_to_provisional_specialist() {
     let history = root("specialist");
     let mut jev = UnknownJev;
