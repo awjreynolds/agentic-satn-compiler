@@ -529,6 +529,17 @@ self.addEventListener("fetch", event => {
 """,
         encoding="utf-8",
     )
+    unrelated = server_root / "other-region"
+    unrelated.mkdir()
+    (unrelated / "index.html").write_text(
+        """<!doctype html><html><body data-load-count="0"><script>
+const count = Number(sessionStorage.getItem("other-region-loads") || "0") + 1;
+sessionStorage.setItem("other-region-loads", String(count));
+document.body.dataset.loadCount = String(count);
+</script></body></html>
+""",
+        encoding="utf-8",
+    )
 
     class Handler(http.server.SimpleHTTPRequestHandler):
         def __init__(self, *args: object, **kwargs: object) -> None:
@@ -562,6 +573,12 @@ self.addEventListener("fetch", event => {
             context = browser.new_context()
             page = context.new_page()
             url = f"http://127.0.0.1:{server.server_port}/deployments/native-area/"
+            unrelated_page = context.new_page()
+            unrelated_page.goto(
+                f"http://127.0.0.1:{server.server_port}/other-region/",
+                wait_until="domcontentloaded",
+            )
+            unrelated_page.wait_for_function("document.body.dataset.loadCount === '1'")
             page.goto(url, wait_until="domcontentloaded")
             page.wait_for_function(
                 "document.getElementById('legacy-map')?.textContent === 'Old Python map'"
@@ -590,8 +607,8 @@ self.addEventListener("fetch", event => {
             page.wait_for_function(
                 "async () => !(await caches.keys()).includes('satn-native-area-run-old')"
             )
-            page.reload(wait_until="domcontentloaded")
             page.wait_for_function("document.documentElement.dataset.nativeReady === 'true'")
+            assert unrelated_page.evaluate("document.body.dataset.loadCount") == "1"
             assert page.locator('[data-native-publication="native-agentic"]').count() == 1
             assert "unrelated-cache" in page.evaluate("caches.keys()")
             browser.close()

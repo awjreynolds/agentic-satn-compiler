@@ -893,6 +893,10 @@ self.addEventListener("activate", event => {{
     await Promise.all(keys
       .filter(key => key.startsWith(LEGACY_CACHE_PREFIX))
       .map(key => caches.delete(key)));
+    const windows = await self.clients.matchAll({{ type: "window" }});
+    windows.forEach(client => {{
+      void client.navigate(client.url).catch(() => {{}});
+    }});
   }})());
 }});
 self.addEventListener("fetch", event => {{
