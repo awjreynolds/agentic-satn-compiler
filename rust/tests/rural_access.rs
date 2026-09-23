@@ -299,7 +299,13 @@ fn rural_offer_exposes_townward_frontier_candidate_and_journey_evidence() {
         .expect("townward journey evidence");
     assert_eq!(evidence.status, "available");
     assert_eq!(evidence.complete_route_length_m, Some(16.0));
-    assert!(evidence.complete_route_topography.is_some());
+    assert!(evidence.complete_route_topography.is_none());
+    assert_eq!(
+        evidence.reason.as_deref(),
+        Some(
+            "Terrain and moving-time evidence is measured by the offline complete-journey comparison."
+        )
+    );
 }
 
 #[test]

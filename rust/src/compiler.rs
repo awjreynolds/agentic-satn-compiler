@@ -2443,18 +2443,16 @@ impl<'a> RuralAccessPlanner<'a> {
                     };
                 };
                 let complete = combine_routes(&candidate.route, &onward);
-                let topography = self.profile_for_route(
-                    &complete.geometry,
-                    complete.length_m,
-                    "No governed elevation profile is available for this complete destination journey.",
-                );
                 RuralDestinationEvidence {
                     destination_id: destination.id.clone(),
                     destination_name: destination.name.clone(),
                     status: "available".to_string(),
                     complete_route_length_m: Some(complete.length_m),
-                    complete_route_topography: Some(topography),
-                    reason: None,
+                    complete_route_topography: None,
+                    reason: Some(
+                        "Terrain and moving-time evidence is measured by the offline complete-journey comparison."
+                            .to_string(),
+                    ),
                 }
             })
             .collect()

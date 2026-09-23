@@ -1162,11 +1162,10 @@ fn rural_provider_packet_is_compact_but_retains_full_offer_for_replay() {
         item["destination_name"].is_string()
             && item["status"].is_string()
             && item["complete_route_length_m"].is_number()
-            && (topography.is_null()
-                || (topography["availability"].is_string()
-                    && topography["estimated_moving_time"]["availability"].is_string()
-                    && topography.get("evidence_refs").is_none()
-                    && topography.get("source_refs").is_none()))
+            && topography.is_null()
+            && item["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("offline complete-journey comparison"))
     }));
 
     let retained_task = fs::read_to_string(history.join("events.jsonl"))
@@ -1180,15 +1179,22 @@ fn rural_provider_packet_is_compact_but_retains_full_offer_for_replay() {
                     .is_some_and(|task_id| task_id.starts_with("task:rural:"))
         })
         .expect("retained rural task");
-    let retained_evidence = retained_task["task"]["state"]["offer"]["candidates"]
+    let retained_candidate = retained_task["task"]["state"]["offer"]["candidates"]
         .as_array()
         .expect("retained offer candidates")
         .iter()
-        .flat_map(|candidate| candidate["destination_evidence"].as_array())
-        .flat_map(|items| items.iter())
-        .find(|item| item["complete_route_topography"].is_object())
-        .expect("full retained destination profile");
-    assert!(retained_evidence["complete_route_topography"]["evidence_refs"].is_array());
+        .find(|candidate| candidate["access"]["full_access_topography"].is_object())
+        .expect("full retained access profile");
+    assert!(
+        retained_candidate["access"]["full_access_topography"]["estimated_moving_time"].is_object()
+    );
+    let retained_evidence = retained_candidate["destination_evidence"]
+        .as_array()
+        .expect("retained destination evidence")
+        .iter()
+        .find(|item| item["status"] == "available")
+        .expect("retained available destination evidence");
+    assert!(retained_evidence["complete_route_topography"].is_null());
 }
 
 #[test]
