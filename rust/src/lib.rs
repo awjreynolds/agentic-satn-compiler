@@ -12,8 +12,10 @@ pub mod topography;
 
 pub use compiler::{
     AccessObligation, AccountingSummary, Candidate, CommunityAccess, CommunityAccessBenefit,
-    CompileOptions, CompileReport, Connection, JourneyComparison, JourneyDestination, JourneyPath,
-    NetworkPlace, Operation, PreparedCompilation, ProgressEvent, RuralAccessCandidate,
+    CompileOptions, CompileReport, Connection, JourneyBatchEvaluation, JourneyBatchPair,
+    JourneyBatchPathSummary, JourneyBatchProgress, JourneyBatchSuccess, JourneyBatchSummary,
+    JourneyBatchTopographySummary, JourneyComparison, JourneyDestination, JourneyPairStatus,
+    JourneyPath, NetworkPlace, Operation, PreparedCompilation, ProgressEvent, RuralAccessCandidate,
     RuralAccessOffer, RuralAccessPlanner, SchoolContext, SourceCorridor, UnknownFact, compile,
     compile_with_progress, prepare_with_progress,
 };

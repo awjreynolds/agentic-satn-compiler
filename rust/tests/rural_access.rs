@@ -1,7 +1,7 @@
 use std::fs;
 
 use satn_rs::topography::TopographyAvailability;
-use satn_rs::{CompileOptions, compile, prepare_with_progress};
+use satn_rs::{CompileOptions, JourneyPairStatus, compile, prepare_with_progress};
 use serde_json::{Value, json};
 
 #[test]
@@ -897,6 +897,82 @@ fn complete_journey_comparison_reuses_selected_branch_and_direct_baseline() {
     assert_eq!(
         comparison.to_geojson()["features"][0]["geometry"]["type"],
         "LineString"
+    );
+
+    let batch = prepared.compare_all_journeys(&accepted, std::slice::from_ref(&alternative_access));
+    assert_eq!(batch.summary.origin_count, 2);
+    assert_eq!(batch.summary.destination_count, 1);
+    assert_eq!(batch.summary.pair_count, 2);
+    assert_eq!(batch.summary.success_count, 2);
+    assert_eq!(batch.summary.unsupported_count, 0);
+    assert_eq!(batch.summary.error_count, 0);
+    assert!(
+        batch
+            .summary
+            .pairs
+            .iter()
+            .all(|pair| pair.status == JourneyPairStatus::Success)
+    );
+    assert_eq!(batch.successes.len(), 2);
+    assert!(
+        batch
+            .successes
+            .iter()
+            .all(|success| success.comparison.destination.name == "Radstock")
+    );
+
+    let mut broken_alternative = alternative_access.clone();
+    broken_alternative.parent_community_id = Some("missing-parent".to_string());
+    let optional_failure_batch =
+        prepared.compare_all_journeys(&accepted, std::slice::from_ref(&broken_alternative));
+    let child_pair = optional_failure_batch
+        .summary
+        .pairs
+        .iter()
+        .find(|pair| pair.origin_id == selected_access.community_id)
+        .expect("selected child batch pair");
+    assert_eq!(child_pair.status, JourneyPairStatus::Success);
+    assert!(child_pair.selected.is_some());
+    assert!(child_pair.direct.is_some());
+    assert!(child_pair.retained_alternative.is_none());
+    assert!(child_pair.alternative_error.is_some());
+    let child_success = optional_failure_batch
+        .successes
+        .iter()
+        .find(|success| success.comparison.community_id == selected_access.community_id)
+        .expect("selected child batch success");
+    assert!(child_success.comparison.alternative_error.is_some());
+
+    let mut unsupported = selected_access.clone();
+    unsupported.community_id = "unsupported".to_string();
+    unsupported.name = "Unsupported".to_string();
+    unsupported.status = "network-gap".to_string();
+    unsupported.parent_community_id = None;
+    unsupported.attachment_node = None;
+    unsupported.attachment_point = None;
+    unsupported.path_edge_ids.clear();
+    let mut unsupported_inputs = accepted.clone();
+    unsupported_inputs.push(unsupported);
+    let unavailable_batch = prepared.compare_all_journeys(&unsupported_inputs, &[]);
+    assert_eq!(unavailable_batch.summary.unsupported_count, 1);
+    assert_eq!(unavailable_batch.summary.error_count, 0);
+    assert_eq!(
+        unavailable_batch.summary.pairs[2].status,
+        JourneyPairStatus::Unsupported
+    );
+
+    let mut invalid = selected_access.clone();
+    invalid.community_id = "invalid".to_string();
+    invalid.name = "Invalid".to_string();
+    invalid.parent_community_id = Some("missing-parent".to_string());
+    let mut invalid_inputs = accepted.clone();
+    invalid_inputs.push(invalid);
+    let invalid_batch = prepared.compare_all_journeys(&invalid_inputs, &[]);
+    assert_eq!(invalid_batch.summary.unsupported_count, 0);
+    assert_eq!(invalid_batch.summary.error_count, 1);
+    assert_eq!(
+        invalid_batch.summary.pairs[2].status,
+        JourneyPairStatus::Error
     );
 }
 
