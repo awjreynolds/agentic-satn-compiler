@@ -61,8 +61,12 @@ An urban network area with defined portals and sufficiently permeable low-traffi
 _Avoid_: single route, Community boundary, guaranteed LTN
 
 **Classified-Road Enclosure**:
-A complete planar area bounded by officially classified roads, proposed as a candidate neighbourhood for review. Its boundary does not establish low traffic, connected internal streets, safe crossings or an adopted scheme. An urban extent selects relevant enclosures without becoming part of their boundary; area is descriptive rather than a size requirement.
+A complete planar area bounded by officially classified roads. It can provide a Candidate Neighbourhood boundary, but does not establish low traffic, connected internal streets, safe crossings or an adopted scheme.
 _Avoid_: existing LTN, connected neighbourhood, size-qualified cell
+
+**Candidate Neighbourhood**:
+An area inside a sourced built-up extent with boundary frontages on at least two distinct officially classified roads. The built-up edge may complete the remaining boundary. Separate segments of the same road do not count as distinct roads. It identifies an area for considering the removal of through motor traffic between surrounding roads, without asserting existing restrictions, internal connectivity or safe crossings. Area is descriptive, not a size requirement.
+_Avoid_: existing LTN, adopted traffic restriction, size-qualified cell
 
 **Candidate Low-Traffic Area**:
 A proposed Low-Traffic Area inferred from a connected unclassified-street fabric enclosed by Urban Main-Road Spines and, where necessary, non-road settlement edges. Existing through traffic creates an intervention need rather than turning an internal street into a spine, and the area does not claim that low-traffic conditions already exist.

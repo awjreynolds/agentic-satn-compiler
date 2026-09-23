@@ -937,6 +937,13 @@ fn baseline_features(report: &CompileReport) -> Vec<MapFeature> {
                 "source_effective_dates": candidate.source_effective_dates,
                 "source_licences": candidate.source_licences,
                 "source_classifications": candidate.source_classifications,
+                "classified_road_frontages": candidate.classified_road_frontages,
+                "urban_edge_closes_boundary": candidate.urban_edge_closes_boundary,
+                "urban_extent_source_dataset_id": candidate.urban_extent_source_dataset_id,
+                "urban_extent_source_effective_date": candidate.urban_extent_source_effective_date,
+                "urban_extent_source_licence": candidate.urban_extent_source_licence,
+                "urban_extent_source_url": candidate.urban_extent_source_url,
+                "urban_extent_source_attribution": candidate.urban_extent_source_attribution,
                 "interpretation": "Candidate enclosure; it does not establish existing low-traffic conditions, safe crossings, or legal access.",
             }),
         });
