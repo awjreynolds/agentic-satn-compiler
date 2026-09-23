@@ -2197,13 +2197,12 @@ impl<'a> RuralAccessPlanner<'a> {
                     route,
                     target,
                 };
-                let mut planned = self.plan_candidate(
+                let planned = self.plan_candidate(
                     &alternate,
                     &pending.place,
                     "least-climbing-detour",
                     "Best generated edge-exclusion detour by measured full-journey elevation variation; the shortest baseline is reported separately.",
                 );
-                planned.destination_evidence = self.destination_evidence(&alternate);
                 if planned
                     .access
                     .full_access_topography
@@ -2213,10 +2212,10 @@ impl<'a> RuralAccessPlanner<'a> {
                             && profile.cumulative_elevation_variation_m.is_some()
                     })
                 {
-                    comfort_candidates.push(planned);
+                    comfort_candidates.push((alternate, planned));
                 }
             }
-            comfort_candidates.sort_by(|left, right| {
+            comfort_candidates.sort_by(|(_, left), (_, right)| {
                 let left_profile = left.access.full_access_topography.as_ref();
                 let right_profile = right.access.full_access_topography.as_ref();
                 let left_variation = left_profile
@@ -2239,8 +2238,11 @@ impl<'a> RuralAccessPlanner<'a> {
                     })
                     .then_with(|| left.access.path_edge_ids.cmp(&right.access.path_edge_ids))
             });
-            if let Some(best_comfort) = comfort_candidates.into_iter().next() {
-                let mut best_comfort = best_comfort;
+            if let Some((best_comfort_frontier, mut best_comfort)) =
+                comfort_candidates.into_iter().next()
+            {
+                best_comfort.destination_evidence =
+                    self.destination_evidence(&best_comfort_frontier);
                 offered_paths.insert(best_comfort.access.path_edge_ids.clone());
                 best_comfort.id = format!("rural:{}:comfort", shortest.community_id);
                 candidates.push(best_comfort);
