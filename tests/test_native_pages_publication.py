@@ -774,6 +774,14 @@ def test_native_map_labels_serialized_urban_entry_without_spine_claim(
             )
 
             def click_feature(layer: str) -> None:
+                page.wait_for_function(
+                    """layer => {
+                      const map = window.SATN_NATIVE_MAP;
+                    return map && !map.isMoving() &&
+                        map.queryRenderedFeatures({layers: [layer]}).length > 0;
+                    }""",
+                    arg=layer,
+                )
                 point = page.evaluate(
                     """layer => {
                       const map = window.SATN_NATIVE_MAP;
@@ -790,6 +798,9 @@ def test_native_map_labels_serialized_urban_entry_without_spine_claim(
                             ]
                           : feature.geometry.coordinates[0];
                       const screen = map.project(coordinates);
+                      if (!map.queryRenderedFeatures(
+                        [screen.x, screen.y], {layers: [layer]}
+                      ).length) return null;
                       const rect = map.getContainer().getBoundingClientRect();
                       return {x: screen.x + rect.left, y: screen.y + rect.top};
                     }""",
