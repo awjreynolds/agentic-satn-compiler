@@ -18,6 +18,8 @@ pub(crate) struct AreaConfig {
 pub(crate) struct SourceConfig {
     pub snapshot_dir: PathBuf,
     pub snapshot_id: String,
+    #[serde(default)]
+    pub candidate_built_up_areas: Option<PathBuf>,
     #[serde(default = "default_community_place_types")]
     pub community_place_types: Vec<String>,
     #[serde(default = "default_urban_scope_buffer_km")]
@@ -104,6 +106,19 @@ impl AreaConfig {
                 .join(&self.source.snapshot_dir)
         };
         snapshot_dir.join(&self.source.snapshot_id)
+    }
+
+    pub(crate) fn candidate_built_up_areas_path(&self, config_path: &Path) -> Option<PathBuf> {
+        self.source.candidate_built_up_areas.as_ref().map(|path| {
+            if path.is_absolute() {
+                path.clone()
+            } else {
+                config_path
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .join(path)
+            }
+        })
     }
 
     pub(crate) fn elevation_path(
