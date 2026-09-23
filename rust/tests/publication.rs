@@ -207,6 +207,19 @@ fn publishes_compact_decision_map_with_real_departure_sections() {
     assert!(html.contains("New link distance"));
     assert!(html.contains("Complete access distance"));
     assert!(html.contains("native-feature-details"));
+    assert!(html.contains("Strategic source baseline · solid"));
+    assert!(html.contains("Selected alignment · solid, circle"));
+    assert!(html.contains("Provisional alignment · dashed, triangle"));
+    assert!(html.contains("Unresolved decision · dotted"));
+    assert!(html.contains("A-road departure · prominent long dash"));
+    assert!(html.contains("Source departure · dash-dot, dark edge"));
+    assert!(html.contains("Network places · square"));
+    assert!(html.contains("Schools · diamond"));
+    assert!(html.contains("Community access · dash-dot, pentagon; X for gaps"));
+    assert!(html.contains("Access obligations and gaps · hexagon"));
+    assert!(html.contains("Study area boundary · pale fill and thin neutral edge"));
+    assert!(html.contains("native-marker-access-obligation"));
+    assert!(html.contains("native-highlight-line-casing"));
     assert!(!html.contains("data-native-decision-kind"));
     assert!(!html.contains("data-native-departure=\""));
     assert!(html.contains("Fixture attribution"));
@@ -336,6 +349,10 @@ fn adds_sourced_bus_context_to_an_existing_publication_without_rewriting_decisio
     let viewer = fs::read_to_string(root.join("bus-context.js")).expect("bus context viewer");
     assert!(viewer.contains("service_date"));
     assert!(viewer.contains("textContent"));
+    assert!(viewer.contains("long-dashed line"));
+    assert!(viewer.contains("star marker"));
+    assert!(viewer.contains("native-bus-interchange-star"));
+    assert!(viewer.contains("type: 'symbol'"));
     assert!(!viewer.contains("innerHTML"));
 }
 
