@@ -3,9 +3,10 @@ use std::path::PathBuf;
 use clap::Parser;
 use satn_rs::judgment::{CodexConfig, TypeSafeConfig};
 use satn_rs::midend::{MidendConfig, MidendProgress, ProviderSet, replay, run_prepared};
+use satn_rs::officer::{apply_officer_decisions, load_officer_decisions};
 use satn_rs::{
     CompileOptions, ProgressEvent, add_bus_context, compile_with_progress, load_retained_report,
-    prepare_with_progress, publish_decision_map,
+    prepare_with_progress, publish_decision_map, publish_officer_scenario_map,
 };
 
 #[derive(Debug, Parser)]
@@ -36,6 +37,9 @@ struct Cli {
     /// Add a GeoJSON bus-context sidecar to an existing native publication.
     #[arg(long)]
     bus_context: Option<PathBuf>,
+    /// Replay an attributable officer decision ledger into a separate scenario.
+    #[arg(long)]
+    officer_decisions: Option<PathBuf>,
 }
 
 fn main() {
@@ -56,6 +60,7 @@ fn run() -> satn_rs::Result<()> {
             || cli.allow_provisional
             || cli.specialist_model.is_some()
             || cli.specialist_reasoning_effort.is_some()
+            || cli.officer_decisions.is_some()
         {
             return Err(satn_rs::SatnError::InvalidInput(
                 "--bus-context operates on an existing publication and cannot be combined with planning options"
@@ -66,11 +71,6 @@ fn run() -> satn_rs::Result<()> {
         println!("{}", serde_json::to_string(&publication)?);
         return Ok(());
     }
-    let config = cli.config.as_ref().ok_or_else(|| {
-        satn_rs::SatnError::InvalidInput(
-            "--config is required unless --bus-context updates an existing publication".to_string(),
-        )
-    })?;
     if !matches!(
         cli.mode.as_str(),
         "mechanical" | "deterministic" | "live" | "replay"
@@ -79,6 +79,11 @@ fn run() -> satn_rs::Result<()> {
             "unsupported mode {}",
             cli.mode
         )));
+    }
+    if cli.officer_decisions.is_some() && cli.mode != "replay" {
+        return Err(satn_rs::SatnError::InvalidInput(
+            "--officer-decisions is supported only with --mode replay".to_string(),
+        ));
     }
     if cli.specialist_model.is_some() != cli.specialist_reasoning_effort.is_some() {
         return Err(satn_rs::SatnError::InvalidInput(
@@ -113,19 +118,40 @@ fn run() -> satn_rs::Result<()> {
                 event.elapsed_ms,
             );
         };
-        let result = replay(&history, &cli.branch, &mut emit)
+        let baseline = replay(&history, &cli.branch, &mut emit)
             .map_err(|error| satn_rs::SatnError::InvalidInput(error.to_string()))?;
+        let report = load_retained_report(&history)?;
+        let (result, officer_scenario) = match &cli.officer_decisions {
+            Some(path) => {
+                let ledger = load_officer_decisions(path)?;
+                let (effective, scenario) = apply_officer_decisions(&report, &baseline, &ledger)?;
+                (effective, Some(scenario))
+            }
+            None => (baseline, None),
+        };
         std::fs::create_dir_all(&cli.output)?;
         std::fs::write(
             cli.output.join("planning.json"),
             serde_json::to_string_pretty(&result)?,
         )?;
-        let report = load_retained_report(&history)?;
-        publish_decision_map(&cli.output, &report, &result)?;
+        if let Some(scenario) = officer_scenario {
+            std::fs::write(
+                cli.output.join("officer-scenario.json"),
+                serde_json::to_string_pretty(&scenario)?,
+            )?;
+            publish_officer_scenario_map(&cli.output, &report, &result, &scenario)?;
+        } else {
+            publish_decision_map(&cli.output, &report, &result)?;
+        }
         println!("{}", serde_json::to_string(&result)?);
         return Ok(());
     }
     if cli.mode == "live" {
+        let config = cli.config.as_ref().ok_or_else(|| {
+            satn_rs::SatnError::InvalidInput(
+                "--config is required for live compilation".to_string(),
+            )
+        })?;
         let prepared = prepare_with_progress(
             config,
             CompileOptions {
@@ -189,6 +215,11 @@ fn run() -> satn_rs::Result<()> {
         println!("{}", serde_json::to_string(&result)?);
         return Ok(());
     }
+    let config = cli.config.as_ref().ok_or_else(|| {
+        satn_rs::SatnError::InvalidInput(
+            "--config is required for mechanical compilation".to_string(),
+        )
+    })?;
     let report = compile_with_progress(
         config,
         &cli.output,

@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 use crate::compiler::{Candidate, CommunityAccess, CompileReport};
 use crate::error::{Result, SatnError};
 use crate::midend::{MidendRun, TypedOperation};
+use crate::officer::{OfficerOutcomeStatus, OfficerScenario};
 
 const MAPLIBRE_JS: &[u8] = include_bytes!("../../src/satn/assets/maplibre-gl.js");
 const MAPLIBRE_CSS: &[u8] = include_bytes!("../../src/satn/assets/maplibre-gl.css");
@@ -106,6 +107,8 @@ struct CompactDecisionMap {
     files: DecisionMapFiles,
     decisions: Vec<PublicDecision>,
     departures: Vec<PublicDeparture>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    officer_scenario: Option<PublicOfficerScenario>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -152,6 +155,35 @@ struct PublicPublicationManifest {
     disclaimer: &'static str,
     counts: DecisionMapCounts,
     files: DecisionMapFiles,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    officer_scenario: Option<PublicOfficerScenario>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PublicOfficerScenario {
+    label: &'static str,
+    authority: String,
+    base_id: String,
+    baseline_branch: String,
+    agreement_count: usize,
+    divergence_count: usize,
+    unavailable_count: usize,
+    outcomes: Vec<PublicOfficerOutcome>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PublicOfficerOutcome {
+    decision_id: String,
+    connection_id: String,
+    baseline_candidate_id: Option<String>,
+    officer_candidate_id: Option<String>,
+    effective_candidate_id: Option<String>,
+    status: &'static str,
+    source_refs: Vec<String>,
+    attribution: String,
+    rationale: String,
+    baseline_decision_id: Option<String>,
+    baseline_decision_class: Option<String>,
 }
 
 /// Publish the public decision projection for a live or replayed run.
@@ -162,6 +194,30 @@ pub fn publish_decision_map(
     output_dir: &Path,
     report: &CompileReport,
     run: &MidendRun,
+) -> Result<DecisionMapPublication> {
+    publish_decision_map_inner(output_dir, report, run, None)
+}
+
+/// Publish the effective network together with its separate illustrative officer scenario.
+pub fn publish_officer_scenario_map(
+    output_dir: &Path,
+    report: &CompileReport,
+    effective_run: &MidendRun,
+    scenario: &OfficerScenario,
+) -> Result<DecisionMapPublication> {
+    if scenario.base_id != effective_run.base_id {
+        return Err(SatnError::InvalidInput(
+            "officer scenario base_id must match the effective run".to_string(),
+        ));
+    }
+    publish_decision_map_inner(output_dir, report, effective_run, Some(scenario))
+}
+
+fn publish_decision_map_inner(
+    output_dir: &Path,
+    report: &CompileReport,
+    run: &MidendRun,
+    officer_scenario: Option<&OfficerScenario>,
 ) -> Result<DecisionMapPublication> {
     fs::create_dir_all(output_dir)?;
     write_viewer_assets(output_dir)?;
@@ -458,6 +514,18 @@ pub fn publish_decision_map(
         }
     }
 
+    let public_officer_scenario = officer_scenario.map(public_officer_scenario);
+    if let Some(scenario) = officer_scenario {
+        add_officer_scenario_features(report, scenario, &mut features);
+        for feature in features.iter_mut().filter(|feature| {
+            feature.kind == "community-access" || feature.properties.get("community_id").is_some()
+        }) {
+            if let Some(properties) = feature.properties.as_object_mut() {
+                properties.insert("scenario_baseline_context".to_string(), json!(true));
+            }
+        }
+    }
+
     for departure in &departures {
         if let Some(source) = report
             .source_inventory
@@ -557,6 +625,7 @@ pub fn publish_decision_map(
         files: files.clone(),
         decisions: decisions.clone(),
         departures: departures.clone(),
+        officer_scenario: public_officer_scenario.clone(),
     };
     fs::write(
         output_dir.join("decision-map.json"),
@@ -577,6 +646,7 @@ pub fn publish_decision_map(
             &counts,
             &accounting_status,
             &files,
+            public_officer_scenario.as_ref(),
         ),
     )?;
     let legacy_html = output_dir.join("decision-map.html");
@@ -599,6 +669,7 @@ pub fn publish_decision_map(
         disclaimer: "Experimental SATN POC — not an adopted plan.",
         counts: counts.clone(),
         files: files.clone(),
+        officer_scenario: public_officer_scenario,
     };
     fs::write(
         output_dir.join("publication.json"),
@@ -891,6 +962,161 @@ fn operation_connection_id(operation: &TypedOperation) -> &str {
         | TypedOperation::Unresolved { connection_id, .. } => connection_id,
         TypedOperation::SelectCommunityAccess { community_id, .. }
         | TypedOperation::UnresolvedCommunityAccess { community_id, .. } => community_id,
+    }
+}
+
+fn public_officer_scenario(scenario: &OfficerScenario) -> PublicOfficerScenario {
+    let outcomes = scenario
+        .outcomes
+        .iter()
+        .map(|outcome| PublicOfficerOutcome {
+            decision_id: outcome.decision_id.clone(),
+            connection_id: outcome.connection_id.clone(),
+            baseline_candidate_id: outcome.baseline_candidate_id.clone(),
+            officer_candidate_id: outcome.officer_candidate_id.clone(),
+            effective_candidate_id: outcome.effective_candidate_id.clone(),
+            status: officer_status_label(outcome.status),
+            source_refs: outcome.source_refs.clone(),
+            attribution: outcome.attribution.clone(),
+            rationale: outcome.rationale.clone(),
+            baseline_decision_id: outcome.baseline_decision_id.clone(),
+            baseline_decision_class: outcome.baseline_decision_class.clone(),
+        })
+        .collect::<Vec<_>>();
+    PublicOfficerScenario {
+        label: "Illustrative officer-led scenario",
+        authority: scenario.authority.clone(),
+        base_id: scenario.base_id.clone(),
+        baseline_branch: scenario.baseline_branch.clone(),
+        agreement_count: scenario
+            .outcomes
+            .iter()
+            .filter(|outcome| outcome.status == OfficerOutcomeStatus::Agreement)
+            .count(),
+        divergence_count: scenario
+            .outcomes
+            .iter()
+            .filter(|outcome| outcome.status == OfficerOutcomeStatus::Divergence)
+            .count(),
+        unavailable_count: scenario
+            .outcomes
+            .iter()
+            .filter(|outcome| outcome.status == OfficerOutcomeStatus::Unavailable)
+            .count(),
+        outcomes,
+    }
+}
+
+fn officer_status_label(status: OfficerOutcomeStatus) -> &'static str {
+    match status {
+        OfficerOutcomeStatus::Agreement => "agreement",
+        OfficerOutcomeStatus::Divergence => "divergence",
+        OfficerOutcomeStatus::Unavailable => "unavailable",
+    }
+}
+
+fn add_officer_scenario_features(
+    report: &CompileReport,
+    scenario: &OfficerScenario,
+    features: &mut Vec<MapFeature>,
+) {
+    for outcome in &scenario.outcomes {
+        let status = officer_status_label(outcome.status);
+        if let Some(feature) = features.iter_mut().find(|feature| {
+            matches!(
+                feature.kind.as_str(),
+                "selected-alignment" | "provisional-alignment" | "unresolved-decision"
+            ) && feature.properties["connection_id"] == outcome.connection_id
+                && (outcome.effective_candidate_id.is_none()
+                    || feature.properties["candidate_id"]
+                        == outcome
+                            .effective_candidate_id
+                            .as_deref()
+                            .unwrap_or_default()
+                    || feature.properties["kind"] == "unresolved-decision")
+        }) {
+            if let Some(properties) = feature.properties.as_object_mut() {
+                properties.insert("scenario_status".to_string(), json!(status));
+                properties.insert(
+                    "scenario_authority".to_string(),
+                    json!(if outcome.status == OfficerOutcomeStatus::Unavailable {
+                        "Officer decision unavailable"
+                    } else {
+                        "Illustrative officer-led scenario"
+                    }),
+                );
+                properties.insert(
+                    "baseline_candidate_id".to_string(),
+                    json!(outcome.baseline_candidate_id),
+                );
+                properties.insert(
+                    "officer_candidate_id".to_string(),
+                    json!(outcome.officer_candidate_id),
+                );
+                properties.insert(
+                    "effective_candidate_id".to_string(),
+                    json!(outcome.effective_candidate_id),
+                );
+                properties.insert(
+                    "baseline_decision_id".to_string(),
+                    json!(outcome.baseline_decision_id),
+                );
+                properties.insert(
+                    "baseline_decision_class".to_string(),
+                    json!(outcome.baseline_decision_class),
+                );
+                properties.insert(
+                    "officer_source_refs".to_string(),
+                    json!(outcome.source_refs),
+                );
+                properties.insert(
+                    "officer_attribution".to_string(),
+                    json!(outcome.attribution),
+                );
+                properties.insert("officer_rationale".to_string(), json!(outcome.rationale));
+            }
+        }
+
+        if outcome.status != OfficerOutcomeStatus::Divergence {
+            continue;
+        }
+        let Some(candidate) = outcome.baseline_candidate_id.as_deref().and_then(|id| {
+            report.candidates.iter().find(|candidate| {
+                candidate.id == id && candidate.connection_id == outcome.connection_id
+            })
+        }) else {
+            continue;
+        };
+        if candidate.geometry.len() < 2 {
+            continue;
+        }
+        let (connection_label, road_classes) = connection_details(report, &outcome.connection_id);
+        features.push(MapFeature {
+            kind: "officer-baseline-comparison".to_string(),
+            geometry: Some(MapGeometry::Line(candidate.geometry.clone())),
+            properties: json!({
+                "kind": "officer-baseline-comparison",
+                "label": "Original baseline selection (comparison only)",
+                "decision_id": outcome.baseline_decision_id,
+                "connection_id": outcome.connection_id,
+                "connection_label": connection_label,
+                "road_classes": road_classes,
+                "candidate_id": candidate.id,
+                "baseline_candidate_id": outcome.baseline_candidate_id,
+                "officer_candidate_id": outcome.officer_candidate_id,
+                "effective_candidate_id": outcome.effective_candidate_id,
+                "decision_class": outcome.baseline_decision_class,
+                "baseline_decision_id": outcome.baseline_decision_id,
+                "baseline_decision_class": outcome.baseline_decision_class,
+                "scenario_status": "divergence",
+                "scenario_authority": "Original baseline decision",
+                "officer_source_refs": outcome.source_refs,
+                "officer_attribution": outcome.attribution,
+                "officer_rationale": outcome.rationale,
+                "branch": scenario.baseline_branch,
+                "base_id": scenario.base_id,
+            }),
+        });
     }
 }
 
@@ -1408,12 +1634,13 @@ fn feature_json(feature: &MapFeature) -> Value {
 fn render_interactive_html(
     report: &CompileReport,
     run: &MidendRun,
-    _features: &[MapFeature],
+    features: &[MapFeature],
     _decisions: &[PublicDecision],
     _departures: &[PublicDeparture],
     counts: &DecisionMapCounts,
     accounting_status: &str,
     files: &DecisionMapFiles,
+    officer_scenario: Option<&PublicOfficerScenario>,
 ) -> String {
     let title = html_escape(&report.title);
     let branch = html_escape(&run.branch);
@@ -1425,17 +1652,61 @@ fn render_interactive_html(
     });
     let attribution = html_escape(&report.attribution);
     let source_attributions = html_escape(&report.source_attributions.join("; "));
+    let (community_access_label, community_access_help, network_description) = if officer_scenario
+        .is_some()
+    {
+        (
+            "Baseline community access (not re-evaluated)",
+            "Retained mechanical baseline context. These paths were not re-evaluated against the illustrative officer-led choices and do not establish connection to the effective scenario network.",
+            "The strategic active travel network shows effective scenario selections. Any baseline choice retained for an unavailable officer decision is identified as not officer-approved. A-road reference corridors remain in the source baseline. Community access is retained baseline context and was not re-evaluated against officer choices.",
+        )
+    } else {
+        (
+            "Community Connections",
+            "Community Connections show recorded access from a community to the strategic network. A cross marks a missing connection where no connected path is evidenced.",
+            "The Strategic active travel network shows selected and provisional route lines. Community Connections, source baseline and other evidence layers are optional overlays. Provision, safety, access and adoption remain explicit unknowns where evidence is absent.",
+        )
+    };
     let candidate_neighbourhood_layer_control = if report.candidate_neighbourhoods.is_empty() {
         String::new()
     } else {
         "<li class=\"layer-control-row\"><label><input type=\"checkbox\" data-layer-toggle=\"candidate-neighbourhood\"> <span class=\"swatch candidate-key\"></span>Candidate neighbourhoods <span data-layer-count></span></label><details class=\"layer-help\" name=\"native-layer-help\"><summary aria-label=\"About candidate neighbourhoods\" aria-describedby=\"layer-help-candidate-neighbourhood\">ⓘ</summary></details><span id=\"layer-help-candidate-neighbourhood\" class=\"layer-help-popup\" role=\"tooltip\">Candidate neighbourhoods are generated planning areas based on available evidence; they do not confirm a low-traffic area.</span></li>".to_string()
     };
+    let officer_comparison_layer_control = if features
+        .iter()
+        .any(|feature| feature.kind == "officer-baseline-comparison")
+    {
+        "<li class=\"layer-control-row\"><label><input type=\"checkbox\" data-layer-toggle=\"officer-baseline-comparison\"> <span class=\"swatch officer-baseline-key\" aria-hidden=\"true\"></span>Original baseline selection (comparison only) <span data-layer-count></span></label><details class=\"layer-help\" name=\"native-layer-help\"><summary aria-label=\"About the original baseline comparison\" aria-describedby=\"layer-help-officer-baseline\">ⓘ</summary></details><span id=\"layer-help-officer-baseline\" class=\"layer-help-popup\" role=\"tooltip\">Shows the original graph-bound baseline candidate only where the illustrative officer-led choice diverges. It is optional comparison context and is not part of the effective strategic network.</span></li>"
+            .to_string()
+    } else {
+        String::new()
+    };
+    let officer_scenario_attribute = if officer_scenario.is_some() {
+        " data-native-officer-scenario=\"illustrative\""
+    } else {
+        ""
+    };
+    let officer_scenario_banner = officer_scenario
+        .map(officer_scenario_banner)
+        .unwrap_or_default();
+    let officer_findings = officer_scenario.map(officer_findings).unwrap_or_default();
     let template = include_str!("native_map_template.html");
     template
         .replace(
             "__CANDIDATE_NEIGHBOURHOOD_LAYER_CONTROL__",
             &candidate_neighbourhood_layer_control,
         )
+        .replace(
+            "__OFFICER_COMPARISON_CONTROL__",
+            &officer_comparison_layer_control,
+        )
+        .replace("__OFFICER_SCENARIO_ATTRIBUTE__", officer_scenario_attribute)
+        .replace("__OFFICER_SCENARIO_BANNER__", &officer_scenario_banner)
+        .replace("__OFFICER_FINDINGS__", &officer_findings)
+        .replace("__NETWORK_DESCRIPTION__", network_description)
+        .replace("__COMMUNITY_ACCESS_LABEL__", community_access_label)
+        .replace("__COMMUNITY_ACCESS_HELP_LABEL__", community_access_label)
+        .replace("__COMMUNITY_ACCESS_HELP__", community_access_help)
         .replace("__TITLE__", &title)
         .replace("__DEPLOYMENT__", &deployment_id)
         .replace("__BRANCH__", &branch)
@@ -1464,6 +1735,40 @@ fn render_interactive_html(
         .replace("__COMMUNITY_ACCESS__", &counts.community_access.to_string())
         .replace("__COMMUNITY_GAPS__", &counts.community_gaps.to_string())
         .replace("__GEOJSON__", files.geojson)
+}
+
+fn officer_scenario_banner(scenario: &PublicOfficerScenario) -> String {
+    format!(
+        "<section class=\"officer-scenario-banner\" aria-label=\"Illustrative officer scenario notice\"><strong>Illustrative officer-led scenario</strong><p>Scenario authority: {}</p><p>This is an illustrative scenario, not an adopted plan or an actual named-officer-issued decision.</p><p>The decision class describes the mechanical or classifier process; scenario authority is shown separately.</p></section>",
+        html_escape(&scenario.authority)
+    )
+}
+
+fn officer_findings(scenario: &PublicOfficerScenario) -> String {
+    let unavailable = scenario
+        .outcomes
+        .iter()
+        .filter(|outcome| outcome.status == "unavailable")
+        .collect::<Vec<_>>();
+    if unavailable.is_empty() {
+        return String::new();
+    }
+    let findings = unavailable
+        .iter()
+        .map(|outcome| {
+            let source_refs = outcome.source_refs.join("; ");
+            format!(
+                "<li><strong>Officer decision unavailable</strong> for {}. The baseline operation remains as context and is not officer-approved. Attribution: {}. Rationale: {}. Source references: {}.</li>",
+                html_escape(&outcome.connection_id),
+                html_escape(&outcome.attribution),
+                html_escape(&outcome.rationale),
+                html_escape(&source_refs),
+            )
+        })
+        .collect::<String>();
+    format!(
+        "<section class=\"officer-findings\" aria-label=\"Unavailable officer decisions\"><h2>Unavailable officer decisions</h2><ul>{findings}</ul></section>"
+    )
 }
 
 fn html_escape(value: &str) -> String {

@@ -2460,6 +2460,22 @@ fn validate_candidate<'a>(
     Ok(candidate)
 }
 
+pub(crate) fn validate_officer_candidate<'a>(
+    report: &'a CompileReport,
+    connection_id: &str,
+    candidate_id: &str,
+) -> Result<&'a Candidate, MidendError> {
+    let task = DecisionTask {
+        task_id: format!("officer-ledger:{connection_id}"),
+        base_id: String::new(),
+        connection_id: connection_id.to_string(),
+        question_id: String::new(),
+        state: Value::Null,
+        options: BTreeMap::new(),
+    };
+    validate_candidate(report, &task, candidate_id)
+}
+
 fn validate_operation(
     report: &CompileReport,
     operation: &TypedOperation,

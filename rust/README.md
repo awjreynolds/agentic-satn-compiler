@@ -100,3 +100,37 @@ Replay reads those retained operations without launching either provider:
 
 `--allow-provisional` is required for a specialist proposal to select an
 alignment; otherwise the typed result remains unresolved.
+
+For an offline illustrative officer scenario, replay the same retained history
+with a JSON ledger. Each decision requires a stable `decision_id`, exact
+`connection_id`, `source_refs`, `attribution` and `rationale`; `candidate_id`
+may be omitted to record an unbound unavailable decision:
+
+```json
+{
+  "decisions": [{
+    "decision_id": "officer-example:decision-1",
+    "connection_id": "connection:alpha:beta",
+    "candidate_id": "candidate:alternative",
+    "source_refs": ["source:committee-note-1"],
+    "attribution": "Illustrative officer decision",
+    "rationale": "Prefer this admitted alternative for the stated objective."
+  }]
+}
+```
+
+```sh
+./rust/target/release/satn-rs \
+  --output build/rust-banes-officer-example \
+  --history build/rust-banes-history \
+  --mode replay \
+  --officer-decisions build/officer-decisions.json
+```
+
+The candidate must already be admitted on that exact connection. A missing or
+unbound target remains visible as unavailable; a candidate belonging to another
+connection is rejected. `planning.json` contains the effective replay and
+`officer-scenario.json` records the officer-example authority beside the full
+baseline operation and comparison outcome. The replay does not change retained
+history or call a model; `decision_class: "mechanical"` describes application
+of the exact binding, while officer-example authority remains separate.

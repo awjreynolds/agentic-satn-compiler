@@ -2,11 +2,12 @@ use std::fs;
 use std::process::Command;
 
 use satn_rs::midend::{MidendRun, PlanningBase, TypedOperation};
+use satn_rs::officer::{OfficerOutcome, OfficerOutcomeStatus, OfficerScenario};
 use satn_rs::{
     AccessObligation, AccountingSummary, Candidate, CandidateNeighbourhood,
     CandidateNeighbourhoodGeometry, CommunityAccess, CompileReport, Connection, NetworkPlace,
     SchoolContext, SourceCorridor, UnknownFact, UrbanEntry, add_bus_context, load_retained_report,
-    publish_decision_map,
+    publish_decision_map, publish_officer_scenario_map,
 };
 use serde_json::{Value, json};
 
@@ -239,6 +240,174 @@ fn publishes_compact_decision_map_with_real_departure_sections() {
     assert!(root.join("assets/maplibre-gl.js").is_file());
     assert!(root.join("assets/maplibre-gl.css").is_file());
     assert!(root.join("assets/MAPLIBRE-LICENSE.txt").is_file());
+}
+
+#[test]
+fn publishes_illustrative_officer_scenario_with_effective_route_and_optional_baseline() {
+    let root = tempfile_root("satn-rs-officer-scenario");
+    let mut report = report_fixture();
+    report
+        .candidates
+        .iter_mut()
+        .find(|candidate| candidate.id == "candidate:strategic")
+        .expect("strategic candidate")
+        .geometry = vec![[0.0, 1.0], [1.0, 1.0]];
+    let baseline_selection = TypedOperation::SelectAlignment {
+        id: "baseline:selected".to_string(),
+        task_id: "task:selected".to_string(),
+        attempt_id: "attempt:selected".to_string(),
+        connection_id: "connection:selected".to_string(),
+        candidate_id: "candidate:selected".to_string(),
+        decision_class: "classifier".to_string(),
+        provisional: false,
+        reason: None,
+        uncertainties: Vec::new(),
+    };
+    let unavailable_baseline = TypedOperation::SelectAlignment {
+        id: "baseline:unavailable".to_string(),
+        task_id: "task:provisional".to_string(),
+        attempt_id: "attempt:provisional".to_string(),
+        connection_id: "connection:provisional".to_string(),
+        candidate_id: "candidate:provisional".to_string(),
+        decision_class: "agent".to_string(),
+        provisional: false,
+        reason: None,
+        uncertainties: Vec::new(),
+    };
+    let run = MidendRun {
+        branch: "illustrative-officer-led".to_string(),
+        base_id: "base:fixture:snapshot".to_string(),
+        status: "replayed".to_string(),
+        task_ids: Vec::new(),
+        operations: vec![
+            TypedOperation::SelectAlignment {
+                id: "scenario:selected".to_string(),
+                task_id: "task:selected".to_string(),
+                attempt_id: "attempt:officer".to_string(),
+                connection_id: "connection:selected".to_string(),
+                candidate_id: "candidate:strategic".to_string(),
+                decision_class: "mechanical".to_string(),
+                provisional: false,
+                reason: Some("Illustrative officer-led choice.".to_string()),
+                uncertainties: Vec::new(),
+            },
+            unavailable_baseline.clone(),
+        ],
+        community_access: Vec::new(),
+    };
+    let scenario = OfficerScenario {
+        authority: "officer-example".to_string(),
+        base_id: "base:fixture:snapshot".to_string(),
+        baseline_branch: "review-branch".to_string(),
+        outcomes: vec![
+            OfficerOutcome {
+                decision_id: "scenario:selected".to_string(),
+                connection_id: "connection:selected".to_string(),
+                baseline_candidate_id: Some("candidate:selected".to_string()),
+                officer_candidate_id: Some("candidate:strategic".to_string()),
+                effective_candidate_id: Some("candidate:strategic".to_string()),
+                status: OfficerOutcomeStatus::Divergence,
+                source_refs: vec!["ATM-FID-42".to_string()],
+                attribution: "Fixture Council source attribution".to_string(),
+                rationale: "The illustrative officer chooses the strategic candidate.".to_string(),
+                baseline_decision_id: Some("baseline:selected".to_string()),
+                baseline_decision_class: Some("classifier".to_string()),
+                baseline_operation: Some(baseline_selection),
+            },
+            OfficerOutcome {
+                decision_id: "scenario:unavailable".to_string(),
+                connection_id: "connection:provisional".to_string(),
+                baseline_candidate_id: Some("candidate:provisional".to_string()),
+                officer_candidate_id: None,
+                effective_candidate_id: Some("candidate:provisional".to_string()),
+                status: OfficerOutcomeStatus::Unavailable,
+                source_refs: vec!["ATM-FID-43".to_string()],
+                attribution: "Fixture Council source attribution".to_string(),
+                rationale: "No officer decision was supplied for this connection.".to_string(),
+                baseline_decision_id: Some("baseline:unavailable".to_string()),
+                baseline_decision_class: Some("agent".to_string()),
+                baseline_operation: Some(unavailable_baseline),
+            },
+        ],
+    };
+
+    publish_officer_scenario_map(&root, &report, &run, &scenario)
+        .expect("publish illustrative officer scenario");
+    let geojson: Value = serde_json::from_str(
+        &fs::read_to_string(root.join("decision-map.geojson")).expect("scenario GeoJSON"),
+    )
+    .expect("valid scenario GeoJSON");
+    let features = geojson["features"].as_array().expect("features");
+    let effective = features
+        .iter()
+        .find(|feature| {
+            feature["properties"]["kind"] == "selected-alignment"
+                && feature["properties"]["candidate_id"] == "candidate:strategic"
+        })
+        .expect("effective strategic candidate");
+    assert_eq!(effective["properties"]["scenario_status"], "divergence");
+    assert_eq!(effective["properties"]["decision_class"], "mechanical");
+    assert_eq!(
+        effective["properties"]["scenario_authority"],
+        "Illustrative officer-led scenario"
+    );
+    assert_eq!(
+        effective["properties"]["officer_source_refs"][0],
+        "ATM-FID-42"
+    );
+    let comparison = features
+        .iter()
+        .find(|feature| feature["properties"]["kind"] == "officer-baseline-comparison")
+        .expect("diverged baseline comparison");
+    assert_eq!(
+        comparison["properties"]["baseline_candidate_id"],
+        "candidate:selected"
+    );
+    assert_eq!(
+        comparison["geometry"]["coordinates"][0],
+        serde_json::json!([0.0, 0.0])
+    );
+    assert!(features.iter().any(|feature| {
+        feature["properties"]["kind"] == "source-baseline"
+            && feature["properties"]["baseline_layer"] == "source-strategic-a-road"
+    }));
+    assert!(features.iter().any(|feature| {
+        feature["properties"]["kind"] == "community-access"
+            && feature["properties"]["scenario_baseline_context"] == true
+    }));
+    assert!(!features.iter().any(|feature| {
+        feature["properties"]["kind"] == "officer-baseline-comparison"
+            && feature["properties"]["connection_id"] == "connection:provisional"
+    }));
+
+    let details: Value = serde_json::from_str(
+        &fs::read_to_string(root.join("decision-map.json")).expect("scenario details"),
+    )
+    .expect("valid scenario details");
+    assert_eq!(details["officer_scenario"]["authority"], "officer-example");
+    assert_eq!(
+        details["officer_scenario"]["outcomes"][1]["status"],
+        "unavailable"
+    );
+    assert_eq!(
+        details["officer_scenario"]["outcomes"][1]["effective_candidate_id"],
+        "candidate:provisional"
+    );
+    assert!(
+        details["officer_scenario"]["outcomes"][0]
+            .get("baseline_operation")
+            .is_none()
+    );
+
+    let html = fs::read_to_string(root.join("index.html")).expect("scenario viewer");
+    assert!(html.contains("Illustrative officer-led scenario"));
+    assert!(html.contains("not officer-approved"));
+    assert!(html.contains("Baseline community access (not re-evaluated)"));
+    assert!(html.contains("not re-evaluated against officer choices"));
+    assert!(html.contains("ATM-FID-43"));
+    assert!(html.contains("data-layer-toggle=\"officer-baseline-comparison\""));
+    assert!(html.contains("aria-label=\"About the original baseline comparison\""));
+    assert!(html.contains("data-native-officer-scenario=\"illustrative\""));
 }
 
 #[test]
