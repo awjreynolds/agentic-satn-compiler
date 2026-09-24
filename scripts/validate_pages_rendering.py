@@ -557,12 +557,18 @@ def _inspect_native_agentic(
                   initiallyChecked[0] !== 'strategic-network') {
                 failures.push('Strategic active travel network is not the sole default layer');
               }
-              if (!defaultMain.length || defaultMain.some(feature => {
+              const isMainStrategicFeature = feature => {
                 const props = properties(feature);
-                return !['selected-alignment', 'provisional-alignment'].includes(props.kind) ||
-                  feature.geometry?.type !== 'LineString' ||
-                  Object.hasOwn(props, 'community_id');
-              })) {
+                const line = ['LineString', 'MultiLineString'].includes(feature.geometry?.type);
+                return line && (
+                  (['selected-alignment', 'provisional-alignment'].includes(props.kind) &&
+                    !Object.hasOwn(props, 'community_id')) ||
+                  (props.kind === 'source-baseline' &&
+                    props.baseline_layer === 'source-strategic-a-road')
+                );
+              };
+              if (!defaultMain.length ||
+                  defaultMain.some(feature => !isMainStrategicFeature(feature))) {
                 failures.push('default Strategic active travel network is invalid');
               }
               const waitForIdleAfter = change => new Promise(resolve => {
