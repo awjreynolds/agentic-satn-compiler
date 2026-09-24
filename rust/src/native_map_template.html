@@ -21,6 +21,7 @@ button:focus-visible, input:focus-visible { outline: 3px solid #2563eb; outline-
 .key li { margin: .4rem 0; }
 .swatch { display: inline-block; width: 1.8rem; height: 0; vertical-align: middle; margin: 0 .25rem; border-top: 3px solid transparent; }
 .source-key { border-top-color: #0072b2; }
+.strategic-network-key { border-top-color: #d71920; }
 .context-key { border-top: 2px dotted #4b5563; }
 .alternative-key { border-top: 2px dashed #4b5563; }
 .selected-key { border-top-color: #009e73; }
@@ -73,26 +74,27 @@ code { font-size: .9em; }
 <header><h1>__TITLE__ decision map</h1>
 <p class="disclaimer">Experimental SATN POC — not an adopted plan.</p>
 <details class="run-details"><summary>Run details</summary><p data-native-branch>Deployment <code>__DEPLOYMENT__</code> · Branch <code>__BRANCH__</code> · base <code>__BASE_ID__</code> · accounting <strong>__ACCOUNTING__</strong> · run status <strong>__STATUS__</strong></p></details>
-<p>Source baseline remains visible as the proposed strategic structure. Selected alignments are decision overlays; source provision, safety, access and adoption remain explicit unknowns where evidence is absent.</p>
+<p>The Strategic active travel network shows selected and provisional route lines. Community Connections, source baseline and other evidence layers are optional overlays. Provision, safety, access and adoption remain explicit unknowns where evidence is absent.</p>
 <p class="source-attribution">Source attribution: __ATTRIBUTION__ __SOURCE_ATTRIBUTIONS__</p></header>
 <main class="native-shell">
   <aside class="native-panel" aria-label="Decision map controls and evidence" tabindex="0">
     <div class="map-actions"><button type="button" data-native-reset>Reset to network</button><button type="button" data-native-clear>Clear inspection</button></div>
-    <section class="native-details" id="native-feature-details" aria-live="polite"><h3>Evidence</h3><p>Hover or select a rendered map feature to inspect its public evidence.</p></section>
+    <section class="native-details" id="native-feature-details"><h3>Evidence</h3><p>Hover a map feature for its evidence. Click to pin the popup; click an empty map area or Clear inspection to dismiss it.</p></section>
     <fieldset><legend>Layers</legend><ul class="key">
-      <li><label><input type="checkbox" data-layer-toggle="source-strategic" checked> <span class="swatch source-key" aria-hidden="true"></span>Strategic source baseline · solid <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="strategic-network" checked> <span class="swatch strategic-network-key" aria-hidden="true"></span>Strategic active travel network · solid red <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="source-strategic"> <span class="swatch source-key" aria-hidden="true"></span>Strategic source baseline · solid <span data-layer-count></span></label></li>
       <li><label><input type="checkbox" data-layer-toggle="source-context"> <span class="swatch context-key" aria-hidden="true"></span>Context sources · dotted <span data-layer-count></span></label></li>
       __CANDIDATE_NEIGHBOURHOOD_LAYER_CONTROL__
-      <li><label><input type="checkbox" data-layer-toggle="selected-alignment" checked> <span class="swatch selected-key" aria-hidden="true"></span><span class="marker-key marker-circle-key selected-point-key" aria-hidden="true"></span>Selected alignment · solid, circle <span data-layer-count></span></label></li>
-      <li><label><input type="checkbox" data-layer-toggle="provisional-alignment" checked> <span class="swatch provisional-key" aria-hidden="true"></span><span class="marker-key marker-triangle-key provisional-point-key" aria-hidden="true"></span>Provisional alignment · dashed, triangle <span data-layer-count></span></label></li>
-      <li><label><input type="checkbox" data-layer-toggle="unresolved-decision" checked> <span class="swatch unresolved-key" aria-hidden="true"></span>Unresolved decision · dotted <span data-layer-count></span></label></li>
-      <li><label><input type="checkbox" data-layer-toggle="candidate-alternative" checked> <span class="swatch alternative-key" aria-hidden="true"></span>Candidate alternatives · dashed <span data-layer-count></span></label></li>
-      <li><label><input type="checkbox" data-layer-toggle="a-road-departure" checked> <span class="swatch a-road-departure-key" aria-hidden="true"></span>A-road departure · prominent long dash <span data-layer-count></span></label></li>
-      <li><label><input type="checkbox" data-layer-toggle="source-departure" checked> <span class="swatch source-departure-key" aria-hidden="true"></span>Source departure · solid, dark edge <span data-layer-count></span></label></li>
-      <li><label><input type="checkbox" data-layer-toggle="network-place" checked> <span class="marker-key marker-square-key" aria-hidden="true"></span>Network places · square <span data-layer-count></span></label></li>
-      <li><label><input type="checkbox" data-layer-toggle="school-context" checked> <span class="marker-key marker-diamond-key school-point-key" aria-hidden="true"></span>Schools · diamond <span data-layer-count></span></label></li>
-      <li><label><input type="checkbox" data-layer-toggle="community-access" checked> <span class="swatch community-key" aria-hidden="true"></span><span class="marker-key marker-pentagon-key community-point-key" aria-hidden="true"></span><span class="marker-key marker-cross-key gap-point-key" aria-hidden="true"></span>Community access · solid, pentagon; X for gaps <span data-layer-count></span></label></li>
-      <li><label><input type="checkbox" data-layer-toggle="access-obligation" checked> <span class="marker-key marker-hexagon-key obligation-point-key" aria-hidden="true"></span>Access obligations and gaps · hexagon <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="selected-alignment"> <span class="swatch selected-key" aria-hidden="true"></span><span class="marker-key marker-circle-key selected-point-key" aria-hidden="true"></span>Selected alignment · solid, circle <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="provisional-alignment"> <span class="swatch provisional-key" aria-hidden="true"></span><span class="marker-key marker-triangle-key provisional-point-key" aria-hidden="true"></span>Provisional alignment · dashed, triangle <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="unresolved-decision"> <span class="swatch unresolved-key" aria-hidden="true"></span>Unresolved decision · dotted <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="candidate-alternative"> <span class="swatch alternative-key" aria-hidden="true"></span>Candidate alternatives · dashed <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="a-road-departure"> <span class="swatch a-road-departure-key" aria-hidden="true"></span>A-road departure · prominent long dash <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="source-departure"> <span class="swatch source-departure-key" aria-hidden="true"></span>Source departure · solid, dark edge <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="network-place"> <span class="marker-key marker-square-key" aria-hidden="true"></span>Network places · square <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="school-context"> <span class="marker-key marker-diamond-key school-point-key" aria-hidden="true"></span>Schools · diamond <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="community-access"> <span class="swatch community-key" aria-hidden="true"></span><span class="marker-key marker-pentagon-key community-point-key" aria-hidden="true"></span><span class="marker-key marker-cross-key gap-point-key" aria-hidden="true"></span>Community Connections · solid, pentagon; X for gaps <span data-layer-count></span></label></li>
+      <li><label><input type="checkbox" data-layer-toggle="access-obligation"> <span class="marker-key marker-hexagon-key obligation-point-key" aria-hidden="true"></span>Access obligations and gaps · hexagon <span data-layer-count></span></label></li>
     </ul></fieldset>
     <p class="layer-key-note"><span class="swatch study-boundary-key" aria-hidden="true"></span>Study area boundary · pale fill and thin neutral edge &nbsp; <span class="swatch highlight-key" aria-hidden="true"></span><span class="marker-key marker-circle-key highlight-point-key" aria-hidden="true"></span>Inspection highlight · yellow with dark edge</p>
     <p>__SOURCE_COUNT__ source baseline sections · __PREPARED_CONNECTIONS__ prepared connections · __PENDING_CONNECTIONS__ pending connections · __CANDIDATE_COUNT__ generated candidates · __DECISION_COUNT__ decisions · __UNRESOLVED_FACTS__ unresolved facts · __UNRESOLVED_ACCESS__ unresolved access obligations · __COMMUNITY_ACCESS__ community access records · __COMMUNITY_GAPS__ community gaps</p>
@@ -107,18 +109,19 @@ code { font-size: .9em; }
   const root = document.documentElement;
   const networkUrl = document.body.dataset.networkUrl;
   const failure = document.getElementById('native-loading-failure');
-  const detail = document.getElementById('native-feature-details');
   const interactiveLayers = [
-    'native-selected', 'native-selected-point', 'native-provisional-casing', 'native-provisional', 'native-provisional-point',
+    'native-strategic-network', 'native-selected', 'native-selected-point', 'native-provisional-casing', 'native-provisional', 'native-provisional-point',
     'native-unresolved', 'native-alternative',
     'native-candidate-neighbourhood',
     'native-a-road-departure-casing', 'native-a-road-departure',
     'native-source-departure-casing', 'native-source-departure', 'native-source-strategic',
     'native-source-context', 'native-network-place', 'native-school-context',
     'native-community-access-casing', 'native-community-access', 'native-community-access-point',
-    'native-community-access-gap', 'native-access-obligation'
+    'native-community-access-gap', 'native-access-obligation',
+    'native-bus-route', 'native-bus-interchange'
   ];
   const layerGroups = {
+    'strategic-network': ['native-strategic-network'],
     'source-strategic': ['native-source-strategic'],
     'source-context': ['native-source-context'],
     'candidate-neighbourhood': ['native-candidate-neighbourhood', 'native-candidate-neighbourhood-boundary'],
@@ -355,22 +358,15 @@ code { font-size: .9em; }
     }
     return rows;
   };
-  const showFeature = feature => {
-    const props = feature && feature.properties ? feature.properties : {};
-    const publicRows = readableRows(props);
-    const technical = technicalRows(props);
-    const technicalHtml = technical.length
-      ? '<details><summary>Technical details</summary><dl>' + rowsHtml(technical) + '</dl></details>'
-      : '';
-    detail.innerHTML = '<h3>' + escapeHtml(featureLabel(feature)) + '</h3>' +
-      (publicRows.length ? '<dl>' + rowsHtml(publicRows) + '</dl>' : '<p>No additional public evidence.</p>') +
-      technicalHtml;
-  };
   const popupHtml = feature => {
     const props = feature && feature.properties ? feature.properties : {};
     const rows = readableRows(props);
+    const technical = technicalRows(props);
     return '<strong>' + escapeHtml(featureLabel(feature)) + '</strong>' +
-      (rows.length ? '<dl>' + rowsHtml(rows) + '</dl>' : '<p>Public map evidence</p>');
+      (rows.length ? '<dl>' + rowsHtml(rows) + '</dl>' : '<p>Public map evidence</p>') +
+      (technical.length
+        ? '<details><summary>Technical details</summary><dl>' + rowsHtml(technical) + '</dl></details>'
+        : '');
   };
   const highlight = (map, feature) => {
     const source = map.getSource('native-highlight');
@@ -396,6 +392,11 @@ code { font-size: .9em; }
   });
   const installControls = (map, bounds, network) => {
     const featureCounts = {
+      'strategic-network': network.features.filter(feature => {
+        const properties = feature.properties || {};
+        return ['selected-alignment', 'provisional-alignment'].includes(properties.kind) &&
+          feature.geometry?.type === 'LineString' && !Object.hasOwn(properties, 'community_id');
+      }).length,
       'source-strategic': network.features.filter(feature => feature.properties?.kind === 'source-baseline' && feature.properties?.baseline_layer !== 'source-context').length,
       'source-context': network.features.filter(feature => feature.properties?.kind === 'source-baseline' && feature.properties?.baseline_layer === 'source-context').length,
       'candidate-neighbourhood': network.features.filter(feature => feature.properties?.kind === 'candidate-neighbourhood').length,
@@ -414,7 +415,10 @@ code { font-size: .9em; }
       toggle.addEventListener('change', () => {
         setVisibility(map, toggle.dataset.layerToggle, toggle.checked);
         const selectedLayerIds = layerGroups[toggle.dataset.layerToggle] || [];
-        if (!toggle.checked && pinnedFeature && selectedLayerIds.includes(pinnedFeature.layer?.id)) {
+        if (!toggle.checked && (
+          selectedLayerIds.includes(pinnedFeature?.layer?.id) ||
+          selectedLayerIds.includes(activePopupLayerId)
+        )) {
           clearInspection(map);
         }
       });
@@ -433,31 +437,77 @@ code { font-size: .9em; }
   };
   let pinnedFeature = null;
   let activePopup = null;
+  let activePopupFeatureKey = null;
+  let activePopupLayerId = null;
+  const featureKey = feature => feature.layer.id + ':' +
+    (feature.id ?? JSON.stringify(feature.properties || {}));
+  const showPopup = (map, feature, event, pin) => {
+    const key = featureKey(feature);
+    if (activePopup && activePopupFeatureKey === key) {
+      if (pin) activePopup.setLngLat(event.lngLat);
+      return;
+    }
+    const previousPopup = activePopup;
+    activePopup = null;
+    activePopupFeatureKey = null;
+    activePopupLayerId = null;
+    if (previousPopup) previousPopup.remove();
+    const popup = new maplibregl.Popup({ closeButton: true, closeOnClick: false })
+      .setLngLat(event.lngLat);
+    const busContent = feature.properties?.kind?.startsWith('bus-')
+      ? window.SATN_NATIVE_BUS_POPUP_CONTENT?.(feature)
+      : null;
+    if (busContent) popup.setDOMContent(busContent);
+    else popup.setHTML(popupHtml(feature));
+    popup.on('close', () => {
+      if (activePopup !== popup) return;
+      activePopup = null;
+      activePopupFeatureKey = null;
+      activePopupLayerId = null;
+      if (pinnedFeature && featureKey(pinnedFeature) !== key) return;
+      pinnedFeature = null;
+      highlight(map, null);
+    });
+    activePopup = popup.addTo(map);
+    activePopupFeatureKey = key;
+    activePopupLayerId = feature.layer.id;
+  };
   const clearInspection = map => {
     pinnedFeature = null;
-    if (activePopup) { activePopup.remove(); activePopup = null; }
+    const popup = activePopup;
+    activePopup = null;
+    activePopupFeatureKey = null;
+    activePopupLayerId = null;
+    if (popup) popup.remove();
     highlight(map, null);
-    detail.innerHTML = '<h3>Evidence</h3><p>Hover or select a rendered map feature to inspect its public evidence.</p>';
+  };
+  window.SATN_NATIVE_CLEAR_INSPECTION_IF_LAYER_HIDDEN = layers => {
+    if (layers.includes(pinnedFeature?.layer?.id) || layers.includes(activePopupLayerId)) {
+      clearInspection(window.SATN_NATIVE_MAP);
+    }
   };
   const inspect = (map, event, openPopup) => {
-    if (openPopup) document.querySelector('.native-panel').scrollTop = 0;
     const layers = interactiveLayers.filter(layer => map.getLayer(layer));
     const found = map.queryRenderedFeatures(event.point, { layers });
     const feature = found[0];
     map.getCanvas().style.cursor = feature ? 'pointer' : '';
-    if (openPopup && !feature) { clearInspection(map); return; }
+    if (!feature) {
+      if (openPopup) clearInspection(map);
+      else if (!pinnedFeature) {
+        const popup = activePopup;
+        activePopup = null;
+        activePopupFeatureKey = null;
+        activePopupLayerId = null;
+        if (popup) popup.remove();
+        highlight(map, null);
+      }
+      return;
+    }
     if (openPopup && feature) {
       pinnedFeature = feature;
       highlight(map, feature);
     } else if (!pinnedFeature) highlight(map, feature);
-    if (feature && (!pinnedFeature || openPopup)) {
-      showFeature(feature);
-      if (openPopup) {
-        if (activePopup) activePopup.remove();
-        activePopup = new maplibregl.Popup({ closeButton: true, closeOnClick: true })
-          .setLngLat(event.lngLat).setHTML(popupHtml(feature)).addTo(map);
-      }
-    }
+    if (openPopup || !pinnedFeature) showPopup(map, feature, event, openPopup);
   };
   root.dataset.nativeReady = 'false';
   fetch(networkUrl).then(response => {
@@ -566,6 +616,8 @@ code { font-size: .9em; }
       line('native-boundary-line', ['==', ['get', 'kind'], 'boundary-scope'], '#6b7280', 1, [2, 3]);
       line('native-source-context', ['all', ['==', ['get', 'kind'], 'source-baseline'], ['==', ['get', 'baseline_layer'], 'source-context']], '#4b5563', 2, [1, 3]);
       line('native-source-strategic', ['all', ['==', ['get', 'kind'], 'source-baseline'], ['!=', ['get', 'baseline_layer'], 'source-context']], '#0072b2', 3);
+      const mainStrategicFilter = ['all', ['any', ['==', ['get', 'kind'], 'selected-alignment'], ['==', ['get', 'kind'], 'provisional-alignment']], ['==', ['geometry-type'], 'LineString'], ['!', ['has', 'community_id']]];
+      line('native-strategic-network', mainStrategicFilter, '#d71920', 4);
       line('native-alternative', ['==', ['get', 'kind'], 'candidate-alternative'], '#4b5563', 2, [5, 4]);
       line('native-selected', ['==', ['get', 'kind'], 'selected-alignment'], '#009e73', 5);
       const provisionalFilter = ['==', ['get', 'kind'], 'provisional-alignment'];

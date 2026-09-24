@@ -4,13 +4,11 @@
   if (!contextUrl) return;
 
   const root = document.documentElement;
-  const detail = document.getElementById('native-feature-details');
   const legend = document.querySelector('.native-panel .key');
   const routeLayer = 'native-bus-route';
   const routeCasingLayer = 'native-bus-route-casing';
   const interchangeLayer = 'native-bus-interchange';
   let started = false;
-  let activePopup = null;
 
   const valueText = value => {
     if (typeof value === 'string') return value;
@@ -155,10 +153,6 @@
     if (propertyRows(properties).length || collectionRows.length) content.append(fullSourceDetails);
     return content;
   };
-  const showFeature = (feature, context) => {
-    if (!detail) return;
-    detail.replaceChildren(...renderFeature(feature, context).childNodes);
-  };
   const addControl = (kind, label, count, layers, pointCounts = null) => {
     const item = document.createElement('li');
     const control = document.createElement('label');
@@ -188,6 +182,9 @@
           );
         }
       });
+      if (!toggle.checked) {
+        window.SATN_NATIVE_CLEAR_INSPECTION_IF_LAYER_HIDDEN?.(layers);
+      }
     });
   };
   const appendFailure = error => {
@@ -218,6 +215,7 @@
       feature => feature.properties?.transfer_candidate === true
     );
     window.SATN_BUS_CONTEXT = context;
+    window.SATN_NATIVE_BUS_POPUP_CONTENT = feature => renderFeature(feature, context);
     if (routes.length || interchanges.length) {
       map.addSource('native-bus-context', {
         type: 'geojson',
@@ -289,25 +287,6 @@
           { facilities: sourceFacilities.length, transfers: transferCandidates.length }
         );
       }
-      const interactiveLayers = [
-        routes.length ? routeLayer : null,
-        interchanges.length ? interchangeLayer : null
-      ].filter(Boolean);
-      map.on('mousemove', event => {
-        map.getCanvas().style.cursor = map.queryRenderedFeatures(event.point, {
-          layers: interactiveLayers
-        }).length ? 'pointer' : '';
-      });
-      map.on('click', event => {
-        const feature = map.queryRenderedFeatures(event.point, { layers: interactiveLayers })[0];
-        if (!feature) return;
-        showFeature(feature, context);
-        if (activePopup) activePopup.remove();
-        activePopup = new maplibregl.Popup({ closeButton: true, closeOnClick: true })
-          .setLngLat(event.lngLat)
-          .setDOMContent(renderFeature(feature, context))
-          .addTo(map);
-      });
     }
     root.dataset.nativeBusContextRoutes = String(routes.length);
     root.dataset.nativeBusContextInterchanges = String(interchanges.length);
