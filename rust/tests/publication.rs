@@ -164,7 +164,7 @@ fn publishes_compact_decision_map_with_real_departure_sections() {
     assert!(html.contains("Provisional alignment"));
     assert!(html.contains("Unresolved decision"));
     assert!(html.contains("Strategic source baseline"));
-    assert!(html.contains("Context sources"));
+    assert!(html.contains("Additional source evidence"));
     assert!(!html.contains("source_inventory"));
     assert!(root.join("index.html").is_file());
     let publication: Value = serde_json::from_str(
@@ -207,17 +207,19 @@ fn publishes_compact_decision_map_with_real_departure_sections() {
     assert!(html.contains("New link distance"));
     assert!(html.contains("Complete access distance"));
     assert!(html.contains("native-feature-details"));
-    assert!(html.contains("Strategic source baseline · solid"));
-    assert!(html.contains("Selected alignment · solid, circle"));
-    assert!(html.contains("Provisional alignment · dashed, triangle"));
-    assert!(html.contains("Unresolved decision · dotted"));
-    assert!(html.contains("A-road departure · prominent long dash"));
-    assert!(html.contains("Source departure · solid, dark edge"));
-    assert!(html.contains("Network places · square"));
-    assert!(html.contains("Schools · diamond"));
-    assert!(html.contains("Community Connections · solid, pentagon; X for gaps"));
-    assert!(html.contains("Access obligations and gaps · hexagon"));
-    assert!(html.contains("Study area boundary · pale fill and thin neutral edge"));
+    assert!(html.contains("Strategic source baseline"));
+    assert!(html.contains("Provisional alignment"));
+    assert!(html.contains("Unresolved decisions"));
+    assert!(html.contains("A-road departures"));
+    assert!(html.contains("Source departures"));
+    assert!(html.contains("Towns and communities"));
+    assert!(html.contains("Schools"));
+    assert!(html.contains("Community Connections"));
+    assert!(html.contains("Access obligations and gaps"));
+    assert!(html.contains("Study area boundary"));
+    assert!(html.contains("aria-describedby=\"layer-help-2\""));
+    assert!(!html.contains("data-layer-toggle=\"selected-alignment\""));
+    assert!(html.contains("data-layer-toggle=\"strategic-network\" checked"));
     assert!(html.contains("native-marker-access-obligation"));
     assert!(html.contains("native-highlight-line-casing"));
     assert!(!html.contains("data-native-decision-kind"));
@@ -349,8 +351,10 @@ fn adds_sourced_bus_context_to_an_existing_publication_without_rewriting_decisio
     let viewer = fs::read_to_string(root.join("bus-context.js")).expect("bus context viewer");
     assert!(viewer.contains("service_date"));
     assert!(viewer.contains("textContent"));
-    assert!(viewer.contains("long-dashed line"));
-    assert!(viewer.contains("star marker"));
+    assert!(viewer.contains("Bus route segments"));
+    assert!(viewer.contains("Bus facilities and transfer points"));
+    assert!(viewer.contains("Facility records:"));
+    assert!(viewer.contains("Timetable-supported transfer candidates:"));
     assert!(viewer.contains("native-bus-interchange-star"));
     assert!(viewer.contains("type: 'symbol'"));
     assert!(!viewer.contains("innerHTML"));
@@ -581,6 +585,7 @@ fn publication_preserves_candidate_neighbourhood_polygon_holes_and_provenance() 
 
     let html = fs::read_to_string(root.join("index.html")).expect("HTML output");
     assert!(html.contains("data-layer-toggle=\"candidate-neighbourhood\""));
+    assert!(html.contains("layer-help-candidate-neighbourhood"));
     assert!(html.contains("native-candidate-neighbourhood"));
     assert!(html.contains("native-candidate-neighbourhood-boundary"));
     assert!(html.contains("'line-color': '#000000'"));

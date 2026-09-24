@@ -19,6 +19,15 @@ button { padding: .4rem .65rem; border: 1px solid #64748b; border-radius: .25rem
 button:focus-visible, input:focus-visible { outline: 3px solid #2563eb; outline-offset: 2px; }
 .key { list-style: none; margin: .5rem 0 1rem; padding: 0; }
 .key li { margin: .4rem 0; }
+.key li[hidden] { display: none; }
+.layer-control-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: .2rem .4rem; }
+.layer-control-row > label { grid-column: 1; }
+.layer-control-row > .layer-help { grid-column: 2; grid-row: 1; }
+.layer-help > summary { display: grid; place-items: center; width: 1.5rem; height: 1.5rem; border-radius: 50%; list-style: none; cursor: pointer; color: #1d4ed8; font-size: 1.1rem; line-height: 1; }
+.layer-help > summary:focus-visible { outline: 3px solid #2563eb; outline-offset: 2px; }
+.layer-help > summary::-webkit-details-marker { display: none; }
+.layer-help-popup { display: none; grid-column: 1 / -1; grid-row: 2; width: 100%; max-width: 100%; margin: 0; padding: .55rem .7rem; border: 1px solid #94a3b8; border-radius: .3rem; background: #f8fafc; overflow-wrap: anywhere; }
+.layer-help:not(.is-dismissed):hover + .layer-help-popup, .layer-help:not(.is-dismissed):focus-within + .layer-help-popup, .layer-help[open]:not(.is-dismissed) + .layer-help-popup, .layer-help:not(.is-dismissed) + .layer-help-popup:hover { display: block; }
 .swatch { display: inline-block; width: 1.8rem; height: 0; vertical-align: middle; margin: 0 .25rem; border-top: 3px solid transparent; }
 .source-key { border-top-color: #0072b2; }
 .strategic-network-key { border-top-color: #d71920; }
@@ -81,22 +90,21 @@ code { font-size: .9em; }
     <div class="map-actions"><button type="button" data-native-reset>Reset to network</button><button type="button" data-native-clear>Clear inspection</button></div>
     <section class="native-details" id="native-feature-details"><h3>Evidence</h3><p>Hover a map feature for its evidence. Click to pin the popup; click an empty map area or Clear inspection to dismiss it.</p></section>
     <fieldset><legend>Layers</legend><ul class="key">
-      <li><label><input type="checkbox" data-layer-toggle="strategic-network" checked> <span class="swatch strategic-network-key" aria-hidden="true"></span>Strategic active travel network · solid red <span data-layer-count></span></label></li>
-      <li><label><input type="checkbox" data-layer-toggle="source-strategic"> <span class="swatch source-key" aria-hidden="true"></span>Strategic source baseline · solid <span data-layer-count></span></label></li>
-      <li><label><input type="checkbox" data-layer-toggle="source-context"> <span class="swatch context-key" aria-hidden="true"></span>Context sources · dotted <span data-layer-count></span></label></li>
+      <li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="strategic-network" checked> <span class="swatch strategic-network-key" aria-hidden="true"></span>Strategic active travel network <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About the strategic active travel network" aria-describedby="layer-help-1">ⓘ</summary></details><span id="layer-help-1" class="layer-help-popup" role="tooltip">The proposed strategic network includes chosen and provisional non-community route lines plus A-road reference sections. Provisional routes remain available in the separate review layer.</span></li>
+      <li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="community-access"> <span class="swatch community-key" aria-hidden="true"></span><span class="marker-key marker-pentagon-key community-point-key" aria-hidden="true"></span><span class="marker-key marker-cross-key gap-point-key" aria-hidden="true"></span>Community Connections <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About Community Connections" aria-describedby="layer-help-2">ⓘ</summary></details><span id="layer-help-2" class="layer-help-popup" role="tooltip">Community Connections show recorded access from a community to the strategic network. A cross marks a missing connection where no connected path is evidenced.</span></li>
+      <li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="source-strategic"> <span class="swatch source-key" aria-hidden="true"></span>Strategic source baseline <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About the strategic source baseline" aria-describedby="layer-help-3">ⓘ</summary></details><span id="layer-help-3" class="layer-help-popup" role="tooltip">The source baseline records mapped strategic corridors as supplied. It is evidence before strategic choices, distinct from the proposed strategic network.</span></li>
+      <li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="source-context"> <span class="swatch context-key" aria-hidden="true"></span>Additional source evidence <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About additional source evidence" aria-describedby="layer-help-4">ⓘ</summary></details><span id="layer-help-4" class="layer-help-popup" role="tooltip">Additional mapped sources provide context. They do not by themselves show a selected strategic route.</span></li>
       __CANDIDATE_NEIGHBOURHOOD_LAYER_CONTROL__
-      <li><label><input type="checkbox" data-layer-toggle="selected-alignment"> <span class="swatch selected-key" aria-hidden="true"></span><span class="marker-key marker-circle-key selected-point-key" aria-hidden="true"></span>Selected alignment · solid, circle <span data-layer-count></span></label></li>
-      <li><label><input type="checkbox" data-layer-toggle="provisional-alignment"> <span class="swatch provisional-key" aria-hidden="true"></span><span class="marker-key marker-triangle-key provisional-point-key" aria-hidden="true"></span>Provisional alignment · dashed, triangle <span data-layer-count></span></label></li>
-      <li><label><input type="checkbox" data-layer-toggle="unresolved-decision"> <span class="swatch unresolved-key" aria-hidden="true"></span>Unresolved decision · dotted <span data-layer-count></span></label></li>
-      <li><label><input type="checkbox" data-layer-toggle="candidate-alternative"> <span class="swatch alternative-key" aria-hidden="true"></span>Candidate alternatives · dashed <span data-layer-count></span></label></li>
-      <li><label><input type="checkbox" data-layer-toggle="a-road-departure"> <span class="swatch a-road-departure-key" aria-hidden="true"></span>A-road departure · prominent long dash <span data-layer-count></span></label></li>
-      <li><label><input type="checkbox" data-layer-toggle="source-departure"> <span class="swatch source-departure-key" aria-hidden="true"></span>Source departure · solid, dark edge <span data-layer-count></span></label></li>
-      <li><label><input type="checkbox" data-layer-toggle="network-place"> <span class="marker-key marker-square-key" aria-hidden="true"></span>Network places · square <span data-layer-count></span></label></li>
-      <li><label><input type="checkbox" data-layer-toggle="school-context"> <span class="marker-key marker-diamond-key school-point-key" aria-hidden="true"></span>Schools · diamond <span data-layer-count></span></label></li>
-      <li><label><input type="checkbox" data-layer-toggle="community-access"> <span class="swatch community-key" aria-hidden="true"></span><span class="marker-key marker-pentagon-key community-point-key" aria-hidden="true"></span><span class="marker-key marker-cross-key gap-point-key" aria-hidden="true"></span>Community Connections · solid, pentagon; X for gaps <span data-layer-count></span></label></li>
-      <li><label><input type="checkbox" data-layer-toggle="access-obligation"> <span class="marker-key marker-hexagon-key obligation-point-key" aria-hidden="true"></span>Access obligations and gaps · hexagon <span data-layer-count></span></label></li>
+      <li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="provisional-alignment"> <span class="swatch provisional-key" aria-hidden="true"></span><span class="marker-key marker-triangle-key provisional-point-key" aria-hidden="true"></span>Provisional alignment <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About provisional alignments" aria-describedby="layer-help-5">ⓘ</summary></details><span id="layer-help-5" class="layer-help-popup" role="tooltip">Provisional routes appear provisionally in the strategic network; this layer highlights them for review.</span></li>
+      <li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="unresolved-decision"> <span class="swatch unresolved-key" aria-hidden="true"></span>Unresolved decisions <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About unresolved decisions" aria-describedby="layer-help-6">ⓘ</summary></details><span id="layer-help-6" class="layer-help-popup" role="tooltip">These features need a route or decision and remain unresolved in the current evidence.</span></li>
+      <li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="candidate-alternative"> <span class="swatch alternative-key" aria-hidden="true"></span>Candidate alternatives <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About candidate alternatives" aria-describedby="layer-help-7">ⓘ</summary></details><span id="layer-help-7" class="layer-help-popup" role="tooltip">Alternative route candidates considered for a decision; these are options, not the chosen network.</span></li>
+      <li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="a-road-departure"> <span class="swatch a-road-departure-key" aria-hidden="true"></span>A-road departures <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About A-road departures" aria-describedby="layer-help-8">ⓘ</summary></details><span id="layer-help-8" class="layer-help-popup" role="tooltip">These features mark recorded departures from an A-road source corridor.</span></li>
+      <li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="source-departure"> <span class="swatch source-departure-key" aria-hidden="true"></span>Source departures <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About source departures" aria-describedby="layer-help-9">ⓘ</summary></details><span id="layer-help-9" class="layer-help-popup" role="tooltip">These source corridors are not followed by the proposed route; their source evidence remains available in the baseline.</span></li>
+      <li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="network-place"> <span class="marker-key marker-square-key" aria-hidden="true"></span>Towns and communities <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About towns and communities" aria-describedby="layer-help-10">ⓘ</summary></details><span id="layer-help-10" class="layer-help-popup" role="tooltip">Named Network Places are shown for orientation and as network endpoints.</span></li>
+      <li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="school-context"> <span class="marker-key marker-diamond-key school-point-key" aria-hidden="true"></span>Schools <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About schools" aria-describedby="layer-help-11">ⓘ</summary></details><span id="layer-help-11" class="layer-help-popup" role="tooltip">School locations are shown as access context; their presence does not prove an accessible route.</span></li>
+      <li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="access-obligation"> <span class="marker-key marker-hexagon-key obligation-point-key" aria-hidden="true"></span>Access obligations and gaps <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About access obligations and gaps" aria-describedby="layer-help-12">ⓘ</summary></details><span id="layer-help-12" class="layer-help-popup" role="tooltip">These records identify governed access obligations and unresolved gaps, not confirmed provision.</span></li>
     </ul></fieldset>
-    <p class="layer-key-note"><span class="swatch study-boundary-key" aria-hidden="true"></span>Study area boundary · pale fill and thin neutral edge &nbsp; <span class="swatch highlight-key" aria-hidden="true"></span><span class="marker-key marker-circle-key highlight-point-key" aria-hidden="true"></span>Inspection highlight · yellow with dark edge</p>
+    <p class="layer-key-note"><span class="swatch study-boundary-key" aria-hidden="true"></span>Study area boundary &nbsp; <span class="swatch highlight-key" aria-hidden="true"></span><span class="marker-key marker-circle-key highlight-point-key" aria-hidden="true"></span>Inspection highlight</p>
     <p>__SOURCE_COUNT__ source baseline sections · __PREPARED_CONNECTIONS__ prepared connections · __PENDING_CONNECTIONS__ pending connections · __CANDIDATE_COUNT__ generated candidates · __DECISION_COUNT__ decisions · __UNRESOLVED_FACTS__ unresolved facts · __UNRESOLVED_ACCESS__ unresolved access obligations · __COMMUNITY_ACCESS__ community access records · __COMMUNITY_GAPS__ community gaps</p>
     <p id="native-loading-failure" role="alert" hidden>Unable to load public network data.</p>
     <p><a href="decision-map.json">Compact decision manifest</a> · <a href="decision-map.geojson">GeoJSON download</a> · <a href="publication.json">Public publication manifest</a></p>
@@ -109,6 +117,35 @@ code { font-size: .9em; }
   const root = document.documentElement;
   const networkUrl = document.body.dataset.networkUrl;
   const failure = document.getElementById('native-loading-failure');
+  const layerList = document.querySelector('.native-panel .key');
+  const layerHelpFor = target => {
+    if (!(target instanceof Element)) return null;
+    return target.closest('.layer-help') ||
+      target.closest('.layer-help-popup')?.previousElementSibling;
+  };
+  const prepareLayerHelp = event => {
+    const current = layerHelpFor(event.target);
+    current?.classList.remove('is-dismissed');
+    layerList.querySelectorAll('.layer-help[open]').forEach(item => {
+      if (item !== current) item.open = false;
+    });
+  };
+  layerList.addEventListener('pointerover', prepareLayerHelp);
+  layerList.addEventListener('focusin', prepareLayerHelp);
+  layerList.addEventListener('click', prepareLayerHelp);
+  document.addEventListener('pointerdown', event => {
+    const target = event.target instanceof Element ? event.target : null;
+    layerList.querySelectorAll('.layer-help[open]').forEach(item => {
+      if (!item.contains(target) && !item.nextElementSibling.contains(target)) item.open = false;
+    });
+  });
+  document.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    layerList.querySelectorAll('.layer-help').forEach(item => {
+      item.open = false;
+      item.classList.add('is-dismissed');
+    });
+  });
   const interactiveLayers = [
     'native-strategic-network', 'native-selected', 'native-selected-point', 'native-provisional-casing', 'native-provisional', 'native-provisional-point',
     'native-unresolved', 'native-alternative',
@@ -440,6 +477,7 @@ code { font-size: .9em; }
       if (countLabel) countLabel.textContent = ' (' + count + ')';
       setVisibility(map, toggle.dataset.layerToggle, toggle.checked);
     });
+    setVisibility(map, 'selected-alignment', false);
     document.querySelector('[data-native-reset]').addEventListener('click', () => {
       if (bounds) map.fitBounds(bounds, { padding: 40, duration: 0 });
       clearInspection(map);
