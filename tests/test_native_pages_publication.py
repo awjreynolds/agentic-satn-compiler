@@ -196,6 +196,22 @@ def _write_native_bundle(
         "__DEPLOYMENT__": "native-area",
         "__BRANCH__": "review-branch",
         "__BASE_ID__": "base-1",
+        "__OFFICER_SCENARIO_ATTRIBUTE__": "",
+        "__NETWORK_DESCRIPTION__": (
+            "The Strategic active travel network shows selected and provisional route lines. "
+            "Community Connections, source baseline and other evidence layers are optional "
+            "overlays. Provision, safety, access and adoption remain explicit unknowns where "
+            "evidence is absent."
+        ),
+        "__OFFICER_SCENARIO_BANNER__": "",
+        "__OFFICER_FINDINGS__": "",
+        "__OFFICER_COMPARISON_CONTROL__": "",
+        "__COMMUNITY_ACCESS_LABEL__": "Community Connections",
+        "__COMMUNITY_ACCESS_HELP_LABEL__": "About Community Connections",
+        "__COMMUNITY_ACCESS_HELP__": (
+            "Community Connections show recorded access from a community to the strategic "
+            "network. A cross marks a missing connection where no connected path is evidenced."
+        ),
         "__ACCOUNTING__": "reviewable-with-gaps",
         "__STATUS__": "complete",
         "__ATTRIBUTION__": "Fixture attribution",
