@@ -44,3 +44,13 @@ cargo run --manifest-path rust/Cargo.toml -- \
 ```
 
 This attaches the bus context layer to the existing published network and its decisions; it does not rerun the planner or model.
+
+After the generated deployment bundle is ready, create the Pages tree and release
+archive with the standard packager:
+
+```sh
+uv run python scripts/package_pages.py
+```
+
+The packager carries the native publisher's `bus-context.js` and
+`bus-context.geojson` sidecars into the deployment in both outputs.

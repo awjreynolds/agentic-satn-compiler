@@ -872,6 +872,11 @@ def _native_public_files(source: Path, entry: DeploymentEntry) -> set[Path]:
             Path("assets/MAPLIBRE-LICENSE.txt"),
         }
     )
+    paths.update(
+        Path(name)
+        for name in ("bus-context.js", "bus-context.geojson")
+        if (source / name).is_file()
+    )
     for relative in paths:
         item = source / relative
         if item.is_symlink() or not item.is_file():
