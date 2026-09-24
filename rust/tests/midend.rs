@@ -229,6 +229,32 @@ impl ChoiceProvider for RecordingJev {
     }
 }
 
+struct FirstOfferedChoice;
+
+impl ChoiceProvider for FirstOfferedChoice {
+    fn classify_choice(&mut self, request: &satn_rs::judgment::ChoiceRequest) -> ChoiceAttempt {
+        let choice = request
+            .options
+            .keys()
+            .find(|option| !option.starts_with("__"))
+            .expect("offered decision candidate")
+            .clone();
+        ChoiceAttempt {
+            result: Some(ChoiceResult {
+                model: "jev-first-offered-fixture".to_string(),
+                choice,
+                probabilities: BTreeMap::new(),
+                confidence: 0.0,
+            }),
+            receipt: receipt(
+                "typesafe",
+                "jev-first-offered-fixture",
+                "{\"choice\":\"first-offered\"}",
+            ),
+        }
+    }
+}
+
 fn receipt(provider: &str, model: &str, response: &str) -> ProviderReceipt {
     ProviderReceipt {
         provider: provider.to_string(),
@@ -1078,6 +1104,120 @@ fn prepared_rural_choice_binds_the_next_offer_to_the_selected_parent_path() {
             .count(),
         2
     );
+}
+
+#[test]
+fn accepted_alignment_path_is_a_rural_attachment_target() {
+    let root = std::env::temp_dir().join(format!(
+        "satn-rust-midend-selected-cycleway-{}",
+        std::process::id()
+    ));
+    if root.exists() {
+        fs::remove_dir_all(&root).expect("clean selected-cycleway fixture");
+    }
+    let snapshot = root.join("snapshot");
+    fs::create_dir_all(&snapshot).expect("selected-cycleway snapshot");
+    fs::write(
+        root.join("area.yaml"),
+        format!(
+            "area_id: fixture\narea_name: Fixture\nsource:\n  snapshot_dir: {}\n  snapshot_id: snapshot\n  community_place_types: [village]\ncompilation:\n  max_connection_km: 15\n",
+            root.display()
+        ),
+    )
+    .expect("selected-cycleway config");
+    let mut edges = Vec::new();
+    add_bidirectional(
+        &mut edges,
+        "community",
+        "junction",
+        [0.0, 0.0],
+        [0.001, 0.001],
+        20.0,
+        "residential",
+        None,
+    );
+    add_bidirectional(
+        &mut edges,
+        "junction",
+        "terminal",
+        [0.001, 0.001],
+        [0.002, 0.0],
+        100.0,
+        "cycleway",
+        None,
+    );
+    write_collection(&snapshot.join("network.geojson"), edges);
+    write_collection(
+        &snapshot.join("places.geojson"),
+        vec![place_feature(
+            "community",
+            "Community",
+            "village",
+            [0.0, 0.0],
+        )],
+    );
+
+    let mut prepared = prepare_with_progress(
+        &root.join("area.yaml"),
+        CompileOptions::default(),
+        &mut |_| {},
+    )
+    .expect("selected-cycleway preparation");
+    let cycleway = prepared
+        .report
+        .source_inventory
+        .iter()
+        .find(|source| source.baseline_role == "existing-cycleway")
+        .expect("cycleway source corridor");
+    let candidate_id = "candidate:selected-cycleway";
+    let connection_id = "connection:town-a:town-b";
+    prepared.report.connections.push(Connection {
+        id: connection_id.to_string(),
+        origin_place_id: "town-a".to_string(),
+        origin_name: "Town A".to_string(),
+        destination_place_id: "town-b".to_string(),
+        destination_name: "Town B".to_string(),
+        origin_node: "junction".to_string(),
+        destination_node: "terminal".to_string(),
+        cross_region_edge_ids: Vec::new(),
+        road_classes: vec!["cycleway".to_string()],
+        preferred_classes: vec!["cycleway".to_string()],
+    });
+    let path_geometry = cycleway.geometry[0].clone();
+    let mut selected = candidate_for(candidate_id, connection_id, 100.0);
+    selected.a_road_share = 0.0;
+    selected.cycle_alignment_bases = vec!["existing-cycleway".to_string()];
+    selected.path_edge_ids = vec![cycleway.graph_edge_ids[0].clone()];
+    selected.path_edge_geometries = vec![path_geometry.clone()];
+    selected.geometry = path_geometry;
+    prepared.report.candidates.push(selected);
+    prepared.report.connection_count = prepared.report.connections.len();
+    prepared.report.candidate_count = prepared.report.candidates.len();
+
+    let mut jev = FirstOfferedChoice;
+    let result = run_prepared(
+        &root.join("history"),
+        &prepared,
+        MidendConfig::live(false),
+        ProviderSet {
+            classifier: Some(&mut jev),
+            specialist: None,
+        },
+        &mut |_| {},
+    )
+    .expect("prepared alignment and rural run");
+    assert!(result.operations.iter().any(|operation| {
+        matches!(operation, TypedOperation::SelectAlignment { candidate_id: selected, .. }
+            if selected == candidate_id)
+    }));
+    let access = result
+        .community_access
+        .iter()
+        .find(|access| access.community_id == "community" && access.is_primary)
+        .expect("primary community access");
+    assert_eq!(access.status, "served");
+    assert_eq!(access.joined_spine_id.as_deref(), Some(candidate_id));
+    assert_eq!(access.path_edge_ids.len(), 1);
 }
 
 #[test]

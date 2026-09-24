@@ -990,6 +990,18 @@ fn run_rural_sequence(
 ) -> Result<Vec<CommunityAccess>, MidendError> {
     let started = Instant::now();
     let mut planner = planner;
+    let selected_candidates = operations
+        .iter()
+        .filter_map(|operation| match operation {
+            TypedOperation::SelectAlignment { candidate_id, .. } => base
+                .report
+                .candidates
+                .iter()
+                .find(|candidate| candidate.id == *candidate_id),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    planner.add_selected_alignment_targets(&selected_candidates);
     let mut completed = operations
         .iter()
         .filter_map(|operation| operation.community_id().map(str::to_string))

@@ -2110,6 +2110,26 @@ impl<'a> RuralAccessPlanner<'a> {
         }
     }
 
+    pub(crate) fn add_selected_alignment_targets(&mut self, candidates: &[&Candidate]) {
+        for candidate in candidates {
+            let path_edge_ids = candidate
+                .path_edge_ids
+                .iter()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>();
+            for edge in self
+                .graph
+                .edges
+                .iter()
+                .filter(|edge| path_edge_ids.contains(edge.id.as_str()))
+            {
+                insert_spine_target(&mut self.target_edges, &edge.id, &candidate.id);
+                insert_spine_target(&mut self.target_nodes, &edge.from, &candidate.id);
+                insert_spine_target(&mut self.target_nodes, &edge.to, &candidate.id);
+            }
+        }
+    }
+
     pub fn offer_next(&mut self) -> Result<Option<RuralAccessOffer>> {
         if let Some(offer) = &self.cached_offer {
             return Ok(Some(offer.clone()));
@@ -3395,16 +3415,10 @@ fn strategic_spine_targets(
     source_inventory: &[SourceCorridor],
 ) -> (HashMap<String, String>, HashMap<String, String>) {
     let mut edge_spines: HashMap<String, BTreeSet<String>> = HashMap::new();
-    for source in source_inventory.iter().filter(|source| {
-        matches!(
-            source.baseline_role.as_str(),
-            "a-road"
-                | "current-ncn"
-                | "declassified-ncn"
-                | "existing-cycleway"
-                | "greenway-cycleway"
-        )
-    }) {
+    for source in source_inventory
+        .iter()
+        .filter(|source| source.baseline_role == "a-road")
+    {
         for edge_id in &source.graph_edge_ids {
             edge_spines
                 .entry(edge_id.clone())
@@ -3437,6 +3451,23 @@ fn strategic_spine_targets(
         .map(|(node, spines)| (node, spines.into_iter().collect::<Vec<_>>().join("+")))
         .collect();
     (node_spines, edge_spines)
+}
+
+fn insert_spine_target(targets: &mut HashMap<String, String>, key: &str, spine_id: &str) {
+    let mut spine_ids = targets
+        .get(key)
+        .map(|value| {
+            value
+                .split('+')
+                .map(str::to_string)
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    spine_ids.insert(spine_id.to_string());
+    targets.insert(
+        key.to_string(),
+        spine_ids.into_iter().collect::<Vec<_>>().join("+"),
+    );
 }
 
 fn build_access_obligations(
