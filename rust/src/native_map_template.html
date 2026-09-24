@@ -405,8 +405,14 @@ code { font-size: .9em; }
       'source-strategic': network.features.filter(feature => feature.properties?.kind === 'source-baseline' && feature.properties?.baseline_layer !== 'source-context').length,
       'source-context': network.features.filter(feature => feature.properties?.kind === 'source-baseline' && feature.properties?.baseline_layer === 'source-context').length,
       'candidate-neighbourhood': network.features.filter(feature => feature.properties?.kind === 'candidate-neighbourhood').length,
-      'selected-alignment': network.features.filter(feature => feature.properties?.kind === 'selected-alignment').length,
-      'provisional-alignment': network.features.filter(feature => feature.properties?.kind === 'provisional-alignment').length,
+      'selected-alignment': network.features.filter(feature =>
+        feature.properties?.kind === 'selected-alignment' &&
+        !Object.hasOwn(feature.properties, 'community_id')
+      ).length,
+      'provisional-alignment': network.features.filter(feature =>
+        feature.properties?.kind === 'provisional-alignment' &&
+        !Object.hasOwn(feature.properties, 'community_id')
+      ).length,
       'unresolved-decision': network.features.filter(feature => feature.properties?.kind === 'unresolved-decision').length,
       'candidate-alternative': network.features.filter(feature => feature.properties?.kind === 'candidate-alternative').length,
       'a-road-departure': network.features.filter(feature => feature.properties?.kind === 'a-road-departure').length,
@@ -641,8 +647,9 @@ code { font-size: .9em; }
       ];
       line('native-strategic-network', mainStrategicFilter, '#d71920', 4);
       line('native-alternative', ['==', ['get', 'kind'], 'candidate-alternative'], '#4b5563', 2, [5, 4]);
-      line('native-selected', ['==', ['get', 'kind'], 'selected-alignment'], '#009e73', 5);
-      const provisionalFilter = ['==', ['get', 'kind'], 'provisional-alignment'];
+      const selectedFilter = ['all', ['==', ['get', 'kind'], 'selected-alignment'], ['!', ['has', 'community_id']]];
+      line('native-selected', selectedFilter, '#009e73', 5);
+      const provisionalFilter = ['all', ['==', ['get', 'kind'], 'provisional-alignment'], ['!', ['has', 'community_id']]];
       line('native-provisional-casing', provisionalFilter, '#263238', 7, [5.7142857, 3.5714286]);
       line('native-provisional', provisionalFilter, '#e69f00', 5, [8, 5]);
       line('native-unresolved', ['==', ['get', 'kind'], 'unresolved-decision'], '#cc79a7', 4, [1, 3]);
@@ -662,8 +669,8 @@ code { font-size: .9em; }
       addMarkerImage('native-marker-community-access', 'pentagon', '#56b4e9');
       addMarkerImage('native-marker-community-gap', 'cross', '#d55e00');
       addMarkerImage('native-marker-access-obligation', 'hexagon', '#f0e442');
-      marker('native-selected-point', ['all', ['==', ['get', 'kind'], 'selected-alignment'], ['==', ['geometry-type'], 'Point']], 'native-marker-selected', 1);
-      marker('native-provisional-point', ['all', ['==', ['get', 'kind'], 'provisional-alignment'], ['==', ['geometry-type'], 'Point']], 'native-marker-provisional', 1);
+      marker('native-selected-point', ['all', selectedFilter, ['==', ['geometry-type'], 'Point']], 'native-marker-selected', 1);
+      marker('native-provisional-point', ['all', provisionalFilter, ['==', ['geometry-type'], 'Point']], 'native-marker-provisional', 1);
       marker('native-network-place', ['==', ['get', 'kind'], 'network-place'], 'native-marker-network-place', 0.72);
       marker('native-school-context', ['==', ['get', 'kind'], 'school-context'], 'native-marker-school', 0.86);
       marker('native-community-access-point', ['all', ['==', ['get', 'kind'], 'community-access'], ['==', ['geometry-type'], 'Point'], ['!=', ['get', 'status'], 'network-gap']], 'native-marker-community-access', 0.86);
