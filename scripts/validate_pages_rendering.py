@@ -480,7 +480,7 @@ def _inspect_native_agentic(
             raise ValueError(f"{deployment_id} native decision summary has invalid departure count")
 
         inspection = page.evaluate(
-            """expectedDepartures => {
+            """async expectedDepartures => {
               const root = document.querySelector('[data-native-publication="native-agentic"]');
               const network = window.SATN_NATIVE_NETWORK;
               const features = network?.features || [];
@@ -576,6 +576,7 @@ def _inspect_native_agentic(
                   toggle.dispatchEvent(new Event('change', {bubbles: true}));
                 }
               }
+              await new Promise(resolve => map.once('render', resolve));
               const renderedStrategic = uniqueRendered([
                 'native-strategic-network',
                 'native-selected', 'native-selected-point', 'native-provisional',

@@ -885,16 +885,34 @@ def test_native_map_supports_public_feature_inspection_reset_and_layer_toggle(
                       const map = window.SATN_NATIVE_MAP;
                       const feature = map.queryRenderedFeatures({layers: ['native-unresolved']})[0];
                       if (!feature) return null;
-                      const coordinates = feature.geometry.coordinates;
-                      const start = map.project(coordinates[0]);
-                      const end = map.project(coordinates[coordinates.length - 1]);
-                      const screen = [(start.x + end.x) / 2, (start.y + end.y) / 2];
-                      if (!map.queryRenderedFeatures(screen, {
-                        layers: ['native-unresolved']
-                      }).length) return null;
                       const rect = map.getContainer().getBoundingClientRect();
-                      return {x: screen[0] + rect.left, y: screen[1] + rect.top,
-                        mapX: screen[0], mapY: screen[1]};
+                      const lines = feature.geometry.type === 'MultiLineString'
+                        ? feature.geometry.coordinates
+                        : [feature.geometry.coordinates];
+                      const candidates = [];
+                      lines.forEach(line => line.forEach((coordinate, index) => {
+                        candidates.push(coordinate);
+                        if (index + 1 < line.length) {
+                          candidates.push([
+                            (coordinate[0] + line[index + 1][0]) / 2,
+                            (coordinate[1] + line[index + 1][1]) / 2
+                          ]);
+                        }
+                      }));
+                      for (const coordinate of candidates) {
+                        const screen = map.project(coordinate);
+                        const hits = map.queryRenderedFeatures(screen, {
+                          layers: ['native-unresolved']
+                        });
+                        if (!hits.some(hit =>
+                          hit.properties.decision_id === feature.properties.decision_id
+                        )) continue;
+                        const x = screen.x + rect.left;
+                        const y = screen.y + rect.top;
+                        if (document.elementFromPoint(x, y) !== map.getCanvas()) continue;
+                        return {x, y, mapX: screen.x, mapY: screen.y};
+                      }
+                      return null;
                     }"""
                 )
                 assert unresolved_point is not None
