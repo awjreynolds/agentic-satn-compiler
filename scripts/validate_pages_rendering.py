@@ -565,18 +565,23 @@ def _inspect_native_agentic(
               })) {
                 failures.push('default Strategic active travel network is invalid');
               }
-              for (const name of [
-                'source-strategic', 'source-context', 'selected-alignment',
-                'provisional-alignment', 'unresolved-decision', 'candidate-alternative',
-                'a-road-departure', 'source-departure', 'access-obligation'
-              ]) {
-                const toggle = document.querySelector(`[data-layer-toggle="${name}"]`);
-                if (toggle) {
-                  toggle.checked = true;
-                  toggle.dispatchEvent(new Event('change', {bubbles: true}));
+              const waitForIdleAfter = change => new Promise(resolve => {
+                map.once('idle', resolve);
+                change();
+              });
+              await waitForIdleAfter(() => {
+                for (const name of [
+                  'source-strategic', 'source-context', 'selected-alignment',
+                  'provisional-alignment', 'unresolved-decision', 'candidate-alternative',
+                  'a-road-departure', 'source-departure', 'access-obligation'
+                ]) {
+                  const toggle = document.querySelector(`[data-layer-toggle="${name}"]`);
+                  if (toggle) {
+                    toggle.checked = true;
+                    toggle.dispatchEvent(new Event('change', {bubbles: true}));
+                  }
                 }
-              }
-              await new Promise(resolve => map.once('render', resolve));
+              });
               const renderedStrategic = uniqueRendered([
                 'native-strategic-network',
                 'native-selected', 'native-selected-point', 'native-provisional',

@@ -880,6 +880,7 @@ def test_native_map_supports_public_feature_inspection_reset_and_layer_toggle(
                 assert "candidate:selected" in popup_text
                 assert "[]" not in popup_text
                 assert "[" not in popup_text
+                page.locator(".maplibregl-popup-content details summary").click()
                 unresolved_point = page.evaluate(
                     """() => {
                       const map = window.SATN_NATIVE_MAP;
