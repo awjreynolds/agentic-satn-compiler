@@ -471,6 +471,17 @@ code { font-size: .9em; }
     activePopup = popup.addTo(map);
     activePopupFeatureKey = key;
     activePopupLayerId = feature.layer.id;
+    popup.getElement().addEventListener('click', event => {
+      if (event.target instanceof Element &&
+          event.target.closest('.maplibregl-popup-close-button')) {
+        event.stopPropagation();
+        return;
+      }
+      event.stopPropagation();
+      if (activePopup !== popup) return;
+      pinnedFeature = feature;
+      highlight(map, feature);
+    });
   };
   const clearInspection = map => {
     pinnedFeature = null;
