@@ -181,7 +181,7 @@ def _inspect_native_agentic(
                     f"{bus_context_url}"
                 )
             bus_result = page.evaluate(
-                """async () => {
+                r"""async () => {
                   const failures = [];
                   const root = document.documentElement;
                   const map = window.SATN_NATIVE_MAP;
@@ -230,9 +230,11 @@ def _inspect_native_agentic(
                     if (!routeToggle || !map.getLayer('native-bus-route')) {
                       failures.push('bus route control or layer is missing');
                     } else {
-                      if (!routeToggle.closest('li')?.textContent.includes(
-                        routes.length + ' mapped segments'
-                      )) failures.push(
+                      const routeLabel = routeToggle.closest('label')?.innerText
+                        .replace(/\s+/g, ' ').trim() || '';
+                      const exactRouteTotal = `Bus route segments (${routes.length})`;
+                      if (routeLabel !== exactRouteTotal &&
+                          !routeLabel.includes(`${routes.length} mapped segments`)) failures.push(
                         'bus route control count is not labelled as mapped segments'
                       );
                       if (routeToggle.checked || routeVisible() !== 'none') {
@@ -254,14 +256,50 @@ def _inspect_native_agentic(
                     if (!interchangeToggle || !map.getLayer('native-bus-interchange')) {
                       failures.push('bus station and stop-group control or layer is missing');
                     } else {
-                      const expectedPointCounts = `${interchanges.length} points (` +
+                      const interchangeLabel = interchangeToggle.closest('label')?.innerText
+                        .replace(/\s+/g, ' ').trim() || '';
+                      const exactInterchangeTotal =
+                        `Bus facilities and transfer points (${interchanges.length})`;
+                      const expectedLegacyPointCounts = `${interchanges.length} points (` +
                         `${facilities.length} facilities, ` +
                         `${transferCandidates.length} transfer points)`;
-                      if (!interchangeToggle.closest('li')?.textContent.includes(
-                        expectedPointCounts
-                      )) failures.push(
-                        'bus facility and transfer-point control count is incorrect'
-                      );
+                      const hasLegacyBreakdown =
+                        interchangeLabel.includes(expectedLegacyPointCounts);
+                      if (interchangeLabel !== exactInterchangeTotal &&
+                          !hasLegacyBreakdown) {
+                        failures.push(
+                          'bus facility and transfer-point control count is incorrect'
+                        );
+                      }
+                      if (interchangeLabel === exactInterchangeTotal) {
+                        const item = interchangeToggle.closest('li');
+                        const summary = item?.querySelector('.layer-help > summary');
+                        const helpId = summary?.getAttribute('aria-describedby');
+                        const help = helpId ? document.getElementById(helpId) : null;
+                        const details = summary?.parentElement;
+                        if (!help || help.getAttribute('role') !== 'tooltip' || !details) {
+                          failures.push(
+                            'bus facility count breakdown is missing from its info tooltip'
+                          );
+                        } else {
+                          const wasOpen = details.open;
+                          details.open = true;
+                          const helpText = help.innerText.replace(/\s+/g, ' ').trim();
+                          const transferBreakdown =
+                            `Timetable-supported transfer candidates: ` +
+                            `${transferCandidates.length}`;
+                          if (
+                            !helpText.includes(`Facility records: ${facilities.length}`) ||
+                            !helpText.includes(transferBreakdown)
+                          ) {
+                            failures.push(
+                              'bus facility and transfer-point breakdown is ' +
+                              'incorrect in its info tooltip'
+                            );
+                          }
+                          details.open = wasOpen;
+                        }
+                      }
                       if (interchangeToggle.checked || interchangeVisible() !== 'none') {
                         failures.push('bus facility context is not off by default');
                       }

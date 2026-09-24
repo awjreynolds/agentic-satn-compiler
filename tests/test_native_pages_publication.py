@@ -367,6 +367,31 @@ def _make_on_spine_decision_point(bundle: Path, *, include_access: bool) -> None
         path.write_text(json.dumps(document), encoding="utf-8")
 
 
+def _add_community_gap(bundle: Path) -> None:
+    network_path = bundle / "decision-map.geojson"
+    network = json.loads(network_path.read_text(encoding="utf-8"))
+    network["features"].append(
+        {
+            "type": "Feature",
+            "properties": {
+                "kind": "community-access",
+                "community_id": "community:gap",
+                "name": "Fixture community",
+                "status": "network-gap",
+                "reason": "No connected path is available in the current evidence.",
+            },
+            "geometry": {"type": "Point", "coordinates": [-1.72, 51.24]},
+        }
+    )
+    network_path.write_text(json.dumps(network), encoding="utf-8")
+    for filename in ("decision-map.json", "publication.json"):
+        path = bundle / filename
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["counts"]["community_access"] = 1
+        document["counts"]["community_gaps"] = 1
+        path.write_text(json.dumps(document), encoding="utf-8")
+
+
 def _add_serialized_urban_entry_features(bundle: Path) -> None:
     network_path = bundle / "decision-map.geojson"
     network = json.loads(network_path.read_text(encoding="utf-8"))
@@ -751,6 +776,94 @@ def test_native_rendering_gate_checks_readable_transfer_schedule_evidence(
 
 
 @pytest.mark.browser
+def test_native_layer_controls_have_readable_help_and_preserve_map_defaults(
+    tmp_path: Path,
+) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    _write_native_catalogue(catalogue)
+    _write_native_bundle(bundles, include_transfer_candidate=True)
+    bundle = bundles / "native-area"
+    _add_community_gap(bundle)
+    result = package_pages(
+        catalogue,
+        bundles,
+        tmp_path / "pages",
+        tmp_path / "satn-pages.zip",
+    )
+    published_bundle = result.pages_directory / "deployments" / "native-area"
+    shutil.copy2(bundle / "bus-context.geojson", published_bundle)
+    shutil.copy2(bundle / "bus-context.js", published_bundle)
+
+    with (
+        VALIDATOR._serve(result.pages_directory) as origin,
+        VALIDATOR.sync_playwright() as playwright,
+    ):
+        executable = os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE")
+        browser = playwright.chromium.launch(headless=True, executable_path=executable)
+        try:
+            page = browser.new_page(viewport={"width": 1280, "height": 900})
+            page.goto(f"{origin}/deployments/native-area/index.html", wait_until="domcontentloaded")
+            page.wait_for_function(
+                "() => document.documentElement.dataset.nativeReady === 'true' && "
+                "document.documentElement.dataset.nativeBusContextLoaded === 'true'"
+            )
+
+            strategic_row = page.locator("[data-layer-toggle='strategic-network']").locator(
+                "xpath=../.."
+            )
+            assert (
+                strategic_row.evaluate(
+                    "row => row.nextElementSibling.querySelector("
+                    "'[data-layer-toggle]')?.dataset.layerToggle"
+                )
+                == "community-access"
+            )
+            assert page.locator("[data-layer-toggle='selected-alignment']").count() == 0
+            assert page.evaluate(
+                """() => [...document.querySelectorAll('input[type=checkbox]:checked')]
+                  .map(input => input.dataset.layerToggle || input.dataset.busContextToggle)"""
+            ) == ["strategic-network"]
+            assert page.locator(".native-panel .key > li:not([hidden])").evaluate_all(
+                "rows => rows.every(row => row.querySelector('.layer-help summary'))"
+            )
+            assert page.locator("[data-layer-toggle='community-access']").is_checked() is False
+
+            community_help = (
+                page.locator("[data-layer-toggle='community-access']")
+                .locator("xpath=../..")
+                .locator(".layer-help > summary")
+            )
+            community_help.click()
+            assert community_help.locator("xpath=..").evaluate("details => details.open")
+            assert (
+                "A cross marks a missing connection" in page.locator("#layer-help-2").inner_text()
+            )
+            assert page.locator("[data-layer-toggle='community-access']").is_checked() is False
+            community_help.press("Escape")
+            assert not community_help.locator("xpath=..").evaluate("details => details.open")
+            assert page.locator("#layer-help-2").is_hidden()
+
+            bus_help = page.locator("summary[aria-describedby='layer-help-bus-interchanges']")
+            bus_help.click()
+            assert (
+                "Facility records: 1" in page.locator("#layer-help-bus-interchanges").inner_text()
+            )
+            assert (
+                "transfer candidates: 1"
+                in page.locator("#layer-help-bus-interchanges").inner_text()
+            )
+            assert (
+                "1 facility"
+                not in page.locator("[data-bus-context-toggle='interchanges']")
+                .locator("xpath=../..")
+                .inner_text()
+            )
+        finally:
+            browser.close()
+
+
+@pytest.mark.browser
 def test_native_map_supports_public_feature_inspection_reset_and_layer_toggle(
     tmp_path: Path,
 ) -> None:
@@ -824,6 +937,9 @@ def test_native_map_supports_public_feature_inspection_reset_and_layer_toggle(
                         visibility: map.getLayoutProperty(
                           'native-strategic-network', 'visibility'
                         ),
+                        selectedVisibility: map.getLayoutProperty(
+                          'native-selected', 'visibility'
+                        ),
                         color: map.getPaintProperty('native-strategic-network', 'line-color'),
                         count: toggles.find(toggle =>
                           toggle.dataset.layerToggle === 'strategic-network'
@@ -840,6 +956,7 @@ def test_native_map_supports_public_feature_inspection_reset_and_layer_toggle(
                 )
                 assert default_layers["checked"] == ["strategic-network"]
                 assert default_layers["visibility"] == "visible"
+                assert default_layers["selectedVisibility"] == "none"
                 assert default_layers["color"] == "#d71920"
                 assert default_layers["count"] == " (3)"
                 assert default_layers["features"]
@@ -867,8 +984,11 @@ def test_native_map_supports_public_feature_inspection_reset_and_layer_toggle(
                     for feature in default_layers["features"]
                 )
 
-                page.locator("input[data-layer-toggle='selected-alignment']").check()
                 page.locator("input[data-layer-toggle='unresolved-decision']").check()
+                page.evaluate(
+                    "() => window.SATN_NATIVE_MAP.setLayoutProperty("
+                    "'native-selected', 'visibility', 'visible')"
+                )
 
                 initial = page.evaluate(
                     "() => ({center: window.SATN_NATIVE_MAP.getCenter().toArray(), "
@@ -1029,7 +1149,10 @@ def test_native_map_supports_public_feature_inspection_reset_and_layer_toggle(
                     map_wrap_box = page.locator(".native-map-wrap").bounding_box()
                     assert panel_box and map_wrap_box and map_wrap_box["y"] < panel_box["y"]
 
-                page.locator("input[data-layer-toggle='selected-alignment']").uncheck()
+                page.evaluate(
+                    "() => window.SATN_NATIVE_MAP.setLayoutProperty("
+                    "'native-selected', 'visibility', 'none')"
+                )
                 page.wait_for_function(
                     "() => window.SATN_NATIVE_MAP.getLayoutProperty('native-selected', "
                     "'visibility') === 'none'"
@@ -1107,23 +1230,20 @@ def test_native_map_labels_serialized_urban_entry_without_spine_claim(
                   const renderedCommunityDecisions = map.queryRenderedFeatures({
                     layers: decisionLayers
                   }).filter(feature => Object.hasOwn(feature.properties, 'community_id'));
-                  const selectedToggle = document.querySelector(
-                    '[data-layer-toggle="selected-alignment"]'
-                  );
                   return {
                     sourceCount: rawCommunityDecisions.length,
                     overlayCount: renderedCommunityDecisions.length,
-                    selectedCount: selectedToggle.parentElement.querySelector(
-                      '[data-layer-count]'
-                    ).textContent,
-                    selectedHidden: selectedToggle.closest('li').hidden
+                    selectedControlCount: document.querySelectorAll(
+                      '[data-layer-toggle="selected-alignment"]'
+                    ).length,
+                    selectedRendererPresent: Boolean(map.getLayer('native-selected'))
                   };
                 }"""
             )
             assert community_overlay["sourceCount"] == 1
             assert community_overlay["overlayCount"] == 0
-            assert community_overlay["selectedCount"] == " (0)"
-            assert community_overlay["selectedHidden"]
+            assert community_overlay["selectedControlCount"] == 0
+            assert community_overlay["selectedRendererPresent"]
             page.locator("input[data-layer-toggle='community-access']").check()
             page.wait_for_function(
                 "() => window.SATN_NATIVE_MAP.queryRenderedFeatures({layers: "

@@ -153,8 +153,9 @@
     if (propertyRows(properties).length || collectionRows.length) content.append(fullSourceDetails);
     return content;
   };
-  const addControl = (kind, label, count, layers, pointCounts = null) => {
+  const addControl = (kind, label, count, layers, description) => {
     const item = document.createElement('li');
+    item.className = 'layer-control-row';
     const control = document.createElement('label');
     const toggle = document.createElement('input');
     toggle.type = 'checkbox';
@@ -165,12 +166,22 @@
     swatch.className = kind === 'routes'
       ? 'swatch bus-route-key'
       : 'marker-key marker-star-key bus-interchange-key';
-    const countText = kind === 'routes'
-      ? `${count} mapped segments, long-dashed line`
-      : `${count} points (${pointCounts.facilities} facilities, ${pointCounts.transfers} transfer points), star markers`;
-    const text = document.createTextNode(`${label} (${countText})`);
+    const text = document.createTextNode(`${label} (${count})`);
     control.append(toggle, document.createTextNode(' '), swatch, text);
-    item.append(control);
+    const help = document.createElement('details');
+    help.className = 'layer-help';
+    help.name = 'native-layer-help';
+    const summary = document.createElement('summary');
+    summary.setAttribute('aria-label', 'About ' + label.toLowerCase());
+    summary.setAttribute('aria-describedby', 'layer-help-bus-' + kind);
+    summary.textContent = 'ⓘ';
+    help.append(summary);
+    const helpText = document.createElement('span');
+    helpText.id = 'layer-help-bus-' + kind;
+    helpText.className = 'layer-help-popup';
+    helpText.setAttribute('role', 'tooltip');
+    helpText.textContent = description;
+    item.append(control, help, helpText);
     legend.append(item);
     toggle.addEventListener('change', () => {
       layers.forEach(layer => {
@@ -238,7 +249,13 @@
           layout: { visibility: 'none', 'line-cap': 'round' },
           paint: { 'line-color': '#cc79a7', 'line-width': 3.5, 'line-dasharray': [6, 3] }
         });
-        addControl('routes', 'Bus route segments', routes.length, [routeCasingLayer, routeLayer]);
+        addControl(
+          'routes',
+          'Bus route segments',
+          routes.length,
+          [routeCasingLayer, routeLayer],
+          'Source route geometry for the stated service date; it does not establish observed transfers or service reliability.'
+        );
       }
       if (interchanges.length) {
         const markerSize = 28;
@@ -284,7 +301,7 @@
           'Bus facilities and transfer points',
           interchanges.length,
           [interchangeLayer],
-          { facilities: sourceFacilities.length, transfers: transferCandidates.length }
+          `Facility records: ${sourceFacilities.length}. Timetable-supported transfer candidates: ${transferCandidates.length}. Shared-stop evidence does not confirm a practical interchange or connection time.`
         );
       }
     }
