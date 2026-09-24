@@ -14,6 +14,16 @@ historical B&NES and WECA inputs, the snapshot locations are:
 - B&NES: `data/snapshots/banes-osm-open-roads-v1-2026-07-29/network.geojson`
 - WECA: `data/snapshots/weca-classification-elevation-2026-07-31-v14-fp-20260731T092920522968Z-02-fp-20260809T123804416841Z-01-connected-context-20260906-envelope-02/network.geojson`
 
+Before a run makes a live Jev/TypeSafe call or invokes a Codex specialist,
+obtain explicit user approval for that run. State each destination (the live
+Jev/TypeSafe service and/or the named Codex specialist) and the data categories
+it will receive: SATN planning inputs, candidate routes, source evidence and
+decision context, including any nonpublic context. A single approval may cover
+the specifically named B&NES and WECA batch, but does not authorize future
+runs. Offline source preparation, cached-tile sampling, manifest generation,
+builds, and tests require no model approval. This is operational guidance;
+compiler live mode does not itself enforce consent.
+
 Run the preparation from the checkout whose code is being verified. Set
 `EA_CACHE` to the raw tile cache created by the existing EA acquisition process,
 and choose a new output directory for each run:
