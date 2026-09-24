@@ -348,14 +348,17 @@ def _inspect_native_agentic(
                     let safeText = false;
                     if (currentFeature) {
                       map.fire('click', {point: currentPoint, lngLat: map.unproject(currentPoint)});
-                      const detail = document.querySelector('#native-feature-details');
+                      const popup = document.querySelector('.maplibregl-popup-content');
                       const visibleValue = feature.properties?.service_date ||
                         feature.properties?.name || feature.properties?.source_id || '';
-                      const visibleText = [...(detail?.children || [])]
-                        .filter(child => child.tagName !== 'DETAILS')
-                        .map(child => child.textContent).join(' ');
-                      const sourceDetails = detail?.querySelector('details');
-                      safeText = Boolean(detail && visibleText.includes(String(visibleValue))) &&
+                      const visibleContent = popup?.cloneNode(true);
+                      visibleContent?.querySelectorAll('details:not([open])').forEach(details =>
+                        details.remove()
+                      );
+                      const visibleText = visibleContent?.textContent || '';
+                      const sourceDetails = popup?.querySelector('details');
+                      safeText = Boolean(popup && visibleText.includes(String(visibleValue))) &&
+                        document.querySelectorAll('.maplibregl-popup').length === 1 &&
                         expectedVisibleValues.every(value =>
                           visibleText.includes(String(value))
                         ) && expectedCollapsedValues.every(value =>
@@ -370,11 +373,8 @@ def _inspect_native_agentic(
                         );
                       }
                       if (probeFeature) {
-                        safeText = safeText && detail.textContent.includes(probeValue) &&
-                          !detail.querySelector('[data-bus-safety-probe]') &&
-                          !document.querySelector(
-                            '.maplibregl-popup-content [data-bus-safety-probe]'
-                          );
+                        safeText = safeText && popup.textContent.includes(probeValue) &&
+                          !popup.querySelector('[data-bus-safety-probe]');
                       }
                     }
                     if (probeFeature) {
@@ -480,7 +480,7 @@ def _inspect_native_agentic(
             raise ValueError(f"{deployment_id} native decision summary has invalid departure count")
 
         inspection = page.evaluate(
-            """expectedDepartures => {
+            """async expectedDepartures => {
               const root = document.querySelector('[data-native-publication="native-agentic"]');
               const network = window.SATN_NATIVE_NETWORK;
               const features = network?.features || [];
@@ -546,7 +546,44 @@ def _inspect_native_agentic(
                   return true;
                 });
               };
+              const mainToggle = document.querySelector(
+                '[data-layer-toggle="strategic-network"]'
+              );
+              const initiallyChecked = [...document.querySelectorAll('[data-layer-toggle]')]
+                .filter(toggle => toggle.checked)
+                .map(toggle => toggle.dataset.layerToggle);
+              const defaultMain = renderedFor(['native-strategic-network']);
+              if (!mainToggle?.checked || initiallyChecked.length !== 1 ||
+                  initiallyChecked[0] !== 'strategic-network') {
+                failures.push('Strategic active travel network is not the sole default layer');
+              }
+              if (!defaultMain.length || defaultMain.some(feature => {
+                const props = properties(feature);
+                return !['selected-alignment', 'provisional-alignment'].includes(props.kind) ||
+                  feature.geometry?.type !== 'LineString' ||
+                  Object.hasOwn(props, 'community_id');
+              })) {
+                failures.push('default Strategic active travel network is invalid');
+              }
+              const waitForIdleAfter = change => new Promise(resolve => {
+                map.once('idle', resolve);
+                change();
+              });
+              await waitForIdleAfter(() => {
+                for (const name of [
+                  'source-strategic', 'source-context', 'selected-alignment',
+                  'provisional-alignment', 'unresolved-decision', 'candidate-alternative',
+                  'a-road-departure', 'source-departure', 'access-obligation'
+                ]) {
+                  const toggle = document.querySelector(`[data-layer-toggle="${name}"]`);
+                  if (toggle) {
+                    toggle.checked = true;
+                    toggle.dispatchEvent(new Event('change', {bubbles: true}));
+                  }
+                }
+              });
               const renderedStrategic = uniqueRendered([
+                'native-strategic-network',
                 'native-selected', 'native-selected-point', 'native-provisional',
                 'native-provisional-point', 'native-unresolved', 'native-alternative'
               ]);
@@ -558,8 +595,9 @@ def _inspect_native_agentic(
               ]);
               const renderedGaps = uniqueRendered(['native-access-obligation']);
               if (!root) failures.push('native publication root is missing');
-              if (!document.querySelector('#native-feature-details')) {
-                failures.push('native feature evidence panel is missing');
+              const summaryPanel = document.querySelector('#native-feature-details');
+              if (!summaryPanel || !summaryPanel.textContent.includes('Hover a map feature')) {
+                failures.push('native feature summary panel is missing');
               }
               if (!sourceBaseline.length) {
                 failures.push('native source baseline geometry is not visible');

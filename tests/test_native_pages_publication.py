@@ -82,6 +82,7 @@ def _write_native_bundle(
                 "type": "Feature",
                 "properties": {
                     "kind": "selected-alignment",
+                    "role": "strategic-spine",
                     "decision_id": "decision:selected",
                     "candidate_id": "candidate:selected",
                     "reason": "Selected public evidence alignment",
@@ -94,6 +95,7 @@ def _write_native_bundle(
                 "type": "Feature",
                 "properties": {
                     "kind": "provisional-alignment",
+                    "role": "strategic-spine",
                     "decision_id": "decision:provisional",
                     "candidate_id": "candidate:provisional",
                     "reason": "Provisional public evidence alignment",
@@ -766,7 +768,7 @@ def test_native_map_supports_public_feature_inspection_reset_and_layer_toggle(
                 layout = page.evaluate(
                     """() => {
                       const panel = document.querySelector('.native-panel');
-                      const evidence = document.querySelector('#native-feature-details');
+                      const summary = document.querySelector('#native-feature-details');
                       const layers = document.querySelector('.native-panel fieldset');
                       return {
                         shellBottom: Math.round(
@@ -776,14 +778,14 @@ def test_native_map_supports_public_feature_inspection_reset_and_layer_toggle(
                         documentHeight: document.documentElement.scrollHeight,
                         panelTabIndex: panel.getAttribute('tabindex'),
                         panelOverflowY: getComputedStyle(panel).overflowY,
-                        evidenceBeforeLayers: Boolean(
-                          evidence.compareDocumentPosition(layers) &
+                        summaryBeforeLayers: Boolean(
+                          summary.compareDocumentPosition(layers) &
                           Node.DOCUMENT_POSITION_FOLLOWING
                         )
                       };
                     }"""
                 )
-                assert layout["evidenceBeforeLayers"]
+                assert layout["summaryBeforeLayers"]
                 if viewport["width"] >= 720:
                     assert layout["shellBottom"] == round(layout["viewportHeight"])
                     assert layout["documentHeight"] == layout["viewportHeight"]
@@ -792,6 +794,41 @@ def test_native_map_supports_public_feature_inspection_reset_and_layer_toggle(
                 assert not page.locator(
                     "input[data-layer-toggle='candidate-alternative']"
                 ).is_visible()
+                default_layers = page.evaluate(
+                    """() => {
+                      const map = window.SATN_NATIVE_MAP;
+                      const toggles = [...document.querySelectorAll('[data-layer-toggle]')];
+                      const features = map.queryRenderedFeatures({
+                        layers: ['native-strategic-network']
+                      });
+                      return {
+                        checked: toggles.filter(toggle => toggle.checked)
+                          .map(toggle => toggle.dataset.layerToggle),
+                        visibility: map.getLayoutProperty(
+                          'native-strategic-network', 'visibility'
+                        ),
+                        color: map.getPaintProperty('native-strategic-network', 'line-color'),
+                        features: features.map(feature => ({
+                          kind: feature.properties.kind,
+                          geometry: feature.geometry.type,
+                          hasCommunity: Object.hasOwn(feature.properties, 'community_id')
+                        }))
+                      };
+                    }"""
+                )
+                assert default_layers["checked"] == ["strategic-network"]
+                assert default_layers["visibility"] == "visible"
+                assert default_layers["color"] == "#d71920"
+                assert default_layers["features"]
+                assert all(
+                    feature["kind"] in {"selected-alignment", "provisional-alignment"}
+                    and feature["geometry"] == "LineString"
+                    and not feature["hasCommunity"]
+                    for feature in default_layers["features"]
+                )
+
+                page.locator("input[data-layer-toggle='selected-alignment']").check()
+                page.locator("input[data-layer-toggle='unresolved-decision']").check()
 
                 initial = page.evaluate(
                     "() => ({center: window.SATN_NATIVE_MAP.getCenter().toArray(), "
@@ -828,66 +865,125 @@ def test_native_map_supports_public_feature_inspection_reset_and_layer_toggle(
                     }"""
                 )
                 assert point is not None
+                summary_text = page.locator("#native-feature-details").inner_text()
+                assert "Hover a map feature" in summary_text
+                assert "Click to pin" in summary_text
                 page.mouse.click(point["x"], point["y"])
                 page.wait_for_selector(".maplibregl-popup")
-                assert "selected-alignment" in page.locator("#native-feature-details").inner_text()
+                assert (
+                    "selected-alignment" in page.locator(".maplibregl-popup-content").inner_text()
+                )
+                assert "strategic-spine" in page.locator(".maplibregl-popup-content").inner_text()
                 assert page.locator(".maplibregl-popup").count() == 1
-                page.locator("#native-feature-details summary").click()
-                detail_text = page.locator("#native-feature-details").inner_text()
+                page.locator(".maplibregl-popup-content details summary").click()
                 popup_text = page.locator(".maplibregl-popup-content").inner_text()
-                assert "candidate:selected" in detail_text
-                assert "[]" not in detail_text
+                assert "candidate:selected" in popup_text
                 assert "[]" not in popup_text
                 assert "[" not in popup_text
-                if viewport["width"] >= 720:
-                    assert (
-                        page.evaluate(
-                            """() => {
-                              const panel = document.querySelector('.native-panel');
-                              panel.scrollTop = panel.scrollHeight;
-                              return panel.scrollTop;
-                            }"""
-                        )
-                        > 0
-                    )
-                    page.mouse.click(point["x"], point["y"])
-                    page.wait_for_function(
-                        "() => document.querySelector('.native-panel').scrollTop === 0"
-                    )
+                page.locator(".maplibregl-popup-content details summary").click()
+                unresolved_point = page.evaluate(
+                    """() => {
+                      const map = window.SATN_NATIVE_MAP;
+                      const feature = map.queryRenderedFeatures({layers: ['native-unresolved']})[0];
+                      if (!feature) return null;
+                      const rect = map.getContainer().getBoundingClientRect();
+                      const lines = feature.geometry.type === 'MultiLineString'
+                        ? feature.geometry.coordinates
+                        : [feature.geometry.coordinates];
+                      const candidates = [];
+                      lines.forEach(line => line.forEach((coordinate, index) => {
+                        candidates.push(coordinate);
+                        if (index + 1 < line.length) {
+                          candidates.push([
+                            (coordinate[0] + line[index + 1][0]) / 2,
+                            (coordinate[1] + line[index + 1][1]) / 2
+                          ]);
+                        }
+                      }));
+                      for (const coordinate of candidates) {
+                        const screen = map.project(coordinate);
+                        const hits = map.queryRenderedFeatures(screen, {
+                          layers: ['native-unresolved']
+                        });
+                        if (!hits.some(hit =>
+                          hit.properties.decision_id === feature.properties.decision_id
+                        )) continue;
+                        const x = screen.x + rect.left;
+                        const y = screen.y + rect.top;
+                        if (document.elementFromPoint(x, y) !== map.getCanvas()) continue;
+                        return {x, y, mapX: screen.x, mapY: screen.y};
+                      }
+                      return null;
+                    }"""
+                )
+                assert unresolved_point is not None
+                page.mouse.move(unresolved_point["x"], unresolved_point["y"])
+                assert (
+                    "selected-alignment" in page.locator(".maplibregl-popup-content").inner_text()
+                )
+                assert page.locator("#native-feature-details").inner_text() == summary_text
+                page.mouse.click(unresolved_point["x"], unresolved_point["y"])
+                page.wait_for_function(
+                    "() => document.querySelector('.maplibregl-popup-content')?.innerText "
+                    ".includes('unresolved-decision')"
+                )
+                assert page.locator(".maplibregl-popup").count() == 1
+                page.mouse.move(point["x"], point["y"])
+                assert (
+                    "unresolved-decision" in page.locator(".maplibregl-popup-content").inner_text()
+                )
+                assert page.locator("#native-feature-details").inner_text() == summary_text
+                blank_point = [8, 8]
+                assert page.evaluate(
+                    "point => window.SATN_NATIVE_MAP.queryRenderedFeatures(point).length === 0",
+                    blank_point,
+                )
                 map_box = page.locator("#native-map").bounding_box()
                 assert map_box and map_box["width"] > 0 and map_box["height"] > 0
-                page.mouse.move(
-                    map_box["x"] + map_box["width"] - 8, map_box["y"] + map_box["height"] - 8
+                page.mouse.click(map_box["x"] + blank_point[0], map_box["y"] + blank_point[1])
+                page.wait_for_function("() => !document.querySelector('.maplibregl-popup')")
+                page.wait_for_function(
+                    "point => window.SATN_NATIVE_MAP.queryRenderedFeatures(point, "
+                    "{layers: ['native-highlight-line']}).length === 0",
+                    arg=[unresolved_point["mapX"], unresolved_point["mapY"]],
                 )
-                assert "selected-alignment" in page.locator("#native-feature-details").inner_text()
-                if viewport["width"] >= 720:
-                    blank_point = [8, 8]
-                    assert page.evaluate(
-                        "point => window.SATN_NATIVE_MAP.queryRenderedFeatures(point).length === 0",
-                        blank_point,
-                    )
-                    highlighted_point = [point["mapX"], point["mapY"]]
-                    page.wait_for_function(
-                        "point => window.SATN_NATIVE_MAP.queryRenderedFeatures(point, "
-                        "{layers: ['native-highlight-line']}).length > 0",
-                        arg=highlighted_point,
-                    )
-                    page.mouse.click(map_box["x"] + blank_point[0], map_box["y"] + blank_point[1])
-                    page.wait_for_function("() => !document.querySelector('.maplibregl-popup')")
-                    page.wait_for_function(
-                        "point => window.SATN_NATIVE_MAP.queryRenderedFeatures(point, "
-                        "{layers: ['native-highlight-line']}).length === 0",
-                        arg=highlighted_point,
-                    )
-                    assert (
-                        "Hover or select a rendered map feature"
-                        in page.locator("#native-feature-details").inner_text()
-                    )
-                    page.mouse.move(map_box["x"] + point["mapX"], map_box["y"] + point["mapY"])
-                    assert (
-                        "selected-alignment" in page.locator("#native-feature-details").inner_text()
-                    )
-                    assert page.locator(".maplibregl-popup").count() == 0
+                assert page.locator("#native-feature-details").inner_text() == summary_text
+                page.locator("#native-map").scroll_into_view_if_needed()
+                map_box = page.locator("#native-map").bounding_box()
+                assert map_box
+                rehover_point = [
+                    map_box["x"] + point["mapX"],
+                    map_box["y"] + point["mapY"],
+                ]
+                assert page.evaluate(
+                    "point => document.elementFromPoint(point[0], point[1]) === "
+                    "window.SATN_NATIVE_MAP.getCanvas()",
+                    rehover_point,
+                )
+                page.mouse.move(rehover_point[0], rehover_point[1])
+                page.wait_for_function(
+                    "() => document.querySelector('.maplibregl-popup-content')?.innerText "
+                    ".includes('selected-alignment')"
+                )
+                assert page.locator("#native-feature-details").inner_text() == summary_text
+                page.mouse.click(unresolved_point["x"], unresolved_point["y"])
+                page.wait_for_function(
+                    "() => document.querySelector('.maplibregl-popup-content')?.innerText "
+                    ".includes('unresolved-decision')"
+                )
+                page.locator("[data-native-clear]").click()
+                page.wait_for_function("() => !document.querySelector('.maplibregl-popup')")
+                page.locator("#native-map").scroll_into_view_if_needed()
+                map_box = page.locator("#native-map").bounding_box()
+                assert map_box
+                page.mouse.move(map_box["x"] + point["mapX"], map_box["y"] + point["mapY"])
+                page.wait_for_function(
+                    "() => document.querySelector('.maplibregl-popup-content')?.innerText "
+                    ".includes('selected-alignment')"
+                )
+                assert page.locator("#native-feature-details").inner_text() == summary_text
+                page.locator("[data-native-clear]").click()
+                page.wait_for_function("() => !document.querySelector('.maplibregl-popup')")
                 if viewport["width"] < 720:
                     panel_box = page.locator(".native-panel").bounding_box()
                     map_wrap_box = page.locator(".native-map-wrap").bounding_box()
@@ -944,6 +1040,14 @@ def test_native_map_labels_serialized_urban_entry_without_spine_claim(
                 "() => document.documentElement.dataset.nativeReady === 'true' && "
                 "window.SATN_NATIVE_MAP?.isStyleLoaded()"
             )
+            assert "Community Connections" in page.locator(".native-panel").inner_text()
+            assert not page.evaluate(
+                """() => window.SATN_NATIVE_MAP.queryRenderedFeatures({
+                  layers: ['native-strategic-network']
+                }).some(feature => feature.properties.decision_id === 'decision:selected')"""
+            )
+            page.locator("input[data-layer-toggle='selected-alignment']").check()
+            page.locator("input[data-layer-toggle='community-access']").check()
             page.wait_for_function(
                 "() => window.SATN_NATIVE_MAP.queryRenderedFeatures({layers: "
                 "['native-community-access-point']}).length > 0"
@@ -986,23 +1090,23 @@ def test_native_map_labels_serialized_urban_entry_without_spine_claim(
                 page.mouse.click(point["x"], point["y"])
                 page.wait_for_selector(".maplibregl-popup")
 
+            summary_text = page.locator("#native-feature-details").inner_text()
             click_feature("native-community-access-point")
-            community_text = page.locator("#native-feature-details").inner_text()
             community_popup = page.locator(".maplibregl-popup-content").inner_text()
-            assert "Urban entry to Bath" in community_text
-            assert "Urban extent source" in community_text
-            assert "osm:relation:5342409" in community_text
-            assert "estimated moving time 14.5 min" in community_text
-            assert "Hill-neutral sensitivity (not an e-bike ETA): 11.2 min" in community_text
-            assert "Primary spine access" not in community_text
             assert "Urban entry to Bath" in community_popup
+            assert "Urban extent source" in community_popup
+            assert "osm:relation:5342409" in community_popup
+            assert "estimated moving time 14.5 min" in community_popup
+            assert "Hill-neutral sensitivity (not an e-bike ETA): 11.2 min" in community_popup
+            assert "Primary spine access" not in community_popup
+            assert page.locator("#native-feature-details").inner_text() == summary_text
 
             page.locator(".maplibregl-popup-close-button").click()
             page.locator("[data-native-clear]").click()
             click_feature("native-selected")
-            selected_text = page.locator("#native-feature-details").inner_text()
-            assert "Urban entry to Bath" in selected_text
-            assert "Primary spine access" not in selected_text
+            selected_popup = page.locator(".maplibregl-popup-content").inner_text()
+            assert "Urban entry to Bath" in selected_popup
+            assert "Primary spine access" not in selected_popup
         finally:
             browser.close()
 

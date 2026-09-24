@@ -215,7 +215,7 @@ fn publishes_compact_decision_map_with_real_departure_sections() {
     assert!(html.contains("Source departure · solid, dark edge"));
     assert!(html.contains("Network places · square"));
     assert!(html.contains("Schools · diamond"));
-    assert!(html.contains("Community access · solid, pentagon; X for gaps"));
+    assert!(html.contains("Community Connections · solid, pentagon; X for gaps"));
     assert!(html.contains("Access obligations and gaps · hexagon"));
     assert!(html.contains("Study area boundary · pale fill and thin neutral edge"));
     assert!(html.contains("native-marker-access-obligation"));
