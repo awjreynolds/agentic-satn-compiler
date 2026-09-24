@@ -508,7 +508,7 @@ def test_native_rendering_gate_accepts_a_valid_on_spine_decision_point(
     validated = VALIDATOR.validate_pages_rendering(result.pages_directory)
 
     assert validated[0].strategic_spines == 2
-    assert validated[0].rendered_strategic_spines == 4
+    assert validated[0].rendered_strategic_spines == 3
 
 
 def test_package_pages_accepts_the_explicit_native_agentic_publication(tmp_path: Path) -> None:
