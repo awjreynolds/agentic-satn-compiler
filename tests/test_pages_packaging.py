@@ -187,6 +187,27 @@ def write_bundle(root: Path) -> None:
     )
 
 
+def write_native_bus_fixture(
+    catalogue: Path,
+    bundles: Path,
+    *,
+    include_bus_context: bool = True,
+) -> None:
+    from test_native_pages_publication import _write_native_bundle, _write_native_catalogue
+
+    _write_native_catalogue(catalogue)
+    _write_native_bundle(bundles, include_transfer_candidate=include_bus_context)
+    if not include_bus_context:
+        bundle = bundles / "native-area"
+        html_path = bundle / "index.html"
+        loader = '<script src="bus-context.js" data-satn-bus-context data-context-url=""></script>'
+        html_path.write_text(
+            html_path.read_text(encoding="utf-8").replace(loader, ""),
+            encoding="utf-8",
+        )
+        (bundle / "bus-context.js").unlink()
+
+
 def package_fixture(tmp_path: Path, *, maximum_bytes: int = 1_000_000):
     catalogue = tmp_path / "catalogue.yaml"
     bundles = tmp_path / "bundles"
@@ -221,6 +242,45 @@ def test_package_pages_copies_catalogue_deployments_and_writes_release_archive(
         names = set(archive.namelist())
     assert "catalogue.json" in names
     assert "deployments/test-area/publication.json" in names
+
+
+def test_package_pages_copies_native_bus_context_sidecars_into_tree_and_archive(
+    tmp_path: Path,
+) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    write_native_bus_fixture(catalogue, bundles)
+
+    result = package_pages(
+        catalogue,
+        bundles,
+        tmp_path / "pages",
+        tmp_path / "satn-pages.zip",
+    )
+
+    deployment = result.pages_directory / "deployments" / "native-area"
+    with zipfile.ZipFile(result.release_artifact) as archive:
+        for name in ("bus-context.js", "bus-context.geojson"):
+            expected = (bundles / "native-area" / name).read_bytes()
+            assert (deployment / name).read_bytes() == expected
+            assert archive.read(f"deployments/native-area/{name}") == expected
+
+
+def test_package_pages_keeps_legacy_native_bundle_without_bus_context(tmp_path: Path) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    write_native_bus_fixture(catalogue, bundles, include_bus_context=False)
+
+    result = package_pages(
+        catalogue,
+        bundles,
+        tmp_path / "pages",
+        tmp_path / "satn-pages.zip",
+    )
+
+    deployment = result.pages_directory / "deployments" / "native-area"
+    assert not (deployment / "bus-context.js").exists()
+    assert not (deployment / "bus-context.geojson").exists()
 
 
 def test_package_pages_keeps_one_canonical_reviewable_projection(
