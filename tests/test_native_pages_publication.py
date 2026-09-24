@@ -508,7 +508,7 @@ def test_native_rendering_gate_accepts_a_valid_on_spine_decision_point(
     validated = VALIDATOR.validate_pages_rendering(result.pages_directory)
 
     assert validated[0].strategic_spines == 2
-    assert validated[0].rendered_strategic_spines == 4
+    assert validated[0].rendered_strategic_spines == 3
 
 
 def test_package_pages_accepts_the_explicit_native_agentic_publication(tmp_path: Path) -> None:
@@ -1086,7 +1086,44 @@ def test_native_map_labels_serialized_urban_entry_without_spine_claim(
                   layers: ['native-strategic-network']
                 }).some(feature => feature.properties.decision_id === 'decision:selected')"""
             )
-            page.locator("input[data-layer-toggle='selected-alignment']").check()
+            community_overlay = page.evaluate(
+                """async () => {
+                  const map = window.SATN_NATIVE_MAP;
+                  const rendered = new Promise(resolve => map.once('idle', resolve));
+                  const decisionLayers = [
+                    'native-selected', 'native-selected-point',
+                    'native-provisional-casing', 'native-provisional',
+                    'native-provisional-point'
+                  ];
+                  decisionLayers.forEach(layer =>
+                    map.setLayoutProperty(layer, 'visibility', 'visible')
+                  );
+                  await rendered;
+                  const rawCommunityDecisions = window.SATN_NATIVE_NETWORK.features.filter(
+                    feature => ['selected-alignment', 'provisional-alignment'].includes(
+                      feature.properties.kind
+                    ) && Object.hasOwn(feature.properties, 'community_id')
+                  );
+                  const renderedCommunityDecisions = map.queryRenderedFeatures({
+                    layers: decisionLayers
+                  }).filter(feature => Object.hasOwn(feature.properties, 'community_id'));
+                  const selectedToggle = document.querySelector(
+                    '[data-layer-toggle="selected-alignment"]'
+                  );
+                  return {
+                    sourceCount: rawCommunityDecisions.length,
+                    overlayCount: renderedCommunityDecisions.length,
+                    selectedCount: selectedToggle.parentElement.querySelector(
+                      '[data-layer-count]'
+                    ).textContent,
+                    selectedHidden: selectedToggle.closest('li').hidden
+                  };
+                }"""
+            )
+            assert community_overlay["sourceCount"] == 1
+            assert community_overlay["overlayCount"] == 0
+            assert community_overlay["selectedCount"] == " (0)"
+            assert community_overlay["selectedHidden"]
             page.locator("input[data-layer-toggle='community-access']").check()
             page.wait_for_function(
                 "() => window.SATN_NATIVE_MAP.queryRenderedFeatures({layers: "
@@ -1143,10 +1180,10 @@ def test_native_map_labels_serialized_urban_entry_without_spine_claim(
 
             page.locator(".maplibregl-popup-close-button").click()
             page.locator("[data-native-clear]").click()
-            click_feature("native-selected")
-            selected_popup = page.locator(".maplibregl-popup-content").inner_text()
-            assert "Urban entry to Bath" in selected_popup
-            assert "Primary spine access" not in selected_popup
+            click_feature("native-community-access-point")
+            popup_after_clear = page.locator(".maplibregl-popup-content").inner_text()
+            assert "Urban entry to Bath" in popup_after_clear
+            assert "Primary spine access" not in popup_after_clear
         finally:
             browser.close()
 
