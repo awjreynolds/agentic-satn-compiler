@@ -446,8 +446,8 @@ fn rural_access_uses_measured_graph_paths_and_exposes_gaps_without_routing_schoo
     .expect("area config");
 
     let mut edges = Vec::new();
-    // The physically nearest strategic edge is longer by graph length than the
-    // farther cycleway spine, so Euclidean proximity must not choose the result.
+    // A nearby cycleway fragment is not a root frontier; access must reach the
+    // farther A-road unless an accepted alignment makes the fragment strategic.
     add_bidirectional(
         &mut edges,
         "community",
@@ -616,10 +616,10 @@ fn rural_access_uses_measured_graph_paths_and_exposes_gaps_without_routing_schoo
     assert_eq!(primary.status, "served");
     assert_eq!(
         primary.joined_spine_id.as_deref(),
-        Some("source:network:existing-cycleway:existing-cycleway")
+        Some("source:network:a-road:A1")
     );
     assert_eq!(primary.path_edge_ids.len(), 1);
-    assert_eq!(primary.access_length_m, Some(8.0));
+    assert_eq!(primary.access_length_m, Some(10.0));
     assert!(primary.attachment_distance_m.is_some());
 
     let alternatives = report
@@ -696,6 +696,54 @@ fn rural_access_uses_measured_graph_paths_and_exposes_gaps_without_routing_schoo
             .iter()
             .any(|feature| feature["properties"]["kind"] == "access-obligation")
     );
+}
+
+#[test]
+fn isolated_cycleway_fragment_does_not_serve_a_rural_community() {
+    let root = tempfile_root("satn-rs-isolated-cycleway-frontier");
+    let snapshot = root.join("snapshot");
+    fs::create_dir_all(&snapshot).expect("snapshot directory");
+    fs::write(
+        root.join("area.yaml"),
+        format!(
+            "area_id: fixture\narea_name: Fixture\nsource:\n  snapshot_dir: {}\n  snapshot_id: snapshot\n  community_place_types: [village]\ncompilation:\n  max_connection_km: 15\n",
+            root.display()
+        ),
+    )
+    .expect("area config");
+
+    let mut edges = Vec::new();
+    add_bidirectional(
+        &mut edges,
+        "community",
+        "cycleway",
+        [0.0, 0.0],
+        [0.001, 0.0],
+        10.0,
+        "cycleway",
+        None,
+        None,
+    );
+    write_collection(&snapshot.join("network.geojson"), edges);
+    write_collection(
+        &snapshot.join("places.geojson"),
+        vec![place("community", "Community", "village", [0.0, 0.0])],
+    );
+
+    let report = compile(
+        &root.join("area.yaml"),
+        &root.join("output"),
+        CompileOptions::default(),
+    )
+    .expect("cycleway-only fixture compiles");
+    let access = report
+        .community_access
+        .iter()
+        .find(|access| access.community_id == "community" && access.is_primary)
+        .expect("primary community access");
+    assert_eq!(access.status, "network-gap");
+    assert!(access.joined_spine_id.is_none());
+    assert!(access.path_edge_ids.is_empty());
 }
 
 #[test]
