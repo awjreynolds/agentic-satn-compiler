@@ -232,10 +232,7 @@ fn operation_id(operation: &TypedOperation) -> String {
     }
 }
 
-fn replace_effective_selection(
-    effective: &mut MidendRun,
-    decision: &OfficerDecision,
-) {
+fn replace_effective_selection(effective: &mut MidendRun, decision: &OfficerDecision) {
     let operation_id = format!("officer-ledger:{}", decision.decision_id);
     let operation = TypedOperation::SelectAlignment {
         id: operation_id.clone(),
