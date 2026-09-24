@@ -394,8 +394,13 @@ code { font-size: .9em; }
     const featureCounts = {
       'strategic-network': network.features.filter(feature => {
         const properties = feature.properties || {};
-        return ['selected-alignment', 'provisional-alignment'].includes(properties.kind) &&
-          feature.geometry?.type === 'LineString' && !Object.hasOwn(properties, 'community_id');
+        const lineGeometry = ['LineString', 'MultiLineString'].includes(feature.geometry?.type);
+        return lineGeometry && (
+          (['selected-alignment', 'provisional-alignment'].includes(properties.kind) &&
+            !Object.hasOwn(properties, 'community_id')) ||
+          (properties.kind === 'source-baseline' &&
+            properties.baseline_layer === 'source-strategic-a-road')
+        );
       }).length,
       'source-strategic': network.features.filter(feature => feature.properties?.kind === 'source-baseline' && feature.properties?.baseline_layer !== 'source-context').length,
       'source-context': network.features.filter(feature => feature.properties?.kind === 'source-baseline' && feature.properties?.baseline_layer === 'source-context').length,
@@ -629,7 +634,11 @@ code { font-size: .9em; }
       line('native-boundary-line', ['==', ['get', 'kind'], 'boundary-scope'], '#6b7280', 1, [2, 3]);
       line('native-source-context', ['all', ['==', ['get', 'kind'], 'source-baseline'], ['==', ['get', 'baseline_layer'], 'source-context']], '#4b5563', 2, [1, 3]);
       line('native-source-strategic', ['all', ['==', ['get', 'kind'], 'source-baseline'], ['!=', ['get', 'baseline_layer'], 'source-context']], '#0072b2', 3);
-      const mainStrategicFilter = ['all', ['any', ['==', ['get', 'kind'], 'selected-alignment'], ['==', ['get', 'kind'], 'provisional-alignment']], ['==', ['geometry-type'], 'LineString'], ['!', ['has', 'community_id']]];
+      const lineGeometryFilter = ['==', ['geometry-type'], 'LineString'];
+      const mainStrategicFilter = ['any',
+        ['all', ['any', ['==', ['get', 'kind'], 'selected-alignment'], ['==', ['get', 'kind'], 'provisional-alignment']], lineGeometryFilter, ['!', ['has', 'community_id']]],
+        ['all', ['==', ['get', 'kind'], 'source-baseline'], ['==', ['get', 'baseline_layer'], 'source-strategic-a-road'], lineGeometryFilter]
+      ];
       line('native-strategic-network', mainStrategicFilter, '#d71920', 4);
       line('native-alternative', ['==', ['get', 'kind'], 'candidate-alternative'], '#4b5563', 2, [5, 4]);
       line('native-selected', ['==', ['get', 'kind'], 'selected-alignment'], '#009e73', 5);

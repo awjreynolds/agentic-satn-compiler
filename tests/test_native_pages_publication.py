@@ -74,9 +74,26 @@ def _write_native_bundle(
                 "properties": {
                     "kind": "source-baseline",
                     "baseline_role": "a-road",
+                    "baseline_layer": "source-strategic-a-road",
                     "source_id": "source:a-road",
                 },
-                "geometry": {"type": "LineString", "coordinates": [[-2, 51], [-1.9, 51.1]]},
+                "geometry": {
+                    "type": "MultiLineString",
+                    "coordinates": [
+                        [[-2, 51.3], [-1.95, 51.3]],
+                        [[-2, 51.28], [-1.95, 51.28]],
+                    ],
+                },
+            },
+            {
+                "type": "Feature",
+                "properties": {
+                    "kind": "source-baseline",
+                    "baseline_role": "rail",
+                    "baseline_layer": "source-context",
+                    "source_id": "source:context",
+                },
+                "geometry": {"type": "LineString", "coordinates": [[-2, 51.05], [-1.95, 51.05]]},
             },
             {
                 "type": "Feature",
@@ -140,7 +157,7 @@ def _write_native_bundle(
                 "status": "reviewable-with-gaps",
                 "run_status": "complete",
                 "counts": {
-                    "source_baseline": 1,
+                    "source_baseline": 2,
                     "prepared_connections": 3,
                     "pending_connections": 0,
                     "connections": 3,
@@ -183,7 +200,7 @@ def _write_native_bundle(
         "__STATUS__": "complete",
         "__ATTRIBUTION__": "Fixture attribution",
         "__SOURCE_ATTRIBUTIONS__": "Fixture official attribution",
-        "__SOURCE_COUNT__": "1",
+        "__SOURCE_COUNT__": "2",
         "__PREPARED_CONNECTIONS__": "3",
         "__PENDING_CONNECTIONS__": "0",
         "__CANDIDATE_COUNT__": "3",
@@ -270,7 +287,7 @@ def _write_native_bundle(
                 "accounting_status": "reviewable-with-gaps",
                 "disclaimer": "Experimental SATN POC — not an adopted plan.",
                 "counts": {
-                    "source_baseline": 1,
+                    "source_baseline": 2,
                     "prepared_connections": 3,
                     "pending_connections": 0,
                     "connections": 3,
@@ -491,7 +508,7 @@ def test_native_rendering_gate_accepts_a_valid_on_spine_decision_point(
     validated = VALIDATOR.validate_pages_rendering(result.pages_directory)
 
     assert validated[0].strategic_spines == 2
-    assert validated[0].rendered_strategic_spines == 3
+    assert validated[0].rendered_strategic_spines == 4
 
 
 def test_package_pages_accepts_the_explicit_native_agentic_publication(tmp_path: Path) -> None:
@@ -706,7 +723,7 @@ def test_native_rendering_gate_uses_the_loaded_map_and_public_decision_sections(
     assert validated[0].deployment_id == "native-area"
     assert validated[0].strategic_spines == 2
     assert validated[0].cross_spine_connectors == 1
-    assert validated[0].rendered_strategic_spines == 3
+    assert validated[0].rendered_strategic_spines == 4
 
 
 @pytest.mark.browser
@@ -808,8 +825,13 @@ def test_native_map_supports_public_feature_inspection_reset_and_layer_toggle(
                           'native-strategic-network', 'visibility'
                         ),
                         color: map.getPaintProperty('native-strategic-network', 'line-color'),
+                        count: toggles.find(toggle =>
+                          toggle.dataset.layerToggle === 'strategic-network'
+                        ).parentElement.querySelector('[data-layer-count]').textContent,
                         features: features.map(feature => ({
                           kind: feature.properties.kind,
+                          sourceId: feature.properties.source_id,
+                          baselineLayer: feature.properties.baseline_layer,
                           geometry: feature.geometry.type,
                           hasCommunity: Object.hasOwn(feature.properties, 'community_id')
                         }))
@@ -819,11 +841,29 @@ def test_native_map_supports_public_feature_inspection_reset_and_layer_toggle(
                 assert default_layers["checked"] == ["strategic-network"]
                 assert default_layers["visibility"] == "visible"
                 assert default_layers["color"] == "#d71920"
+                assert default_layers["count"] == " (3)"
                 assert default_layers["features"]
+                assert any(
+                    feature["sourceId"] == "source:a-road"
+                    and feature["baselineLayer"] == "source-strategic-a-road"
+                    for feature in default_layers["features"]
+                )
                 assert all(
-                    feature["kind"] in {"selected-alignment", "provisional-alignment"}
-                    and feature["geometry"] == "LineString"
-                    and not feature["hasCommunity"]
+                    feature["sourceId"] != "source:context"
+                    for feature in default_layers["features"]
+                )
+                assert all(
+                    (
+                        feature["kind"] in {"selected-alignment", "provisional-alignment"}
+                        and feature["geometry"] in {"LineString", "MultiLineString"}
+                        and not feature["hasCommunity"]
+                    )
+                    or (
+                        feature["kind"] == "source-baseline"
+                        and feature["sourceId"] == "source:a-road"
+                        and feature["baselineLayer"] == "source-strategic-a-road"
+                        and feature["geometry"] in {"LineString", "MultiLineString"}
+                    )
                     for feature in default_layers["features"]
                 )
 
