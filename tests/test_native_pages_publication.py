@@ -948,7 +948,19 @@ def test_native_map_supports_public_feature_inspection_reset_and_layer_toggle(
                     arg=[unresolved_point["mapX"], unresolved_point["mapY"]],
                 )
                 assert page.locator("#native-feature-details").inner_text() == summary_text
-                page.mouse.move(point["x"], point["y"])
+                page.locator("#native-map").scroll_into_view_if_needed()
+                map_box = page.locator("#native-map").bounding_box()
+                assert map_box
+                rehover_point = [
+                    map_box["x"] + point["mapX"],
+                    map_box["y"] + point["mapY"],
+                ]
+                assert page.evaluate(
+                    "point => document.elementFromPoint(point[0], point[1]) === "
+                    "window.SATN_NATIVE_MAP.getCanvas()",
+                    rehover_point,
+                )
+                page.mouse.move(rehover_point[0], rehover_point[1])
                 page.wait_for_function(
                     "() => document.querySelector('.maplibregl-popup-content')?.innerText "
                     ".includes('selected-alignment')"

@@ -452,7 +452,9 @@ code { font-size: .9em; }
     activePopupFeatureKey = null;
     activePopupLayerId = null;
     if (previousPopup) previousPopup.remove();
-    const popup = new maplibregl.Popup({ closeButton: true, closeOnClick: false })
+    const popup = new maplibregl.Popup({
+      closeButton: true, closeOnClick: false, focusAfterOpen: false
+    })
       .setLngLat(event.lngLat);
     const busContent = feature.properties?.kind?.startsWith('bus-')
       ? window.SATN_NATIVE_BUS_POPUP_CONTENT?.(feature)
