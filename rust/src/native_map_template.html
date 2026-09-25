@@ -505,7 +505,7 @@ code { font-size: .9em; }
       closeButton: true, closeOnClick: false, focusAfterOpen: false
     })
       .setLngLat(event.lngLat);
-    const busContent = feature.properties?.kind?.startsWith('bus-')
+    const busContent = (feature.properties?.kind?.startsWith('bus-') || feature.properties?.kind === 'rail-station')
       ? window.SATN_NATIVE_BUS_POPUP_CONTENT?.(feature)
       : null;
     if (busContent) popup.setDOMContent(busContent);

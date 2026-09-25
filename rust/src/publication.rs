@@ -41,6 +41,7 @@ pub struct DecisionMapPublication {
 pub struct BusContextPublication {
     pub route_count: usize,
     pub interchange_count: usize,
+    pub rail_station_count: usize,
     pub geojson_file: String,
 }
 
@@ -629,7 +630,7 @@ pub fn publish_decision_map(
 pub fn add_bus_context(output_dir: &Path, context_path: &Path) -> Result<BusContextPublication> {
     let context_bytes = fs::read(context_path)?;
     let context: Value = serde_json::from_slice(&context_bytes)?;
-    let (route_count, interchange_count) = validate_bus_context(&context)?;
+    let (route_count, interchange_count, rail_station_count) = validate_bus_context(&context)?;
 
     let publication: Value =
         serde_json::from_slice(&fs::read(output_dir.join("publication.json"))?)?;
@@ -662,14 +663,16 @@ pub fn add_bus_context(output_dir: &Path, context_path: &Path) -> Result<BusCont
     Ok(BusContextPublication {
         route_count,
         interchange_count,
+        rail_station_count,
         geojson_file: "bus-context.geojson".to_string(),
     })
 }
 
-fn validate_bus_context(context: &Value) -> Result<(usize, usize)> {
+fn validate_bus_context(context: &Value) -> Result<(usize, usize, usize)> {
     let features = feature_collection(context, "bus context")?;
     let mut route_count = 0;
     let mut interchange_count = 0;
+    let mut rail_station_count = 0;
     for (index, feature) in features.iter().enumerate() {
         if feature.get("type").and_then(Value::as_str) != Some("Feature") {
             return Err(SatnError::InvalidInput(format!(
@@ -705,23 +708,27 @@ fn validate_bus_context(context: &Value) -> Result<(usize, usize)> {
                 }
                 route_count += 1;
             }
-            Some("bus-interchange") => {
+            Some(kind @ ("bus-interchange" | "rail-station")) => {
                 validate_interchange_properties(properties, index)?;
                 if geometry.get("type").and_then(Value::as_str) != Some("Point") {
                     return Err(SatnError::InvalidInput(format!(
-                        "bus interchange feature {index} geometry must be Point"
+                        "transport facility feature {index} geometry must be Point"
                     )));
                 }
-                interchange_count += 1;
+                if kind == "rail-station" {
+                    rail_station_count += 1;
+                } else {
+                    interchange_count += 1;
+                }
             }
             _ => {
                 return Err(SatnError::InvalidInput(format!(
-                    "bus context feature {index} kind must be bus-route or bus-interchange"
+                    "bus context feature {index} kind must be bus-route, bus-interchange or rail-station"
                 )));
             }
         }
     }
-    Ok((route_count, interchange_count))
+    Ok((route_count, interchange_count, rail_station_count))
 }
 
 fn validate_bus_route_properties(
@@ -827,6 +834,11 @@ fn feature_collection<'a>(value: &'a Value, label: &str) -> Result<&'a Vec<Value
 }
 
 fn enable_bus_context_loader(html: &str) -> Result<String> {
+    // Older published viewers must send rail records to the same safe inspector.
+    let html = html.replace(
+        "const busContent = feature.properties?.kind?.startsWith('bus-')",
+        "const busContent = (feature.properties?.kind?.startsWith('bus-') || feature.properties?.kind === 'rail-station')",
+    );
     const MARKER: &str = "data-satn-bus-context";
     const ACTIVE_URL: &str = "data-context-url=\"bus-context.geojson\"";
     const SCRIPT: &str = "<script src=\"bus-context.js\" data-satn-bus-context data-context-url=\"bus-context.geojson\"></script>";

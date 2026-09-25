@@ -370,6 +370,41 @@ def test_naptan_cli_emits_only_active_in_area_stop_groups_with_source_types(
     assert "Chew Magna" not in {feature["properties"]["name"] for feature in facilities}
 
 
+def test_cli_adds_rail_stations_without_changing_bus_evidence(tmp_path: Path) -> None:
+    gtfs, boundary = tmp_path / "feed.zip", tmp_path / "boundary.geojson"
+    naptan, rail = tmp_path / "bus.xml", tmp_path / "rail.xml"
+    before, after = tmp_path / "before.geojson", tmp_path / "after.geojson"
+    write_gtfs(gtfs)
+    write_boundary(boundary, (0, 0, 1, 1))
+    write_naptan(naptan)
+    rail.write_text(naptan.read_text().replace("010G", "910G").replace("GBCS", "GRLS"))
+    arguments = (
+        "--gtfs",
+        str(gtfs),
+        "--boundary",
+        str(boundary),
+        "--service-date",
+        "2026-09-23",
+        "--naptan-xml",
+        str(naptan),
+    )
+    run_cli(*arguments, "--output", str(before))
+    run_cli(*arguments, "--rail-naptan-xml", str(rail), "--output", str(after))
+    original = json.loads(before.read_text())
+    result = json.loads(after.read_text())
+    stations = [f for f in result["features"] if f["properties"]["kind"] == "rail-station"]
+    assert [f for f in result["features"] if f not in stations] == original["features"]
+    assert len(stations) == 1  # Other records are bus groups, inactive or lack coordinates.
+    station = stations[0]
+    assert station["geometry"] == {"type": "Point", "coordinates": [0.25, 0.25]}
+    assert station["properties"]["stop_area_code"] == "910G0001"
+    assert station["properties"]["facility_type"] == "train station"
+    assert station["properties"]["source_id"] == "naptan-national-rail"
+    source = result["provenance"]["sources"][-1]
+    assert source["sha256"] == hashlib.sha256(rail.read_bytes()).hexdigest()
+    assert "atcoAreaCodes=910" in source["url"]
+
+
 def test_cli_adds_only_selected_stops_with_dated_route_and_boarding_evidence(
     tmp_path: Path,
 ) -> None:
