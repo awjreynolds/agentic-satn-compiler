@@ -255,6 +255,16 @@ fn publishes_illustrative_officer_scenario_with_effective_routes_and_displaced_b
         .find(|source| source.id == "source:a-road")
         .expect("A-road baseline")
         .geometry[1] = vec![[0.5, 0.0], [1.0, 0.0], [1.5, 0.0]];
+    let a_road = report
+        .source_inventory
+        .iter_mut()
+        .find(|source| source.id == "source:a-road")
+        .expect("A-road baseline");
+    a_road.geometry.extend([
+        vec![[0.0, 0.0], [1.0, 0.0]],
+        vec![[0.4, 0.0], [0.6, 0.0]],
+        vec![[2.0, 0.0], [3.0, 0.0]],
+    ]);
     let baseline = report
         .candidates
         .iter_mut()
@@ -362,6 +372,7 @@ fn publishes_illustrative_officer_scenario_with_effective_routes_and_displaced_b
             attribution: "Fixture Strategic Reference layer".to_string(),
             rationale: "Included only where the source designates the Strategic route class."
                 .to_string(),
+            scope_geometry: None,
         }),
         outcomes: vec![
             OfficerOutcome {
@@ -394,6 +405,15 @@ fn publishes_illustrative_officer_scenario_with_effective_routes_and_displaced_b
             },
         ],
     };
+    let mut scenario_json = serde_json::to_value(&scenario).expect("scenario JSON");
+    scenario_json["strategic_network"]["scope_geometry"] = json!({
+        "type": "Polygon",
+        "coordinates": [[
+            [0.25, -0.1], [0.75, -0.1], [0.75, 0.1], [0.25, 0.1], [0.25, -0.1]
+        ]]
+    });
+    let scenario: OfficerScenario =
+        serde_json::from_value(scenario_json).expect("scenario with network scope");
 
     publish_officer_scenario_map(&root, &report, &run, &scenario)
         .expect("publish illustrative officer scenario");
@@ -526,6 +546,57 @@ fn publishes_illustrative_officer_scenario_with_effective_routes_and_displaced_b
             && feature["geometry"]["coordinates"]
                 == serde_json::json!([[0.5, 0.0], [1.0, 0.0], [1.5, 0.0]])
     }));
+    let scoped_a_road_parts = features
+        .iter()
+        .filter(|feature| {
+            feature["properties"]["kind"] == "source-baseline"
+                && feature["properties"]["source_corridor_id"] == "source:a-road"
+                && feature["properties"]["strategic_network_scope_display"] == true
+        })
+        .collect::<Vec<_>>();
+    let crossing_parts = scoped_a_road_parts
+        .iter()
+        .filter(|feature| feature["properties"]["source_geometry_part"] == 2)
+        .map(|feature| feature["geometry"]["coordinates"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(crossing_parts.len(), 2);
+    assert!(crossing_parts.contains(&json!([[0.0, 0.0], [0.25, 0.0]])));
+    assert!(crossing_parts.contains(&json!([[0.75, 0.0], [1.0, 0.0]])));
+    let crossing_display = scoped_a_road_parts
+        .iter()
+        .find(|feature| feature["properties"]["source_geometry_part"] == 2)
+        .expect("clipped outside A-road feature");
+    assert_eq!(
+        crossing_display["properties"]["strategic_network_scope_source_refs"][0],
+        "ATM-FID-REFERENCE"
+    );
+    assert_eq!(
+        crossing_display["properties"]["strategic_network_scope_attribution"],
+        "Fixture Strategic Reference layer"
+    );
+    assert_eq!(
+        crossing_display["properties"]["reason"],
+        "This A-road source segment is outside the geographic scope supplied by the strategic network reference."
+    );
+    assert!(
+        !scoped_a_road_parts
+            .iter()
+            .any(|feature| feature["properties"]["source_geometry_part"] == 3)
+    );
+    assert!(scoped_a_road_parts.iter().any(|feature| {
+        feature["properties"]["source_geometry_part"] == 4
+            && feature["geometry"]["coordinates"] == json!([[2.0, 0.0], [3.0, 0.0]])
+    }));
+    assert!(features.iter().any(|feature| {
+        feature["properties"]["source_geometry_part"] == 3
+            && feature["properties"]["strategic_network_scope_original"] == true
+            && feature["geometry"]["coordinates"] == json!([[0.4, 0.0], [0.6, 0.0]])
+    }));
+    assert!(features.iter().any(|feature| {
+        feature["properties"]["source_geometry_part"] == 2
+            && feature["properties"]["strategic_network_scope_original"] == true
+            && feature["geometry"]["coordinates"] == json!([[0.0, 0.0], [1.0, 0.0]])
+    }));
     assert!(!features.iter().any(|feature| {
         feature["properties"]["kind"] == "officer-baseline-unused"
             && ["baseline-a", "baseline-b"].contains(
@@ -569,6 +640,20 @@ fn publishes_illustrative_officer_scenario_with_effective_routes_and_displaced_b
         "Included only where the source designates the Strategic route class."
     );
     assert_eq!(
+        details["officer_scenario"]["strategic_network"]["scope_geometry"]["type"],
+        "Polygon"
+    );
+    assert_eq!(
+        details["officer_scenario"]["strategic_network"]["scope_geometry"]["coordinates"],
+        json!([[
+            [0.25, -0.1],
+            [0.75, -0.1],
+            [0.75, 0.1],
+            [0.25, 0.1],
+            [0.25, -0.1]
+        ]])
+    );
+    assert_eq!(
         details["officer_scenario"]["community_access_regenerated"],
         false
     );
@@ -603,6 +688,13 @@ fn publishes_illustrative_officer_scenario_with_effective_routes_and_displaced_b
     assert!(html.contains("line('native-officer-effective'"));
     assert!(html.contains("line('native-officer-baseline-unused'"));
     assert!(html.contains("line('native-officer-strategic-network'"));
+    assert!(html.contains("strategic_network_scope_display"));
+    assert!(html.contains("strategic_network_scope_original"));
+    assert!(html.contains("Strategic reference attribution"));
+    assert!(html.contains("Strategic reference rationale"));
+    assert!(html.contains("strategic_network_scope_display'], true"));
+    assert!(html.contains("strategic_network_scope_original']]]"));
+    assert!(html.contains("['!', ['has', 'strategic_network_scope_display']]"));
     assert!(html.contains("#d71920"));
     assert!(html.contains("#d55e00"));
     assert!(html.contains("#4b5563"));
@@ -642,6 +734,51 @@ fn publishes_illustrative_officer_scenario_with_effective_routes_and_displaced_b
             .expect("legacy features")
             .iter()
             .any(|feature| feature["properties"]["kind"] == "officer-strategic-network")
+    );
+    let mut unscoped_network_scenario = scenario.clone();
+    unscoped_network_scenario
+        .strategic_network
+        .as_mut()
+        .expect("network reference")
+        .scope_geometry = None;
+    let unscoped_network_root =
+        tempfile_root("satn-rs-officer-scenario-network-without-geographic-scope");
+    publish_officer_scenario_map(
+        &unscoped_network_root,
+        &report,
+        &run,
+        &unscoped_network_scenario,
+    )
+    .expect("publish network reference without geographic scope");
+    let unscoped_geojson: Value = serde_json::from_str(
+        &fs::read_to_string(unscoped_network_root.join("decision-map.geojson"))
+            .expect("unscoped network GeoJSON"),
+    )
+    .expect("valid unscoped network GeoJSON");
+    let unscoped_a_roads = unscoped_geojson["features"]
+        .as_array()
+        .expect("unscoped features")
+        .iter()
+        .filter(|feature| feature["properties"]["source_corridor_id"] == "source:a-road")
+        .collect::<Vec<_>>();
+    assert_eq!(unscoped_a_roads.len(), 5);
+    assert!(!unscoped_a_roads.iter().any(|feature| {
+        feature["properties"]
+            .get("strategic_network_scope_display")
+            .is_some()
+            || feature["properties"]
+                .get("strategic_network_scope_original")
+                .is_some()
+    }));
+    let unscoped_details: Value = serde_json::from_str(
+        &fs::read_to_string(unscoped_network_root.join("decision-map.json"))
+            .expect("unscoped network details"),
+    )
+    .expect("valid unscoped network details");
+    assert!(
+        unscoped_details["officer_scenario"]["strategic_network"]
+            .get("scope_geometry")
+            .is_none()
     );
     let legacy_html = fs::read_to_string(legacy_root.join("index.html")).expect("legacy viewer");
     assert!(legacy_html.contains("orange shows officer-selected alignments"));

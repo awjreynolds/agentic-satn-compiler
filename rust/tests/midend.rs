@@ -1911,7 +1911,13 @@ fn officer_selection_rebuilds_frontier_before_retained_rural_choices() {
         "deselected_graph_edge_ids": [baseline_edge],
         "source_refs": ["fixture-network-source"],
         "attribution": "Fixture strategic network reference",
-        "rationale": "Only explicitly listed edges are deselected; omitted edges remain outside scope."
+        "rationale": "Only explicitly listed edges are deselected; omitted edges remain outside scope.",
+        "scope_geometry": {
+            "type": "MultiPolygon",
+            "coordinates": [[[
+                [0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0], [0.0, 0.0]
+            ]]]
+        }
     });
     let ledger: OfficerDecisionLedger =
         serde_json::from_value(ledger_json).expect("resolved strategic network input");
@@ -1970,6 +1976,18 @@ fn officer_selection_rebuilds_frontier_before_retained_rural_choices() {
     assert_eq!(
         network.edge_geometries[0].geometry,
         officer_network_geometry
+    );
+    assert_eq!(
+        network.scope_geometry,
+        Some(
+            satn_rs::officer::OfficerStrategicScopeGeometry::MultiPolygon(vec![vec![vec![
+                [0.0, 0.0],
+                [2.0, 0.0],
+                [2.0, 2.0],
+                [0.0, 2.0],
+                [0.0, 0.0],
+            ]]])
+        )
     );
     assert!(effective.operations.iter().any(|operation| matches!(
         operation,

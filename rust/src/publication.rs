@@ -9,13 +9,17 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
+use geos::{Geom, Geometry as GeosGeometry};
 use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::compiler::{Candidate, CommunityAccess, CompileReport};
 use crate::error::{Result, SatnError};
 use crate::midend::{MidendRun, TypedOperation};
-use crate::officer::{OfficerOutcomeStatus, OfficerScenario, displaced_baseline_edges};
+use crate::officer::{
+    OfficerOutcomeStatus, OfficerScenario, OfficerStrategicNetwork, OfficerStrategicScopeGeometry,
+    displaced_baseline_edges,
+};
 
 const MAPLIBRE_JS: &[u8] = include_bytes!("../../src/satn/assets/maplibre-gl.js");
 const MAPLIBRE_CSS: &[u8] = include_bytes!("../../src/satn/assets/maplibre-gl.css");
@@ -181,6 +185,8 @@ struct PublicOfficerStrategicNetwork {
     source_refs: Vec<String>,
     attribution: String,
     rationale: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scope_geometry: Option<OfficerStrategicScopeGeometry>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -243,7 +249,10 @@ fn publish_decision_map_inner(
     };
     let report = &effective_report;
 
-    let mut features = baseline_features(report);
+    let strategic_scope = officer_scenario
+        .and_then(|scenario| scenario.strategic_network.as_ref())
+        .filter(|network| network.scope_geometry.is_some());
+    let mut features = baseline_features(report, strategic_scope)?;
     let mut decisions = Vec::new();
     let mut departures = Vec::new();
     let mut selected_count = 0usize;
@@ -1027,6 +1036,7 @@ fn public_officer_scenario(scenario: &OfficerScenario) -> PublicOfficerScenario 
                 source_refs: network.source_refs.clone(),
                 attribution: network.attribution.clone(),
                 rationale: network.rationale.clone(),
+                scope_geometry: network.scope_geometry.clone(),
             }
         }),
     }
@@ -1192,30 +1202,70 @@ fn add_officer_scenario_features(
     }
 }
 
-fn baseline_features(report: &CompileReport) -> Vec<MapFeature> {
+fn baseline_features(
+    report: &CompileReport,
+    strategic_scope: Option<&OfficerStrategicNetwork>,
+) -> Result<Vec<MapFeature>> {
     let mut features = Vec::new();
+    let scope_geometry = strategic_scope
+        .and_then(|network| network.scope_geometry.as_ref())
+        .map(|geometry| {
+            let geometry = serde_json::to_value(geometry)?;
+            GeosGeometry::new_from_geojson(&geometry.to_string()).map_err(scope_geos_error)
+        })
+        .transpose()?;
     for source in &report.source_inventory {
         let baseline_layer = source_layer(&source.baseline_role);
         for (part_index, geometry) in source.geometry.iter().enumerate() {
-            features.push(MapFeature {
+            let scoped_a_road =
+                baseline_layer == "source-strategic-a-road" && scope_geometry.is_some();
+            let mut properties = json!({
+                "kind": "source-baseline",
+                "source_corridor_id": source.id,
+                "source_reference": source.reference,
+                "source_kind": source.source_kind,
+                "source_id": source.source_id,
+                "label": format!("{} ({})", source.reference, source.baseline_role),
+                "source_geometry_part": part_index,
+                "scope": source.scope,
+                "baseline_role": source.baseline_role,
+                "baseline_layer": baseline_layer,
+                "topology_status": source.topology_status,
+                "attachment_status": source.attachment_status,
+                "provision_status": source.provision_status,
+            });
+            if scoped_a_road {
+                properties["strategic_network_scope_original"] = json!(true);
+            }
+            let original = MapFeature {
                 kind: "source-baseline".to_string(),
                 geometry: Some(MapGeometry::Line(geometry.clone())),
-                properties: json!({
-                    "kind": "source-baseline",
-                    "source_corridor_id": source.id,
-                    "source_reference": source.reference,
-                    "source_kind": source.source_kind,
-                    "source_id": source.source_id,
-                    "label": format!("{} ({})", source.reference, source.baseline_role),
-                    "source_geometry_part": part_index,
-                    "scope": source.scope,
-                    "baseline_role": source.baseline_role,
-                    "baseline_layer": baseline_layer,
-                    "topology_status": source.topology_status,
-                    "attachment_status": source.attachment_status,
-                    "provision_status": source.provision_status,
-                }),
-            });
+                properties,
+            };
+            features.push(original.clone());
+
+            let Some(scope_geometry) = scope_geometry.as_ref().filter(|_| scoped_a_road) else {
+                continue;
+            };
+            let outside = line_outside_scope(geometry, scope_geometry)?;
+            let network = strategic_scope.expect("scope geometry comes from the network");
+            for (outside_part, coordinates) in outside.into_iter().enumerate() {
+                let mut properties = original.properties.clone();
+                properties["strategic_network_scope_display"] = json!(true);
+                properties["strategic_network_scope_part"] = json!(outside_part);
+                properties["scenario_authority"] = json!("Strategic network reference");
+                properties["strategic_network_scope_source_refs"] = json!(network.source_refs);
+                properties["strategic_network_scope_attribution"] = json!(network.attribution);
+                properties["strategic_network_scope_rationale"] = json!(network.rationale);
+                properties["reason"] = json!(
+                    "This A-road source segment is outside the geographic scope supplied by the strategic network reference."
+                );
+                features.push(MapFeature {
+                    kind: "source-baseline".to_string(),
+                    geometry: Some(MapGeometry::Line(coordinates)),
+                    properties,
+                });
+            }
         }
     }
     for candidate in &report.candidate_neighbourhoods {
@@ -1344,7 +1394,75 @@ fn baseline_features(report: &CompileReport) -> Vec<MapFeature> {
             }),
         });
     }
-    features
+    Ok(features)
+}
+
+fn line_outside_scope(
+    coordinates: &[[f64; 2]],
+    scope: &GeosGeometry,
+) -> Result<Vec<Vec<[f64; 2]>>> {
+    let line = json!({
+        "type": "LineString",
+        "coordinates": coordinates,
+    });
+    let line = GeosGeometry::new_from_geojson(&line.to_string()).map_err(scope_geos_error)?;
+    let outside = line.difference(scope).map_err(scope_geos_error)?;
+    if outside.is_empty().map_err(scope_geos_error)? {
+        return Ok(Vec::new());
+    }
+    let geometry: Value = serde_json::from_str(&outside.to_geojson().map_err(scope_geos_error)?)?;
+    let mut lines = Vec::new();
+    collect_scope_lines(&geometry, &mut lines)?;
+    Ok(lines)
+}
+
+fn collect_scope_lines(geometry: &Value, lines: &mut Vec<Vec<[f64; 2]>>) -> Result<()> {
+    match geometry.get("type").and_then(Value::as_str) {
+        Some("LineString") => {
+            let coordinates: Vec<[f64; 2]> =
+                serde_json::from_value(geometry.get("coordinates").cloned().ok_or_else(|| {
+                    SatnError::InvalidInput("scope line has no coordinates".to_string())
+                })?)?;
+            if coordinates.len() >= 2 {
+                lines.push(coordinates);
+            }
+        }
+        Some("MultiLineString") => {
+            let coordinates: Vec<Vec<[f64; 2]>> =
+                serde_json::from_value(geometry.get("coordinates").cloned().ok_or_else(|| {
+                    SatnError::InvalidInput("scope multilinestring has no coordinates".to_string())
+                })?)?;
+            lines.extend(coordinates.into_iter().filter(|line| line.len() >= 2));
+        }
+        Some("GeometryCollection") => {
+            let geometries = geometry
+                .get("geometries")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    SatnError::InvalidInput(
+                        "scope geometry collection has no geometries".to_string(),
+                    )
+                })?;
+            for geometry in geometries {
+                collect_scope_lines(geometry, lines)?;
+            }
+        }
+        Some(other) => {
+            return Err(SatnError::InvalidInput(format!(
+                "strategic network clipping returned non-linear geometry {other}"
+            )));
+        }
+        None => {
+            return Err(SatnError::InvalidInput(
+                "strategic network clipping returned geometry without a type".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn scope_geos_error(error: geos::Error) -> SatnError {
+    SatnError::InvalidInput(format!("strategic network scope clipping failed: {error}"))
 }
 
 fn rural_decision_feature(
