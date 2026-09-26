@@ -3,6 +3,7 @@ use satn_rs::officer::{
     OfficerDecision, OfficerDecisionLedger, OfficerOutcomeStatus, apply_officer_decisions,
 };
 use satn_rs::{AccountingSummary, Candidate, CompileReport, Connection};
+use serde_json::json;
 
 fn report() -> CompileReport {
     CompileReport {
@@ -114,6 +115,7 @@ fn officer_alternative_is_applied_without_rewriting_baseline_provenance() {
     let baseline = baseline("candidate:alpha");
     let ledger = OfficerDecisionLedger {
         decisions: vec![decision("connection:alpha:beta", Some("candidate:beta"))],
+        strategic_network: None,
     };
 
     let (effective, scenario) =
@@ -172,6 +174,7 @@ fn unavailable_targets_remain_visible_and_do_not_change_the_effective_selection(
     let baseline = baseline("candidate:alpha");
     let ledger = OfficerDecisionLedger {
         decisions: vec![decision("connection:alpha:beta", None)],
+        strategic_network: None,
     };
 
     let (effective, scenario) =
@@ -196,6 +199,7 @@ fn unavailable_targets_remain_visible_and_do_not_change_the_effective_selection(
 fn exact_connection_binding_rejects_cross_connection_candidates() {
     let ledger = OfficerDecisionLedger {
         decisions: vec![decision("connection:alpha:beta", Some("candidate:gamma"))],
+        strategic_network: None,
     };
     let error = apply_officer_decisions(&report(), &baseline("candidate:alpha"), &ledger)
         .expect_err("candidate from another connection must be rejected");
@@ -208,6 +212,7 @@ fn missing_candidates_are_unavailable_and_decisions_survive_baseline_changes() {
     let report = report();
     let ledger = OfficerDecisionLedger {
         decisions: vec![decision("connection:alpha:beta", Some("candidate:beta"))],
+        strategic_network: None,
     };
 
     let (first_effective, first_scenario) =
@@ -224,6 +229,7 @@ fn missing_candidates_are_unavailable_and_decisions_survive_baseline_changes() {
             "connection:alpha:beta",
             Some("candidate:no-longer-admitted"),
         )],
+        strategic_network: None,
     };
     let (unavailable_effective, unavailable_scenario) =
         apply_officer_decisions(&report, &baseline("candidate:alpha"), &unavailable)
@@ -265,18 +271,21 @@ fn duplicate_and_malformed_decisions_are_rejected() {
     duplicate_id.decision_id = first.decision_id.clone();
     let duplicate_ids = OfficerDecisionLedger {
         decisions: vec![first.clone(), duplicate_id],
+        strategic_network: None,
     };
     let duplicate_targets = OfficerDecisionLedger {
         decisions: vec![
             first,
             decision("connection:alpha:beta", Some("candidate:beta")),
         ],
+        strategic_network: None,
     };
     let mut malformed = decision("connection:alpha:beta", Some("candidate:alpha"));
     malformed.attribution = "  ".into();
     malformed.source_refs.clear();
     let malformed_ledger = OfficerDecisionLedger {
         decisions: vec![malformed],
+        strategic_network: None,
     };
 
     assert!(
@@ -290,4 +299,21 @@ fn duplicate_and_malformed_decisions_are_rejected() {
         apply_officer_decisions(&report(), &baseline("candidate:alpha"), &malformed_ledger)
             .is_err()
     );
+}
+
+#[test]
+fn legacy_officer_ledger_without_network_scope_remains_valid() {
+    let ledger: OfficerDecisionLedger = serde_json::from_value(json!({
+        "decisions": [{
+            "decision_id": "legacy-example",
+            "connection_id": "connection:alpha:beta",
+            "candidate_id": "candidate:beta",
+            "source_refs": ["legacy-source"],
+            "attribution": "Legacy officer example",
+            "rationale": "Retain the original per-journey decision format."
+        }]
+    }))
+    .expect("legacy ledger without network scope");
+
+    assert!(ledger.strategic_network.is_none());
 }

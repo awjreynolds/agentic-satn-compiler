@@ -158,7 +158,7 @@ __OFFICER_SCENARIO_BANNER__</header>
   });
   const interactiveLayers = [
     'native-strategic-network', 'native-selected', 'native-selected-point', 'native-provisional-casing', 'native-provisional', 'native-provisional-point',
-    'native-officer-baseline-unused', 'native-officer-effective',
+    'native-officer-baseline-unused', 'native-officer-effective', 'native-officer-strategic-network',
     'native-unresolved', 'native-alternative',
     'native-candidate-neighbourhood',
     'native-a-road-departure-casing', 'native-a-road-departure',
@@ -169,7 +169,7 @@ __OFFICER_SCENARIO_BANNER__</header>
     'native-bus-route', 'native-bus-interchange'
   ];
   const layerGroups = {
-    'strategic-network': ['native-strategic-network', 'native-officer-baseline-unused', 'native-officer-effective'],
+    'strategic-network': ['native-strategic-network', 'native-officer-baseline-unused', 'native-officer-effective', 'native-officer-strategic-network'],
     'source-strategic': ['native-source-strategic'],
     'source-context': ['native-source-context'],
     'candidate-neighbourhood': ['native-candidate-neighbourhood', 'native-candidate-neighbourhood-boundary'],
@@ -314,14 +314,21 @@ __OFFICER_SCENARIO_BANNER__</header>
     if (props.baseline_decision_class && props.baseline_decision_class !== props.decision_class) {
       add('Baseline decision class', props.baseline_decision_class);
     }
-    add('Officer source references', props.officer_source_refs);
-    add('Officer attribution', props.officer_attribution);
-    add('Officer rationale', props.officer_rationale);
+    const referenceNetworkEdge = props.kind === 'officer-strategic-network';
+    add(referenceNetworkEdge ? 'Network reference source references' : 'Officer source references', referenceNetworkEdge ? props.source_refs : props.officer_source_refs);
+    add(referenceNetworkEdge ? 'Network reference attribution' : 'Officer attribution', referenceNetworkEdge ? props.attribution : props.officer_attribution);
+    add(referenceNetworkEdge ? 'Network reference rationale' : 'Officer rationale', referenceNetworkEdge ? props.rationale : props.officer_rationale);
     if (props.kind === 'officer-baseline-unused') {
       add('Original baseline candidate', props.baseline_candidate_id);
       add('Original baseline edge', props.baseline_edge_id);
       add('Officer candidate', props.officer_candidate_id);
       add('Effective candidate', props.effective_candidate_id);
+    }
+    if (referenceNetworkEdge) {
+      add('Reference graph edge', props.graph_edge_id);
+      add('Strategic network reference disposition', props.strategic_network_disposition === 'selected'
+        ? 'Included by reference'
+        : 'Inferred deselection (absent from reference)');
     }
     if (props.provisional !== undefined) add(props.scenario_baseline_context ? 'Baseline decision status' : 'Status', props.provisional ? 'Provisional' : 'Selected');
     add('Role', props.role);
@@ -464,6 +471,7 @@ __OFFICER_SCENARIO_BANNER__</header>
           (['selected-alignment', 'provisional-alignment'].includes(properties.kind) &&
             !Object.hasOwn(properties, 'community_id')) ||
           properties.kind === 'officer-baseline-unused' ||
+          properties.kind === 'officer-strategic-network' ||
           (properties.kind === 'source-baseline' &&
             properties.baseline_layer === 'source-strategic-a-road')
         );
@@ -722,6 +730,8 @@ __OFFICER_SCENARIO_BANNER__</header>
       line('native-provisional-casing', provisionalFilter, '#263238', 7, [5.7142857, 3.5714286]);
       line('native-provisional', provisionalFilter, '#e69f00', 5, [8, 5]);
       line('native-officer-effective', ['all', ['any', ['==', ['get', 'kind'], 'selected-alignment'], ['==', ['get', 'kind'], 'provisional-alignment']], ['!', ['has', 'community_id']], ['==', ['get', 'officer_selected'], true]], '#d55e00', 5);
+      line('native-officer-strategic-network', ['all', ['==', ['get', 'kind'], 'officer-strategic-network'], ['==', ['geometry-type'], 'LineString']],
+        ['case', ['==', ['get', 'strategic_network_disposition'], 'selected'], '#d55e00', '#4b5563'], 6);
       line('native-unresolved', ['==', ['get', 'kind'], 'unresolved-decision'], '#cc79a7', 4, [1, 3]);
       const aRoadDepartureFilter = ['==', ['get', 'kind'], 'a-road-departure'];
       line('native-a-road-departure-casing', aRoadDepartureFilter, '#263238', 8, [7.5, 3.75]);

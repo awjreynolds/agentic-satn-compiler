@@ -14,6 +14,8 @@ use crate::midend::{MidendRun, TypedOperation, validate_officer_candidate};
 #[serde(deny_unknown_fields)]
 pub struct OfficerDecisionLedger {
     pub decisions: Vec<OfficerDecision>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strategic_network: Option<OfficerStrategicNetworkDecision>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -28,6 +30,16 @@ pub struct OfficerDecision {
     pub rationale: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct OfficerStrategicNetworkDecision {
+    pub selected_graph_edge_ids: Vec<String>,
+    pub deselected_graph_edge_ids: Vec<String>,
+    pub source_refs: Vec<String>,
+    pub attribution: String,
+    pub rationale: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OfficerScenario {
     pub authority: String,
@@ -35,7 +47,27 @@ pub struct OfficerScenario {
     pub baseline_branch: String,
     #[serde(default)]
     pub community_access_regenerated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strategic_network: Option<OfficerStrategicNetwork>,
     pub outcomes: Vec<OfficerOutcome>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct OfficerStrategicNetwork {
+    pub selected_graph_edge_ids: Vec<String>,
+    pub deselected_graph_edge_ids: Vec<String>,
+    pub edge_geometries: Vec<OfficerStrategicEdgeGeometry>,
+    pub source_refs: Vec<String>,
+    pub attribution: String,
+    pub rationale: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct OfficerStrategicEdgeGeometry {
+    pub edge_id: String,
+    pub geometry: Vec<[f64; 2]>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -223,6 +255,7 @@ pub fn apply_officer_decisions(
             base_id: baseline.base_id.clone(),
             baseline_branch: baseline.branch.clone(),
             community_access_regenerated: false,
+            strategic_network: None,
             outcomes,
         },
     ))
@@ -261,6 +294,39 @@ fn validate_ledger(ledger: &OfficerDecisionLedger) -> Result<()> {
                 "multiple officer decisions target connection {}",
                 decision.connection_id
             )));
+        }
+    }
+    if let Some(network) = &ledger.strategic_network {
+        if network.attribution.trim().is_empty()
+            || network.rationale.trim().is_empty()
+            || network.source_refs.is_empty()
+            || network
+                .source_refs
+                .iter()
+                .any(|reference| reference.trim().is_empty())
+        {
+            return Err(invalid(
+                "officer strategic network requires source references, attribution, and rationale",
+            ));
+        }
+        let mut selected = HashSet::new();
+        for edge_id in &network.selected_graph_edge_ids {
+            if edge_id.trim().is_empty() || !selected.insert(edge_id) {
+                return Err(invalid(
+                    "officer strategic network selected graph edge IDs must be nonempty and unique",
+                ));
+            }
+        }
+        let mut deselected = HashSet::new();
+        for edge_id in &network.deselected_graph_edge_ids {
+            if edge_id.trim().is_empty()
+                || selected.contains(edge_id)
+                || !deselected.insert(edge_id)
+            {
+                return Err(invalid(
+                    "officer strategic network deselected graph edge IDs must be nonempty, unique, and disjoint from selected IDs",
+                ));
+            }
         }
     }
     Ok(())

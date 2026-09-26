@@ -752,6 +752,7 @@ def _validate_native_publication_shape(
         | {
             "unresolved-decision",
             "candidate-alternative",
+            "officer-strategic-network",
         }
         | departure_kinds
     )
