@@ -1832,10 +1832,18 @@ fn officer_selection_rebuilds_frontier_before_retained_rural_choices() {
             rationale: "Use the flatter alignment into the community frontier.".to_string(),
         }],
     };
+    let mut replay_progress = Vec::new();
     let (effective, scenario) =
-        replay_with_officer_decisions(&history, "main", &prepared, &ledger, &mut |_event| {})
-            .expect("officer-first provider-free regeneration");
+        replay_with_officer_decisions(&history, "main", &prepared, &ledger, &mut |event| {
+            replay_progress.push(event)
+        })
+        .expect("officer-first provider-free regeneration");
     assert_eq!(jev.calls, provider_calls, "replay must not call a provider");
+    assert!(
+        replay_progress
+            .iter()
+            .any(|event| event.stage == "community-access" && event.task_id.is_some())
+    );
     assert!(scenario.community_access_regenerated);
     assert!(scenario.outcomes.iter().any(|outcome| matches!(
         outcome.status,

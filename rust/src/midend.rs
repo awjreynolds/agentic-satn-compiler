@@ -1530,6 +1530,7 @@ pub fn replay_with_officer_decisions(
     progress: &mut dyn FnMut(MidendProgress),
 ) -> Result<(MidendRun, OfficerScenario), MidendError> {
     let started = Instant::now();
+    let config = MidendConfig::deterministic(false).with_branch(branch.to_string());
     let baseline = replay(root, branch, progress)?;
     let store = HistoryStore::open(root)?;
     let base = store.ensure_base(&PlanningBase::from_report(prepared.report.clone()))?;
@@ -1614,8 +1615,23 @@ pub fn replay_with_officer_decisions(
             previous_candidate.as_ref(),
         )?;
         validate_operation(&prepared.report, &operation, true, Some(&task))?;
-        rural_task_ids.push(task.task_id);
+        let task_id = task.task_id.clone();
+        let status = if operation.is_unresolved() {
+            "unresolved"
+        } else {
+            "regenerated"
+        };
+        rural_task_ids.push(task_id.clone());
         operations.push(operation);
+        emit(
+            progress,
+            &config,
+            started,
+            Some(task_id),
+            None,
+            "community-access",
+            status,
+        );
     }
 
     let mut community_access = planner.into_records();
@@ -1670,8 +1686,18 @@ pub fn replay_with_officer_decisions(
             vec![reason.clone()],
         );
         validate_operation(&prepared.report, &operation, true, Some(&task))?;
-        rural_task_ids.push(task.task_id);
+        let task_id = task.task_id.clone();
+        rural_task_ids.push(task_id.clone());
         operations.push(operation);
+        emit(
+            progress,
+            &config,
+            started,
+            Some(task_id),
+            None,
+            "community-access",
+            "unresolved-gap",
+        );
     }
 
     let previous_rural_tasks = baseline
@@ -1699,7 +1725,7 @@ pub fn replay_with_officer_decisions(
 
     emit(
         progress,
-        &MidendConfig::deterministic(false).with_branch(branch.to_string()),
+        &config,
         started,
         None,
         None,
