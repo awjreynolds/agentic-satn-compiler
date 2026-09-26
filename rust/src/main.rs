@@ -2,8 +2,10 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use satn_rs::judgment::{CodexConfig, TypeSafeConfig};
-use satn_rs::midend::{MidendConfig, MidendProgress, ProviderSet, replay, run_prepared};
-use satn_rs::officer::{apply_officer_decisions, load_officer_decisions};
+use satn_rs::midend::{
+    MidendConfig, MidendProgress, ProviderSet, replay, replay_with_officer_decisions, run_prepared,
+};
+use satn_rs::officer::load_officer_decisions;
 use satn_rs::{
     CompileOptions, ProgressEvent, add_bus_context, compile_with_progress, load_retained_report,
     prepare_with_progress, publish_decision_map, publish_officer_scenario_map,
@@ -118,16 +120,39 @@ fn run() -> satn_rs::Result<()> {
                 event.elapsed_ms,
             );
         };
-        let baseline = replay(&history, &cli.branch, &mut emit)
-            .map_err(|error| satn_rs::SatnError::InvalidInput(error.to_string()))?;
-        let report = load_retained_report(&history)?;
-        let (result, officer_scenario) = match &cli.officer_decisions {
+        let (report, result, officer_scenario) = match &cli.officer_decisions {
             Some(path) => {
+                let config = cli.config.as_ref().ok_or_else(|| {
+                    satn_rs::SatnError::InvalidInput(
+                        "--config is required with --mode replay --officer-decisions to regenerate community access"
+                            .to_string(),
+                    )
+                })?;
+                let prepared = prepare_with_progress(
+                    config,
+                    CompileOptions {
+                        origin: cli.origin.clone(),
+                        destination: cli.destination.clone(),
+                    },
+                    &mut progress,
+                )?;
                 let ledger = load_officer_decisions(path)?;
-                let (effective, scenario) = apply_officer_decisions(&report, &baseline, &ledger)?;
-                (effective, Some(scenario))
+                let (effective, scenario) = replay_with_officer_decisions(
+                    &history,
+                    &cli.branch,
+                    &prepared,
+                    &ledger,
+                    &mut emit,
+                )
+                .map_err(|error| satn_rs::SatnError::InvalidInput(error.to_string()))?;
+                (prepared.report, effective, Some(scenario))
             }
-            None => (baseline, None),
+            None => {
+                let baseline = replay(&history, &cli.branch, &mut emit)
+                    .map_err(|error| satn_rs::SatnError::InvalidInput(error.to_string()))?;
+                let report = load_retained_report(&history)?;
+                (report, baseline, None)
+            }
         };
         std::fs::create_dir_all(&cli.output)?;
         std::fs::write(

@@ -101,8 +101,9 @@ Replay reads those retained operations without launching either provider:
 `--allow-provisional` is required for a specialist proposal to select an
 alignment; otherwise the typed result remains unresolved.
 
-For an offline illustrative officer scenario, replay the same retained history
-with a JSON ledger. Each decision requires a stable `decision_id`, exact
+For an offline illustrative officer scenario, replay the retained strategic
+decisions with a JSON ledger and the pinned area configuration. The compiler
+applies officer choices before rebuilding dependent community connections. Each decision requires a stable `decision_id`, exact
 `connection_id`, `source_refs`, `attribution` and `rationale`; `candidate_id`
 may be omitted to record an unbound unavailable decision:
 
@@ -121,6 +122,7 @@ may be omitted to record an unbound unavailable decision:
 
 ```sh
 ./rust/target/release/satn-rs \
+  --config config/banes.yaml \
   --output build/rust-banes-officer-example \
   --history build/rust-banes-history \
   --mode replay \
@@ -134,3 +136,14 @@ connection is rejected. `planning.json` contains the effective replay and
 baseline operation and comparison outcome. The replay does not change retained
 history or call a model; `decision_class: "mechanical"` describes application
 of the exact binding, while officer-example authority remains separate.
+
+In the default strategic view, red denotes the remaining strategic network,
+orange an officer-selected alignment, and dark grey an original section displaced
+by that choice. Sections shared with another effective strategic alignment remain
+selected. Inspect a section for the officer attribution and retained comparison.
+
+Community decisions are carried forward only when their offered route and
+parent/root connection still match the rebuilt frontier. Changed judgments remain
+explicitly unresolved; this offline command does not obtain new model decisions.
+ATM source categories are retained as evidence and do not automatically determine
+whether a route belongs to the strategic spine or community connections.

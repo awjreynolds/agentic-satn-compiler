@@ -6,8 +6,10 @@ use std::path::{Path, PathBuf};
 use satn_rs::judgment::{ChoiceResult, ProviderReceipt};
 use satn_rs::midend::{
     ChoiceAttempt, ChoiceProvider, MidendConfig, MidendProgress, ProviderSet, SpecialistAttempt,
-    SpecialistProvider, TypedOperation, fork, replay, run, run_prepared,
+    SpecialistProvider, TypedOperation, fork, replay, replay_with_officer_decisions, run,
+    run_prepared,
 };
+use satn_rs::officer::{OfficerDecision, OfficerDecisionLedger};
 use satn_rs::{
     AccessObligation, AccountingSummary, Candidate, CompileOptions, CompileReport, Connection,
     NetworkPlace, Operation, SourceCorridor, UnknownFact, prepare_with_progress,
@@ -821,6 +823,42 @@ struct RuralChoiceJev {
     calls: usize,
     choices: Vec<String>,
     choose_comfort: bool,
+}
+
+struct OfficerOrderingJev {
+    calls: usize,
+    rural_calls: usize,
+}
+
+impl ChoiceProvider for OfficerOrderingJev {
+    fn classify_choice(&mut self, request: &satn_rs::judgment::ChoiceRequest) -> ChoiceAttempt {
+        self.calls += 1;
+        let choice = if request.state["schema"] == "satn-rust-rural-task/v1" {
+            self.rural_calls += 1;
+            request
+                .options
+                .keys()
+                .find(|option| option.ends_with(":comfort"))
+                .expect("comfort rural offer")
+                .clone()
+        } else {
+            "candidate:baseline-alignment".to_string()
+        };
+        assert!(request.options.contains_key(&choice));
+        ChoiceAttempt {
+            result: Some(ChoiceResult {
+                model: "jev-officer-ordering-fixture".to_string(),
+                choice,
+                probabilities: BTreeMap::new(),
+                confidence: 0.0,
+            }),
+            receipt: receipt(
+                "typesafe",
+                "jev-officer-ordering-fixture",
+                "{\"choice\":\"fixture\"}",
+            ),
+        }
+    }
 }
 
 impl ChoiceProvider for RuralChoiceJev {
@@ -1665,6 +1703,174 @@ fn prepared_rural_replay_reuses_retained_operations_without_providers() {
     let replayed = replay(&history, "main", &mut |_event| {}).expect("rural replay");
     assert_eq!(replayed.operations, first.operations);
     assert_eq!(replayed.community_access, first.community_access);
+}
+
+#[test]
+fn officer_selection_rebuilds_frontier_before_retained_rural_choices() {
+    let root = rural_prepared_fixture("officer-ordering");
+    let mut prepared = prepare_with_progress(
+        &root.join("area.yaml"),
+        CompileOptions::default(),
+        &mut |_event| {},
+    )
+    .expect("prepared rural fixture");
+    let network: Value = serde_json::from_str(
+        &fs::read_to_string(root.join("snapshot/network.geojson")).expect("network"),
+    )
+    .expect("network JSON");
+    let features = network["features"].as_array().expect("network features");
+    let fixture_edge = |from: &str, to: &str| {
+        let (index, feature) = features
+            .iter()
+            .enumerate()
+            .find(|(_, feature)| {
+                feature["properties"]["u"] == from && feature["properties"]["v"] == to
+            })
+            .expect("fixture graph edge");
+        let properties = &feature["properties"];
+        let edge_id = format!(
+            "edge:{from}:{to}:{}:{index}",
+            properties["key"].as_i64().expect("edge key")
+        );
+        let geometry =
+            serde_json::from_value::<Vec<[f64; 2]>>(feature["geometry"]["coordinates"].clone())
+                .expect("edge geometry");
+        let length = properties["length"].as_f64().expect("edge length");
+        (edge_id, geometry, length)
+    };
+    let candidate_for_edge =
+        |id: &str, edge_id: String, geometry: Vec<[f64; 2]>, length_m: f64, a_road_share: f64| {
+            Candidate {
+                id: id.to_string(),
+                connection_id: "connection:fixture-strategic".to_string(),
+                status: "mechanical-candidate".to_string(),
+                decision_class: "mechanical".to_string(),
+                role: "direct".to_string(),
+                role_aliases: Vec::new(),
+                length_m,
+                search_cost_m: length_m,
+                a_road_share,
+                ncn_share: 0.0,
+                cycle_alignment_bases: Vec::new(),
+                topology_status: "graph-supported".to_string(),
+                provision_status: "unknown".to_string(),
+                path_edge_ids: vec![edge_id],
+                path_edge_geometries: vec![geometry.clone()],
+                geometry,
+            }
+        };
+    let (baseline_edge, baseline_geometry, baseline_length) = fixture_edge("high", "spine");
+    let (officer_edge, officer_geometry, officer_length) = fixture_edge("flat", "spine");
+    prepared.report.connections.push(Connection {
+        id: "connection:fixture-strategic".to_string(),
+        origin_place_id: "parent".to_string(),
+        origin_name: "Parent".to_string(),
+        destination_place_id: "spine-town".to_string(),
+        destination_name: "Spine town".to_string(),
+        origin_node: "parent".to_string(),
+        destination_node: "spine".to_string(),
+        cross_region_edge_ids: vec![baseline_edge.clone()],
+        road_classes: vec!["a-road-reference".to_string()],
+        preferred_classes: vec!["a-road-reference".to_string()],
+    });
+    prepared.report.candidates.push(candidate_for_edge(
+        "candidate:baseline-alignment",
+        baseline_edge,
+        baseline_geometry,
+        baseline_length,
+        1.0,
+    ));
+    prepared.report.candidates.push(candidate_for_edge(
+        "candidate:officer-alignment",
+        officer_edge,
+        officer_geometry,
+        officer_length,
+        0.0,
+    ));
+    prepared.report.connection_count = prepared.report.connections.len();
+    prepared.report.candidate_count = prepared.report.candidates.len();
+
+    let history = root.join("history");
+    let mut jev = OfficerOrderingJev {
+        calls: 0,
+        rural_calls: 0,
+    };
+    let baseline = run_prepared(
+        &history,
+        &prepared,
+        MidendConfig::live(false),
+        ProviderSet {
+            classifier: Some(&mut jev),
+            specialist: None,
+        },
+        &mut |_event| {},
+    )
+    .expect("baseline strategic and rural decisions");
+    assert_eq!(jev.rural_calls, 1);
+    assert!(baseline.operations.iter().any(|operation| matches!(
+        operation,
+        TypedOperation::SelectAlignment { candidate_id, .. }
+            if candidate_id == "candidate:baseline-alignment"
+    )));
+    let baseline_rural_order = baseline
+        .task_ids
+        .iter()
+        .filter_map(|task_id| task_id.strip_prefix("task:rural:"))
+        .collect::<Vec<_>>();
+    assert_eq!(baseline_rural_order.first(), Some(&"parent"));
+
+    let retained_history = ["base.json", "events.jsonl", "branches.json"]
+        .map(|name| fs::read(history.join(name)).expect("retained history file"));
+    let provider_calls = jev.calls;
+    let ledger = OfficerDecisionLedger {
+        decisions: vec![OfficerDecision {
+            decision_id: "officer-example".to_string(),
+            connection_id: "connection:fixture-strategic".to_string(),
+            candidate_id: Some("candidate:officer-alignment".to_string()),
+            source_refs: vec!["fixture-source".to_string()],
+            attribution: "Officer example".to_string(),
+            rationale: "Use the flatter alignment into the community frontier.".to_string(),
+        }],
+    };
+    let (effective, scenario) =
+        replay_with_officer_decisions(&history, "main", &prepared, &ledger, &mut |_event| {})
+            .expect("officer-first provider-free regeneration");
+    assert_eq!(jev.calls, provider_calls, "replay must not call a provider");
+    assert!(scenario.community_access_regenerated);
+    assert!(scenario.outcomes.iter().any(|outcome| matches!(
+        outcome.status,
+        satn_rs::officer::OfficerOutcomeStatus::Divergence
+    )));
+    assert!(effective.operations.iter().any(|operation| matches!(
+        operation,
+        TypedOperation::SelectAlignment { candidate_id, .. }
+            if candidate_id == "candidate:officer-alignment"
+    )));
+    let regenerated_rural_order = effective
+        .task_ids
+        .iter()
+        .filter_map(|task_id| task_id.strip_prefix("task:rural:"))
+        .collect::<Vec<_>>();
+    assert_eq!(regenerated_rural_order.first(), Some(&"child"));
+    assert!(effective.operations.iter().any(|operation| matches!(
+        operation,
+        TypedOperation::UnresolvedCommunityAccess {
+            decision_class,
+            reason,
+            ..
+        } if decision_class == "classifier"
+            && reason.contains("no longer binds")
+    )));
+    for (name, contents) in ["base.json", "events.jsonl", "branches.json"]
+        .into_iter()
+        .zip(retained_history)
+    {
+        assert_eq!(
+            fs::read(history.join(name)).expect("history after replay"),
+            contents
+        );
+    }
+    assert_eq!(provider_calls, 2);
 }
 
 #[test]

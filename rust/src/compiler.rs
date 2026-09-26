@@ -19,6 +19,7 @@ use crate::graph::{
     EdgeAttachment, FrontierEdgeTarget, FrontierTarget, FrontierTerminal, Graph, GraphEdge, Route,
     UrbanEntryTarget,
 };
+use crate::officer::same_or_reversed_geometry;
 use crate::output::write_bundle;
 use crate::topography::{
     ElevationEvidenceIndex, RouteTopographyProfile, TopographyAvailability, unknown_route_profile,
@@ -2126,6 +2127,33 @@ impl<'a> RuralAccessPlanner<'a> {
                 insert_spine_target(&mut self.target_edges, &edge.id, &candidate.id);
                 insert_spine_target(&mut self.target_nodes, &edge.from, &candidate.id);
                 insert_spine_target(&mut self.target_nodes, &edge.to, &candidate.id);
+            }
+        }
+    }
+
+    pub(crate) fn exclude_displaced_baseline_targets(&mut self, geometries: &[&[[f64; 2]]]) {
+        let displaced_edge_ids = self
+            .graph
+            .edges
+            .iter()
+            .filter(|edge| {
+                geometries
+                    .iter()
+                    .any(|geometry| same_or_reversed_geometry(&edge.geometry, geometry))
+            })
+            .map(|edge| edge.id.as_str())
+            .collect::<BTreeSet<_>>();
+        self.target_edges
+            .retain(|edge_id, _| !displaced_edge_ids.contains(edge_id.as_str()));
+
+        self.target_nodes.clear();
+        for edge in &self.graph.edges {
+            let Some(spines) = self.target_edges.get(&edge.id) else {
+                continue;
+            };
+            for spine in spines.split('+') {
+                insert_spine_target(&mut self.target_nodes, &edge.from, spine);
+                insert_spine_target(&mut self.target_nodes, &edge.to, spine);
             }
         }
     }

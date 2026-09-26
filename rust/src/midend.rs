@@ -16,10 +16,13 @@ use serde_json::{Value, json};
 
 use crate::compiler::{
     AccessObligation, Candidate, CommunityAccess, CompileReport, Connection, PreparedCompilation,
-    RuralAccessOffer, RuralAccessPlanner, SourceCorridor,
+    RuralAccessCandidate, RuralAccessOffer, RuralAccessPlanner, SourceCorridor,
 };
 pub use crate::judgment::{ChoiceAttempt, SpecialistAttempt};
 use crate::judgment::{ChoiceRequest, ChoiceResult, CodexConfig, ProviderReceipt, TypeSafeConfig};
+use crate::officer::{
+    OfficerDecisionLedger, OfficerScenario, apply_officer_decisions, displaced_baseline_edges,
+};
 use crate::topography::TopographyAvailability;
 
 const UNKNOWN: &str = "__unknown__";
@@ -396,11 +399,31 @@ impl HistoryStore {
             // binding to the retained report.
             let incoming_persisted: CompileReport =
                 serde_json::from_str(&serde_json::to_string(&base.report)?)?;
-            if serde_json::to_value(&existing.report)? != serde_json::to_value(&incoming_persisted)?
-            {
-                return Err(MidendError::Invalid(
-                    "incoming prepared report differs from the retained planning base".to_string(),
-                ));
+            let mut existing_report = serde_json::to_value(&existing.report)?;
+            let mut incoming_report = serde_json::to_value(&incoming_persisted)?;
+            // Candidate-neighbourhood overlays are presentation evidence and
+            // can differ between clean preparation and retained network runs.
+            // All graph source inventory and strategic route bindings remain
+            // part of the strict base comparison below.
+            if let Some(report) = existing_report.as_object_mut() {
+                report.remove("candidate_neighbourhoods");
+            }
+            if let Some(report) = incoming_report.as_object_mut() {
+                report.remove("candidate_neighbourhoods");
+            }
+            if existing_report != incoming_report {
+                let differing_fields = existing_report
+                    .as_object()
+                    .into_iter()
+                    .flat_map(|existing| existing.iter())
+                    .filter_map(|(field, value)| {
+                        (incoming_report.get(field) != Some(value)).then_some(field.as_str())
+                    })
+                    .collect::<Vec<_>>();
+                return Err(MidendError::Invalid(format!(
+                    "incoming prepared report differs from the retained planning base in fields: {}",
+                    differing_fields.join(", ")
+                )));
             }
             return Ok(existing);
         }
@@ -1493,6 +1516,340 @@ pub fn replay(
         operations,
         community_access,
     })
+}
+
+/// Replay an officer ledger against the prepared local graph and regenerate
+/// community access from its effective strategic selections. This reads the
+/// retained history for prior rural bindings but never appends to it or calls
+/// a provider.
+pub fn replay_with_officer_decisions(
+    root: &Path,
+    branch: &str,
+    prepared: &PreparedCompilation,
+    ledger: &OfficerDecisionLedger,
+    progress: &mut dyn FnMut(MidendProgress),
+) -> Result<(MidendRun, OfficerScenario), MidendError> {
+    let started = Instant::now();
+    let baseline = replay(root, branch, progress)?;
+    let store = HistoryStore::open(root)?;
+    let base = store.ensure_base(&PlanningBase::from_report(prepared.report.clone()))?;
+    if base.base_id != baseline.base_id {
+        return Err(MidendError::Invalid(format!(
+            "prepared config base {} does not match replayed history base {}",
+            base.base_id, baseline.base_id
+        )));
+    }
+    let (mut effective, mut scenario) =
+        apply_officer_decisions(&prepared.report, &baseline, ledger)
+            .map_err(|error| MidendError::Invalid(error.to_string()))?;
+
+    let mut planner = prepared.rural_planner();
+    let displaced = displaced_baseline_edges(&prepared.report, &scenario, &effective);
+    let displaced_geometries = displaced
+        .iter()
+        .map(|edge| edge.geometry)
+        .collect::<Vec<_>>();
+    planner.exclude_displaced_baseline_targets(&displaced_geometries);
+    let selected_candidates = effective
+        .operations
+        .iter()
+        .filter_map(|operation| match operation {
+            TypedOperation::SelectAlignment { candidate_id, .. } => prepared
+                .report
+                .candidates
+                .iter()
+                .find(|candidate| candidate.id == *candidate_id),
+            TypedOperation::Unresolved { .. }
+            | TypedOperation::SelectCommunityAccess { .. }
+            | TypedOperation::UnresolvedCommunityAccess { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    planner.add_selected_alignment_targets(&selected_candidates);
+
+    let retained_rural = baseline
+        .operations
+        .iter()
+        .filter(|operation| operation.is_rural())
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut operations = effective
+        .operations
+        .iter()
+        .filter(|operation| !operation.is_rural())
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut rural_task_ids = Vec::new();
+    while let Some(offer) = planner
+        .offer_next()
+        .map_err(|error| MidendError::Invalid(error.to_string()))?
+    {
+        let task = make_rural_task(&base, &offer, true)?;
+        let prior = retained_rural
+            .iter()
+            .find(|operation| operation.community_id() == Some(offer.community_id.as_str()));
+        let previous_candidate = prior
+            .map(|operation| {
+                let retained_task = store
+                    .task(branch, operation_task_id(operation))?
+                    .ok_or_else(|| {
+                        MidendError::Invalid(format!(
+                            "rural operation {} has no retained task",
+                            operation_task_id(operation)
+                        ))
+                    })?;
+                let candidate_id = operation.rural_candidate_id().ok_or_else(|| {
+                    MidendError::Invalid(format!(
+                        "rural operation {} has no retained candidate",
+                        operation_task_id(operation)
+                    ))
+                })?;
+                rural_candidate_from_task(&retained_task, candidate_id)
+            })
+            .transpose()?;
+        let operation = regenerate_rural_operation(
+            &mut planner,
+            &task,
+            &offer,
+            prior,
+            previous_candidate.as_ref(),
+        )?;
+        validate_operation(&prepared.report, &operation, true, Some(&task))?;
+        rural_task_ids.push(task.task_id);
+        operations.push(operation);
+    }
+
+    let mut community_access = planner.into_records();
+    for access in &mut community_access {
+        if rural_task_ids.contains(&format!("task:rural:{}", access.community_id)) {
+            if let Some(operation) = operations
+                .iter()
+                .rev()
+                .find(|operation| operation.community_id() == Some(access.community_id.as_str()))
+            {
+                access.decision_class = operation.decision_class().to_string();
+                if let Some(reason) = operation_reason(operation) {
+                    access.reason = reason.to_string();
+                }
+            }
+            continue;
+        }
+
+        let prior = retained_rural
+            .iter()
+            .find(|operation| operation.community_id() == Some(access.community_id.as_str()));
+        let reason = if prior.is_some_and(|operation| {
+            operation.decision_class() == "agent" || operation.decision_class() == "classifier"
+        }) {
+            "Retained semantic community-access choice no longer binds to a reachable offer after officer strategic selections; the current graph frontier remains unresolved.".to_string()
+        } else {
+            access.reason.clone()
+        };
+        access.reason = reason.clone();
+        access.decision_class = prior
+            .map(TypedOperation::decision_class)
+            .unwrap_or("mechanical")
+            .to_string();
+        let candidate = RuralAccessCandidate {
+            id: format!("rural:{}:gap", access.community_id),
+            criterion: "unresolved-gap".to_string(),
+            access: access.clone(),
+            destination_evidence: Vec::new(),
+        };
+        let gap_offer = RuralAccessOffer {
+            community_id: access.community_id.clone(),
+            community_name: access.name.clone(),
+            candidates: vec![candidate],
+        };
+        let task = make_rural_task(&base, &gap_offer, true)?;
+        let operation = rural_unresolved_operation(
+            &task,
+            "mechanical:rural-gap",
+            access.decision_class.as_str(),
+            &reason,
+            Some(NEEDS_EVIDENCE.to_string()),
+            vec![reason.clone()],
+        );
+        validate_operation(&prepared.report, &operation, true, Some(&task))?;
+        rural_task_ids.push(task.task_id);
+        operations.push(operation);
+    }
+
+    let previous_rural_tasks = baseline
+        .operations
+        .iter()
+        .filter(|operation| operation.is_rural())
+        .map(|operation| operation_task_id(operation).to_string())
+        .collect::<BTreeSet<_>>();
+    effective
+        .task_ids
+        .retain(|task_id| !previous_rural_tasks.contains(task_id));
+    effective.task_ids.extend(rural_task_ids);
+    effective.operations = operations;
+    effective.community_access = community_access;
+    effective.status = if effective
+        .operations
+        .iter()
+        .any(TypedOperation::is_unresolved)
+    {
+        "unresolved".to_string()
+    } else {
+        "replayed".to_string()
+    };
+    scenario.community_access_regenerated = true;
+
+    emit(
+        progress,
+        &MidendConfig::deterministic(false).with_branch(branch.to_string()),
+        started,
+        None,
+        None,
+        "community-access",
+        "regenerated-from-officer-selections",
+    );
+    Ok((effective, scenario))
+}
+
+fn regenerate_rural_operation(
+    planner: &mut RuralAccessPlanner<'_>,
+    task: &DecisionTask,
+    offer: &RuralAccessOffer,
+    prior: Option<&TypedOperation>,
+    previous: Option<&RuralAccessCandidate>,
+) -> Result<TypedOperation, MidendError> {
+    if let (Some(prior), Some(previous)) = (prior, previous) {
+        if let Some(current) = offer
+            .candidates
+            .iter()
+            .find(|candidate| rural_binding_matches(prior, previous, candidate))
+        {
+            match prior {
+                TypedOperation::SelectCommunityAccess { .. } => {
+                    planner
+                        .accept(&current.id)
+                        .map_err(|error| MidendError::Invalid(error.to_string()))?;
+                    return Ok(prior.clone());
+                }
+                TypedOperation::UnresolvedCommunityAccess { reason, .. } => {
+                    planner
+                        .reject(reason)
+                        .map_err(|error| MidendError::Invalid(error.to_string()))?;
+                    return Ok(prior.clone());
+                }
+                TypedOperation::SelectAlignment { .. } | TypedOperation::Unresolved { .. } => {
+                    return Err(MidendError::Invalid(
+                        "urban operation entered officer rural replay".to_string(),
+                    ));
+                }
+            }
+        }
+    }
+
+    let semantic_prior =
+        prior.filter(|operation| matches!(operation.decision_class(), "agent" | "classifier"));
+    if let Some(prior) = semantic_prior {
+        let reason = "Retained semantic community-access choice no longer binds to the offered path, parent, and root after officer strategic selections; a new judgment is required.";
+        planner
+            .reject(reason)
+            .map_err(|error| MidendError::Invalid(error.to_string()))?;
+        return Ok(rural_unresolved_operation(
+            task,
+            &format!("officer-replay:{}", task.task_id),
+            prior.decision_class(),
+            reason,
+            retained_operation_marker(prior),
+            retained_operation_uncertainties(prior),
+        ));
+    }
+
+    if let Some(candidate) = mechanical_rural_candidate(offer) {
+        planner
+            .accept(&candidate.id)
+            .map_err(|error| MidendError::Invalid(error.to_string()))?;
+        return Ok(rural_select_operation(
+            task,
+            "mechanical:rural",
+            candidate,
+            "Mechanically admissible rural candidate on the regenerated officer frontier.",
+            Vec::new(),
+            false,
+        ));
+    }
+
+    let reason = if prior.is_some() {
+        "Retained mechanical community-access choice no longer matches the offered bindings, and no unambiguous mechanical choice is available."
+    } else {
+        "Officer replay has no retained community-access choice and the current offer is not mechanically unambiguous."
+    };
+    planner
+        .reject(reason)
+        .map_err(|error| MidendError::Invalid(error.to_string()))?;
+    Ok(rural_unresolved_operation(
+        task,
+        &format!("officer-replay:{}", task.task_id),
+        "mechanical",
+        reason,
+        Some(NEEDS_EVIDENCE.to_string()),
+        vec![reason.to_string()],
+    ))
+}
+
+fn rural_binding_matches(
+    operation: &TypedOperation,
+    previous: &RuralAccessCandidate,
+    current: &RuralAccessCandidate,
+) -> bool {
+    let operation_binding = match operation {
+        TypedOperation::SelectCommunityAccess {
+            candidate_id,
+            parent_community_id,
+            root_spine_id,
+            new_link_length_m,
+            full_access_length_m,
+            ..
+        }
+        | TypedOperation::UnresolvedCommunityAccess {
+            candidate_id,
+            parent_community_id,
+            root_spine_id,
+            new_link_length_m,
+            full_access_length_m,
+            ..
+        } => {
+            candidate_id == &current.id
+                && parent_community_id == &current.access.parent_community_id
+                && root_spine_id == &current.access.root_spine_id
+                && new_link_length_m == &current.access.new_link_length_m
+                && full_access_length_m == &current.access.full_access_length_m
+        }
+        TypedOperation::SelectAlignment { .. } | TypedOperation::Unresolved { .. } => false,
+    };
+    operation_binding
+        && previous.id == current.id
+        && previous.access.community_id == current.access.community_id
+        && previous.access.path_edge_ids == current.access.path_edge_ids
+        && previous.access.path_geometry == current.access.path_geometry
+        && previous.access.path_start_fraction == current.access.path_start_fraction
+        && previous.access.path_end_fraction == current.access.path_end_fraction
+        && previous.access.parent_community_id == current.access.parent_community_id
+        && previous.access.root_spine_id == current.access.root_spine_id
+        && previous.access.urban_entry == current.access.urban_entry
+        && previous.access.new_link_length_m == current.access.new_link_length_m
+        && previous.access.full_access_length_m == current.access.full_access_length_m
+}
+
+fn retained_operation_marker(operation: &TypedOperation) -> Option<String> {
+    match operation {
+        TypedOperation::UnresolvedCommunityAccess { marker, .. } => marker.clone(),
+        _ => None,
+    }
+}
+
+fn retained_operation_uncertainties(operation: &TypedOperation) -> Vec<String> {
+    match operation {
+        TypedOperation::SelectCommunityAccess { uncertainties, .. }
+        | TypedOperation::UnresolvedCommunityAccess { uncertainties, .. } => uncertainties.clone(),
+        TypedOperation::SelectAlignment { .. } | TypedOperation::Unresolved { .. } => Vec::new(),
+    }
 }
 
 pub fn load_base(root: &Path) -> Result<PlanningBase, MidendError> {
@@ -2860,6 +3217,7 @@ fn emit(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::candidate_neighbourhoods::{CandidateNeighbourhood, CandidateNeighbourhoodGeometry};
     use crate::compiler::{RuralAccessCandidate, RuralDestinationEvidence};
     use crate::topography::{
         RouteCoverage, RouteTopographyProfile, SustainedGradient, TopographyPolicy,
@@ -2953,6 +3311,158 @@ mod tests {
             },
             destination_evidence: Vec::new(),
         }
+    }
+
+    fn report_for_base_guard() -> CompileReport {
+        CompileReport {
+            area_id: "fixture".to_string(),
+            deployment_id: "fixture".to_string(),
+            attribution: String::new(),
+            source_attributions: Vec::new(),
+            title: "Fixture".to_string(),
+            snapshot_id: "snapshot".to_string(),
+            source_inventory_count: 1,
+            unknown_fact_count: 0,
+            connection_count: 1,
+            candidate_count: 1,
+            operation_count: 0,
+            boundary_scope: None,
+            source_inventory: vec![SourceCorridor {
+                id: "source:a1".to_string(),
+                reference: "A1".to_string(),
+                source_kind: "network".to_string(),
+                source_id: "network".to_string(),
+                scope: "pinned-network".to_string(),
+                baseline_role: "a-road".to_string(),
+                source_edge_ids: vec!["source-edge".to_string()],
+                graph_edge_ids: vec!["edge:baseline".to_string()],
+                geometry: vec![vec![[0.0, 0.0], [1.0, 0.0]]],
+                topology_status: "graph-bound".to_string(),
+                attachment_status: "graph-edge".to_string(),
+                provision_status: "unknown".to_string(),
+            }],
+            unknown_facts: Vec::new(),
+            network_places: Vec::new(),
+            school_context: Vec::new(),
+            community_access: Vec::new(),
+            access_obligations: Vec::new(),
+            destination_profile: "unconfigured".to_string(),
+            accounting: crate::compiler::AccountingSummary::default(),
+            connections: vec![Connection {
+                id: "connection:alpha:beta".to_string(),
+                origin_place_id: "alpha".to_string(),
+                origin_name: "Alpha".to_string(),
+                destination_place_id: "beta".to_string(),
+                destination_name: "Beta".to_string(),
+                origin_node: "n1".to_string(),
+                destination_node: "n2".to_string(),
+                cross_region_edge_ids: vec!["edge:baseline".to_string()],
+                road_classes: vec!["a-road-reference".to_string()],
+                preferred_classes: vec!["a-road-reference".to_string()],
+            }],
+            candidates: vec![Candidate {
+                id: "candidate:baseline".to_string(),
+                connection_id: "connection:alpha:beta".to_string(),
+                status: "mechanical-candidate".to_string(),
+                decision_class: "mechanical".to_string(),
+                role: "direct".to_string(),
+                role_aliases: Vec::new(),
+                length_m: 1.0,
+                search_cost_m: 1.0,
+                a_road_share: 1.0,
+                ncn_share: 0.0,
+                cycle_alignment_bases: Vec::new(),
+                topology_status: "graph-supported".to_string(),
+                provision_status: "unknown".to_string(),
+                path_edge_ids: vec!["edge:baseline".to_string()],
+                path_edge_geometries: vec![vec![[0.0, 0.0], [1.0, 0.0]]],
+                geometry: vec![[0.0, 0.0], [1.0, 0.0]],
+            }],
+            candidate_neighbourhoods: Vec::new(),
+            operations: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn base_guard_ignores_only_candidate_neighbourhood_overlay_changes() {
+        let root =
+            std::env::temp_dir().join(format!("satn-rust-base-guard-{}", std::process::id()));
+        if root.exists() {
+            fs::remove_dir_all(&root).expect("clean base guard fixture");
+        }
+        let store = HistoryStore::open(&root).expect("history store");
+        let report = report_for_base_guard();
+        store
+            .ensure_base(&PlanningBase::from_report(report.clone()))
+            .expect("write base");
+
+        let mut neighbourhood_changed = report.clone();
+        neighbourhood_changed.candidate_neighbourhoods = vec![CandidateNeighbourhood {
+            id: "neighbourhood:fixture".to_string(),
+            urban_extent_source_id: "urban:fixture".to_string(),
+            urban_extent_name: "Fixture".to_string(),
+            area_m2: 1.0,
+            source_dataset_ids: Vec::new(),
+            source_effective_dates: Vec::new(),
+            source_licences: Vec::new(),
+            source_classifications: Vec::new(),
+            classified_road_frontages: Vec::new(),
+            urban_edge_closes_boundary: false,
+            urban_extent_source_dataset_id: None,
+            urban_extent_source_effective_date: None,
+            urban_extent_source_licence: None,
+            urban_extent_source_url: None,
+            urban_extent_source_attribution: None,
+            geometry: CandidateNeighbourhoodGeometry {
+                geometry_type: "Polygon".to_string(),
+                coordinates: vec![vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 0.0]]],
+            },
+        }];
+        store
+            .ensure_base(&PlanningBase::from_report(neighbourhood_changed))
+            .expect("candidate-neighbourhood overlay may differ");
+
+        let mut candidate_changed = report.clone();
+        candidate_changed.candidates[0].path_edge_ids = vec!["edge:changed".to_string()];
+        let error = store
+            .ensure_base(&PlanningBase::from_report(candidate_changed))
+            .expect_err("strategic candidate path difference must be rejected");
+        assert!(error.to_string().contains("candidates"));
+
+        let mut graph_changed = report;
+        graph_changed.source_inventory[0].graph_edge_ids = vec!["edge:changed".to_string()];
+        let error = store
+            .ensure_base(&PlanningBase::from_report(graph_changed))
+            .expect_err("prepared graph binding difference must be rejected");
+        assert!(error.to_string().contains("source_inventory"));
+        fs::remove_dir_all(root).expect("remove base guard fixture");
+    }
+
+    #[test]
+    fn rural_binding_rejects_changed_inherited_full_access_length() {
+        let mut previous = candidate("rural:child:comfort", 10.0, 50.0);
+        previous.access.community_id = "child".to_string();
+        previous.access.parent_community_id = Some("parent".to_string());
+        let mut current = previous.clone();
+        current.access.full_access_length_m = Some(60.0);
+        let operation = TypedOperation::SelectCommunityAccess {
+            id: "decision:child:comfort".to_string(),
+            task_id: "task:rural:child".to_string(),
+            attempt_id: "attempt:child".to_string(),
+            community_id: "child".to_string(),
+            candidate_id: "rural:child:comfort".to_string(),
+            decision_class: "classifier".to_string(),
+            provisional: false,
+            reason: Some("Retained child choice".to_string()),
+            uncertainties: Vec::new(),
+            parent_community_id: Some("parent".to_string()),
+            root_spine_id: Some("spine".to_string()),
+            new_link_length_m: Some(10.0),
+            full_access_length_m: Some(50.0),
+        };
+
+        assert!(rural_binding_matches(&operation, &previous, &previous));
+        assert!(!rural_binding_matches(&operation, &previous, &current));
     }
 
     #[test]

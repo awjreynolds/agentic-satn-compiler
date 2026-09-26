@@ -498,15 +498,15 @@ A frozen, versioned and attributable human planning decision bound to one stable
 _Avoid_: agent decision, expiring decision, stale decision, Area Definition exception, hidden override, edited evidence
 
 **Material Officer–Compiler Divergence**:
-An explicit finding that a current valid Officer Decision selects a different eligible alignment from the compiler's current evidence-preferred option. The officer-selected route remains the primary route in that Officer-Informed Scenario Compilation, while the compiler-preferred alternative is highlighted distinctly rather than muted as an ordinary rejected option; the finding does not declare either route objectively correct.
-_Avoid_: officer error, correct route, grey rejected alternative, silent override
+An explicit finding that a current valid Officer Decision selects a different eligible alignment from the compiler's current evidence-preferred option. The officer-selected route remains the primary route in that Officer-Informed Scenario Compilation. The default strategic view distinguishes the officer-selected alignment from displaced baseline sections, while sections still used by another effective strategic connection remain selected. The retained comparison and attribution explain the divergence without declaring either route objectively correct.
+_Avoid_: officer error, correct route, unlabelled rejected alternative, silent override
 
 **Officer Decision Target Unavailable**:
 An explicit governance finding that the stable logical target of a continuing Officer Decision no longer exists among the current materially equivalent compiler targets. Generation still completes, but the decision is neither expired nor silently transferred to a different route and remains visible until an authorised human supersedes or withdraws it; when no other Officer Decision applies, the new output is a Generated Scenario Compilation with an unresolved-decision warning rather than an Officer-Informed Scenario Compilation.
 _Avoid_: stale decision, automatic remapping, nearest-route substitution, silent expiry
 
 **Officer Decision Ledger**:
-The immutable canonical set of Officer Decisions supplied as initial governed input to generation. Every applicable decision controls its stable logical target, all other targets resolve normally, and a non-empty applied ledger creates an Officer-Informed Scenario Compilation; changed evidence or profile does not expire a decision and instead may produce a highlighted Material Officer–Compiler Divergence.
+The immutable canonical set of Officer Decisions supplied as initial governed input to generation. Every applicable decision controls its stable logical target within its strategic-route or community-connection scope. Strategic choices take effect before dependent community connections are determined; community choices apply to those resulting connections and retain their separate role. A changed strategic network requires affected community choices to be reconsidered without losing their attribution. All other targets resolve normally, and a non-empty applied ledger creates an Officer-Informed Scenario Compilation; changed evidence or profile does not expire a decision and instead may produce a highlighted Material Officer–Compiler Divergence.
 _Avoid_: interactive approval gate, mutable configuration, expiring decision ledger, second network source, agent ledger, output patch
 
 **Human Intervention Response**:
