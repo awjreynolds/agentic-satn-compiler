@@ -17,8 +17,8 @@ use crate::compiler::{Candidate, CommunityAccess, CompileReport};
 use crate::error::{Result, SatnError};
 use crate::midend::{MidendRun, TypedOperation};
 use crate::officer::{
-    OfficerOutcomeStatus, OfficerScenario, OfficerStrategicNetwork, OfficerStrategicScopeGeometry,
-    displaced_baseline_edges,
+    OfficerOutcomeStatus, OfficerScenario, OfficerSelectedAlignment, OfficerStrategicNetwork,
+    OfficerStrategicScopeGeometry, displaced_baseline_edges,
 };
 
 const MAPLIBRE_JS: &[u8] = include_bytes!("../../src/satn/assets/maplibre-gl.js");
@@ -182,6 +182,8 @@ struct PublicOfficerScenario {
 struct PublicOfficerStrategicNetwork {
     selected_graph_edge_ids: Vec<String>,
     deselected_graph_edge_ids: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    selected_alignments: Vec<OfficerSelectedAlignment>,
     source_refs: Vec<String>,
     attribution: String,
     rationale: String,
@@ -252,6 +254,15 @@ fn publish_decision_map_inner(
     let strategic_scope = officer_scenario
         .and_then(|scenario| scenario.strategic_network.as_ref())
         .filter(|network| network.scope_geometry.is_some());
+    let exact_alignment_network = officer_scenario
+        .and_then(|scenario| scenario.strategic_network.as_ref())
+        .filter(|network| !network.selected_alignments.is_empty());
+    if exact_alignment_network.is_some() && strategic_scope.is_none() {
+        return Err(SatnError::InvalidInput(
+            "officer-selected source alignments require an explicit strategic network scope"
+                .to_string(),
+        ));
+    }
     let mut features = baseline_features(report, strategic_scope)?;
     let mut decisions = Vec::new();
     let mut departures = Vec::new();
@@ -538,6 +549,18 @@ fn publish_decision_map_inner(
     let public_officer_scenario = officer_scenario.map(public_officer_scenario);
     if let Some(scenario) = officer_scenario {
         add_officer_scenario_features(report, scenario, run, &mut features);
+        if let Some(network) = exact_alignment_network {
+            let scope = strategic_scope
+                .and_then(|network| network.scope_geometry.as_ref())
+                .ok_or_else(|| {
+                    SatnError::InvalidInput(
+                        "officer-selected source alignments require an explicit strategic network scope"
+                            .to_string(),
+                    )
+                })?;
+            split_compiler_candidates_for_source_alignment(&mut features, network, scope)?;
+            add_selected_alignment_features(network, run, &mut features)?;
+        }
         if !scenario.community_access_regenerated {
             for feature in features.iter_mut().filter(|feature| {
                 feature.kind == "community-access"
@@ -1033,6 +1056,7 @@ fn public_officer_scenario(scenario: &OfficerScenario) -> PublicOfficerScenario 
             PublicOfficerStrategicNetwork {
                 selected_graph_edge_ids: network.selected_graph_edge_ids.clone(),
                 deselected_graph_edge_ids: network.deselected_graph_edge_ids.clone(),
+                selected_alignments: network.selected_alignments.clone(),
                 source_refs: network.source_refs.clone(),
                 attribution: network.attribution.clone(),
                 rationale: network.rationale.clone(),
@@ -1152,7 +1176,11 @@ fn add_officer_scenario_features(
         });
     }
 
-    if let Some(network) = &scenario.strategic_network {
+    if let Some(network) = &scenario
+        .strategic_network
+        .as_ref()
+        .filter(|network| network.selected_alignments.is_empty())
+    {
         let selected_edges = network
             .selected_graph_edge_ids
             .iter()
@@ -1249,6 +1277,37 @@ fn baseline_features(
             };
             let outside = line_outside_scope(geometry, scope_geometry)?;
             let network = strategic_scope.expect("scope geometry comes from the network");
+            let exact_source_alignment = !network.selected_alignments.is_empty();
+            if exact_source_alignment {
+                for (inside_part, coordinates) in line_inside_scope(geometry, scope_geometry)?
+                    .into_iter()
+                    .enumerate()
+                {
+                    let mut properties = original.properties.clone();
+                    properties["kind"] = json!("officer-compiler-comparison");
+                    properties["label"] = json!("Compiler A-road baseline (shown for comparison)");
+                    properties["role"] = json!("Compiler A-road baseline");
+                    properties["comparison_subject"] = json!("a-road-source");
+                    properties["strategic_network_scope_part"] = json!(inside_part);
+                    properties["scenario_authority"] = json!("Strategic network reference");
+                    properties["strategic_network_reference_source_refs"] =
+                        json!(network.source_refs);
+                    properties["strategic_network_reference_attribution"] =
+                        json!(network.attribution);
+                    properties["reason"] = json!(
+                        "Compiler baseline geometry within the supplied strategic-reference scope is superseded by the exact source alignment and shown for comparison."
+                    );
+                    properties
+                        .as_object_mut()
+                        .expect("source properties")
+                        .remove("provisional");
+                    features.push(MapFeature {
+                        kind: "officer-compiler-comparison".to_string(),
+                        geometry: Some(MapGeometry::Line(coordinates)),
+                        properties,
+                    });
+                }
+            }
             for (outside_part, coordinates) in outside.into_iter().enumerate() {
                 let mut properties = original.properties.clone();
                 properties["strategic_network_scope_display"] = json!(true);
@@ -1397,6 +1456,114 @@ fn baseline_features(
     Ok(features)
 }
 
+fn split_compiler_candidates_for_source_alignment(
+    features: &mut Vec<MapFeature>,
+    network: &OfficerStrategicNetwork,
+    scope_geometry: &OfficerStrategicScopeGeometry,
+) -> Result<()> {
+    let scope_json = serde_json::to_value(scope_geometry)?;
+    let scope =
+        GeosGeometry::new_from_geojson(&scope_json.to_string()).map_err(scope_geos_error)?;
+    let candidates = (0..features.len())
+        .filter(|index| {
+            matches!(
+                features[*index].kind.as_str(),
+                "selected-alignment" | "provisional-alignment"
+            ) && features[*index].properties.get("community_id").is_none()
+        })
+        .collect::<Vec<_>>();
+    for index in candidates {
+        let original = features[index].clone();
+        let Some(MapGeometry::Line(coordinates)) = original.geometry.as_ref() else {
+            continue;
+        };
+        features[index].properties["strategic_network_scope_original"] = json!(true);
+        let outside = line_outside_scope(coordinates, &scope)?;
+        let inside = line_inside_scope(coordinates, &scope)?;
+        for (part, geometry) in outside.into_iter().enumerate() {
+            let mut properties = original.properties.clone();
+            properties["strategic_network_scope_display"] = json!(true);
+            properties["strategic_network_scope_part"] = json!(part);
+            properties["scenario_authority"] = json!("Strategic network reference");
+            properties["strategic_network_reference_source_refs"] = json!(network.source_refs);
+            properties["strategic_network_reference_attribution"] = json!(network.attribution);
+            properties["reason"] = json!(
+                "This compiler candidate segment is outside the geographic scope supplied by the strategic network reference."
+            );
+            features.push(MapFeature {
+                kind: original.kind.clone(),
+                geometry: Some(MapGeometry::Line(geometry)),
+                properties,
+            });
+        }
+        for (part, geometry) in inside.into_iter().enumerate() {
+            let mut properties = original.properties.clone();
+            properties["kind"] = json!("officer-compiler-comparison");
+            properties["label"] = json!("Compiler candidate geometry (shown for comparison)");
+            properties["role"] = json!("Compiler candidate geometry");
+            properties["comparison_subject"] = json!("selected-candidate");
+            properties["strategic_network_scope_part"] = json!(part);
+            properties["scenario_authority"] = json!("Strategic network reference");
+            properties["strategic_network_reference_source_refs"] = json!(network.source_refs);
+            properties["strategic_network_reference_attribution"] = json!(network.attribution);
+            properties["source_reference"] = json!(network.attribution);
+            properties["reason"] = json!(
+                "Compiler candidate geometry within the supplied strategic-reference scope is superseded by the exact source alignment and shown for comparison."
+            );
+            let object = properties.as_object_mut().expect("candidate properties");
+            object.remove("provisional");
+            object.remove("officer_selected");
+            features.push(MapFeature {
+                kind: "officer-compiler-comparison".to_string(),
+                geometry: Some(MapGeometry::Line(geometry)),
+                properties,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn add_selected_alignment_features(
+    network: &OfficerStrategicNetwork,
+    run: &MidendRun,
+    features: &mut Vec<MapFeature>,
+) -> Result<()> {
+    for alignment in &network.selected_alignments {
+        if alignment.geometry.is_empty() {
+            return Err(SatnError::InvalidInput(format!(
+                "officer-selected alignment {} must contain line geometry",
+                alignment.source_id
+            )));
+        }
+        for geometry in &alignment.geometry {
+            if geometry.len() < 2 {
+                return Err(SatnError::InvalidInput(format!(
+                    "officer-selected alignment {} must contain at least two coordinates",
+                    alignment.source_id
+                )));
+            }
+            features.push(MapFeature {
+                kind: "officer-selected-alignment".to_string(),
+                geometry: Some(MapGeometry::Line(geometry.clone())),
+                properties: json!({
+                    "kind": "officer-selected-alignment",
+                    "label": "Officer-selected alignment",
+                    "role": "Officer-selected alignment",
+                    "source_id": alignment.source_id,
+                    "source_reference": network.attribution,
+                    "source_refs": network.source_refs,
+                    "scenario_authority": "Strategic network reference",
+                    "reason": "Exact source line supplied as the selected strategic alignment; its geometry is shown without snapping or graph matching.",
+                    "evidence_refs": [alignment.source_id, network.source_refs],
+                    "branch": run.branch,
+                    "base_id": run.base_id,
+                }),
+            });
+        }
+    }
+    Ok(())
+}
+
 fn line_outside_scope(
     coordinates: &[[f64; 2]],
     scope: &GeosGeometry,
@@ -1411,6 +1578,22 @@ fn line_outside_scope(
         return Ok(Vec::new());
     }
     let geometry: Value = serde_json::from_str(&outside.to_geojson().map_err(scope_geos_error)?)?;
+    let mut lines = Vec::new();
+    collect_scope_lines(&geometry, &mut lines)?;
+    Ok(lines)
+}
+
+fn line_inside_scope(coordinates: &[[f64; 2]], scope: &GeosGeometry) -> Result<Vec<Vec<[f64; 2]>>> {
+    let line = json!({
+        "type": "LineString",
+        "coordinates": coordinates,
+    });
+    let line = GeosGeometry::new_from_geojson(&line.to_string()).map_err(scope_geos_error)?;
+    let inside = line.intersection(scope).map_err(scope_geos_error)?;
+    if inside.is_empty().map_err(scope_geos_error)? {
+        return Ok(Vec::new());
+    }
+    let geometry: Value = serde_json::from_str(&inside.to_geojson().map_err(scope_geos_error)?)?;
     let mut lines = Vec::new();
     collect_scope_lines(&geometry, &mut lines)?;
     Ok(lines)
@@ -1866,6 +2049,17 @@ fn render_interactive_html(
         "<li class=\"layer-control-row\"><label><input type=\"checkbox\" data-layer-toggle=\"candidate-neighbourhood\"> <span class=\"swatch candidate-key\"></span>Candidate neighbourhoods <span data-layer-count></span></label><details class=\"layer-help\" name=\"native-layer-help\"><summary aria-label=\"About candidate neighbourhoods\" aria-describedby=\"layer-help-candidate-neighbourhood\">ⓘ</summary></details><span id=\"layer-help-candidate-neighbourhood\" class=\"layer-help-popup\" role=\"tooltip\">Candidate neighbourhoods are generated planning areas based on available evidence; they do not confirm a low-traffic area.</span></li>".to_string()
     };
     let (strategic_network_legend, strategic_network_help) = match officer_scenario {
+        Some(scenario)
+            if scenario
+                .strategic_network
+                .as_ref()
+                .is_some_and(|network| !network.selected_alignments.is_empty()) =>
+        {
+            (
+                "<span class=\"swatch strategic-network-key\" aria-hidden=\"true\"></span>Strategic network <span class=\"swatch officer-selected-key\" aria-hidden=\"true\"></span>Officer-selected alignment <span class=\"swatch officer-baseline-unused-key\" aria-hidden=\"true\"></span>Compiler geometry for comparison",
+                "Red shows the compiler network outside the supplied source-alignment scope. Orange shows the exact officer-selected source alignment. Dark grey shows compiler A-road and selected-candidate geometry inside that scope, superseded by the source alignment and retained for comparison.",
+            )
+        }
         Some(scenario) if scenario.strategic_network.is_some() => (
             "<span class=\"swatch strategic-network-key\" aria-hidden=\"true\"></span>Strategic network <span class=\"swatch officer-selected-key\" aria-hidden=\"true\"></span>Selected route / reference edge <span class=\"swatch officer-baseline-unused-key\" aria-hidden=\"true\"></span>Inferred deselection / unused baseline",
             "Red shows the effective strategic network and A-road reference lines. Orange marks officer-selected routes and edges included by the strategic network reference. Dark grey marks either original baseline edges unused by effective routes or graph edges within resolved reference scope that are absent from the source reference: an inferred deselection, not a recorded rejection. Edges outside the resolved scope remain in the red network; unresolved correspondence is not treated as absence.",

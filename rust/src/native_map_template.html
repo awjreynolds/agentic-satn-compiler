@@ -159,6 +159,7 @@ __OFFICER_SCENARIO_BANNER__</header>
   const interactiveLayers = [
     'native-strategic-network', 'native-selected', 'native-selected-point', 'native-provisional-casing', 'native-provisional', 'native-provisional-point',
     'native-officer-baseline-unused', 'native-officer-effective', 'native-officer-strategic-network',
+    'native-officer-compiler-comparison', 'native-officer-selected-alignment',
     'native-unresolved', 'native-alternative',
     'native-candidate-neighbourhood',
     'native-a-road-departure-casing', 'native-a-road-departure',
@@ -169,7 +170,7 @@ __OFFICER_SCENARIO_BANNER__</header>
     'native-bus-route', 'native-bus-interchange'
   ];
   const layerGroups = {
-    'strategic-network': ['native-strategic-network', 'native-officer-baseline-unused', 'native-officer-effective', 'native-officer-strategic-network'],
+    'strategic-network': ['native-strategic-network', 'native-officer-baseline-unused', 'native-officer-effective', 'native-officer-strategic-network', 'native-officer-compiler-comparison', 'native-officer-selected-alignment'],
     'source-strategic': ['native-source-strategic'],
     'source-context': ['native-source-context'],
     'candidate-neighbourhood': ['native-candidate-neighbourhood', 'native-candidate-neighbourhood-boundary'],
@@ -316,6 +317,11 @@ __OFFICER_SCENARIO_BANNER__</header>
     }
     const referenceNetworkEdge = props.kind === 'officer-strategic-network';
     add(referenceNetworkEdge ? 'Network reference source references' : 'Officer source references', referenceNetworkEdge ? props.source_refs : props.officer_source_refs);
+    if (props.kind === 'officer-selected-alignment') add('Source references', props.source_refs);
+    if (props.kind === 'officer-compiler-comparison') {
+      add('Strategic reference source references', props.strategic_network_reference_source_refs);
+      add('Strategic reference attribution', props.strategic_network_reference_attribution);
+    }
     add(referenceNetworkEdge ? 'Network reference attribution' : 'Officer attribution', referenceNetworkEdge ? props.attribution : props.officer_attribution);
     add(referenceNetworkEdge ? 'Network reference rationale' : 'Officer rationale', referenceNetworkEdge ? props.rationale : props.officer_rationale);
     if (props.strategic_network_scope_display) {
@@ -475,9 +481,13 @@ __OFFICER_SCENARIO_BANNER__</header>
         const lineGeometry = ['LineString', 'MultiLineString'].includes(feature.geometry?.type);
         return lineGeometry && (
           (['selected-alignment', 'provisional-alignment'].includes(properties.kind) &&
-            !Object.hasOwn(properties, 'community_id')) ||
+            !Object.hasOwn(properties, 'community_id') &&
+            (properties.strategic_network_scope_display === true ||
+              properties.strategic_network_scope_original !== true)) ||
           properties.kind === 'officer-baseline-unused' ||
           properties.kind === 'officer-strategic-network' ||
+          properties.kind === 'officer-compiler-comparison' ||
+          properties.kind === 'officer-selected-alignment' ||
           (properties.kind === 'source-baseline' &&
             properties.baseline_layer === 'source-strategic-a-road' &&
             (properties.strategic_network_scope_display === true ||
@@ -493,11 +503,15 @@ __OFFICER_SCENARIO_BANNER__</header>
       'candidate-neighbourhood': network.features.filter(feature => feature.properties?.kind === 'candidate-neighbourhood').length,
       'selected-alignment': network.features.filter(feature =>
         feature.properties?.kind === 'selected-alignment' &&
-        !Object.hasOwn(feature.properties, 'community_id')
+        !Object.hasOwn(feature.properties, 'community_id') &&
+        (feature.properties?.strategic_network_scope_display === true ||
+          feature.properties?.strategic_network_scope_original !== true)
       ).length,
       'provisional-alignment': network.features.filter(feature =>
         feature.properties?.kind === 'provisional-alignment' &&
-        !Object.hasOwn(feature.properties, 'community_id')
+        !Object.hasOwn(feature.properties, 'community_id') &&
+        (feature.properties?.strategic_network_scope_display === true ||
+          feature.properties?.strategic_network_scope_original !== true)
       ).length,
       'unresolved-decision': network.features.filter(feature => feature.properties?.kind === 'unresolved-decision').length,
       'candidate-alternative': network.features.filter(feature => feature.properties?.kind === 'candidate-alternative').length,
@@ -729,20 +743,23 @@ __OFFICER_SCENARIO_BANNER__</header>
       line('native-source-strategic', ['all', ['==', ['get', 'kind'], 'source-baseline'], ['!=', ['get', 'baseline_layer'], 'source-context'], ['!', ['has', 'strategic_network_scope_display']]], '#0072b2', 3);
       const lineGeometryFilter = ['==', ['geometry-type'], 'LineString'];
       const mainStrategicFilter = ['any',
-        ['all', ['any', ['==', ['get', 'kind'], 'selected-alignment'], ['==', ['get', 'kind'], 'provisional-alignment']], lineGeometryFilter, ['!', ['has', 'community_id']]],
+        ['all', ['any', ['==', ['get', 'kind'], 'selected-alignment'], ['==', ['get', 'kind'], 'provisional-alignment']], lineGeometryFilter, ['!', ['has', 'community_id']],
+          ['any', ['==', ['get', 'strategic_network_scope_display'], true], ['!', ['has', 'strategic_network_scope_original']]]],
         ['all', ['==', ['get', 'kind'], 'source-baseline'], ['==', ['get', 'baseline_layer'], 'source-strategic-a-road'], lineGeometryFilter,
           ['any', ['==', ['get', 'strategic_network_scope_display'], true], ['!', ['has', 'strategic_network_scope_original']]]]
       ];
       line('native-strategic-network', mainStrategicFilter, '#d71920', 4);
       line('native-officer-baseline-unused', ['==', ['get', 'kind'], 'officer-baseline-unused'], '#4b5563', 5);
       line('native-alternative', ['==', ['get', 'kind'], 'candidate-alternative'], '#4b5563', 2, [5, 4]);
-      const selectedFilter = ['all', ['==', ['get', 'kind'], 'selected-alignment'], ['!', ['has', 'community_id']]];
+      const selectedFilter = ['all', ['==', ['get', 'kind'], 'selected-alignment'], ['!', ['has', 'community_id']],
+        ['any', ['==', ['get', 'strategic_network_scope_display'], true], ['!', ['has', 'strategic_network_scope_original']]]];
       line('native-selected', selectedFilter,
         ['case', ['==', ['get', 'officer_selected'], true], '#d55e00', '#009e73'], 5);
-      const provisionalFilter = ['all', ['==', ['get', 'kind'], 'provisional-alignment'], ['!', ['has', 'community_id']]];
+      const provisionalFilter = ['all', ['==', ['get', 'kind'], 'provisional-alignment'], ['!', ['has', 'community_id']],
+        ['any', ['==', ['get', 'strategic_network_scope_display'], true], ['!', ['has', 'strategic_network_scope_original']]]];
       line('native-provisional-casing', provisionalFilter, '#263238', 7, [5.7142857, 3.5714286]);
       line('native-provisional', provisionalFilter, '#e69f00', 5, [8, 5]);
-      line('native-officer-effective', ['all', ['any', ['==', ['get', 'kind'], 'selected-alignment'], ['==', ['get', 'kind'], 'provisional-alignment']], ['!', ['has', 'community_id']], ['==', ['get', 'officer_selected'], true]], '#d55e00', 5);
+      line('native-officer-effective', ['all', ['any', ['==', ['get', 'kind'], 'selected-alignment'], ['==', ['get', 'kind'], 'provisional-alignment']], ['!', ['has', 'community_id']], ['==', ['get', 'officer_selected'], true], ['!', ['has', 'strategic_network_scope_original']]], '#d55e00', 5);
       line('native-officer-strategic-network', ['all', ['==', ['get', 'kind'], 'officer-strategic-network'], ['==', ['geometry-type'], 'LineString']],
         ['case', ['==', ['get', 'strategic_network_disposition'], 'selected'], '#d55e00', '#4b5563'], 6);
       line('native-unresolved', ['==', ['get', 'kind'], 'unresolved-decision'], '#cc79a7', 4, [1, 3]);
@@ -755,6 +772,8 @@ __OFFICER_SCENARIO_BANNER__</header>
       const communityAccessFilter = ['all', ['==', ['get', 'kind'], 'community-access'], ['==', ['geometry-type'], 'LineString']];
       line('native-community-access-casing', communityAccessFilter, '#263238', 6);
       line('native-community-access', communityAccessFilter, '#56b4e9', 4);
+      line('native-officer-compiler-comparison', ['all', ['==', ['get', 'kind'], 'officer-compiler-comparison'], ['==', ['geometry-type'], 'LineString']], '#4b5563', 6);
+      line('native-officer-selected-alignment', ['all', ['==', ['get', 'kind'], 'officer-selected-alignment'], ['==', ['geometry-type'], 'LineString']], '#d55e00', 7);
       addMarkerImage('native-marker-selected', 'circle', '#009e73');
       addMarkerImage('native-marker-provisional', 'triangle', '#e69f00');
       addMarkerImage('native-marker-network-place', 'square', '#0072b2');

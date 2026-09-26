@@ -35,6 +35,8 @@ pub struct OfficerDecision {
 pub struct OfficerStrategicNetworkDecision {
     pub selected_graph_edge_ids: Vec<String>,
     pub deselected_graph_edge_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selected_alignments: Vec<OfficerSelectedAlignment>,
     pub source_refs: Vec<String>,
     pub attribution: String,
     pub rationale: String,
@@ -59,6 +61,8 @@ pub struct OfficerScenario {
 pub struct OfficerStrategicNetwork {
     pub selected_graph_edge_ids: Vec<String>,
     pub deselected_graph_edge_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selected_alignments: Vec<OfficerSelectedAlignment>,
     pub edge_geometries: Vec<OfficerStrategicEdgeGeometry>,
     pub source_refs: Vec<String>,
     pub attribution: String,
@@ -82,6 +86,13 @@ pub enum OfficerStrategicScopeGeometry {
 pub struct OfficerStrategicEdgeGeometry {
     pub edge_id: String,
     pub geometry: Vec<[f64; 2]>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct OfficerSelectedAlignment {
+    pub source_id: String,
+    pub geometry: Vec<Vec<[f64; 2]>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -321,6 +332,15 @@ fn validate_ledger(ledger: &OfficerDecisionLedger) -> Result<()> {
         {
             return Err(invalid(
                 "officer strategic network requires source references, attribution, and rationale",
+            ));
+        }
+        if network.selected_alignments.iter().any(|alignment| {
+            alignment.source_id.trim().is_empty()
+                || alignment.geometry.is_empty()
+                || alignment.geometry.iter().any(|part| part.len() < 2)
+        }) {
+            return Err(invalid(
+                "officer selected alignments require source IDs and nonempty line parts",
             ));
         }
         let mut selected = HashSet::new();

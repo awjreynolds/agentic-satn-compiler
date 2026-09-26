@@ -1728,6 +1728,18 @@ fn officer_selection_rebuilds_frontier_before_retained_rural_choices() {
         "residential",
         None,
     );
+    add_bidirectional(
+        fixture_network["features"]
+            .as_array_mut()
+            .expect("features"),
+        "outside-a2-west",
+        "outside-a2-east",
+        [0.04, 0.0],
+        [0.05, 0.0],
+        10.0,
+        "primary",
+        Some("A2"),
+    );
     fs::write(
         &network_path,
         serde_json::to_vec(&fixture_network).expect("fixture network"),
@@ -1745,6 +1757,15 @@ fn officer_selection_rebuilds_frontier_before_retained_rural_choices() {
             "Officer network place",
             "village",
             [0.01, 0.01],
+        ));
+    fixture_places["features"]
+        .as_array_mut()
+        .expect("place features")
+        .push(place_feature(
+            "outside-root",
+            "Outside root",
+            "village",
+            [0.04, 0.0],
         ));
     fs::write(
         &places_path,
@@ -1803,7 +1824,9 @@ fn officer_selection_rebuilds_frontier_before_retained_rural_choices() {
             }
         };
     let (baseline_edge, baseline_geometry, baseline_length) = fixture_edge("high", "spine");
+    let (reverse_baseline_edge, _, _) = fixture_edge("spine", "high");
     let (officer_edge, officer_geometry, officer_length) = fixture_edge("flat", "spine");
+    let (reverse_officer_edge, _, _) = fixture_edge("spine", "flat");
     let (officer_network_edge, officer_network_geometry, _) =
         fixture_edge("flat", "officer-network-node");
     prepared.report.connections.push(Connection {
@@ -1843,7 +1866,7 @@ fn officer_selection_rebuilds_frontier_before_retained_rural_choices() {
     prepared.report.candidates.push(another_journey);
     prepared.report.candidates.push(candidate_for_edge(
         "candidate:officer-alignment",
-        officer_edge,
+        officer_edge.clone(),
         officer_geometry,
         officer_length,
         0.0,
@@ -1878,7 +1901,17 @@ fn officer_selection_rebuilds_frontier_before_retained_rural_choices() {
         .iter()
         .filter_map(|task_id| task_id.strip_prefix("task:rural:"))
         .collect::<Vec<_>>();
-    assert_eq!(baseline_rural_order.first(), Some(&"parent"));
+    assert!(baseline_rural_order.contains(&"parent"));
+    let outside_root = baseline
+        .community_access
+        .iter()
+        .find(|access| access.community_id == "outside-root")
+        .expect("outside A2 community root");
+    assert_eq!(
+        outside_root.root_spine_id.as_deref(),
+        Some("source:network:a-road:A2")
+    );
+    let outside_root_path = outside_root.path_edge_ids.clone();
 
     let retained_history = ["base.json", "events.jsonl", "branches.json"]
         .map(|name| fs::read(history.join(name)).expect("retained history file"));
@@ -1917,7 +1950,14 @@ fn officer_selection_rebuilds_frontier_before_retained_rural_choices() {
             "coordinates": [[[
                 [0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0], [0.0, 0.0]
             ]]]
-        }
+        },
+        "selected_alignments": [{
+            "source_id": "kml_10",
+            "geometry": [
+                [[0.1, 0.2], [0.3, 0.4]],
+                [[0.5, 0.6], [0.7, 0.8]]
+            ]
+        }]
     });
     let ledger: OfficerDecisionLedger =
         serde_json::from_value(ledger_json).expect("resolved strategic network input");
@@ -1943,6 +1983,93 @@ fn officer_selection_rebuilds_frontier_before_retained_rural_choices() {
         TypedOperation::SelectAlignment { candidate_id, .. }
             if candidate_id == "candidate:officer-alignment"
     )));
+    let outside_scope_ledger: OfficerDecisionLedger = serde_json::from_value(json!({
+        "decisions": [
+            {
+                "decision_id": "officer-example",
+                "connection_id": "connection:fixture-strategic",
+                "candidate_id": "candidate:officer-alignment",
+                "source_refs": ["fixture-source"],
+                "attribution": "Officer example",
+                "rationale": "Use the flatter alignment into the community frontier."
+            },
+            {
+                "decision_id": "officer-another-journey",
+                "connection_id": "connection:another-journey",
+                "candidate_id": "candidate:another-journey",
+                "source_refs": ["fixture-other-source"],
+                "attribution": "Another officer journey",
+                "rationale": "Retain this journey selection without overriding the network scope."
+            }
+        ],
+        "strategic_network": {
+            "selected_graph_edge_ids": [],
+            "deselected_graph_edge_ids": [
+                baseline_edge,
+                reverse_baseline_edge,
+                officer_edge,
+                reverse_officer_edge
+            ],
+            "selected_alignments": [{
+                "source_id": "final_february25.fixture",
+                "geometry": [[[0.01, 0.0], [0.02, 0.0]]]
+            }],
+            "source_refs": ["fixture-network-source"],
+            "attribution": "Fixture strategic network reference",
+            "rationale": "Source alignment is selected; scoped baseline targets are omitted.",
+            "scope_geometry": {
+                "type": "Polygon",
+                "coordinates": [[
+                    [0.009, -0.002], [0.021, -0.002], [0.021, 0.002],
+                    [0.009, 0.002], [0.009, -0.002]
+                ]]
+            }
+        }
+    }))
+    .expect("source-only scoped network ledger");
+    let (source_only_effective, _) = replay_with_officer_decisions(
+        &history,
+        "main",
+        &prepared,
+        &outside_scope_ledger,
+        &mut |_event| {},
+    )
+    .expect("source-only exact-scope replay");
+    assert!(
+        source_only_effective
+            .operations
+            .iter()
+            .any(|operation| matches!(
+                operation,
+                TypedOperation::SelectAlignment { candidate_id, .. }
+                    if candidate_id == "candidate:another-journey"
+            ))
+    );
+    assert!(
+        source_only_effective
+            .operations
+            .iter()
+            .any(|operation| matches!(
+                operation,
+                TypedOperation::UnresolvedCommunityAccess { community_id, .. }
+                    if community_id == "parent"
+            ))
+    );
+    assert!(!source_only_effective.operations.iter().any(|operation| matches!(
+        operation,
+        TypedOperation::SelectCommunityAccess { community_id, root_spine_id, .. }
+            if community_id == "parent" && root_spine_id.as_deref() == Some("source:network:a-road:A1")
+    )));
+    let outside_root_after = source_only_effective
+        .community_access
+        .iter()
+        .find(|access| access.community_id == "outside-root")
+        .expect("unaffected outside root survives replay");
+    assert_eq!(
+        outside_root_after.root_spine_id.as_deref(),
+        Some("source:network:a-road:A2")
+    );
+    assert_eq!(outside_root_after.path_edge_ids, outside_root_path);
     assert!(effective.operations.iter().any(|operation| matches!(
         operation,
         TypedOperation::SelectAlignment { candidate_id, .. }
@@ -1953,10 +2080,7 @@ fn officer_selection_rebuilds_frontier_before_retained_rural_choices() {
         .iter()
         .filter_map(|task_id| task_id.strip_prefix("task:rural:"))
         .collect::<Vec<_>>();
-    assert_eq!(
-        regenerated_rural_order.first(),
-        Some(&"officer-network-place")
-    );
+    assert!(regenerated_rural_order.contains(&"officer-network-place"));
     let network_access = effective
         .community_access
         .iter()
@@ -1976,6 +2100,16 @@ fn officer_selection_rebuilds_frontier_before_retained_rural_choices() {
     assert_eq!(
         network.edge_geometries[0].geometry,
         officer_network_geometry
+    );
+    assert_eq!(
+        serde_json::to_value(&network.selected_alignments).expect("source alignments"),
+        json!([{
+            "source_id": "kml_10",
+            "geometry": [
+                [[0.1, 0.2], [0.3, 0.4]],
+                [[0.5, 0.6], [0.7, 0.8]]
+            ]
+        }])
     );
     assert_eq!(
         network.scope_geometry,

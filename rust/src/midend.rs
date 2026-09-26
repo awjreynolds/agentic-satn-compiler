@@ -1593,6 +1593,7 @@ pub fn replay_with_officer_decisions(
         scenario.strategic_network = Some(OfficerStrategicNetwork {
             selected_graph_edge_ids: network.selected_graph_edge_ids.clone(),
             deselected_graph_edge_ids: network.deselected_graph_edge_ids.clone(),
+            selected_alignments: network.selected_alignments.clone(),
             edge_geometries,
             source_refs: network.source_refs.clone(),
             attribution: network.attribution.clone(),

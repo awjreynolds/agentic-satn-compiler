@@ -671,6 +671,43 @@ def test_package_pages_rejects_point_geometry_for_officer_strategic_network_edge
         )
 
 
+def test_package_pages_counts_scope_display_candidate_parts_once(tmp_path: Path) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    _write_native_catalogue(catalogue)
+    _write_native_bundle(bundles)
+    network_path = bundles / "native-area" / "decision-map.geojson"
+    network = json.loads(network_path.read_text(encoding="utf-8"))
+    features = network["features"]
+    for kind in ("selected-alignment", "provisional-alignment"):
+        original = next(feature for feature in features if feature["properties"]["kind"] == kind)
+        display_part = json.loads(json.dumps(original))
+        display_part["properties"]["strategic_network_scope_display"] = True
+        display_part["geometry"]["coordinates"] = [[-2, 51], [-1.95, 51.05]]
+        features.append(display_part)
+    for kind in ("officer-compiler-comparison", "officer-selected-alignment"):
+        features.append(
+            {
+                "type": "Feature",
+                "properties": {"kind": kind, "source_id": f"source:{kind}"},
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [[-2, 51], [-1.95, 51.05]],
+                },
+            }
+        )
+    network_path.write_text(json.dumps(network), encoding="utf-8")
+
+    result = package_pages(
+        catalogue,
+        bundles,
+        tmp_path / "pages",
+        tmp_path / "satn-pages.zip",
+    )
+
+    assert result.release_artifact.is_file()
+
+
 @pytest.mark.browser
 def test_native_rendering_gate_accepts_a_valid_on_spine_decision_point(
     tmp_path: Path,
