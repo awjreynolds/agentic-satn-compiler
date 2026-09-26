@@ -637,6 +637,40 @@ def test_package_pages_rejects_an_empty_unresolved_community_point_geometry(
         )
 
 
+def test_package_pages_rejects_point_geometry_for_officer_strategic_network_edge(
+    tmp_path: Path,
+) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    _write_native_catalogue(catalogue)
+    _write_native_bundle(bundles)
+    network_path = bundles / "native-area" / "decision-map.geojson"
+    network = json.loads(network_path.read_text(encoding="utf-8"))
+    network["features"].append(
+        {
+            "type": "Feature",
+            "properties": {
+                "kind": "officer-strategic-network",
+                "strategic_network_disposition": "deselected",
+                "graph_edge_id": "reference-edge",
+            },
+            "geometry": {"type": "Point", "coordinates": [-1.95, 51.05]},
+        }
+    )
+    network_path.write_text(json.dumps(network), encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match=r"officer-strategic-network.*non-empty line geometry",
+    ):
+        package_pages(
+            catalogue,
+            bundles,
+            tmp_path / "pages",
+            tmp_path / "satn-pages.zip",
+        )
+
+
 @pytest.mark.browser
 def test_native_rendering_gate_accepts_a_valid_on_spine_decision_point(
     tmp_path: Path,

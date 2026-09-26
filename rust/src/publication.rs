@@ -170,6 +170,17 @@ struct PublicOfficerScenario {
     divergence_count: usize,
     unavailable_count: usize,
     outcomes: Vec<PublicOfficerOutcome>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    strategic_network: Option<PublicOfficerStrategicNetwork>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PublicOfficerStrategicNetwork {
+    selected_graph_edge_ids: Vec<String>,
+    deselected_graph_edge_ids: Vec<String>,
+    source_refs: Vec<String>,
+    attribution: String,
+    rationale: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1009,6 +1020,15 @@ fn public_officer_scenario(scenario: &OfficerScenario) -> PublicOfficerScenario 
             .filter(|outcome| outcome.status == OfficerOutcomeStatus::Unavailable)
             .count(),
         outcomes,
+        strategic_network: scenario.strategic_network.as_ref().map(|network| {
+            PublicOfficerStrategicNetwork {
+                selected_graph_edge_ids: network.selected_graph_edge_ids.clone(),
+                deselected_graph_edge_ids: network.deselected_graph_edge_ids.clone(),
+                source_refs: network.source_refs.clone(),
+                attribution: network.attribution.clone(),
+                rationale: network.rationale.clone(),
+            }
+        }),
     }
 }
 
@@ -1120,6 +1140,55 @@ fn add_officer_scenario_features(
                 "base_id": scenario.base_id,
             }),
         });
+    }
+
+    if let Some(network) = &scenario.strategic_network {
+        let selected_edges = network
+            .selected_graph_edge_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        let deselected_edges = network
+            .deselected_graph_edge_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        for edge in &network.edge_geometries {
+            let (disposition, status, reason) = if selected_edges.contains(edge.edge_id.as_str()) {
+                (
+                    "selected",
+                    "Included by strategic network reference",
+                    "This graph edge is included by the strategic network reference.",
+                )
+            } else if deselected_edges.contains(edge.edge_id.as_str()) {
+                (
+                    "deselected",
+                    "Inferred deselection from strategic network reference",
+                    "This edge is absent from the strategic network reference and is shown as an inferred deselection, not a recorded rejection.",
+                )
+            } else {
+                continue;
+            };
+            features.push(MapFeature {
+                kind: "officer-strategic-network".to_string(),
+                geometry: Some(MapGeometry::Line(edge.geometry.clone())),
+                properties: json!({
+                    "kind": "officer-strategic-network",
+                    "label": "Strategic network reference edge",
+                    "graph_edge_id": edge.edge_id,
+                    "strategic_network_disposition": disposition,
+                    "scenario_status": status,
+                    "scenario_authority": "Strategic network reference",
+                    "source_refs": network.source_refs,
+                    "attribution": network.attribution,
+                    "rationale": network.rationale,
+                    "reason": reason,
+                    "evidence_refs": network.source_refs,
+                    "branch": scenario.baseline_branch,
+                    "base_id": scenario.base_id,
+                }),
+            });
+        }
     }
 }
 
@@ -1678,16 +1747,19 @@ fn render_interactive_html(
     } else {
         "<li class=\"layer-control-row\"><label><input type=\"checkbox\" data-layer-toggle=\"candidate-neighbourhood\"> <span class=\"swatch candidate-key\"></span>Candidate neighbourhoods <span data-layer-count></span></label><details class=\"layer-help\" name=\"native-layer-help\"><summary aria-label=\"About candidate neighbourhoods\" aria-describedby=\"layer-help-candidate-neighbourhood\">ⓘ</summary></details><span id=\"layer-help-candidate-neighbourhood\" class=\"layer-help-popup\" role=\"tooltip\">Candidate neighbourhoods are generated planning areas based on available evidence; they do not confirm a low-traffic area.</span></li>".to_string()
     };
-    let (strategic_network_legend, strategic_network_help) = if officer_scenario.is_some() {
-        (
+    let (strategic_network_legend, strategic_network_help) = match officer_scenario {
+        Some(scenario) if scenario.strategic_network.is_some() => (
+            "<span class=\"swatch strategic-network-key\" aria-hidden=\"true\"></span>Strategic network <span class=\"swatch officer-selected-key\" aria-hidden=\"true\"></span>Selected route / reference edge <span class=\"swatch officer-baseline-unused-key\" aria-hidden=\"true\"></span>Inferred deselection / unused baseline",
+            "Red shows the effective strategic network and A-road reference lines. Orange marks officer-selected routes and edges included by the strategic network reference. Dark grey marks either original baseline edges unused by effective routes or graph edges within resolved reference scope that are absent from the source reference: an inferred deselection, not a recorded rejection. Edges outside the resolved scope remain in the red network; unresolved correspondence is not treated as absence.",
+        ),
+        Some(_) => (
             "<span class=\"swatch strategic-network-key\" aria-hidden=\"true\"></span>Strategic network <span class=\"swatch officer-selected-key\" aria-hidden=\"true\"></span>Officer-selected route <span class=\"swatch officer-baseline-unused-key\" aria-hidden=\"true\"></span>Unused original baseline edge",
             "Red shows the strategic network and A-road references; orange shows officer-selected alignments; dark grey shows original baseline edges unused by every effective selected or provisional strategic candidate.",
-        )
-    } else {
-        (
+        ),
+        None => (
             "<span class=\"swatch strategic-network-key\" aria-hidden=\"true\"></span>Strategic active travel network",
             "The proposed strategic network includes chosen and provisional non-community route lines plus A-road reference sections. Provisional routes remain available in the separate review layer.",
-        )
+        ),
     };
     let officer_scenario_attribute = if officer_scenario.is_some() {
         " data-native-officer-scenario=\"illustrative\""

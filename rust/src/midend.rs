@@ -21,7 +21,8 @@ use crate::compiler::{
 pub use crate::judgment::{ChoiceAttempt, SpecialistAttempt};
 use crate::judgment::{ChoiceRequest, ChoiceResult, CodexConfig, ProviderReceipt, TypeSafeConfig};
 use crate::officer::{
-    OfficerDecisionLedger, OfficerScenario, apply_officer_decisions, displaced_baseline_edges,
+    OfficerDecisionLedger, OfficerScenario, OfficerStrategicEdgeGeometry, OfficerStrategicNetwork,
+    apply_officer_decisions, displaced_baseline_edges,
 };
 use crate::topography::TopographyAvailability;
 
@@ -1566,6 +1567,38 @@ pub fn replay_with_officer_decisions(
         })
         .collect::<Vec<_>>();
     planner.add_selected_alignment_targets(&selected_candidates);
+    if let Some(network) = &ledger.strategic_network {
+        planner
+            .apply_strategic_network_scope(
+                &network.selected_graph_edge_ids,
+                &network.deselected_graph_edge_ids,
+            )
+            .map_err(|error| MidendError::Invalid(error.to_string()))?;
+        let edge_geometries = network
+            .selected_graph_edge_ids
+            .iter()
+            .chain(&network.deselected_graph_edge_ids)
+            .map(|edge_id| {
+                let geometry = prepared.graph_edge_geometry(edge_id).ok_or_else(|| {
+                    MidendError::Invalid(format!(
+                        "officer strategic network references unknown prepared graph edge {edge_id}"
+                    ))
+                })?;
+                Ok(OfficerStrategicEdgeGeometry {
+                    edge_id: edge_id.clone(),
+                    geometry: geometry.to_vec(),
+                })
+            })
+            .collect::<std::result::Result<Vec<_>, MidendError>>()?;
+        scenario.strategic_network = Some(OfficerStrategicNetwork {
+            selected_graph_edge_ids: network.selected_graph_edge_ids.clone(),
+            deselected_graph_edge_ids: network.deselected_graph_edge_ids.clone(),
+            edge_geometries,
+            source_refs: network.source_refs.clone(),
+            attribution: network.attribution.clone(),
+            rationale: network.rationale.clone(),
+        });
+    }
 
     let retained_rural = baseline
         .operations
