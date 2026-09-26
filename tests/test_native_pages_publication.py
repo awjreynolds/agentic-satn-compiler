@@ -197,6 +197,15 @@ def _write_native_bundle(
         "__BRANCH__": "review-branch",
         "__BASE_ID__": "base-1",
         "__OFFICER_SCENARIO_ATTRIBUTE__": "",
+        "__STRATEGIC_NETWORK_LEGEND__": (
+            '<span class="swatch strategic-network-key" aria-hidden="true"></span>'
+            "Strategic active travel network"
+        ),
+        "__STRATEGIC_NETWORK_HELP__": (
+            "The proposed strategic network includes chosen and provisional non-community "
+            "route lines plus A-road reference sections. Provisional routes remain available "
+            "in the separate review layer."
+        ),
         "__NETWORK_DESCRIPTION__": (
             "The Strategic active travel network shows selected and provisional route lines. "
             "Community Connections, source baseline and other evidence layers are optional "
@@ -205,7 +214,6 @@ def _write_native_bundle(
         ),
         "__OFFICER_SCENARIO_BANNER__": "",
         "__OFFICER_FINDINGS__": "",
-        "__OFFICER_COMPARISON_CONTROL__": "",
         "__COMMUNITY_ACCESS_LABEL__": "Community Connections",
         "__COMMUNITY_ACCESS_HELP_LABEL__": "About Community Connections",
         "__COMMUNITY_ACCESS_HELP__": (
