@@ -753,6 +753,8 @@ def _validate_native_publication_shape(
             "unresolved-decision",
             "candidate-alternative",
             "officer-strategic-network",
+            "officer-compiler-comparison",
+            "officer-selected-alignment",
         }
         | departure_kinds
     )
@@ -761,12 +763,14 @@ def _validate_native_publication_shape(
         for feature in features
         if isinstance(feature.get("properties"), dict)
         and feature["properties"].get("kind") in selected_kinds
+        and feature["properties"].get("strategic_network_scope_display") is not True
     )
     provisional_count = sum(
         1
         for feature in features
         if isinstance(feature.get("properties"), dict)
         and feature["properties"].get("kind") == "provisional-alignment"
+        and feature["properties"].get("strategic_network_scope_display") is not True
     )
     unresolved_count = sum(
         1
