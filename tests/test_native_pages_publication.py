@@ -391,6 +391,27 @@ def _make_on_spine_decision_point(bundle: Path, *, include_access: bool) -> None
         path.write_text(json.dumps(document), encoding="utf-8")
 
 
+def _make_unresolved_community_decision_point(
+    bundle: Path,
+    *,
+    community_id: str | None = "community:unresolved",
+    access_status: str = "unresolved",
+    coordinates: object = [-1.95, 51.05],
+) -> None:
+    network_path = bundle / "decision-map.geojson"
+    network = json.loads(network_path.read_text(encoding="utf-8"))
+    unresolved = next(
+        feature
+        for feature in network["features"]
+        if feature["properties"].get("kind") == "unresolved-decision"
+    )
+    unresolved["geometry"] = {"type": "Point", "coordinates": coordinates}
+    if community_id is not None:
+        unresolved["properties"]["community_id"] = community_id
+    unresolved["properties"]["access_status"] = access_status
+    network_path.write_text(json.dumps(network), encoding="utf-8")
+
+
 def _add_community_gap(bundle: Path) -> None:
     network_path = bundle / "decision-map.geojson"
     network = json.loads(network_path.read_text(encoding="utf-8"))
@@ -530,6 +551,84 @@ def test_package_pages_rejects_an_unproven_zero_length_decision_point(
     _make_on_spine_decision_point(bundles / "native-area", include_access=False)
 
     with pytest.raises(ValueError, match="on-spine decision point"):
+        package_pages(
+            catalogue,
+            bundles,
+            tmp_path / "pages",
+            tmp_path / "satn-pages.zip",
+        )
+
+
+def test_package_pages_accepts_an_unresolved_community_decision_point(
+    tmp_path: Path,
+) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    _write_native_catalogue(catalogue)
+    _write_native_bundle(bundles)
+    _make_unresolved_community_decision_point(bundles / "native-area")
+
+    result = package_pages(
+        catalogue,
+        bundles,
+        tmp_path / "pages",
+        tmp_path / "satn-pages.zip",
+    )
+
+    network = json.loads(
+        (result.pages_directory / "deployments" / "native-area" / "decision-map.geojson").read_text(
+            encoding="utf-8"
+        )
+    )
+    unresolved = next(
+        feature
+        for feature in network["features"]
+        if feature["properties"].get("kind") == "unresolved-decision"
+    )
+    assert unresolved["geometry"] == {"type": "Point", "coordinates": [-1.95, 51.05]}
+
+
+@pytest.mark.parametrize(
+    ("community_id", "access_status"),
+    [(None, "unresolved"), ("community:unresolved", "served")],
+)
+def test_package_pages_rejects_an_unidentified_unresolved_decision_point(
+    tmp_path: Path,
+    community_id: str | None,
+    access_status: str,
+) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    _write_native_catalogue(catalogue)
+    _write_native_bundle(bundles)
+    _make_unresolved_community_decision_point(
+        bundles / "native-area",
+        community_id=community_id,
+        access_status=access_status,
+    )
+
+    with pytest.raises(ValueError, match=r"unresolved-decision.*non-empty line geometry"):
+        package_pages(
+            catalogue,
+            bundles,
+            tmp_path / "pages",
+            tmp_path / "satn-pages.zip",
+        )
+
+
+def test_package_pages_rejects_an_empty_unresolved_community_point_geometry(
+    tmp_path: Path,
+) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    _write_native_catalogue(catalogue)
+    _write_native_bundle(bundles)
+    _make_unresolved_community_decision_point(
+        bundles / "native-area",
+        coordinates=[],
+    )
+
+    with pytest.raises(ValueError, match=r"unresolved-decision.*non-empty line geometry"):
         package_pages(
             catalogue,
             bundles,

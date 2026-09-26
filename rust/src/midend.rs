@@ -1753,13 +1753,19 @@ fn regenerate_rural_operation(
                     planner
                         .accept(&current.id)
                         .map_err(|error| MidendError::Invalid(error.to_string()))?;
-                    return Ok(prior.clone());
+                    return Ok(rural_operation_with_current_measurements(
+                        prior.clone(),
+                        current,
+                    ));
                 }
                 TypedOperation::UnresolvedCommunityAccess { reason, .. } => {
                     planner
                         .reject(reason)
                         .map_err(|error| MidendError::Invalid(error.to_string()))?;
-                    return Ok(prior.clone());
+                    return Ok(rural_operation_with_current_measurements(
+                        prior.clone(),
+                        current,
+                    ));
                 }
                 TypedOperation::SelectAlignment { .. } | TypedOperation::Unresolved { .. } => {
                     return Err(MidendError::Invalid(
@@ -1824,6 +1830,16 @@ fn rural_binding_matches(
     previous: &RuralAccessCandidate,
     current: &RuralAccessCandidate,
 ) -> bool {
+    let Some(current_new_link_length_m) =
+        persisted_fresh_measurement(current.access.new_link_length_m)
+    else {
+        return false;
+    };
+    let Some(current_full_access_length_m) =
+        persisted_fresh_measurement(current.access.full_access_length_m)
+    else {
+        return false;
+    };
     let operation_binding = match operation {
         TypedOperation::SelectCommunityAccess {
             candidate_id,
@@ -1844,8 +1860,8 @@ fn rural_binding_matches(
             candidate_id == &current.id
                 && parent_community_id == &current.access.parent_community_id
                 && root_spine_id == &current.access.root_spine_id
-                && new_link_length_m == &current.access.new_link_length_m
-                && full_access_length_m == &current.access.full_access_length_m
+                && new_link_length_m == &current_new_link_length_m
+                && full_access_length_m == &current_full_access_length_m
         }
         TypedOperation::SelectAlignment { .. } | TypedOperation::Unresolved { .. } => false,
     };
@@ -1859,8 +1875,42 @@ fn rural_binding_matches(
         && previous.access.parent_community_id == current.access.parent_community_id
         && previous.access.root_spine_id == current.access.root_spine_id
         && previous.access.urban_entry == current.access.urban_entry
-        && previous.access.new_link_length_m == current.access.new_link_length_m
-        && previous.access.full_access_length_m == current.access.full_access_length_m
+        && previous.access.new_link_length_m == current_new_link_length_m
+        && previous.access.full_access_length_m == current_full_access_length_m
+}
+
+fn persisted_fresh_measurement(value: Option<f64>) -> Option<Option<f64>> {
+    match value {
+        None => Some(None),
+        Some(value) => {
+            let encoded = serde_json::to_string(&value).ok()?;
+            let persisted = serde_json::from_str(&encoded).ok()?;
+            Some(Some(persisted))
+        }
+    }
+}
+
+fn rural_operation_with_current_measurements(
+    mut operation: TypedOperation,
+    current: &RuralAccessCandidate,
+) -> TypedOperation {
+    match &mut operation {
+        TypedOperation::SelectCommunityAccess {
+            new_link_length_m,
+            full_access_length_m,
+            ..
+        }
+        | TypedOperation::UnresolvedCommunityAccess {
+            new_link_length_m,
+            full_access_length_m,
+            ..
+        } => {
+            *new_link_length_m = current.access.new_link_length_m;
+            *full_access_length_m = current.access.full_access_length_m;
+        }
+        TypedOperation::SelectAlignment { .. } | TypedOperation::Unresolved { .. } => {}
+    }
+    operation
 }
 
 fn retained_operation_marker(operation: &TypedOperation) -> Option<String> {
@@ -3489,6 +3539,110 @@ mod tests {
 
         assert!(rural_binding_matches(&operation, &previous, &previous));
         assert!(!rural_binding_matches(&operation, &previous, &current));
+    }
+
+    #[test]
+    fn retained_worle_binding_uses_persisted_numeric_identity() {
+        let retained_event: Value = serde_json::from_str(
+            r#"{"new_link_length_m":1843.3936373619765,"full_access_length_m":1843.3936373619765}"#,
+        )
+        .expect("historical event number");
+        let retained_new = retained_event["new_link_length_m"]
+            .as_f64()
+            .expect("historical new-link length");
+        let retained_full = retained_event["full_access_length_m"]
+            .as_f64()
+            .expect("historical full-access length");
+        let fresh_new = "1843.3936373619765"
+            .parse::<f64>()
+            .expect("fresh new-link length");
+        let fresh_full = "1843.3936373619765"
+            .parse::<f64>()
+            .expect("fresh full-access length");
+
+        let mut previous = candidate(
+            "rural:community-4af01f80e7:shortest",
+            retained_new,
+            retained_full,
+        );
+        previous.access.community_id = "community-4af01f80e7".to_string();
+        previous.access.root_spine_id =
+            Some("candidate:prepared-urban-journey:29425537:303582229:strategic-spine".to_string());
+        let mut current = previous.clone();
+        current.access.new_link_length_m = Some(fresh_new);
+        current.access.full_access_length_m = Some(fresh_full);
+        let operation = TypedOperation::SelectCommunityAccess {
+            id: "decision:task:rural:community-4af01f80e7:rural:community-4af01f80e7:shortest"
+                .to_string(),
+            task_id: "task:rural:community-4af01f80e7".to_string(),
+            attempt_id: "attempt:task:rural:community-4af01f80e7:jev".to_string(),
+            community_id: "community-4af01f80e7".to_string(),
+            candidate_id: "rural:community-4af01f80e7:shortest".to_string(),
+            decision_class: "classifier".to_string(),
+            provisional: false,
+            reason: None,
+            uncertainties: Vec::new(),
+            parent_community_id: None,
+            root_spine_id: previous.access.root_spine_id.clone(),
+            new_link_length_m: Some(retained_new),
+            full_access_length_m: Some(retained_full),
+        };
+
+        assert!(
+            rural_binding_matches(&operation, &previous, &current),
+            "historical parse {:016x} must bind the fresh measurement {:016x}",
+            retained_new.to_bits(),
+            fresh_new.to_bits(),
+        );
+        let rebound = rural_operation_with_current_measurements(operation.clone(), &current);
+        let TypedOperation::SelectCommunityAccess {
+            new_link_length_m,
+            full_access_length_m,
+            ..
+        } = rebound
+        else {
+            panic!("retained community choice remains selected");
+        };
+        assert_eq!(new_link_length_m, current.access.new_link_length_m);
+        assert_eq!(full_access_length_m, current.access.full_access_length_m);
+
+        let mut changed_length = current.clone();
+        changed_length.access.full_access_length_m = Some(fresh_full + 1.0);
+        assert!(!rural_binding_matches(
+            &operation,
+            &previous,
+            &changed_length
+        ));
+
+        let mut changed_path = current.clone();
+        changed_path
+            .access
+            .path_edge_ids
+            .push("edge:changed".to_string());
+        assert!(!rural_binding_matches(&operation, &previous, &changed_path));
+    }
+
+    #[test]
+    fn base_guard_accepts_the_same_persisted_report_with_exact_decimal_length() {
+        let root = std::env::temp_dir().join(format!(
+            "satn-rust-base-float-roundtrip-{}",
+            std::process::id()
+        ));
+        if root.exists() {
+            fs::remove_dir_all(&root).expect("clean base float fixture");
+        }
+        let store = HistoryStore::open(&root).expect("history store");
+        let mut report = report_for_base_guard();
+        report.candidates[0].length_m = "1843.3936373619765"
+            .parse::<f64>()
+            .expect("persisted decimal length");
+        let base = PlanningBase::from_report(report);
+
+        store.ensure_base(&base).expect("write base");
+        store
+            .ensure_base(&base)
+            .expect("read the same persisted report without changing its binding");
+        fs::remove_dir_all(root).expect("remove base float fixture");
     }
 
     #[test]
