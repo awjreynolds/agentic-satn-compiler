@@ -430,7 +430,10 @@ fn adds_sourced_bus_context_to_an_existing_publication_without_rewriting_decisio
     assert!(initial_html.contains(current_loader));
     fs::write(
         root.join("index.html"),
-        initial_html.replace(current_loader, ""),
+        initial_html.replace(current_loader, "").replace(
+            "(feature.properties?.kind?.startsWith('bus-') || feature.properties?.kind === 'rail-station')",
+            "feature.properties?.kind?.startsWith('bus-')",
+        ),
     )
     .expect("simulate a previously published map without the bus loader");
     let original_geojson = fs::read(root.join("decision-map.geojson")).expect("base GeoJSON");
@@ -471,6 +474,16 @@ fn adds_sourced_bus_context_to_an_existing_publication_without_rewriting_decisio
                         "source_label": "WECA published interchange facilities"
                     },
                     "geometry": {"type": "Point", "coordinates": [-2.36, 51.38]}
+                },
+                {
+                    "type": "Feature",
+                    "properties": {
+                        "kind": "rail-station",
+                        "name": "Bath Spa Rail Station",
+                        "facility_type": "train station",
+                        "source_id": "naptan-national-rail"
+                    },
+                    "geometry": {"type": "Point", "coordinates": [-2.356, 51.377]}
                 }
             ]
         }))
@@ -482,6 +495,7 @@ fn adds_sourced_bus_context_to_an_existing_publication_without_rewriting_decisio
 
     assert_eq!(added.route_count, 1);
     assert_eq!(added.interchange_count, 1);
+    assert_eq!(added.rail_station_count, 1);
     assert_eq!(added.geojson_file, "bus-context.geojson");
     assert_eq!(
         fs::read(root.join("decision-map.geojson")).expect("base GeoJSON after context"),
@@ -517,6 +531,8 @@ fn adds_sourced_bus_context_to_an_existing_publication_without_rewriting_decisio
     let html = fs::read_to_string(root.join("index.html")).expect("upgraded map HTML");
     assert!(html.contains("data-satn-bus-context"));
     assert!(html.contains("data-context-url=\"bus-context.geojson\""));
+    assert!(html.contains("feature.properties?.kind === 'rail-station'"));
+    assert_eq!(sidecar["features"][2]["properties"]["kind"], "rail-station");
     let viewer = fs::read_to_string(root.join("bus-context.js")).expect("bus context viewer");
     assert!(viewer.contains("service_date"));
     assert!(viewer.contains("textContent"));
@@ -525,6 +541,7 @@ fn adds_sourced_bus_context_to_an_existing_publication_without_rewriting_decisio
     assert!(viewer.contains("Facility records:"));
     assert!(viewer.contains("Timetable-supported transfer candidates:"));
     assert!(viewer.contains("native-bus-interchange-star"));
+    assert!(viewer.contains("native-rail-station-train"));
     assert!(viewer.contains("type: 'symbol'"));
     assert!(!viewer.contains("innerHTML"));
 }

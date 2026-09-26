@@ -792,6 +792,37 @@ def test_native_rendering_gate_checks_readable_transfer_schedule_evidence(
 
 
 @pytest.mark.browser
+@pytest.mark.parametrize("station_only", [False, True])
+def test_train_stations_share_the_bus_toggle_with_distinct_symbols_and_inspection(
+    tmp_path: Path,
+    station_only: bool,
+) -> None:
+    catalogue, bundles = tmp_path / "catalogue.yaml", tmp_path / "bundles"
+    _write_native_catalogue(catalogue)
+    _write_native_bundle(bundles, include_transfer_candidate=True)
+    sidecar = bundles / "native-area" / "bus-context.geojson"
+    context = json.loads(sidecar.read_text())
+    if station_only:
+        context["features"] = []
+    context["features"].append(
+        {
+            "type": "Feature",
+            "properties": {
+                "kind": "rail-station",
+                "name": "Fixture Rail Station",
+                "facility_type": "train station",
+                "source_id": "fixture-national-rail",
+            },
+            "geometry": {"type": "Point", "coordinates": [-1.65, 51.19]},
+        }
+    )
+    sidecar.write_text(json.dumps(context))
+    result = package_pages(catalogue, bundles, tmp_path / "pages", tmp_path / "pages.zip")
+    validated = VALIDATOR.validate_pages_rendering(result.pages_directory)
+    assert len(validated) == 1
+
+
+@pytest.mark.browser
 def test_native_layer_controls_have_readable_help_and_preserve_map_defaults(
     tmp_path: Path,
 ) -> None:
