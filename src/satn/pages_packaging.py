@@ -201,6 +201,18 @@ def _valid_on_spine_decision_point(feature: dict[str, object]) -> bool:
     )
 
 
+def _valid_unresolved_community_decision_point(feature: dict[str, object]) -> bool:
+    properties = feature.get("properties")
+    if not isinstance(properties, dict):
+        return False
+    community_id = properties.get("community_id")
+    return (
+        isinstance(community_id, str)
+        and bool(community_id.strip())
+        and properties.get("access_status") == "unresolved"
+    )
+
+
 def _validate_wgs84_map_artifacts(deployment: Path) -> None:
     """Reject map coordinates that cannot be handed safely to MapLibre."""
     for artifact in _files(deployment):
@@ -796,6 +808,14 @@ def _validate_native_publication_shape(
                     f"native {kind} feature must contain a valid on-spine decision point "
                     "or non-empty line geometry"
                 )
+            if (
+                kind == "unresolved-decision"
+                and isinstance(geometry, dict)
+                and geometry.get("type") == "Point"
+                and _valid_unresolved_community_decision_point(feature)
+                and _coordinates(geometry)
+            ):
+                continue
             if (
                 not isinstance(geometry, dict)
                 or geometry.get("type")
