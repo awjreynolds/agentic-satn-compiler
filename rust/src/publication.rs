@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 use crate::compiler::{Candidate, CommunityAccess, CompileReport};
 use crate::error::{Result, SatnError};
 use crate::midend::{MidendRun, TypedOperation};
-use crate::officer::{OfficerOutcomeStatus, OfficerScenario};
+use crate::officer::{OfficerOutcomeStatus, OfficerScenario, displaced_baseline_edges};
 
 const MAPLIBRE_JS: &[u8] = include_bytes!("../../src/satn/assets/maplibre-gl.js");
 const MAPLIBRE_CSS: &[u8] = include_bytes!("../../src/satn/assets/maplibre-gl.css");
@@ -165,6 +165,7 @@ struct PublicOfficerScenario {
     authority: String,
     base_id: String,
     baseline_branch: String,
+    community_access_regenerated: bool,
     agreement_count: usize,
     divergence_count: usize,
     unavailable_count: usize,
@@ -516,12 +517,15 @@ fn publish_decision_map_inner(
 
     let public_officer_scenario = officer_scenario.map(public_officer_scenario);
     if let Some(scenario) = officer_scenario {
-        add_officer_scenario_features(report, scenario, &mut features);
-        for feature in features.iter_mut().filter(|feature| {
-            feature.kind == "community-access" || feature.properties.get("community_id").is_some()
-        }) {
-            if let Some(properties) = feature.properties.as_object_mut() {
-                properties.insert("scenario_baseline_context".to_string(), json!(true));
+        add_officer_scenario_features(report, scenario, run, &mut features);
+        if !scenario.community_access_regenerated {
+            for feature in features.iter_mut().filter(|feature| {
+                feature.kind == "community-access"
+                    || feature.properties.get("community_id").is_some()
+            }) {
+                if let Some(properties) = feature.properties.as_object_mut() {
+                    properties.insert("scenario_baseline_context".to_string(), json!(true));
+                }
             }
         }
     }
@@ -988,6 +992,7 @@ fn public_officer_scenario(scenario: &OfficerScenario) -> PublicOfficerScenario 
         authority: scenario.authority.clone(),
         base_id: scenario.base_id.clone(),
         baseline_branch: scenario.baseline_branch.clone(),
+        community_access_regenerated: scenario.community_access_regenerated,
         agreement_count: scenario
             .outcomes
             .iter()
@@ -1018,6 +1023,7 @@ fn officer_status_label(status: OfficerOutcomeStatus) -> &'static str {
 fn add_officer_scenario_features(
     report: &CompileReport,
     scenario: &OfficerScenario,
+    effective_run: &MidendRun,
     features: &mut Vec<MapFeature>,
 ) {
     for outcome in &scenario.outcomes {
@@ -1035,6 +1041,8 @@ fn add_officer_scenario_features(
                             .unwrap_or_default()
                     || feature.properties["kind"] == "unresolved-decision")
         }) {
+            let officer_selected = outcome.officer_candidate_id.is_some()
+                && outcome.officer_candidate_id == outcome.effective_candidate_id;
             if let Some(properties) = feature.properties.as_object_mut() {
                 properties.insert("scenario_status".to_string(), json!(status));
                 properties.insert(
@@ -1074,45 +1082,40 @@ fn add_officer_scenario_features(
                     json!(outcome.attribution),
                 );
                 properties.insert("officer_rationale".to_string(), json!(outcome.rationale));
+                properties.insert("officer_selected".to_string(), json!(officer_selected));
             }
         }
+    }
 
-        if outcome.status != OfficerOutcomeStatus::Divergence {
-            continue;
-        }
-        let Some(candidate) = outcome.baseline_candidate_id.as_deref().and_then(|id| {
-            report.candidates.iter().find(|candidate| {
-                candidate.id == id && candidate.connection_id == outcome.connection_id
-            })
-        }) else {
-            continue;
-        };
-        if candidate.geometry.len() < 2 {
-            continue;
-        }
+    for displaced in displaced_baseline_edges(report, scenario, effective_run) {
+        let outcome = displaced.outcome;
+        let candidate = displaced.baseline_candidate;
         let (connection_label, road_classes) = connection_details(report, &outcome.connection_id);
         features.push(MapFeature {
-            kind: "officer-baseline-comparison".to_string(),
-            geometry: Some(MapGeometry::Line(candidate.geometry.clone())),
+            kind: "officer-baseline-unused".to_string(),
+            geometry: Some(MapGeometry::Line(displaced.geometry.to_vec())),
             properties: json!({
-                "kind": "officer-baseline-comparison",
-                "label": "Original baseline selection (comparison only)",
+                "kind": "officer-baseline-unused",
+                "label": "Unused original baseline edge",
                 "decision_id": outcome.baseline_decision_id,
                 "connection_id": outcome.connection_id,
                 "connection_label": connection_label,
                 "road_classes": road_classes,
                 "candidate_id": candidate.id,
-                "baseline_candidate_id": outcome.baseline_candidate_id,
+                "baseline_candidate_id": candidate.id,
+                "baseline_edge_id": displaced.edge_id,
                 "officer_candidate_id": outcome.officer_candidate_id,
                 "effective_candidate_id": outcome.effective_candidate_id,
                 "decision_class": outcome.baseline_decision_class,
                 "baseline_decision_id": outcome.baseline_decision_id,
                 "baseline_decision_class": outcome.baseline_decision_class,
-                "scenario_status": "divergence",
+                "scenario_status": officer_status_label(outcome.status),
                 "scenario_authority": "Original baseline decision",
                 "officer_source_refs": outcome.source_refs,
                 "officer_attribution": outcome.attribution,
                 "officer_rationale": outcome.rationale,
+                "reason": "This original baseline edge is displaced and is no longer used by any effective selected or provisional strategic candidate.",
+                "evidence_refs": [candidate.id, displaced.edge_id, outcome.source_refs],
                 "branch": scenario.baseline_branch,
                 "base_id": scenario.base_id,
             }),
@@ -1634,7 +1637,7 @@ fn feature_json(feature: &MapFeature) -> Value {
 fn render_interactive_html(
     report: &CompileReport,
     run: &MidendRun,
-    features: &[MapFeature],
+    _features: &[MapFeature],
     _decisions: &[PublicDecision],
     _departures: &[PublicDeparture],
     counts: &DecisionMapCounts,
@@ -1652,34 +1655,39 @@ fn render_interactive_html(
     });
     let attribution = html_escape(&report.attribution);
     let source_attributions = html_escape(&report.source_attributions.join("; "));
-    let (community_access_label, community_access_help, network_description) = if officer_scenario
-        .is_some()
-    {
-        (
-            "Baseline community access (not re-evaluated)",
-            "Retained mechanical baseline context. These paths were not re-evaluated against the illustrative officer-led choices and do not establish connection to the effective scenario network.",
-            "The strategic active travel network shows effective scenario selections. Any baseline choice retained for an unavailable officer decision is identified as not officer-approved. A-road reference corridors remain in the source baseline. Community access is retained baseline context and was not re-evaluated against officer choices.",
-        )
-    } else {
-        (
-            "Community Connections",
-            "Community Connections show recorded access from a community to the strategic network. A cross marks a missing connection where no connected path is evidenced.",
-            "The Strategic active travel network shows selected and provisional route lines. Community Connections, source baseline and other evidence layers are optional overlays. Provision, safety, access and adoption remain explicit unknowns where evidence is absent.",
-        )
-    };
+    let (community_access_label, community_access_help, network_description) =
+        match officer_scenario {
+            Some(scenario) if scenario.community_access_regenerated => (
+                "Community access (recomputed)",
+                "Community access paths were recomputed against the effective strategic choices in this scenario.",
+                "The strategic active travel network shows effective scenario selections. Any baseline choice retained for an unavailable officer decision is identified as not officer-approved. A-road reference corridors remain in the source baseline. Community access paths were recomputed against the effective strategic choices.",
+            ),
+            Some(_) => (
+                "Baseline community access (not re-evaluated)",
+                "Retained mechanical baseline context. These paths were not re-evaluated against the illustrative officer-led choices and do not establish connection to the effective scenario network.",
+                "The strategic active travel network shows effective scenario selections. Any baseline choice retained for an unavailable officer decision is identified as not officer-approved. A-road reference corridors remain in the source baseline. Community access is retained baseline context and was not re-evaluated against officer choices.",
+            ),
+            None => (
+                "Community Connections",
+                "Community Connections show recorded access from a community to the strategic network. A cross marks a missing connection where no connected path is evidenced.",
+                "The Strategic active travel network shows selected and provisional route lines. Community Connections, source baseline and other evidence layers are optional overlays. Provision, safety, access and adoption remain explicit unknowns where evidence is absent.",
+            ),
+        };
     let candidate_neighbourhood_layer_control = if report.candidate_neighbourhoods.is_empty() {
         String::new()
     } else {
         "<li class=\"layer-control-row\"><label><input type=\"checkbox\" data-layer-toggle=\"candidate-neighbourhood\"> <span class=\"swatch candidate-key\"></span>Candidate neighbourhoods <span data-layer-count></span></label><details class=\"layer-help\" name=\"native-layer-help\"><summary aria-label=\"About candidate neighbourhoods\" aria-describedby=\"layer-help-candidate-neighbourhood\">ⓘ</summary></details><span id=\"layer-help-candidate-neighbourhood\" class=\"layer-help-popup\" role=\"tooltip\">Candidate neighbourhoods are generated planning areas based on available evidence; they do not confirm a low-traffic area.</span></li>".to_string()
     };
-    let officer_comparison_layer_control = if features
-        .iter()
-        .any(|feature| feature.kind == "officer-baseline-comparison")
-    {
-        "<li class=\"layer-control-row\"><label><input type=\"checkbox\" data-layer-toggle=\"officer-baseline-comparison\"> <span class=\"swatch officer-baseline-key\" aria-hidden=\"true\"></span>Original baseline selection (comparison only) <span data-layer-count></span></label><details class=\"layer-help\" name=\"native-layer-help\"><summary aria-label=\"About the original baseline comparison\" aria-describedby=\"layer-help-officer-baseline\">ⓘ</summary></details><span id=\"layer-help-officer-baseline\" class=\"layer-help-popup\" role=\"tooltip\">Shows the original graph-bound baseline candidate only where the illustrative officer-led choice diverges. It is optional comparison context and is not part of the effective strategic network.</span></li>"
-            .to_string()
+    let (strategic_network_legend, strategic_network_help) = if officer_scenario.is_some() {
+        (
+            "<span class=\"swatch strategic-network-key\" aria-hidden=\"true\"></span>Strategic network <span class=\"swatch officer-selected-key\" aria-hidden=\"true\"></span>Officer-selected route <span class=\"swatch officer-baseline-unused-key\" aria-hidden=\"true\"></span>Unused original baseline edge",
+            "Red shows the strategic network and A-road references; orange shows officer-selected alignments; dark grey shows original baseline edges unused by every effective selected or provisional strategic candidate.",
+        )
     } else {
-        String::new()
+        (
+            "<span class=\"swatch strategic-network-key\" aria-hidden=\"true\"></span>Strategic active travel network",
+            "The proposed strategic network includes chosen and provisional non-community route lines plus A-road reference sections. Provisional routes remain available in the separate review layer.",
+        )
     };
     let officer_scenario_attribute = if officer_scenario.is_some() {
         " data-native-officer-scenario=\"illustrative\""
@@ -1696,10 +1704,8 @@ fn render_interactive_html(
             "__CANDIDATE_NEIGHBOURHOOD_LAYER_CONTROL__",
             &candidate_neighbourhood_layer_control,
         )
-        .replace(
-            "__OFFICER_COMPARISON_CONTROL__",
-            &officer_comparison_layer_control,
-        )
+        .replace("__STRATEGIC_NETWORK_LEGEND__", strategic_network_legend)
+        .replace("__STRATEGIC_NETWORK_HELP__", strategic_network_help)
         .replace("__OFFICER_SCENARIO_ATTRIBUTE__", officer_scenario_attribute)
         .replace("__OFFICER_SCENARIO_BANNER__", &officer_scenario_banner)
         .replace("__OFFICER_FINDINGS__", &officer_findings)

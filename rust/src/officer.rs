@@ -6,7 +6,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::compiler::CompileReport;
+use crate::compiler::{Candidate, CompileReport};
 use crate::error::{Result, SatnError};
 use crate::midend::{MidendRun, TypedOperation, validate_officer_candidate};
 
@@ -33,6 +33,8 @@ pub struct OfficerScenario {
     pub authority: String,
     pub base_id: String,
     pub baseline_branch: String,
+    #[serde(default)]
+    pub community_access_regenerated: bool,
     pub outcomes: Vec<OfficerOutcome>,
 }
 
@@ -58,6 +60,73 @@ pub enum OfficerOutcomeStatus {
     Agreement,
     Divergence,
     Unavailable,
+}
+
+/// One baseline candidate edge whose exact geometry is absent from every
+/// currently selected strategic route in an officer scenario.
+pub(crate) struct DisplacedBaselineEdge<'a> {
+    pub outcome: &'a OfficerOutcome,
+    pub baseline_candidate: &'a Candidate,
+    pub edge_id: &'a str,
+    pub geometry: &'a [[f64; 2]],
+}
+
+/// Find baseline candidate edges that an effective selection actually
+/// displaces. Geometry identity is exact, including exact reversal; nearby or
+/// partially overlapping linework is not treated as shared.
+pub(crate) fn displaced_baseline_edges<'a>(
+    report: &'a CompileReport,
+    scenario: &'a OfficerScenario,
+    effective_run: &MidendRun,
+) -> Vec<DisplacedBaselineEdge<'a>> {
+    let selected_geometries = effective_run
+        .operations
+        .iter()
+        .filter_map(|operation| match operation {
+            TypedOperation::SelectAlignment { candidate_id, .. } => report
+                .candidates
+                .iter()
+                .find(|candidate| candidate.id == *candidate_id),
+            TypedOperation::Unresolved { .. }
+            | TypedOperation::SelectCommunityAccess { .. }
+            | TypedOperation::UnresolvedCommunityAccess { .. } => None,
+        })
+        .flat_map(|candidate| candidate.path_edge_geometries.iter())
+        .collect::<Vec<_>>();
+
+    scenario
+        .outcomes
+        .iter()
+        .filter_map(|outcome| {
+            report
+                .candidates
+                .iter()
+                .find(|candidate| outcome.baseline_candidate_id.as_deref() == Some(&candidate.id))
+                .map(|candidate| (outcome, candidate))
+        })
+        .flat_map(|(outcome, baseline_candidate)| {
+            baseline_candidate
+                .path_edge_ids
+                .iter()
+                .zip(&baseline_candidate.path_edge_geometries)
+                .filter(|(_, geometry)| {
+                    !geometry.is_empty()
+                        && !selected_geometries
+                            .iter()
+                            .any(|selected| same_or_reversed_geometry(geometry, selected))
+                })
+                .map(move |(edge_id, geometry)| DisplacedBaselineEdge {
+                    outcome,
+                    baseline_candidate,
+                    edge_id,
+                    geometry,
+                })
+        })
+        .collect()
+}
+
+pub(crate) fn same_or_reversed_geometry(first: &[[f64; 2]], second: &[[f64; 2]]) -> bool {
+    first == second || first.iter().rev().eq(second.iter())
 }
 
 pub fn load_officer_decisions(path: &Path) -> Result<OfficerDecisionLedger> {
@@ -153,6 +222,7 @@ pub fn apply_officer_decisions(
             authority: "officer-example".to_string(),
             base_id: baseline.base_id.clone(),
             baseline_branch: baseline.branch.clone(),
+            community_access_regenerated: false,
             outcomes,
         },
     ))

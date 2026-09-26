@@ -31,7 +31,8 @@ button:focus-visible, input:focus-visible { outline: 3px solid #2563eb; outline-
 .swatch { display: inline-block; width: 1.8rem; height: 0; vertical-align: middle; margin: 0 .25rem; border-top: 3px solid transparent; }
 .source-key { border-top-color: #0072b2; }
 .strategic-network-key { border-top-color: #d71920; }
-.officer-baseline-key { border-top-color: #7c3aed; }
+.officer-selected-key { border-top-color: #d55e00; }
+.officer-baseline-unused-key { border-top-color: #4b5563; }
 .context-key { border-top: 2px dotted #4b5563; }
 .alternative-key { border-top: 2px dashed #4b5563; }
 .selected-key { border-top-color: #009e73; }
@@ -99,7 +100,7 @@ __OFFICER_SCENARIO_BANNER__</header>
     <section class="native-details" id="native-feature-details"><h3>Evidence</h3><p>Hover a map feature for its evidence. Click to pin the popup; click an empty map area or Clear inspection to dismiss it.</p></section>
     __OFFICER_FINDINGS__
     <fieldset><legend>Layers</legend><ul class="key">
-      <li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="strategic-network" checked> <span class="swatch strategic-network-key" aria-hidden="true"></span>Strategic active travel network <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About the strategic active travel network" aria-describedby="layer-help-1">ⓘ</summary></details><span id="layer-help-1" class="layer-help-popup" role="tooltip">The proposed strategic network includes chosen and provisional non-community route lines plus A-road reference sections. Provisional routes remain available in the separate review layer.</span></li>
+      <li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="strategic-network" checked> __STRATEGIC_NETWORK_LEGEND__ <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About the strategic active travel network" aria-describedby="layer-help-1">ⓘ</summary></details><span id="layer-help-1" class="layer-help-popup" role="tooltip">__STRATEGIC_NETWORK_HELP__</span></li>
       <li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="community-access"> <span class="swatch community-key" aria-hidden="true"></span><span class="marker-key marker-pentagon-key community-point-key" aria-hidden="true"></span><span class="marker-key marker-cross-key gap-point-key" aria-hidden="true"></span>__COMMUNITY_ACCESS_LABEL__ <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="__COMMUNITY_ACCESS_HELP_LABEL__" aria-describedby="layer-help-2">ⓘ</summary></details><span id="layer-help-2" class="layer-help-popup" role="tooltip">__COMMUNITY_ACCESS_HELP__</span></li>
       <li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="source-strategic"> <span class="swatch source-key" aria-hidden="true"></span>Strategic source baseline <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About the strategic source baseline" aria-describedby="layer-help-3">ⓘ</summary></details><span id="layer-help-3" class="layer-help-popup" role="tooltip">The source baseline records mapped strategic corridors as supplied. It is evidence before strategic choices, distinct from the proposed strategic network.</span></li>
       <li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="source-context"> <span class="swatch context-key" aria-hidden="true"></span>Additional source evidence <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About additional source evidence" aria-describedby="layer-help-4">ⓘ</summary></details><span id="layer-help-4" class="layer-help-popup" role="tooltip">Additional mapped sources provide context. They do not by themselves show a selected strategic route.</span></li>
@@ -107,7 +108,6 @@ __OFFICER_SCENARIO_BANNER__</header>
       <li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="provisional-alignment"> <span class="swatch provisional-key" aria-hidden="true"></span><span class="marker-key marker-triangle-key provisional-point-key" aria-hidden="true"></span>Provisional alignment <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About provisional alignments" aria-describedby="layer-help-5">ⓘ</summary></details><span id="layer-help-5" class="layer-help-popup" role="tooltip">Provisional routes appear provisionally in the strategic network; this layer highlights them for review.</span></li>
       <li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="unresolved-decision"> <span class="swatch unresolved-key" aria-hidden="true"></span>Unresolved decisions <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About unresolved decisions" aria-describedby="layer-help-6">ⓘ</summary></details><span id="layer-help-6" class="layer-help-popup" role="tooltip">These features need a route or decision and remain unresolved in the current evidence.</span></li>
       <li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="candidate-alternative"> <span class="swatch alternative-key" aria-hidden="true"></span>Candidate alternatives <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About candidate alternatives" aria-describedby="layer-help-7">ⓘ</summary></details><span id="layer-help-7" class="layer-help-popup" role="tooltip">Alternative route candidates considered for a decision; these are options, not the chosen network.</span></li>
-      __OFFICER_COMPARISON_CONTROL__
       <li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="a-road-departure"> <span class="swatch a-road-departure-key" aria-hidden="true"></span>A-road departures <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About A-road departures" aria-describedby="layer-help-8">ⓘ</summary></details><span id="layer-help-8" class="layer-help-popup" role="tooltip">These features mark recorded departures from an A-road source corridor.</span></li>
       <li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="source-departure"> <span class="swatch source-departure-key" aria-hidden="true"></span>Source departures <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About source departures" aria-describedby="layer-help-9">ⓘ</summary></details><span id="layer-help-9" class="layer-help-popup" role="tooltip">These source corridors are not followed by the proposed route; their source evidence remains available in the baseline.</span></li>
       <li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="network-place"> <span class="marker-key marker-square-key" aria-hidden="true"></span>Towns and communities <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About towns and communities" aria-describedby="layer-help-10">ⓘ</summary></details><span id="layer-help-10" class="layer-help-popup" role="tooltip">Named Network Places are shown for orientation and as network endpoints.</span></li>
@@ -158,7 +158,8 @@ __OFFICER_SCENARIO_BANNER__</header>
   });
   const interactiveLayers = [
     'native-strategic-network', 'native-selected', 'native-selected-point', 'native-provisional-casing', 'native-provisional', 'native-provisional-point',
-    'native-unresolved', 'native-alternative', 'native-officer-baseline-comparison',
+    'native-officer-baseline-unused', 'native-officer-effective',
+    'native-unresolved', 'native-alternative',
     'native-candidate-neighbourhood',
     'native-a-road-departure-casing', 'native-a-road-departure',
     'native-source-departure-casing', 'native-source-departure', 'native-source-strategic',
@@ -168,7 +169,7 @@ __OFFICER_SCENARIO_BANNER__</header>
     'native-bus-route', 'native-bus-interchange'
   ];
   const layerGroups = {
-    'strategic-network': ['native-strategic-network'],
+    'strategic-network': ['native-strategic-network', 'native-officer-baseline-unused', 'native-officer-effective'],
     'source-strategic': ['native-source-strategic'],
     'source-context': ['native-source-context'],
     'candidate-neighbourhood': ['native-candidate-neighbourhood', 'native-candidate-neighbourhood-boundary'],
@@ -176,7 +177,6 @@ __OFFICER_SCENARIO_BANNER__</header>
     'provisional-alignment': ['native-provisional-casing', 'native-provisional', 'native-provisional-point'],
     'unresolved-decision': ['native-unresolved'],
     'candidate-alternative': ['native-alternative'],
-    'officer-baseline-comparison': ['native-officer-baseline-comparison'],
     'a-road-departure': ['native-a-road-departure-casing', 'native-a-road-departure'],
     'source-departure': ['native-source-departure-casing', 'native-source-departure'],
     'network-place': ['native-network-place'],
@@ -215,7 +215,6 @@ __OFFICER_SCENARIO_BANNER__</header>
   const featureLabel = feature => {
     const props = feature && feature.properties ? feature.properties : {};
     return urbanEntryLabel(props) ||
-      (props.kind === 'officer-baseline-comparison' && props.label) ||
       props.connection_label || props.source_reference ||
       props.name || props.label || props.kind || 'Public feature';
   };
@@ -318,6 +317,12 @@ __OFFICER_SCENARIO_BANNER__</header>
     add('Officer source references', props.officer_source_refs);
     add('Officer attribution', props.officer_attribution);
     add('Officer rationale', props.officer_rationale);
+    if (props.kind === 'officer-baseline-unused') {
+      add('Original baseline candidate', props.baseline_candidate_id);
+      add('Original baseline edge', props.baseline_edge_id);
+      add('Officer candidate', props.officer_candidate_id);
+      add('Effective candidate', props.effective_candidate_id);
+    }
     if (props.provisional !== undefined) add(props.scenario_baseline_context ? 'Baseline decision status' : 'Status', props.provisional ? 'Provisional' : 'Selected');
     add('Role', props.role);
     if (props.length_m !== undefined) add('Distance', formatDistance(props.length_m));
@@ -458,6 +463,7 @@ __OFFICER_SCENARIO_BANNER__</header>
         return lineGeometry && (
           (['selected-alignment', 'provisional-alignment'].includes(properties.kind) &&
             !Object.hasOwn(properties, 'community_id')) ||
+          properties.kind === 'officer-baseline-unused' ||
           (properties.kind === 'source-baseline' &&
             properties.baseline_layer === 'source-strategic-a-road')
         );
@@ -475,7 +481,6 @@ __OFFICER_SCENARIO_BANNER__</header>
       ).length,
       'unresolved-decision': network.features.filter(feature => feature.properties?.kind === 'unresolved-decision').length,
       'candidate-alternative': network.features.filter(feature => feature.properties?.kind === 'candidate-alternative').length,
-      'officer-baseline-comparison': network.features.filter(feature => feature.properties?.kind === 'officer-baseline-comparison').length,
       'a-road-departure': network.features.filter(feature => feature.properties?.kind === 'a-road-departure').length,
       'source-departure': network.features.filter(feature => feature.properties?.kind === 'source-departure').length,
       'network-place': network.features.filter(feature => feature.properties?.kind === 'network-place').length,
@@ -708,13 +713,15 @@ __OFFICER_SCENARIO_BANNER__</header>
         ['all', ['==', ['get', 'kind'], 'source-baseline'], ['==', ['get', 'baseline_layer'], 'source-strategic-a-road'], lineGeometryFilter]
       ];
       line('native-strategic-network', mainStrategicFilter, '#d71920', 4);
+      line('native-officer-baseline-unused', ['==', ['get', 'kind'], 'officer-baseline-unused'], '#4b5563', 5);
       line('native-alternative', ['==', ['get', 'kind'], 'candidate-alternative'], '#4b5563', 2, [5, 4]);
-      line('native-officer-baseline-comparison', ['all', ['==', ['get', 'kind'], 'officer-baseline-comparison'], lineGeometryFilter], '#7c3aed', 3, [7, 4]);
       const selectedFilter = ['all', ['==', ['get', 'kind'], 'selected-alignment'], ['!', ['has', 'community_id']]];
-      line('native-selected', selectedFilter, '#009e73', 5);
+      line('native-selected', selectedFilter,
+        ['case', ['==', ['get', 'officer_selected'], true], '#d55e00', '#009e73'], 5);
       const provisionalFilter = ['all', ['==', ['get', 'kind'], 'provisional-alignment'], ['!', ['has', 'community_id']]];
       line('native-provisional-casing', provisionalFilter, '#263238', 7, [5.7142857, 3.5714286]);
       line('native-provisional', provisionalFilter, '#e69f00', 5, [8, 5]);
+      line('native-officer-effective', ['all', ['any', ['==', ['get', 'kind'], 'selected-alignment'], ['==', ['get', 'kind'], 'provisional-alignment']], ['!', ['has', 'community_id']], ['==', ['get', 'officer_selected'], true]], '#d55e00', 5);
       line('native-unresolved', ['==', ['get', 'kind'], 'unresolved-decision'], '#cc79a7', 4, [1, 3]);
       const aRoadDepartureFilter = ['==', ['get', 'kind'], 'a-road-departure'];
       line('native-a-road-departure-casing', aRoadDepartureFilter, '#263238', 8, [7.5, 3.75]);
