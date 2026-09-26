@@ -318,6 +318,12 @@ __OFFICER_SCENARIO_BANNER__</header>
     add(referenceNetworkEdge ? 'Network reference source references' : 'Officer source references', referenceNetworkEdge ? props.source_refs : props.officer_source_refs);
     add(referenceNetworkEdge ? 'Network reference attribution' : 'Officer attribution', referenceNetworkEdge ? props.attribution : props.officer_attribution);
     add(referenceNetworkEdge ? 'Network reference rationale' : 'Officer rationale', referenceNetworkEdge ? props.rationale : props.officer_rationale);
+    if (props.strategic_network_scope_display) {
+      add('Strategic reference source references', props.strategic_network_scope_source_refs);
+      add('Strategic reference attribution', props.strategic_network_scope_attribution);
+      add('Strategic reference rationale', props.strategic_network_scope_rationale);
+      add('Reason', props.reason);
+    }
     if (props.kind === 'officer-baseline-unused') {
       add('Original baseline candidate', props.baseline_candidate_id);
       add('Original baseline edge', props.baseline_edge_id);
@@ -473,10 +479,16 @@ __OFFICER_SCENARIO_BANNER__</header>
           properties.kind === 'officer-baseline-unused' ||
           properties.kind === 'officer-strategic-network' ||
           (properties.kind === 'source-baseline' &&
-            properties.baseline_layer === 'source-strategic-a-road')
+            properties.baseline_layer === 'source-strategic-a-road' &&
+            (properties.strategic_network_scope_display === true ||
+              properties.strategic_network_scope_original !== true))
         );
       }).length,
-      'source-strategic': network.features.filter(feature => feature.properties?.kind === 'source-baseline' && feature.properties?.baseline_layer !== 'source-context').length,
+      'source-strategic': network.features.filter(feature =>
+        feature.properties?.kind === 'source-baseline' &&
+        feature.properties?.baseline_layer !== 'source-context' &&
+        feature.properties?.strategic_network_scope_display !== true
+      ).length,
       'source-context': network.features.filter(feature => feature.properties?.kind === 'source-baseline' && feature.properties?.baseline_layer === 'source-context').length,
       'candidate-neighbourhood': network.features.filter(feature => feature.properties?.kind === 'candidate-neighbourhood').length,
       'selected-alignment': network.features.filter(feature =>
@@ -714,11 +726,12 @@ __OFFICER_SCENARIO_BANNER__</header>
       }
       line('native-boundary-line', ['==', ['get', 'kind'], 'boundary-scope'], '#6b7280', 1, [2, 3]);
       line('native-source-context', ['all', ['==', ['get', 'kind'], 'source-baseline'], ['==', ['get', 'baseline_layer'], 'source-context']], '#4b5563', 2, [1, 3]);
-      line('native-source-strategic', ['all', ['==', ['get', 'kind'], 'source-baseline'], ['!=', ['get', 'baseline_layer'], 'source-context']], '#0072b2', 3);
+      line('native-source-strategic', ['all', ['==', ['get', 'kind'], 'source-baseline'], ['!=', ['get', 'baseline_layer'], 'source-context'], ['!', ['has', 'strategic_network_scope_display']]], '#0072b2', 3);
       const lineGeometryFilter = ['==', ['geometry-type'], 'LineString'];
       const mainStrategicFilter = ['any',
         ['all', ['any', ['==', ['get', 'kind'], 'selected-alignment'], ['==', ['get', 'kind'], 'provisional-alignment']], lineGeometryFilter, ['!', ['has', 'community_id']]],
-        ['all', ['==', ['get', 'kind'], 'source-baseline'], ['==', ['get', 'baseline_layer'], 'source-strategic-a-road'], lineGeometryFilter]
+        ['all', ['==', ['get', 'kind'], 'source-baseline'], ['==', ['get', 'baseline_layer'], 'source-strategic-a-road'], lineGeometryFilter,
+          ['any', ['==', ['get', 'strategic_network_scope_display'], true], ['!', ['has', 'strategic_network_scope_original']]]]
       ];
       line('native-strategic-network', mainStrategicFilter, '#d71920', 4);
       line('native-officer-baseline-unused', ['==', ['get', 'kind'], 'officer-baseline-unused'], '#4b5563', 5);

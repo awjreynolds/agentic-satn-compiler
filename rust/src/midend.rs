@@ -1597,6 +1597,7 @@ pub fn replay_with_officer_decisions(
             source_refs: network.source_refs.clone(),
             attribution: network.attribution.clone(),
             rationale: network.rationale.clone(),
+            scope_geometry: network.scope_geometry.clone(),
         });
     }
 

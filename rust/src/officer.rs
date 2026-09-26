@@ -10,7 +10,7 @@ use crate::compiler::{Candidate, CompileReport};
 use crate::error::{Result, SatnError};
 use crate::midend::{MidendRun, TypedOperation, validate_officer_candidate};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct OfficerDecisionLedger {
     pub decisions: Vec<OfficerDecision>,
@@ -30,7 +30,7 @@ pub struct OfficerDecision {
     pub rationale: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct OfficerStrategicNetworkDecision {
     pub selected_graph_edge_ids: Vec<String>,
@@ -38,6 +38,8 @@ pub struct OfficerStrategicNetworkDecision {
     pub source_refs: Vec<String>,
     pub attribution: String,
     pub rationale: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_geometry: Option<OfficerStrategicScopeGeometry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -61,6 +63,18 @@ pub struct OfficerStrategicNetwork {
     pub source_refs: Vec<String>,
     pub attribution: String,
     pub rationale: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_geometry: Option<OfficerStrategicScopeGeometry>,
+}
+
+/// Explicit polygonal coverage declared by a strategic network reference.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", content = "coordinates")]
+pub enum OfficerStrategicScopeGeometry {
+    #[serde(rename = "Polygon")]
+    Polygon(Vec<Vec<[f64; 2]>>),
+    #[serde(rename = "MultiPolygon")]
+    MultiPolygon(Vec<Vec<Vec<[f64; 2]>>>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
