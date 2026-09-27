@@ -215,28 +215,41 @@ pub fn publish_decision_map(
     report: &CompileReport,
     run: &MidendRun,
 ) -> Result<DecisionMapPublication> {
-    publish_decision_map_inner(output_dir, report, run, None)
+    publish_decision_map_inner(output_dir, report, run, None, None)
 }
 
-/// Publish the effective network together with its separate illustrative officer scenario.
+/// Publish baseline and effective networks as separate illustrative officer scenario layers.
 pub fn publish_officer_scenario_map(
     output_dir: &Path,
     report: &CompileReport,
+    baseline_run: &MidendRun,
     effective_run: &MidendRun,
     scenario: &OfficerScenario,
 ) -> Result<DecisionMapPublication> {
-    if scenario.base_id != effective_run.base_id {
+    if scenario.base_id != effective_run.base_id || scenario.base_id != baseline_run.base_id {
         return Err(SatnError::InvalidInput(
-            "officer scenario base_id must match the effective run".to_string(),
+            "officer scenario base_id must match the baseline and effective runs".to_string(),
         ));
     }
-    publish_decision_map_inner(output_dir, report, effective_run, Some(scenario))
+    if scenario.baseline_branch != baseline_run.branch {
+        return Err(SatnError::InvalidInput(
+            "officer scenario baseline_branch must match the baseline run".to_string(),
+        ));
+    }
+    publish_decision_map_inner(
+        output_dir,
+        report,
+        effective_run,
+        Some(baseline_run),
+        Some(scenario),
+    )
 }
 
 fn publish_decision_map_inner(
     output_dir: &Path,
     report: &CompileReport,
     run: &MidendRun,
+    baseline_run: Option<&MidendRun>,
     officer_scenario: Option<&OfficerScenario>,
 ) -> Result<DecisionMapPublication> {
     fs::create_dir_all(output_dir)?;
@@ -264,6 +277,50 @@ fn publish_decision_map_inner(
         ));
     }
     let mut features = baseline_features(report, strategic_scope)?;
+    if officer_scenario.is_some() {
+        for feature in &mut features {
+            let Some(properties) = feature.properties.as_object_mut() else {
+                continue;
+            };
+            if properties.get("kind").and_then(Value::as_str) == Some("officer-compiler-comparison")
+            {
+                properties.insert("scenario_layer".to_string(), json!("officer-network"));
+            } else if properties.get("kind").and_then(Value::as_str) == Some("source-baseline")
+                && properties.get("baseline_layer").and_then(Value::as_str)
+                    == Some("source-strategic-a-road")
+            {
+                let layer = if properties
+                    .get("strategic_network_scope_display")
+                    .and_then(Value::as_bool)
+                    == Some(true)
+                {
+                    "officer-network"
+                } else {
+                    "baseline-network"
+                };
+                properties.insert("scenario_layer".to_string(), json!(layer));
+            }
+        }
+    }
+    if let Some(baseline_run) = baseline_run {
+        add_baseline_network_features(report, baseline_run, &mut features);
+        let baseline_report = report
+            .clone()
+            .with_community_access(baseline_run.community_access.clone());
+        features.extend(community_access_features(
+            &baseline_report,
+            Some("baseline-community-access"),
+        ));
+        if officer_scenario.is_some_and(|scenario| scenario.community_access_regenerated) {
+            features.extend(community_access_features(
+                report,
+                Some("officer-community-access"),
+            ));
+        }
+    } else {
+        features.extend(community_access_features(report, None));
+    }
+    let scenario_feature_start = features.len();
     let mut decisions = Vec::new();
     let mut departures = Vec::new();
     let mut selected_count = 0usize;
@@ -548,7 +605,7 @@ fn publish_decision_map_inner(
 
     let public_officer_scenario = officer_scenario.map(public_officer_scenario);
     if let Some(scenario) = officer_scenario {
-        add_officer_scenario_features(report, scenario, run, &mut features);
+        add_officer_scenario_features(report, scenario, run, scenario_feature_start, &mut features);
         if let Some(network) = exact_alignment_network {
             let scope = strategic_scope
                 .and_then(|network| network.scope_geometry.as_ref())
@@ -558,17 +615,17 @@ fn publish_decision_map_inner(
                             .to_string(),
                     )
                 })?;
-            split_compiler_candidates_for_source_alignment(&mut features, network, scope)?;
+            split_compiler_candidates_for_source_alignment(
+                &mut features,
+                scenario_feature_start,
+                network,
+                scope,
+            )?;
             add_selected_alignment_features(network, run, &mut features)?;
         }
-        if !scenario.community_access_regenerated {
-            for feature in features.iter_mut().filter(|feature| {
-                feature.kind == "community-access"
-                    || feature.properties.get("community_id").is_some()
-            }) {
-                if let Some(properties) = feature.properties.as_object_mut() {
-                    properties.insert("scenario_baseline_context".to_string(), json!(true));
-                }
+        for feature in &mut features[scenario_feature_start..] {
+            if let Some(properties) = feature.properties.as_object_mut() {
+                properties.insert("scenario_layer".to_string(), json!("officer-network"));
             }
         }
     }
@@ -1078,23 +1135,27 @@ fn add_officer_scenario_features(
     report: &CompileReport,
     scenario: &OfficerScenario,
     effective_run: &MidendRun,
+    effective_feature_start: usize,
     features: &mut Vec<MapFeature>,
 ) {
     for outcome in &scenario.outcomes {
         let status = officer_status_label(outcome.status);
-        if let Some(feature) = features.iter_mut().find(|feature| {
-            matches!(
-                feature.kind.as_str(),
-                "selected-alignment" | "provisional-alignment" | "unresolved-decision"
-            ) && feature.properties["connection_id"] == outcome.connection_id
-                && (outcome.effective_candidate_id.is_none()
-                    || feature.properties["candidate_id"]
-                        == outcome
-                            .effective_candidate_id
-                            .as_deref()
-                            .unwrap_or_default()
-                    || feature.properties["kind"] == "unresolved-decision")
-        }) {
+        if let Some(feature) = features[effective_feature_start..]
+            .iter_mut()
+            .find(|feature| {
+                matches!(
+                    feature.kind.as_str(),
+                    "selected-alignment" | "provisional-alignment" | "unresolved-decision"
+                ) && feature.properties["connection_id"] == outcome.connection_id
+                    && (outcome.effective_candidate_id.is_none()
+                        || feature.properties["candidate_id"]
+                            == outcome
+                                .effective_candidate_id
+                                .as_deref()
+                                .unwrap_or_default()
+                        || feature.properties["kind"] == "unresolved-decision")
+            })
+        {
             let officer_selected = outcome.officer_candidate_id.is_some()
                 && outcome.officer_candidate_id == outcome.effective_candidate_id;
             if let Some(properties) = feature.properties.as_object_mut() {
@@ -1381,16 +1442,150 @@ fn baseline_features(
             }),
         });
     }
-    for access in &report.community_access {
-        let geometry = if access.path_geometry.len() >= 2 {
-            Some(MapGeometry::Line(access.path_geometry.clone()))
-        } else {
-            Some(MapGeometry::Point(access.geometry))
+    for obligation in &report.access_obligations {
+        if community_access_represents_obligation(obligation, &report.community_access) {
+            continue;
+        }
+        let Some(point) = obligation.geometry else {
+            continue;
         };
         features.push(MapFeature {
-            kind: "community-access".to_string(),
-            geometry,
+            kind: "access-obligation".to_string(),
+            geometry: Some(MapGeometry::Point(point)),
             properties: json!({
+                "kind": "access-obligation",
+                "obligation_id": obligation.id,
+                "obligation_kind": obligation.kind,
+                "source_id": obligation.source_id,
+                "name": obligation.name,
+                "disposition": obligation.disposition,
+                "reason": obligation.reason,
+            }),
+        });
+    }
+    Ok(features)
+}
+
+fn add_baseline_network_features(
+    report: &CompileReport,
+    baseline_run: &MidendRun,
+    features: &mut Vec<MapFeature>,
+) {
+    for operation in &baseline_run.operations {
+        match operation {
+            TypedOperation::SelectAlignment {
+                id,
+                connection_id,
+                candidate_id,
+                decision_class,
+                provisional,
+                reason,
+                uncertainties,
+                ..
+            } => {
+                let Some(candidate) = report
+                    .candidates
+                    .iter()
+                    .find(|candidate| candidate.id == *candidate_id)
+                else {
+                    continue;
+                };
+                let (connection_label, road_classes) = connection_details(report, connection_id);
+                let reason = reason.as_deref().unwrap_or(
+                    "Baseline compilation selected this admitted route; provision, safety, access and adoption remain unresolved.",
+                );
+                let mut feature = decision_feature(
+                    if *provisional {
+                        "provisional-alignment"
+                    } else {
+                        "selected-alignment"
+                    },
+                    candidate,
+                    &baseline_run.branch,
+                    &baseline_run.base_id,
+                    decision_properties(
+                        id,
+                        connection_id,
+                        &connection_label,
+                        &road_classes,
+                        Some(candidate_id),
+                        decision_class,
+                        *provisional,
+                        reason,
+                        uncertainties,
+                        vec![candidate_id.clone(), connection_id.clone()],
+                    ),
+                );
+                if let Some(properties) = feature.properties.as_object_mut() {
+                    properties.insert("scenario_layer".to_string(), json!("baseline-network"));
+                    properties.insert(
+                        "scenario_authority".to_string(),
+                        json!("Baseline Scenario Compilation"),
+                    );
+                }
+                features.push(feature);
+            }
+            TypedOperation::Unresolved {
+                id,
+                connection_id,
+                decision_class,
+                marker,
+                reason,
+                uncertainties,
+                ..
+            } => {
+                let (connection_label, road_classes) = connection_details(report, connection_id);
+                let candidate = report
+                    .candidates
+                    .iter()
+                    .filter(|candidate| candidate.connection_id == *connection_id)
+                    .min_by(|left, right| left.id.cmp(&right.id));
+                let mut properties = json!({
+                    "kind": "unresolved-decision",
+                    "scenario_layer": "baseline-network",
+                    "scenario_authority": "Baseline Scenario Compilation",
+                    "decision_id": id,
+                    "connection_id": connection_id,
+                    "connection_label": connection_label,
+                    "road_classes": road_classes,
+                    "decision_class": decision_class,
+                    "marker": marker,
+                    "reason": reason,
+                    "uncertainties": uncertainties,
+                    "evidence_refs": candidate
+                        .map(|candidate| vec![candidate.id.clone(), candidate.connection_id.clone()])
+                        .unwrap_or_else(|| vec![connection_id.clone()]),
+                    "branch": baseline_run.branch,
+                    "base_id": baseline_run.base_id,
+                });
+                let geometry =
+                    candidate.map(|candidate| MapGeometry::Line(candidate.geometry.clone()));
+                features.push(MapFeature {
+                    kind: "unresolved-decision".to_string(),
+                    geometry,
+                    properties: std::mem::take(&mut properties),
+                });
+            }
+            TypedOperation::SelectCommunityAccess { .. }
+            | TypedOperation::UnresolvedCommunityAccess { .. } => {}
+        }
+    }
+}
+
+fn community_access_features(
+    report: &CompileReport,
+    scenario_layer: Option<&str>,
+) -> Vec<MapFeature> {
+    report
+        .community_access
+        .iter()
+        .map(|access| {
+            let geometry = if access.path_geometry.len() >= 2 {
+                Some(MapGeometry::Line(access.path_geometry.clone()))
+            } else {
+                Some(MapGeometry::Point(access.geometry))
+            };
+            let mut properties = json!({
                 "kind": "community-access",
                 "community_id": access.community_id,
                 "source_id": access.source_id,
@@ -1429,42 +1624,34 @@ fn baseline_features(
                 "reason": access.reason,
                 "full_access_topography": topography_summary(access.full_access_topography.as_ref()),
                 "new_link_topography": topography_summary(access.new_link_topography.as_ref()),
-            }),
-        });
-    }
-    for obligation in &report.access_obligations {
-        if community_access_represents_obligation(obligation, &report.community_access) {
-            continue;
-        }
-        let Some(point) = obligation.geometry else {
-            continue;
-        };
-        features.push(MapFeature {
-            kind: "access-obligation".to_string(),
-            geometry: Some(MapGeometry::Point(point)),
-            properties: json!({
-                "kind": "access-obligation",
-                "obligation_id": obligation.id,
-                "obligation_kind": obligation.kind,
-                "source_id": obligation.source_id,
-                "name": obligation.name,
-                "disposition": obligation.disposition,
-                "reason": obligation.reason,
-            }),
-        });
-    }
-    Ok(features)
+            });
+            if let Some(layer) = scenario_layer {
+                properties["scenario_layer"] = json!(layer);
+                properties["scenario_authority"] = json!(if layer == "officer-community-access" {
+                    "Generated after officer strategic choices; this is not officer approval."
+                } else {
+                    "Pre-officer Baseline Scenario Compilation"
+                });
+            }
+            MapFeature {
+                kind: "community-access".to_string(),
+                geometry,
+                properties,
+            }
+        })
+        .collect()
 }
 
 fn split_compiler_candidates_for_source_alignment(
     features: &mut Vec<MapFeature>,
+    feature_start: usize,
     network: &OfficerStrategicNetwork,
     scope_geometry: &OfficerStrategicScopeGeometry,
 ) -> Result<()> {
     let scope_json = serde_json::to_value(scope_geometry)?;
     let scope =
         GeosGeometry::new_from_geojson(&scope_json.to_string()).map_err(scope_geos_error)?;
-    let candidates = (0..features.len())
+    let candidates = (feature_start..features.len())
         .filter(|index| {
             matches!(
                 features[*index].kind.as_str(),
@@ -2025,53 +2212,26 @@ fn render_interactive_html(
     });
     let attribution = html_escape(&report.attribution);
     let source_attributions = html_escape(&report.source_attributions.join("; "));
-    let (community_access_label, community_access_help, network_description) =
-        match officer_scenario {
-            Some(scenario) if scenario.community_access_regenerated => (
-                "Community access (recomputed)",
-                "Community access paths were recomputed against the effective strategic choices in this scenario.",
-                "The strategic active travel network shows effective scenario selections. Any baseline choice retained for an unavailable officer decision is identified as not officer-approved. A-road reference corridors remain in the source baseline. Community access paths were recomputed against the effective strategic choices.",
-            ),
-            Some(_) => (
-                "Baseline community access (not re-evaluated)",
-                "Retained mechanical baseline context. These paths were not re-evaluated against the illustrative officer-led choices and do not establish connection to the effective scenario network.",
-                "The strategic active travel network shows effective scenario selections. Any baseline choice retained for an unavailable officer decision is identified as not officer-approved. A-road reference corridors remain in the source baseline. Community access is retained baseline context and was not re-evaluated against officer choices.",
-            ),
-            None => (
-                "Community Connections",
-                "Community Connections show recorded access from a community to the strategic network. A cross marks a missing connection where no connected path is evidenced.",
+    let (strategic_layer_controls, community_layer_controls, network_description) =
+        if officer_scenario.is_some() {
+            (
+                r#"<li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="baseline-network" checked> <span class="swatch strategic-network-key" aria-hidden="true"></span>Baseline Network <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About the baseline network" aria-describedby="layer-help-baseline-network">ⓘ</summary></details><span id="layer-help-baseline-network" class="layer-help-popup" role="tooltip">Pre-officer selected and provisional routes. A-road reference lines remain source evidence.</span></li>
+<li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="officer-network"> <span class="swatch officer-selected-key" aria-hidden="true"></span>Officer Network <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About the officer network" aria-describedby="layer-help-officer-network">ⓘ</summary></details><span id="layer-help-officer-network" class="layer-help-popup" role="tooltip">Optional effective network after officer strategic choices. Officer attribution and superseded comparisons remain attached to their features.</span></li>"#,
+                r#"<li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="baseline-community-access"> <span class="swatch community-key" aria-hidden="true"></span><span class="marker-key marker-pentagon-key community-point-key" aria-hidden="true"></span><span class="marker-key marker-cross-key gap-point-key" aria-hidden="true"></span>Baseline Community Access <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About baseline community access" aria-describedby="layer-help-baseline-community">ⓘ</summary></details><span id="layer-help-baseline-community" class="layer-help-popup" role="tooltip">Recorded access status from before officer strategic choices.</span></li>
+<li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="officer-community-access"> <span class="swatch community-key" aria-hidden="true"></span><span class="marker-key marker-pentagon-key community-point-key" aria-hidden="true"></span><span class="marker-key marker-cross-key gap-point-key" aria-hidden="true"></span>Officer Community Access <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About officer community access" aria-describedby="layer-help-officer-community">ⓘ</summary></details><span id="layer-help-officer-community" class="layer-help-popup" role="tooltip">Generated by the compiler after officer strategic choices; it does not mean an officer approved each connection.</span></li>"#,
+                "Baseline Network is shown first. Officer layers are optional comparisons. Community access generated after officer strategic choices is not officer approval. Source and context layers remain separate.",
+            )
+        } else {
+            (
+                r#"<li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="strategic-network" checked> <span class="swatch strategic-network-key" aria-hidden="true"></span>Strategic active travel network <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About the strategic active travel network" aria-describedby="layer-help-1">ⓘ</summary></details><span id="layer-help-1" class="layer-help-popup" role="tooltip">The proposed strategic network includes chosen and provisional non-community route lines plus A-road reference sections. Provisional routes remain available in the separate review layer.</span></li>"#,
+                r#"<li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="community-access"> <span class="swatch community-key" aria-hidden="true"></span><span class="marker-key marker-pentagon-key community-point-key" aria-hidden="true"></span><span class="marker-key marker-cross-key gap-point-key" aria-hidden="true"></span>Community Connections <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About Community Connections" aria-describedby="layer-help-2">ⓘ</summary></details><span id="layer-help-2" class="layer-help-popup" role="tooltip">Community Connections show recorded access from a community to the strategic network. A cross marks a missing connection where no connected path is evidenced.</span></li>"#,
                 "The Strategic active travel network shows selected and provisional route lines. Community Connections, source baseline and other evidence layers are optional overlays. Provision, safety, access and adoption remain explicit unknowns where evidence is absent.",
-            ),
+            )
         };
     let candidate_neighbourhood_layer_control = if report.candidate_neighbourhoods.is_empty() {
         String::new()
     } else {
         "<li class=\"layer-control-row\"><label><input type=\"checkbox\" data-layer-toggle=\"candidate-neighbourhood\"> <span class=\"swatch candidate-key\"></span>Candidate neighbourhoods <span data-layer-count></span></label><details class=\"layer-help\" name=\"native-layer-help\"><summary aria-label=\"About candidate neighbourhoods\" aria-describedby=\"layer-help-candidate-neighbourhood\">ⓘ</summary></details><span id=\"layer-help-candidate-neighbourhood\" class=\"layer-help-popup\" role=\"tooltip\">Candidate neighbourhoods are generated planning areas based on available evidence; they do not confirm a low-traffic area.</span></li>".to_string()
-    };
-    let (strategic_network_legend, strategic_network_help) = match officer_scenario {
-        Some(scenario)
-            if scenario
-                .strategic_network
-                .as_ref()
-                .is_some_and(|network| !network.selected_alignments.is_empty()) =>
-        {
-            (
-                "<span class=\"swatch strategic-network-key\" aria-hidden=\"true\"></span>Strategic network <span class=\"swatch officer-selected-key\" aria-hidden=\"true\"></span>Officer-selected alignment <span class=\"swatch officer-baseline-unused-key\" aria-hidden=\"true\"></span>Compiler geometry for comparison",
-                "Red shows the compiler network outside the supplied source-alignment scope. Orange shows the exact officer-selected source alignment. Dark grey shows compiler A-road and selected-candidate geometry inside that scope, superseded by the source alignment and retained for comparison.",
-            )
-        }
-        Some(scenario) if scenario.strategic_network.is_some() => (
-            "<span class=\"swatch strategic-network-key\" aria-hidden=\"true\"></span>Strategic network <span class=\"swatch officer-selected-key\" aria-hidden=\"true\"></span>Selected route / reference edge <span class=\"swatch officer-baseline-unused-key\" aria-hidden=\"true\"></span>Inferred deselection / unused baseline",
-            "Red shows the effective strategic network and A-road reference lines. Orange marks officer-selected routes and edges included by the strategic network reference. Dark grey marks either original baseline edges unused by effective routes or graph edges within resolved reference scope that are absent from the source reference: an inferred deselection, not a recorded rejection. Edges outside the resolved scope remain in the red network; unresolved correspondence is not treated as absence.",
-        ),
-        Some(_) => (
-            "<span class=\"swatch strategic-network-key\" aria-hidden=\"true\"></span>Strategic network <span class=\"swatch officer-selected-key\" aria-hidden=\"true\"></span>Officer-selected route <span class=\"swatch officer-baseline-unused-key\" aria-hidden=\"true\"></span>Unused original baseline edge",
-            "Red shows the strategic network and A-road references; orange shows officer-selected alignments; dark grey shows original baseline edges unused by every effective selected or provisional strategic candidate.",
-        ),
-        None => (
-            "<span class=\"swatch strategic-network-key\" aria-hidden=\"true\"></span>Strategic active travel network",
-            "The proposed strategic network includes chosen and provisional non-community route lines plus A-road reference sections. Provisional routes remain available in the separate review layer.",
-        ),
     };
     let officer_scenario_attribute = if officer_scenario.is_some() {
         " data-native-officer-scenario=\"illustrative\""
@@ -2088,15 +2248,12 @@ fn render_interactive_html(
             "__CANDIDATE_NEIGHBOURHOOD_LAYER_CONTROL__",
             &candidate_neighbourhood_layer_control,
         )
-        .replace("__STRATEGIC_NETWORK_LEGEND__", strategic_network_legend)
-        .replace("__STRATEGIC_NETWORK_HELP__", strategic_network_help)
+        .replace("__STRATEGIC_LAYER_CONTROLS__", strategic_layer_controls)
+        .replace("__COMMUNITY_LAYER_CONTROLS__", community_layer_controls)
         .replace("__OFFICER_SCENARIO_ATTRIBUTE__", officer_scenario_attribute)
         .replace("__OFFICER_SCENARIO_BANNER__", &officer_scenario_banner)
         .replace("__OFFICER_FINDINGS__", &officer_findings)
         .replace("__NETWORK_DESCRIPTION__", network_description)
-        .replace("__COMMUNITY_ACCESS_LABEL__", community_access_label)
-        .replace("__COMMUNITY_ACCESS_HELP_LABEL__", community_access_label)
-        .replace("__COMMUNITY_ACCESS_HELP__", community_access_help)
         .replace("__TITLE__", &title)
         .replace("__DEPLOYMENT__", &deployment_id)
         .replace("__BRANCH__", &branch)

@@ -498,7 +498,7 @@ A frozen, versioned and attributable human planning decision bound to one stable
 _Avoid_: agent decision, expiring decision, stale decision, Area Definition exception, hidden override, edited evidence
 
 **Material Officer–Compiler Divergence**:
-An explicit finding that a current valid Officer Decision selects a different eligible alignment from the compiler's current evidence-preferred option. The officer-selected route remains the primary route in that Officer-Informed Scenario Compilation. The default strategic view distinguishes the officer-selected alignment from displaced baseline sections, while sections still used by another effective strategic connection remain selected unless an applicable network-wide officer reference deselects them. The retained comparison and attribution explain the divergence without declaring either route objectively correct.
+An explicit finding that a current valid Officer Decision selects a different eligible alignment from the compiler's current evidence-preferred option. The officer-selected route remains the primary route in that Officer-Informed Scenario Compilation. The map exposes the generated Baseline Network and Baseline Community Access independently from the Officer Network and Officer Community Access. The baseline network is shown initially; officer geometry and superseded comparisons do not replace or recolour that baseline. Officer Community Access describes compiler-generated connections after officer strategic choices, not individual officer approval. The retained comparison and attribution explain the divergence without declaring either route objectively correct.
 _Avoid_: officer error, correct route, unlabelled rejected alternative, silent override
 
 **Officer Strategic Network Reference**:
