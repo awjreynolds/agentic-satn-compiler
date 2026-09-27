@@ -1529,7 +1529,7 @@ pub fn replay_with_officer_decisions(
     prepared: &PreparedCompilation,
     ledger: &OfficerDecisionLedger,
     progress: &mut dyn FnMut(MidendProgress),
-) -> Result<(MidendRun, OfficerScenario), MidendError> {
+) -> Result<(MidendRun, MidendRun, OfficerScenario), MidendError> {
     let started = Instant::now();
     let config = MidendConfig::deterministic(false).with_branch(branch.to_string());
     let baseline = replay(root, branch, progress)?;
@@ -1767,7 +1767,7 @@ pub fn replay_with_officer_decisions(
         "community-access",
         "regenerated-from-officer-selections",
     );
-    Ok((effective, scenario))
+    Ok((baseline, effective, scenario))
 }
 
 fn regenerate_rural_operation(

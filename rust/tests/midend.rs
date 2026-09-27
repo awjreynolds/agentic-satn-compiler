@@ -1962,7 +1962,7 @@ fn officer_selection_rebuilds_frontier_before_retained_rural_choices() {
     let ledger: OfficerDecisionLedger =
         serde_json::from_value(ledger_json).expect("resolved strategic network input");
     let mut replay_progress = Vec::new();
-    let (effective, scenario) =
+    let (baseline, effective, scenario) =
         replay_with_officer_decisions(&history, "main", &prepared, &ledger, &mut |event| {
             replay_progress.push(event)
         })
@@ -1974,6 +1974,10 @@ fn officer_selection_rebuilds_frontier_before_retained_rural_choices() {
             .any(|event| event.stage == "community-access" && event.task_id.is_some())
     );
     assert!(scenario.community_access_regenerated);
+    assert_eq!(baseline.base_id, scenario.base_id);
+    assert_eq!(baseline.branch, scenario.baseline_branch);
+    assert!(!baseline.operations.is_empty());
+    assert!(!baseline.community_access.is_empty());
     assert!(scenario.outcomes.iter().any(|outcome| matches!(
         outcome.status,
         satn_rs::officer::OfficerOutcomeStatus::Divergence
@@ -2027,7 +2031,7 @@ fn officer_selection_rebuilds_frontier_before_retained_rural_choices() {
         }
     }))
     .expect("source-only scoped network ledger");
-    let (source_only_effective, _) = replay_with_officer_decisions(
+    let (_, source_only_effective, _) = replay_with_officer_decisions(
         &history,
         "main",
         &prepared,

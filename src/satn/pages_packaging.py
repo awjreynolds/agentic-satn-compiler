@@ -763,6 +763,8 @@ def _validate_native_publication_shape(
         for feature in features
         if isinstance(feature.get("properties"), dict)
         and feature["properties"].get("kind") in selected_kinds
+        and feature["properties"].get("scenario_layer")
+        not in ("baseline-network", "baseline-community-access")
         and feature["properties"].get("strategic_network_scope_display") is not True
     )
     provisional_count = sum(
@@ -770,6 +772,8 @@ def _validate_native_publication_shape(
         for feature in features
         if isinstance(feature.get("properties"), dict)
         and feature["properties"].get("kind") == "provisional-alignment"
+        and feature["properties"].get("scenario_layer")
+        not in ("baseline-network", "baseline-community-access")
         and feature["properties"].get("strategic_network_scope_display") is not True
     )
     unresolved_count = sum(
@@ -777,6 +781,8 @@ def _validate_native_publication_shape(
         for feature in features
         if isinstance(feature.get("properties"), dict)
         and feature["properties"].get("kind") == "unresolved-decision"
+        and feature["properties"].get("scenario_layer")
+        not in ("baseline-network", "baseline-community-access")
     )
     departure_count = sum(
         1

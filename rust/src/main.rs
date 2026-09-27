@@ -137,7 +137,7 @@ fn run() -> satn_rs::Result<()> {
                     &mut progress,
                 )?;
                 let ledger = load_officer_decisions(path)?;
-                let (effective, scenario) = replay_with_officer_decisions(
+                let (baseline, effective, scenario) = replay_with_officer_decisions(
                     &history,
                     &cli.branch,
                     &prepared,
@@ -145,7 +145,7 @@ fn run() -> satn_rs::Result<()> {
                     &mut emit,
                 )
                 .map_err(|error| satn_rs::SatnError::InvalidInput(error.to_string()))?;
-                (prepared.report, effective, Some(scenario))
+                (prepared.report, effective, Some((baseline, scenario)))
             }
             None => {
                 let baseline = replay(&history, &cli.branch, &mut emit)
@@ -159,12 +159,12 @@ fn run() -> satn_rs::Result<()> {
             cli.output.join("planning.json"),
             serde_json::to_string_pretty(&result)?,
         )?;
-        if let Some(scenario) = officer_scenario {
+        if let Some((baseline, scenario)) = officer_scenario {
             std::fs::write(
                 cli.output.join("officer-scenario.json"),
                 serde_json::to_string_pretty(&scenario)?,
             )?;
-            publish_officer_scenario_map(&cli.output, &report, &result, &scenario)?;
+            publish_officer_scenario_map(&cli.output, &report, &baseline, &result, &scenario)?;
         } else {
             publish_decision_map(&cli.output, &report, &result)?;
         }

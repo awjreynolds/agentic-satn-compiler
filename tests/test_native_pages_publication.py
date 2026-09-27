@@ -197,6 +197,35 @@ def _write_native_bundle(
         "__BRANCH__": "review-branch",
         "__BASE_ID__": "base-1",
         "__OFFICER_SCENARIO_ATTRIBUTE__": "",
+        "__STRATEGIC_LAYER_CONTROLS__": (
+            '<li class="layer-control-row"><label><input type="checkbox" '
+            'data-layer-toggle="strategic-network" checked> '
+            '<span class="swatch strategic-network-key" aria-hidden="true"></span>'
+            "Strategic active travel network <span data-layer-count></span></label>"
+            '<details class="layer-help" name="native-layer-help"><summary '
+            'aria-label="About the strategic active travel network" '
+            'aria-describedby="layer-help-1">ⓘ</summary></details>'
+            '<span id="layer-help-1" class="layer-help-popup" role="tooltip">'
+            "The proposed strategic network includes chosen and provisional "
+            "non-community route lines plus A-road reference sections. Provisional "
+            "routes remain available in the separate review layer.</span></li>"
+        ),
+        "__COMMUNITY_LAYER_CONTROLS__": (
+            '<li class="layer-control-row"><label><input type="checkbox" '
+            'data-layer-toggle="community-access"> '
+            '<span class="swatch community-key" aria-hidden="true"></span>'
+            '<span class="marker-key marker-pentagon-key community-point-key" '
+            'aria-hidden="true"></span><span class="marker-key marker-cross-key '
+            'gap-point-key" aria-hidden="true"></span>Community Connections '
+            '<span data-layer-count></span></label><details class="layer-help" '
+            'name="native-layer-help"><summary aria-label="About Community Connections" '
+            'aria-describedby="layer-help-2">ⓘ</summary></details><span '
+            'id="layer-help-2" class="layer-help-popup" role="tooltip">'
+            "Community Connections show recorded access from a community to the strategic "
+            "network. A cross marks a missing connection where no connected path is evidenced."
+            "</span></li>"
+        ),
+        "__CANDIDATE_NEIGHBOURHOOD_LAYER_CONTROL__": "",
         "__STRATEGIC_NETWORK_LEGEND__": (
             '<span class="swatch strategic-network-key" aria-hidden="true"></span>'
             "Strategic active travel network"
@@ -231,6 +260,8 @@ def _write_native_bundle(
         "__DECISION_COUNT__": "3",
         "__UNRESOLVED_FACTS__": "0",
         "__UNRESOLVED_ACCESS__": "0",
+        "__COMMUNITY_ACCESS__": "0",
+        "__COMMUNITY_GAPS__": "0",
     }.items():
         html = html.replace(placeholder, value)
     (bundle / "index.html").write_text(html, encoding="utf-8")
@@ -669,6 +700,36 @@ def test_package_pages_rejects_point_geometry_for_officer_strategic_network_edge
             tmp_path / "pages",
             tmp_path / "satn-pages.zip",
         )
+
+
+def test_package_pages_excludes_baseline_scenario_layers_from_effective_decisions(
+    tmp_path: Path,
+) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    _write_native_catalogue(catalogue)
+    _write_native_bundle(bundles)
+    network_path = bundles / "native-area" / "decision-map.geojson"
+    network = json.loads(network_path.read_text(encoding="utf-8"))
+    features = network["features"]
+    for scenario_layer in ("baseline-network", "baseline-community-access"):
+        for kind in ("selected-alignment", "provisional-alignment", "unresolved-decision"):
+            original = next(
+                feature for feature in features if feature["properties"]["kind"] == kind
+            )
+            baseline_feature = json.loads(json.dumps(original))
+            baseline_feature["properties"]["scenario_layer"] = scenario_layer
+            features.append(baseline_feature)
+    network_path.write_text(json.dumps(network), encoding="utf-8")
+
+    result = package_pages(
+        catalogue,
+        bundles,
+        tmp_path / "pages",
+        tmp_path / "satn-pages.zip",
+    )
+
+    assert result.release_artifact.is_file()
 
 
 def test_package_pages_counts_scope_display_candidate_parts_once(tmp_path: Path) -> None:
