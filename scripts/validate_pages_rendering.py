@@ -584,22 +584,44 @@ def _inspect_native_agentic(
                   return true;
                 });
               };
-              const mainToggle = document.querySelector(
-                '[data-layer-toggle="strategic-network"]'
+              const baselineToggle = document.querySelector(
+                '[data-layer-toggle="baseline-network"]'
               );
+              const hasSeparatedScenario = Boolean(
+                document.body.hasAttribute('data-native-officer-scenario') && baselineToggle
+              );
+              const mainToggle = hasSeparatedScenario
+                ? baselineToggle
+                : document.querySelector('[data-layer-toggle="strategic-network"]');
+              const defaultLayerIds = hasSeparatedScenario
+                ? [
+                    'native-strategic-network', 'native-baseline-route',
+                    'native-baseline-provisional-casing', 'native-baseline-provisional',
+                    'native-baseline-unresolved'
+                  ]
+                : ['native-strategic-network'];
               const initiallyChecked = [...document.querySelectorAll('[data-layer-toggle]')]
                 .filter(toggle => toggle.checked)
                 .map(toggle => toggle.dataset.layerToggle);
-              const defaultMain = renderedFor(['native-strategic-network']);
+              const defaultMain = renderedFor(defaultLayerIds);
               if (!mainToggle?.checked || initiallyChecked.length !== 1 ||
-                  initiallyChecked[0] !== 'strategic-network') {
+                  initiallyChecked[0] !== mainToggle.dataset.layerToggle) {
                 failures.push('Strategic active travel network is not the sole default layer');
               }
               const isMainStrategicFeature = feature => {
                 const props = properties(feature);
                 const line = ['LineString', 'MultiLineString'].includes(feature.geometry?.type);
-                return line && (
-                  (['selected-alignment', 'provisional-alignment'].includes(props.kind) &&
+                if (
+                  !line ||
+                  (hasSeparatedScenario && props.scenario_layer !== 'baseline-network')
+                ) {
+                  return false;
+                }
+                return (
+                  ([
+                    'selected-alignment', 'provisional-alignment',
+                    ...(hasSeparatedScenario ? ['unresolved-decision'] : [])
+                  ].includes(props.kind) &&
                     !Object.hasOwn(props, 'community_id')) ||
                   (props.kind === 'source-baseline' &&
                     props.baseline_layer === 'source-strategic-a-road')
@@ -627,10 +649,26 @@ def _inspect_native_agentic(
                 }
               });
               const renderedStrategic = uniqueRendered([
-                'native-strategic-network',
+                ...defaultLayerIds,
                 'native-selected', 'native-selected-point', 'native-provisional',
                 'native-provisional-point', 'native-unresolved', 'native-alternative'
               ]);
+              const hasEvidenceValue = value => {
+                if (Array.isArray(value)) return value.length > 0;
+                if (typeof value !== 'string') return Boolean(value);
+                const text = value.trim();
+                if (!text) return false;
+                if (text.startsWith('[')) {
+                  try {
+                    const parsed = JSON.parse(text);
+                    if (Array.isArray(parsed)) return parsed.length > 0;
+                  } catch (_) {}
+                }
+                return true;
+              };
+              const hasMappedDecisionEvidence = props =>
+                hasEvidenceValue(props.reason) || hasEvidenceValue(props.uncertainties) ||
+                hasEvidenceValue(props.evidence_refs);
               const renderedSource = uniqueRendered([
                 'native-source-strategic', 'native-source-context'
               ]);
@@ -655,9 +693,11 @@ def _inspect_native_agentic(
               if (!renderedStrategic.length) {
                 failures.push('native strategic geometry is not visible');
               }
-              if (renderedStrategic.length && !renderedStrategic.some(feature => {
+              if (!renderedStrategic.some(feature => {
                 const props = properties(feature);
-                return props.reason || props.uncertainties || props.evidence_refs;
+                return decisionGeometryKinds.includes(kind(feature)) &&
+                  (!hasSeparatedScenario || props.scenario_layer === 'baseline-network') &&
+                  hasMappedDecisionEvidence(props);
               })) {
                 failures.push('native mapped decision evidence is unavailable');
               }

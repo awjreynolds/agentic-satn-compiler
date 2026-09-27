@@ -379,6 +379,61 @@ def _write_native_bundle(
     )
 
 
+def _make_separated_scenario_layers(
+    bundle: Path,
+    *,
+    default_layer: str = "baseline-network",
+    empty_baseline_decision_evidence: bool = False,
+) -> None:
+    network_path = bundle / "decision-map.geojson"
+    network = json.loads(network_path.read_text(encoding="utf-8"))
+    officer_features = []
+    for feature in network["features"]:
+        properties = feature["properties"]
+        kind = properties.get("kind")
+        if kind in {"selected-alignment", "provisional-alignment", "unresolved-decision"}:
+            officer_features.append(
+                {
+                    **feature,
+                    "properties": {**properties, "scenario_layer": "officer-network"},
+                }
+            )
+            properties["scenario_layer"] = "baseline-network"
+            if empty_baseline_decision_evidence:
+                properties.update({"reason": "", "uncertainties": [], "evidence_refs": []})
+        elif (
+            kind == "source-baseline"
+            and properties.get("baseline_layer") == "source-strategic-a-road"
+        ):
+            properties["scenario_layer"] = "baseline-network"
+    network["features"].extend(officer_features)
+    network_path.write_text(json.dumps(network), encoding="utf-8")
+
+    index_path = bundle / "index.html"
+    html = index_path.read_text(encoding="utf-8")
+    html = html.replace(
+        "<body data-native-publication=",
+        "<body data-native-officer-scenario data-native-publication=",
+    )
+    html = html.replace(
+        'data-layer-toggle="strategic-network" checked',
+        f'data-layer-toggle="{default_layer}" checked',
+    )
+    html = html.replace(
+        'data-layer-toggle="community-access"',
+        'data-layer-toggle="baseline-community-access"',
+    )
+    html = html.replace(
+        "    </ul></fieldset>",
+        '      <li><label><input type="checkbox" data-layer-toggle="officer-network"> '
+        "Officer Network</label></li>\n"
+        '      <li><label><input type="checkbox" '
+        'data-layer-toggle="officer-community-access"> Officer Community Access</label></li>\n'
+        "    </ul></fieldset>",
+    )
+    index_path.write_text(html, encoding="utf-8")
+
+
 def _make_on_spine_decision_point(bundle: Path, *, include_access: bool) -> None:
     network_path = bundle / "decision-map.geojson"
     network = json.loads(network_path.read_text(encoding="utf-8"))
@@ -789,6 +844,61 @@ def test_native_rendering_gate_accepts_a_valid_on_spine_decision_point(
 
     assert validated[0].strategic_spines == 2
     assert validated[0].rendered_strategic_spines == 3
+
+
+@pytest.mark.browser
+def test_native_rendering_gate_accepts_separated_baseline_scenario_layers(
+    tmp_path: Path,
+) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    _write_native_catalogue(catalogue)
+    _write_native_bundle(bundles)
+    _make_separated_scenario_layers(bundles / "native-area")
+    result = package_pages(
+        catalogue,
+        bundles,
+        tmp_path / "pages",
+        tmp_path / "satn-pages.zip",
+    )
+
+    validated = VALIDATOR.validate_pages_rendering(result.pages_directory)
+
+    assert validated[0].deployment_id == "native-area"
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize(
+    ("default_layer", "empty_baseline_decision_evidence", "message"),
+    [
+        ("officer-network", False, "not the sole default layer"),
+        ("baseline-network", True, "native mapped decision evidence is unavailable"),
+    ],
+)
+def test_native_rendering_gate_rejects_separated_scenario_layer_failures(
+    tmp_path: Path,
+    default_layer: str,
+    empty_baseline_decision_evidence: bool,
+    message: str,
+) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    _write_native_catalogue(catalogue)
+    _write_native_bundle(bundles)
+    _make_separated_scenario_layers(
+        bundles / "native-area",
+        default_layer=default_layer,
+        empty_baseline_decision_evidence=empty_baseline_decision_evidence,
+    )
+    result = package_pages(
+        catalogue,
+        bundles,
+        tmp_path / "pages",
+        tmp_path / "satn-pages.zip",
+    )
+
+    with pytest.raises(ValueError, match=message):
+        VALIDATOR.validate_pages_rendering(result.pages_directory)
 
 
 def test_package_pages_accepts_the_explicit_native_agentic_publication(tmp_path: Path) -> None:
