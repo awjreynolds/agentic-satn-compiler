@@ -702,6 +702,36 @@ def test_package_pages_rejects_point_geometry_for_officer_strategic_network_edge
         )
 
 
+def test_package_pages_excludes_baseline_scenario_layers_from_effective_decisions(
+    tmp_path: Path,
+) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    _write_native_catalogue(catalogue)
+    _write_native_bundle(bundles)
+    network_path = bundles / "native-area" / "decision-map.geojson"
+    network = json.loads(network_path.read_text(encoding="utf-8"))
+    features = network["features"]
+    for scenario_layer in ("baseline-network", "baseline-community-access"):
+        for kind in ("selected-alignment", "provisional-alignment", "unresolved-decision"):
+            original = next(
+                feature for feature in features if feature["properties"]["kind"] == kind
+            )
+            baseline_feature = json.loads(json.dumps(original))
+            baseline_feature["properties"]["scenario_layer"] = scenario_layer
+            features.append(baseline_feature)
+    network_path.write_text(json.dumps(network), encoding="utf-8")
+
+    result = package_pages(
+        catalogue,
+        bundles,
+        tmp_path / "pages",
+        tmp_path / "satn-pages.zip",
+    )
+
+    assert result.release_artifact.is_file()
+
+
 def test_package_pages_counts_scope_display_candidate_parts_once(tmp_path: Path) -> None:
     catalogue = tmp_path / "catalogue.yaml"
     bundles = tmp_path / "bundles"
