@@ -4,6 +4,7 @@ import http.server
 import importlib.util
 import json
 import os
+import re
 import shutil
 import sys
 import threading
@@ -403,6 +404,50 @@ def _add_ncn_baseline(bundle: Path) -> None:
             }
         )
     network_path.write_text(json.dumps(network), encoding="utf-8")
+    index_path = bundle / "index.html"
+    html = index_path.read_text(encoding="utf-8")
+    strategic_swatch = '<span class="swatch strategic-network-key" aria-hidden="true"></span>'
+    ncn_swatches = (
+        strategic_swatch
+        + '<span class="swatch ncn-current-key" aria-hidden="true"></span>Current NCN '
+        + '<span class="swatch ncn-former-key" aria-hidden="true"></span>Former NCN '
+    )
+    if strategic_swatch not in html:
+        raise AssertionError("native fixture has no strategic-network legend swatch")
+    index_path.write_text(html.replace(strategic_swatch, ncn_swatches, 1), encoding="utf-8")
+
+
+def _make_legacy_ncn_renderer(bundle: Path) -> None:
+    index_path = bundle / "index.html"
+    html = index_path.read_text(encoding="utf-8")
+    html = html.replace(
+        '<span class="swatch ncn-current-key" aria-hidden="true"></span>Current NCN ',
+        "",
+    )
+    html = html.replace(
+        '<span class="swatch ncn-former-key" aria-hidden="true"></span>Former NCN ',
+        "",
+    )
+    start = html.index("      const ncnScenarioFilter =")
+    end_marker = "      line('native-strategic-ncn-current', currentNcnFilter, '#0072b2', 4);\n"
+    end = html.index(end_marker, start) + len(end_marker)
+    html = html[:start] + html[end:]
+    for layer in (
+        "native-strategic-ncn-casing",
+        "native-strategic-ncn-current",
+        "native-strategic-ncn-former",
+    ):
+        html = re.sub(rf",\s*'{layer}'", "", html)
+    html = html.replace(
+        " ||\n      (properties.baseline_layer === 'source-strategic-ncn' &&\n"
+        "        ['current-ncn', 'former-ncn', 'declassified-ncn'].includes("
+        "properties.baseline_role))",
+        "",
+    )
+    if "native-strategic-ncn-" in html:
+        remaining = [line for line in html.splitlines() if "native-strategic-ncn-" in line]
+        raise AssertionError(f"legacy fixture still contains native NCN layers: {remaining}")
+    index_path.write_text(html, encoding="utf-8")
 
 
 def _make_separated_scenario_layers(
@@ -1149,6 +1194,28 @@ def test_native_rendering_gate_includes_ncn_roles_in_the_main_network(tmp_path: 
     _write_native_catalogue(catalogue)
     _write_native_bundle(bundles)
     _add_ncn_baseline(bundles / "native-area")
+    result = package_pages(
+        catalogue,
+        bundles,
+        tmp_path / "pages",
+        tmp_path / "satn-pages.zip",
+    )
+
+    validated = VALIDATOR.validate_pages_rendering(result.pages_directory)
+
+    assert len(validated) == 1
+    assert validated[0].deployment_id == "native-area"
+
+
+@pytest.mark.browser
+def test_native_rendering_gate_preserves_legacy_maps_with_ncn_sources(tmp_path: Path) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    _write_native_catalogue(catalogue)
+    _write_native_bundle(bundles)
+    legacy_bundle = bundles / "native-area"
+    _add_ncn_baseline(legacy_bundle)
+    _make_legacy_ncn_renderer(legacy_bundle)
     result = package_pages(
         catalogue,
         bundles,
