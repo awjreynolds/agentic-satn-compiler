@@ -603,7 +603,6 @@ def _inspect_native_agentic(
                 failures.push('NCN baseline legend is missing a current or former route key');
               }
               const ncnLayerIds = [
-                'native-strategic-ncn-casing',
                 'native-strategic-ncn-current',
                 'native-strategic-ncn-former'
               ];

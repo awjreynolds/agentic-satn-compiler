@@ -32,7 +32,7 @@ button:focus-visible, input:focus-visible { outline: 3px solid #2563eb; outline-
 .source-key { border-top-color: #0072b2; }
 .strategic-network-key { border-top-color: #d71920; }
 .ncn-current-key { border-top-color: #0072b2; }
-.ncn-former-key { border-top-color: #f0e442; filter: drop-shadow(0 0 1px #263238); }
+.ncn-former-key { border-top-color: #f0e442; }
 .officer-selected-key { border-top-color: #d55e00; }
 .officer-baseline-unused-key { border-top-color: #4b5563; }
 .context-key { border-top: 2px dotted #4b5563; }
@@ -160,7 +160,7 @@ __OFFICER_SCENARIO_BANNER__</header>
   });
   const interactiveLayers = [
     'native-strategic-network', 'native-selected', 'native-selected-point', 'native-provisional-casing', 'native-provisional', 'native-provisional-point',
-    'native-strategic-ncn-casing', 'native-strategic-ncn-current', 'native-strategic-ncn-former',
+    'native-strategic-ncn-current', 'native-strategic-ncn-former',
     'native-officer-baseline-unused', 'native-officer-effective', 'native-officer-strategic-network',
     'native-officer-compiler-comparison', 'native-officer-selected-alignment', 'native-baseline-route',
     'native-baseline-provisional-casing', 'native-baseline-provisional', 'native-baseline-unresolved',
@@ -178,8 +178,8 @@ __OFFICER_SCENARIO_BANNER__</header>
     'native-bus-route', 'native-bus-interchange'
   ];
   const layerGroups = {
-    'strategic-network': ['native-strategic-network', 'native-strategic-ncn-casing', 'native-strategic-ncn-current', 'native-strategic-ncn-former', 'native-officer-baseline-unused', 'native-officer-effective', 'native-officer-strategic-network', 'native-officer-compiler-comparison', 'native-officer-selected-alignment'],
-    'baseline-network': ['native-strategic-network', 'native-baseline-route', 'native-baseline-provisional-casing', 'native-baseline-provisional', 'native-baseline-unresolved', 'native-strategic-ncn-casing', 'native-strategic-ncn-current', 'native-strategic-ncn-former'],
+    'strategic-network': ['native-strategic-network', 'native-strategic-ncn-current', 'native-strategic-ncn-former', 'native-officer-baseline-unused', 'native-officer-effective', 'native-officer-strategic-network', 'native-officer-compiler-comparison', 'native-officer-selected-alignment'],
+    'baseline-network': ['native-strategic-network', 'native-baseline-route', 'native-baseline-provisional-casing', 'native-baseline-provisional', 'native-baseline-unresolved', 'native-strategic-ncn-current', 'native-strategic-ncn-former'],
     'officer-network': ['native-officer-network-route', 'native-officer-network-provisional-casing', 'native-officer-network-provisional', 'native-officer-network-a-road-scope', 'native-officer-effective', 'native-officer-baseline-unused', 'native-officer-strategic-network', 'native-officer-compiler-comparison', 'native-officer-selected-alignment', 'native-officer-unresolved'],
     'baseline-community-access': ['native-baseline-community-access-casing', 'native-baseline-community-access', 'native-baseline-community-access-point', 'native-baseline-community-access-gap'],
     'officer-community-access': ['native-officer-community-access-casing', 'native-officer-community-access', 'native-officer-community-access-point', 'native-officer-community-access-gap'],
@@ -357,6 +357,12 @@ __OFFICER_SCENARIO_BANNER__</header>
     if (props.provisional !== undefined) add(props.scenario_baseline_context ? 'Baseline decision status' : 'Status', props.provisional ? 'Provisional' : 'Selected');
     add('Role', props.role);
     add('Source classification', props.baseline_role);
+    if (['current-ncn', 'former-ncn', 'declassified-ncn'].includes(props.baseline_role)) {
+      const routeNumber = /^NCN\s+(\d+)(?:\.0+)?$/i.exec(
+        String(props.source_reference || '').trim()
+      )?.[1];
+      add('NCN route number', routeNumber);
+    }
     if (props.length_m !== undefined) add('Distance', formatDistance(props.length_m));
     add('Connection', props.connection_label);
     add('Source', props.source_reference);
@@ -852,7 +858,6 @@ __OFFICER_SCENARIO_BANNER__</header>
       const formerNcnFilter = ['all', ncnFilter,
         ['any', ['==', ['get', 'baseline_role'], 'former-ncn'],
           ['==', ['get', 'baseline_role'], 'declassified-ncn']]];
-      line('native-strategic-ncn-casing', ncnFilter, '#263238', 7);
       line('native-strategic-ncn-former', formerNcnFilter, '#f0e442', 4);
       line('native-strategic-ncn-current', currentNcnFilter, '#0072b2', 4);
       addMarkerImage('native-marker-selected', 'circle', '#009e73');

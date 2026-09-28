@@ -58,7 +58,13 @@ fn accounts_strategic_baseline_places_and_school_gaps() {
     write_collection(
         &snapshot.join("context.geojson"),
         vec![
-            context_line("ncn-route", "ncn-route-1", "NCN 1", [0.0, 0.0], [1.0, 0.0]),
+            context_line(
+                "ncn-route",
+                "ncn-route-1",
+                "NCN 416.0",
+                [0.0, 0.0],
+                [1.0, 0.0],
+            ),
             context_line("ncn-link", "ncn-link-1", "NCN link", [0.0, 0.0], [1.0, 0.0]),
             context_line(
                 "declassified-ncn-route",
@@ -124,6 +130,18 @@ fn accounts_strategic_baseline_places_and_school_gaps() {
     assert!(roles.contains("greenway-cycleway"));
     assert!(roles.contains("railway"));
     assert!(roles.contains("former-railway"));
+    let current_ncn = report
+        .source_inventory
+        .iter()
+        .find(|source| source.source_id == "ncn-route-1")
+        .expect("current NCN source");
+    assert_eq!(current_ncn.reference, "NCN 416.0");
+    let declassified_ncn = report
+        .source_inventory
+        .iter()
+        .find(|source| source.source_id == "former-ncn-1")
+        .expect("declassified NCN source");
+    assert_eq!(declassified_ncn.reference, "Former NCN");
     let railway = report
         .source_inventory
         .iter()

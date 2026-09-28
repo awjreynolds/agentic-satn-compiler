@@ -1652,6 +1652,116 @@ if (labels.some((label, index) => labels.indexOf(label) !== index)) process.exit
 }
 
 #[test]
+fn clips_current_former_and_declassified_ncn_linework_to_report_boundary() {
+    let root = tempfile_root("satn-rs-publication-ncn-boundary");
+    let mut report = report_fixture();
+    report.boundary_scope = Some(
+        serde_json::from_value(json!({
+            "id": "scope:fixture",
+            "name": "Configured area",
+            "geometry": [
+                [[[0.25, -0.1], [0.5, -0.1], [0.5, 0.1], [0.25, 0.1], [0.25, -0.1]]],
+                [[[0.75, -0.1], [1.0, -0.1], [1.0, 0.1], [0.75, 0.1], [0.75, -0.1]]]
+            ]
+        }))
+        .expect("configured boundary scope"),
+    );
+    let current = report
+        .source_inventory
+        .iter_mut()
+        .find(|source| source.id == "source:cycleway")
+        .expect("current NCN source");
+    current.reference = "NCN 4.0".to_string();
+    current.geometry = vec![vec![[0.0, 0.0], [1.0, 0.0]]];
+    report.source_inventory.extend([
+        SourceCorridor {
+            id: "source:former-ncn".to_string(),
+            reference: "Former NCN".to_string(),
+            source_kind: "context".to_string(),
+            source_id: "former-ncn-source".to_string(),
+            scope: "governed".to_string(),
+            baseline_role: "former-ncn".to_string(),
+            source_edge_ids: Vec::new(),
+            graph_edge_ids: Vec::new(),
+            geometry: vec![vec![[0.0, -0.05], [1.0, -0.05]]],
+            topology_status: "source-only".to_string(),
+            attachment_status: "unknown".to_string(),
+            provision_status: "unknown".to_string(),
+        },
+        SourceCorridor {
+            id: "source:declassified-ncn".to_string(),
+            reference: "Officially reclassified NCN".to_string(),
+            source_kind: "context".to_string(),
+            source_id: "declassified-ncn-source".to_string(),
+            scope: "governed".to_string(),
+            baseline_role: "declassified-ncn".to_string(),
+            source_edge_ids: Vec::new(),
+            graph_edge_ids: Vec::new(),
+            geometry: vec![
+                vec![[0.0, -0.08], [1.0, -0.08]],
+                vec![[2.0, -0.08], [3.0, -0.08]],
+            ],
+            topology_status: "source-only".to_string(),
+            attachment_status: "unknown".to_string(),
+            provision_status: "unknown".to_string(),
+        },
+    ]);
+    let run = MidendRun {
+        branch: "main".to_string(),
+        base_id: "base:fixture:snapshot".to_string(),
+        status: "completed".to_string(),
+        task_ids: Vec::new(),
+        operations: Vec::new(),
+        community_access: Vec::new(),
+    };
+
+    publish_decision_map(&root, &report, &run).expect("publish map");
+    let geojson: Value = serde_json::from_str(
+        &fs::read_to_string(root.join("decision-map.geojson")).expect("GeoJSON output"),
+    )
+    .expect("valid GeoJSON");
+    let features = geojson["features"].as_array().expect("features");
+    for (source_id, role, y) in [
+        ("ncn-source", "current-ncn", 0.0),
+        ("former-ncn-source", "former-ncn", -0.05),
+        ("declassified-ncn-source", "declassified-ncn", -0.08),
+    ] {
+        let mut fragments = features
+            .iter()
+            .filter(|feature| {
+                feature["properties"]["kind"] == "source-baseline"
+                    && feature["properties"]["source_id"] == source_id
+            })
+            .collect::<Vec<_>>();
+        fragments.sort_by(|left, right| {
+            left["geometry"]["coordinates"][0][0]
+                .as_f64()
+                .partial_cmp(&right["geometry"]["coordinates"][0][0].as_f64())
+                .expect("coordinates are numbers")
+        });
+        assert_eq!(fragments.len(), 2, "published {role} fragments");
+        assert_eq!(fragments[0]["properties"]["baseline_role"], role);
+        assert_eq!(fragments[1]["properties"]["baseline_role"], role);
+        assert_eq!(
+            fragments[0]["geometry"]["coordinates"],
+            json!([[0.25, y], [0.5, y]])
+        );
+        assert_eq!(
+            fragments[1]["geometry"]["coordinates"],
+            json!([[0.75, y], [1.0, y]])
+        );
+        assert!(fragments.iter().all(|feature| {
+            feature["properties"]["baseline_layer"] == "source-strategic-ncn"
+                && feature["properties"]["source_geometry_part"] == 0
+        }));
+    }
+    assert!(features.iter().any(|feature| {
+        feature["properties"]["source_id"] == "a-road-source"
+            && feature["geometry"]["coordinates"] == json!([[0.0, 0.0], [0.5, 0.0]])
+    }));
+}
+
+#[test]
 fn identical_physical_path_with_parallel_ids_has_no_departure() {
     let root = tempfile_root("satn-rs-publication-physical-path");
     let mut report = report_fixture();

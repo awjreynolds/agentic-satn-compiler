@@ -383,10 +383,15 @@ def _write_native_bundle(
 def _add_ncn_baseline(bundle: Path) -> None:
     network_path = bundle / "decision-map.geojson"
     network = json.loads(network_path.read_text(encoding="utf-8"))
-    for source_id, baseline_role, coordinates in [
-        ("source:ncn-current", "current-ncn", [[-2, 51.3], [-1.95, 51.3]]),
-        ("source:ncn-former", "former-ncn", [[-2, 51.28], [-1.95, 51.28]]),
-        ("source:ncn-declassified", "declassified-ncn", [[-2, 51.3], [-1.95, 51.3]]),
+    for source_id, baseline_role, source_reference, coordinates in [
+        ("source:ncn-current:999", "current-ncn", "NCN 4.0", [[-2, 51.3], [-1.95, 51.3]]),
+        ("source:ncn-former", "former-ncn", "Former NCN", [[-2, 51.28], [-1.95, 51.28]]),
+        (
+            "source:ncn-declassified",
+            "declassified-ncn",
+            "Officially reclassified NCN",
+            [[-2, 51.25], [-1.95, 51.25]],
+        ),
     ]:
         network["features"].append(
             {
@@ -395,7 +400,7 @@ def _add_ncn_baseline(bundle: Path) -> None:
                     "kind": "source-baseline",
                     "source_corridor_id": source_id,
                     "source_id": source_id,
-                    "source_reference": source_id,
+                    "source_reference": source_reference,
                     "baseline_role": baseline_role,
                     "baseline_layer": "source-strategic-ncn",
                     "provision_status": "unknown",
@@ -1227,6 +1232,122 @@ def test_native_rendering_gate_preserves_legacy_maps_with_ncn_sources(tmp_path: 
 
     assert len(validated) == 1
     assert validated[0].deployment_id == "native-area"
+
+
+@pytest.mark.browser
+def test_native_ncn_routes_render_solid_and_expose_only_known_route_numbers(
+    tmp_path: Path,
+) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    _write_native_catalogue(catalogue)
+    _write_native_bundle(bundles)
+    _add_ncn_baseline(bundles / "native-area")
+    result = package_pages(
+        catalogue,
+        bundles,
+        tmp_path / "pages",
+        tmp_path / "satn-pages.zip",
+    )
+
+    with (
+        VALIDATOR._serve(result.pages_directory) as origin,
+        VALIDATOR.sync_playwright() as playwright,
+    ):
+        executable = os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE")
+        browser = playwright.chromium.launch(headless=True, executable_path=executable)
+        try:
+            page = browser.new_page(viewport={"width": 1280, "height": 900})
+            page.goto(f"{origin}/deployments/native-area/index.html", wait_until="domcontentloaded")
+            page.wait_for_function(
+                "() => document.documentElement.dataset.nativeReady === 'true' && "
+                "window.SATN_NATIVE_MAP?.isStyleLoaded()"
+            )
+            styles = page.evaluate(
+                """() => {
+                  const map = window.SATN_NATIVE_MAP;
+                  return {
+                    hasCasing: Boolean(map.getLayer('native-strategic-ncn-casing')),
+                    current: map.getPaintProperty('native-strategic-ncn-current', 'line-color'),
+                    former: map.getPaintProperty('native-strategic-ncn-former', 'line-color'),
+                    legendShadow: getComputedStyle(
+                      document.querySelector('.ncn-former-key')
+                    ).filter
+                  };
+                }"""
+            )
+            assert styles == {
+                "hasCasing": False,
+                "current": "#0072b2",
+                "former": "#f0e442",
+                "legendShadow": "none",
+            }
+
+            point = page.evaluate(
+                """() => {
+                  const map = window.SATN_NATIVE_MAP;
+                  const feature = map.queryRenderedFeatures({
+                    layers: ['native-strategic-ncn-current']
+                  }).find(candidate =>
+                    candidate.properties.source_id === 'source:ncn-current:999'
+                  );
+                  if (!feature) return null;
+                  const coordinates = feature.geometry.coordinates;
+                  const coordinate = [
+                    (coordinates[0][0] + coordinates[coordinates.length - 1][0]) / 2,
+                    (coordinates[0][1] + coordinates[coordinates.length - 1][1]) / 2
+                  ];
+                  const screen = map.project(coordinate);
+                  const rect = map.getContainer().getBoundingClientRect();
+                  return {x: screen.x + rect.left, y: screen.y + rect.top};
+                }"""
+            )
+            assert point is not None
+            page.mouse.move(point["x"], point["y"])
+            page.wait_for_function(
+                "() => document.querySelector('.maplibregl-popup-content')?.innerText "
+                ".includes('NCN route number')"
+            )
+            popup = page.locator(".maplibregl-popup-content").inner_text()
+            assert "NCN route number" in popup
+            route_number = (
+                page.locator(".maplibregl-popup-content dt", has_text="NCN route number")
+                .locator("xpath=following-sibling::dd[1]")
+                .inner_text()
+            )
+            assert route_number == "4"
+
+            page.locator("[data-native-clear]").click()
+            page.wait_for_function("() => !document.querySelector('.maplibregl-popup')")
+            generic_point = page.evaluate(
+                """() => {
+                  const map = window.SATN_NATIVE_MAP;
+                  const feature = map.queryRenderedFeatures({
+                    layers: ['native-strategic-ncn-former']
+                  }).find(candidate => candidate.properties.source_id === 'source:ncn-former');
+                  if (!feature) return null;
+                  const coordinates = feature.geometry.coordinates;
+                  const coordinate = [
+                    (coordinates[0][0] + coordinates[coordinates.length - 1][0]) / 2,
+                    (coordinates[0][1] + coordinates[coordinates.length - 1][1]) / 2
+                  ];
+                  const screen = map.project(coordinate);
+                  const rect = map.getContainer().getBoundingClientRect();
+                  return {x: screen.x + rect.left, y: screen.y + rect.top};
+                }"""
+            )
+            assert generic_point is not None
+            page.mouse.move(generic_point["x"], generic_point["y"])
+            page.wait_for_function(
+                "() => document.querySelector('.maplibregl-popup-content')?.innerText "
+                ".includes('Former NCN')"
+            )
+            assert (
+                page.locator(".maplibregl-popup-content dt", has_text="NCN route number").count()
+                == 0
+            )
+        finally:
+            browser.close()
 
 
 @pytest.mark.browser
