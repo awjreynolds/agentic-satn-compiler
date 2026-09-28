@@ -7,7 +7,7 @@ use proj4rs::adaptors::transform_vertex_2d;
 use rstar::{AABB, RTree, RTreeObject};
 
 use crate::error::{Result, SatnError};
-use crate::geojson::{Feature, Geometry, canonical_tag_values};
+use crate::geojson::{Feature, Geometry, canonical_tag_values, string_property};
 
 /// The reference currently uses PROJ's first available EPSG:27700 fallback
 /// when OSTN15 grids are unavailable. Keep the fallback explicit and stable:
@@ -37,6 +37,13 @@ const STRATEGIC_TYPES: [(&str, &str); 3] = [
 pub(crate) struct EdgeEvidence {
     pub ncn: bool,
     pub cycle_alignment_bases: Vec<String>,
+    pub context_source_bindings: Vec<ContextSourceBinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ContextSourceBinding {
+    pub source_id: String,
+    pub line_index: usize,
 }
 
 #[derive(Clone)]
@@ -83,6 +90,8 @@ pub fn project_wgs84_to_bng(point: [f64; 2]) -> Result<[f64; 2]> {
 #[derive(Debug, Clone)]
 struct Corridor {
     basis: &'static str,
+    source_id: String,
+    line_index: usize,
     buffered: MultiPolygon<f64>,
     envelope: AABB<[f64; 2]>,
 }
@@ -107,6 +116,7 @@ pub(crate) fn enrich_network_edges(
         .map(|feature| EdgeEvidence {
             ncn: raw_current_ncn(feature),
             cycle_alignment_bases: Vec::new(),
+            context_source_bindings: Vec::new(),
         })
         .collect::<Vec<_>>();
     let projector = Projector::new()?;
@@ -115,11 +125,13 @@ pub(crate) fn enrich_network_edges(
     }
 
     let mut corridors = Vec::new();
-    for feature in context_features {
+    for (feature_index, feature) in context_features.iter().enumerate() {
         let Some(basis) = strategic_basis(feature) else {
             continue;
         };
-        for line in line_geometries(feature) {
+        let source_id = string_property(&feature.properties, "evidence_id")
+            .unwrap_or_else(|| format!("context-feature:{feature_index}"));
+        for (line_index, line) in line_geometries(feature).into_iter().enumerate() {
             let projected = projector.line(&line)?;
             let buffered = projected.buffer(BUFFER_M);
             let Some(rect) = buffered.bounding_rect() else {
@@ -127,6 +139,8 @@ pub(crate) fn enrich_network_edges(
             };
             corridors.push(Corridor {
                 basis,
+                source_id: source_id.clone(),
+                line_index,
                 buffered,
                 envelope: AABB::from_corners(
                     [rect.min().x, rect.min().y],
@@ -192,6 +206,31 @@ pub(crate) fn enrich_network_edges(
                 evidence[index]
                     .cycle_alignment_bases
                     .push(basis.to_string());
+            }
+        }
+        let mut source_corridors =
+            std::collections::BTreeMap::<(String, usize), Vec<&Corridor>>::new();
+        for corridor in nearby
+            .iter()
+            .filter(|corridor| matches!(corridor.basis, "current-ncn" | "reclassified-ncn"))
+        {
+            source_corridors
+                .entry((corridor.source_id.clone(), corridor.line_index))
+                .or_default()
+                .push(corridor);
+        }
+        for ((source_id, line_index), source_corridors) in source_corridors {
+            let source_buffers = source_corridors.iter().map(|corridor| &corridor.buffered);
+            let source_corridor = geo::unary_union(source_buffers);
+            let source_overlap = Euclidean.length(&source_corridor.clip(&route, false));
+            if source_overlap / route_length >= OVERLAP_SHARE {
+                let binding = ContextSourceBinding {
+                    source_id,
+                    line_index,
+                };
+                if !evidence[index].context_source_bindings.contains(&binding) {
+                    evidence[index].context_source_bindings.push(binding);
+                }
             }
         }
     }

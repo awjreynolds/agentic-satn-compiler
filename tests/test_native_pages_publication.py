@@ -379,6 +379,32 @@ def _write_native_bundle(
     )
 
 
+def _add_ncn_baseline(bundle: Path) -> None:
+    network_path = bundle / "decision-map.geojson"
+    network = json.loads(network_path.read_text(encoding="utf-8"))
+    for source_id, baseline_role, coordinates in [
+        ("source:ncn-current", "current-ncn", [[-2, 51.3], [-1.95, 51.3]]),
+        ("source:ncn-former", "former-ncn", [[-2, 51.28], [-1.95, 51.28]]),
+        ("source:ncn-declassified", "declassified-ncn", [[-2, 51.3], [-1.95, 51.3]]),
+    ]:
+        network["features"].append(
+            {
+                "type": "Feature",
+                "properties": {
+                    "kind": "source-baseline",
+                    "source_corridor_id": source_id,
+                    "source_id": source_id,
+                    "source_reference": source_id,
+                    "baseline_role": baseline_role,
+                    "baseline_layer": "source-strategic-ncn",
+                    "provision_status": "unknown",
+                },
+                "geometry": {"type": "LineString", "coordinates": coordinates},
+            }
+        )
+    network_path.write_text(json.dumps(network), encoding="utf-8")
+
+
 def _make_separated_scenario_layers(
     bundle: Path,
     *,
@@ -1114,6 +1140,26 @@ def test_native_rendering_gate_uses_the_loaded_map_and_public_decision_sections(
     assert validated[0].strategic_spines == 2
     assert validated[0].cross_spine_connectors == 1
     assert validated[0].rendered_strategic_spines == 4
+
+
+@pytest.mark.browser
+def test_native_rendering_gate_includes_ncn_roles_in_the_main_network(tmp_path: Path) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    _write_native_catalogue(catalogue)
+    _write_native_bundle(bundles)
+    _add_ncn_baseline(bundles / "native-area")
+    result = package_pages(
+        catalogue,
+        bundles,
+        tmp_path / "pages",
+        tmp_path / "satn-pages.zip",
+    )
+
+    validated = VALIDATOR.validate_pages_rendering(result.pages_directory)
+
+    assert len(validated) == 1
+    assert validated[0].deployment_id == "native-area"
 
 
 @pytest.mark.browser
