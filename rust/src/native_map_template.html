@@ -356,16 +356,23 @@ __OFFICER_SCENARIO_BANNER__</header>
     }
     if (props.provisional !== undefined) add(props.scenario_baseline_context ? 'Baseline decision status' : 'Status', props.provisional ? 'Provisional' : 'Selected');
     add('Role', props.role);
-    add('Source classification', props.baseline_role);
-    if (['current-ncn', 'former-ncn', 'declassified-ncn'].includes(props.baseline_role)) {
+    const ncnSource = ['current-ncn', 'former-ncn', 'declassified-ncn'].includes(props.baseline_role);
+    add(ncnSource ? 'Recorded NCN classification' : 'Source classification', props.baseline_role);
+    if (ncnSource) {
       const routeNumber = /^NCN\s+(\d+)(?:\.0+)?$/i.exec(
         String(props.source_reference || '').trim()
       )?.[1];
       add('NCN route number', routeNumber);
+      add('Label source', 'Imported NCN dataset; see the map source attribution.');
+      add(
+        'Designation context',
+        'A recorded NCN designation does not by itself confirm that the designation is ' +
+          'current, the route is complete, or its safety or cycling quality.'
+      );
     }
     if (props.length_m !== undefined) add('Distance', formatDistance(props.length_m));
     add('Connection', props.connection_label);
-    add('Source', props.source_reference);
+    add(ncnSource ? 'Recorded source reference' : 'Source', props.source_reference);
     if (props.kind === 'school-context') add('School', props.name);
     else add('Place', props.name);
     if (props.kind === 'candidate-neighbourhood') {
@@ -422,7 +429,7 @@ __OFFICER_SCENARIO_BANNER__</header>
       add('New link elevation', formatTopography(props.new_link_topography));
       add('Full journey elevation', formatTopography(props.full_access_topography));
     }
-    add('Source kind', props.source_kind);
+    if (!ncnSource) add('Source kind', props.source_kind);
     add('Place class', props.place_class);
     add('Obligation', props.obligation_kind);
     add('Disposition', props.disposition);

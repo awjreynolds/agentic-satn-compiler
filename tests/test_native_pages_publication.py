@@ -401,6 +401,7 @@ def _add_ncn_baseline(bundle: Path) -> None:
                     "source_corridor_id": source_id,
                     "source_id": source_id,
                     "source_reference": source_reference,
+                    "source_kind": "context",
                     "baseline_role": baseline_role,
                     "baseline_layer": "source-strategic-ncn",
                     "provision_status": "unknown",
@@ -1310,12 +1311,25 @@ def test_native_ncn_routes_render_solid_and_expose_only_known_route_numbers(
             )
             popup = page.locator(".maplibregl-popup-content").inner_text()
             assert "NCN route number" in popup
-            route_number = (
-                page.locator(".maplibregl-popup-content dt", has_text="NCN route number")
-                .locator("xpath=following-sibling::dd[1]")
-                .inner_text()
+
+            def popup_value(label: str) -> str:
+                return (
+                    page.locator(".maplibregl-popup-content dt", has_text=label)
+                    .locator("xpath=following-sibling::dd[1]")
+                    .inner_text()
+                )
+
+            assert popup_value("NCN route number") == "4"
+            assert popup_value("Recorded NCN classification") == "current-ncn"
+            assert popup_value("Recorded source reference") == "NCN 4.0"
+            assert (
+                popup_value("Label source")
+                == "Imported NCN dataset; see the map source attribution."
             )
-            assert route_number == "4"
+            assert popup_value("Designation context") == (
+                "A recorded NCN designation does not by itself confirm that the designation is "
+                "current, the route is complete, or its safety or cycling quality."
+            )
 
             page.locator("[data-native-clear]").click()
             page.wait_for_function("() => !document.querySelector('.maplibregl-popup')")
