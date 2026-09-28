@@ -590,37 +590,58 @@ def _inspect_native_agentic(
               const hasSeparatedScenario = Boolean(
                 document.body.hasAttribute('data-native-officer-scenario') && baselineToggle
               );
-              const mainNcnSources = sourceBaseline.filter(feature => {
-                const props = properties(feature);
-                return props.baseline_layer === 'source-strategic-ncn' &&
-                  ['current-ncn', 'former-ncn', 'declassified-ncn'].includes(props.baseline_role) &&
-                  (!hasSeparatedScenario || props.scenario_layer === 'baseline-network');
-              });
               const mainToggle = hasSeparatedScenario
                 ? baselineToggle
                 : document.querySelector('[data-layer-toggle="strategic-network"]');
+              const ncnLegendMarkers = [
+                '.ncn-current-key',
+                '.ncn-former-key'
+              ].map(selector => mainToggle?.parentElement.querySelector(selector));
+              const hasNcnLegendMarker = ncnLegendMarkers.some(Boolean);
+              const supportsNcnBaseline = ncnLegendMarkers.every(Boolean);
+              if (hasNcnLegendMarker && !supportsNcnBaseline) {
+                failures.push('NCN baseline legend is missing a current or former route key');
+              }
+              const ncnLayerIds = [
+                'native-strategic-ncn-casing',
+                'native-strategic-ncn-current',
+                'native-strategic-ncn-former'
+              ];
+              if (supportsNcnBaseline && ncnLayerIds.some(layer => !map?.getLayer(layer))) {
+                failures.push('NCN baseline legend is present but native NCN layers are missing');
+              }
+              const mainNcnSources = supportsNcnBaseline
+                ? sourceBaseline.filter(feature => {
+                    const props = properties(feature);
+                    return props.baseline_layer === 'source-strategic-ncn' &&
+                      ['current-ncn', 'former-ncn', 'declassified-ncn']
+                        .includes(props.baseline_role) &&
+                      (!hasSeparatedScenario || props.scenario_layer === 'baseline-network');
+                  })
+                : [];
+              const ncnDefaultLayers = supportsNcnBaseline ? ncnLayerIds : [];
               const defaultLayerIds = hasSeparatedScenario
                 ? [
                     'native-strategic-network', 'native-baseline-route',
                     'native-baseline-provisional-casing', 'native-baseline-provisional',
-                    'native-baseline-unresolved', 'native-strategic-ncn-casing',
-                    'native-strategic-ncn-current', 'native-strategic-ncn-former'
+                    'native-baseline-unresolved', ...ncnDefaultLayers
                   ]
-                : [
-                    'native-strategic-network', 'native-strategic-ncn-casing',
-                    'native-strategic-ncn-current', 'native-strategic-ncn-former'
-                  ];
+                : ['native-strategic-network', ...ncnDefaultLayers];
               const initiallyChecked = [...document.querySelectorAll('[data-layer-toggle]')]
                 .filter(toggle => toggle.checked)
                 .map(toggle => toggle.dataset.layerToggle);
               const defaultMain = renderedFor(defaultLayerIds);
-              const renderedCurrentNcn = renderedFor(['native-strategic-ncn-current']);
-              const renderedFormerNcn = renderedFor(['native-strategic-ncn-former']);
+              const renderedCurrentNcn = supportsNcnBaseline
+                ? renderedFor(['native-strategic-ncn-current'])
+                : [];
+              const renderedFormerNcn = supportsNcnBaseline
+                ? renderedFor(['native-strategic-ncn-former'])
+                : [];
               const mainStrategicSource = props => props.kind === 'source-baseline' && (
                 (props.baseline_layer === 'source-strategic-a-road' &&
                   (props.strategic_network_scope_display === true ||
                     props.strategic_network_scope_original !== true)) ||
-                (props.baseline_layer === 'source-strategic-ncn' &&
+                (supportsNcnBaseline && props.baseline_layer === 'source-strategic-ncn' &&
                   ['current-ncn', 'former-ncn', 'declassified-ncn']
                     .includes(props.baseline_role))
               );
@@ -634,7 +655,9 @@ def _inspect_native_agentic(
                         .includes(props.kind)) ||
                     (props.scenario_layer === 'baseline-network' &&
                       props.kind === 'source-baseline' &&
-                      ['source-strategic-a-road', 'source-strategic-ncn']
+                      ['source-strategic-a-road', ...(supportsNcnBaseline
+                        ? ['source-strategic-ncn']
+                        : [])]
                         .includes(props.baseline_layer));
                 }
                 return (['selected-alignment', 'provisional-alignment'].includes(props.kind) &&
@@ -673,7 +696,7 @@ def _inspect_native_agentic(
                     !Object.hasOwn(props, 'community_id')) ||
                   (props.kind === 'source-baseline' &&
                     (props.baseline_layer === 'source-strategic-a-road' ||
-                      (props.baseline_layer === 'source-strategic-ncn' &&
+                      (supportsNcnBaseline && props.baseline_layer === 'source-strategic-ncn' &&
                         ['current-ncn', 'former-ncn', 'declassified-ncn']
                           .includes(props.baseline_role))))
               );
@@ -682,51 +705,59 @@ def _inspect_native_agentic(
                   defaultMain.some(feature => !isMainStrategicFeature(feature))) {
                 failures.push('default Strategic active travel network is invalid');
               }
-              if (
-                mainNcnSources.some(
-                  feature => properties(feature).baseline_role === 'current-ncn'
-                ) &&
-                !renderedCurrentNcn.some(
-                  feature => properties(feature).baseline_role === 'current-ncn'
-                )
-              ) {
-                failures.push('current NCN source is not visible in the main strategic network');
-              }
-              if (mainNcnSources.some(feature => ['former-ncn', 'declassified-ncn']
-                    .includes(properties(feature).baseline_role)) &&
-                  !renderedFormerNcn.some(feature => ['former-ncn', 'declassified-ncn']
-                    .includes(properties(feature).baseline_role))) {
-                failures.push('former NCN source is not visible in the main strategic network');
-              }
-              if (
-                renderedCurrentNcn.some(
-                  feature => properties(feature).baseline_role !== 'current-ncn'
-                ) ||
-                renderedFormerNcn.some(
-                  feature => !['former-ncn', 'declassified-ncn']
-                    .includes(properties(feature).baseline_role)
-                )
-              ) {
-                failures.push('NCN source colours do not match their source classifications');
-              }
-              if (
-                (renderedCurrentNcn.length &&
-                  map.getPaintProperty(
-                    'native-strategic-ncn-current', 'line-color'
-                  ) !== '#0072b2') ||
-                (renderedFormerNcn.length &&
-                  map.getPaintProperty(
-                    'native-strategic-ncn-former', 'line-color'
-                  ) !== '#f0e442')
-              ) {
-                failures.push('NCN source line colours are invalid');
-              }
-              const styleLayerIds = map.getStyle().layers.map(layer => layer.id);
-              if (styleLayerIds.indexOf('native-strategic-ncn-current') <
-                    styleLayerIds.indexOf('native-baseline-route') ||
-                  styleLayerIds.indexOf('native-strategic-ncn-current') <
-                    styleLayerIds.indexOf('native-strategic-ncn-former')) {
-                failures.push('current NCN must render above selected red and former NCN routes');
+              if (supportsNcnBaseline) {
+                if (
+                  mainNcnSources.some(
+                    feature => properties(feature).baseline_role === 'current-ncn'
+                  ) &&
+                  !renderedCurrentNcn.some(
+                    feature => properties(feature).baseline_role === 'current-ncn'
+                  )
+                ) {
+                  failures.push('current NCN source is not visible in the main strategic network');
+                }
+                if (
+                  mainNcnSources.some(
+                    feature => ['former-ncn', 'declassified-ncn']
+                      .includes(properties(feature).baseline_role)
+                  ) &&
+                  !renderedFormerNcn.some(
+                    feature => ['former-ncn', 'declassified-ncn']
+                      .includes(properties(feature).baseline_role)
+                  )
+                ) {
+                  failures.push('former NCN source is not visible in the main strategic network');
+                }
+                if (
+                  renderedCurrentNcn.some(
+                    feature => properties(feature).baseline_role !== 'current-ncn'
+                  ) ||
+                  renderedFormerNcn.some(
+                    feature => !['former-ncn', 'declassified-ncn']
+                      .includes(properties(feature).baseline_role)
+                  )
+                ) {
+                  failures.push('NCN source colours do not match their source classifications');
+                }
+                if (
+                  (renderedCurrentNcn.length &&
+                    map.getPaintProperty(
+                      'native-strategic-ncn-current', 'line-color'
+                    ) !== '#0072b2') ||
+                  (renderedFormerNcn.length &&
+                    map.getPaintProperty(
+                      'native-strategic-ncn-former', 'line-color'
+                    ) !== '#f0e442')
+                ) {
+                  failures.push('NCN source line colours are invalid');
+                }
+                const styleLayerIds = map.getStyle().layers.map(layer => layer.id);
+                if (styleLayerIds.indexOf('native-strategic-ncn-current') <
+                      styleLayerIds.indexOf('native-baseline-route') ||
+                    styleLayerIds.indexOf('native-strategic-ncn-current') <
+                      styleLayerIds.indexOf('native-strategic-ncn-former')) {
+                  failures.push('current NCN must render above selected red and former NCN routes');
+                }
               }
               const waitForIdleAfter = change => new Promise(resolve => {
                 map.once('idle', resolve);
