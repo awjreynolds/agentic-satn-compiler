@@ -1823,7 +1823,13 @@ fn admit_source_inventory(
             continue;
         };
         let reference = string_property(&feature.properties, "name")
-            .filter(|value| is_a_reference(value))
+            .filter(|value| {
+                is_a_reference(value)
+                    || matches!(
+                        baseline_role,
+                        "current-ncn" | "former-ncn" | "declassified-ncn"
+                    )
+            })
             .or_else(|| string_property(&feature.properties, "ncn_evidence_role"))
             .unwrap_or_else(|| baseline_role.to_string());
         let source_id = string_property(&feature.properties, "evidence_id")

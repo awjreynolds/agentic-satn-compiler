@@ -1298,6 +1298,23 @@ fn baseline_features(
     strategic_scope: Option<&OfficerStrategicNetwork>,
 ) -> Result<Vec<MapFeature>> {
     let mut features = Vec::new();
+    let boundary_scope_geometry = report
+        .boundary_scope
+        .as_ref()
+        .filter(|_| {
+            report
+                .source_inventory
+                .iter()
+                .any(|source| source_layer(&source.baseline_role) == "source-strategic-ncn")
+        })
+        .map(|boundary| {
+            let geometry = json!({
+                "type": "MultiPolygon",
+                "coordinates": boundary.geometry,
+            });
+            GeosGeometry::new_from_geojson(&geometry.to_string()).map_err(scope_geos_error)
+        })
+        .transpose()?;
     let scope_geometry = strategic_scope
         .and_then(|network| network.scope_geometry.as_ref())
         .map(|geometry| {
@@ -1308,6 +1325,8 @@ fn baseline_features(
     for source in &report.source_inventory {
         let baseline_layer = source_layer(&source.baseline_role);
         for (part_index, geometry) in source.geometry.iter().enumerate() {
+            let scoped_ncn =
+                baseline_layer == "source-strategic-ncn" && boundary_scope_geometry.is_some();
             let scoped_a_road =
                 baseline_layer == "source-strategic-a-road" && scope_geometry.is_some();
             let mut properties = json!({
@@ -1333,6 +1352,26 @@ fn baseline_features(
                 geometry: Some(MapGeometry::Line(geometry.clone())),
                 properties,
             };
+
+            if scoped_ncn {
+                let boundary = boundary_scope_geometry
+                    .as_ref()
+                    .expect("scoped NCN has report boundary scope");
+                for (scope_part, coordinates) in line_inside_scope(geometry, boundary)?
+                    .into_iter()
+                    .enumerate()
+                {
+                    let mut properties = original.properties.clone();
+                    properties["boundary_scope_part"] = json!(scope_part);
+                    features.push(MapFeature {
+                        kind: "source-baseline".to_string(),
+                        geometry: Some(MapGeometry::Line(coordinates)),
+                        properties,
+                    });
+                }
+                continue;
+            }
+
             features.push(original.clone());
 
             let Some(scope_geometry) = scope_geometry.as_ref().filter(|_| scoped_a_road) else {
