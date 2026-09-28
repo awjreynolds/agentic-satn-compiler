@@ -265,6 +265,36 @@ fn publishes_illustrative_officer_scenario_with_effective_routes_and_displaced_b
         vec![[0.4, 0.0], [0.6, 0.0]],
         vec![[2.0, 0.0], [3.0, 0.0]],
     ]);
+    report.source_inventory.extend([
+        SourceCorridor {
+            id: "source:former-ncn".to_string(),
+            reference: "Former NCN".to_string(),
+            source_kind: "context".to_string(),
+            source_id: "former-ncn-source".to_string(),
+            scope: "governed".to_string(),
+            baseline_role: "former-ncn".to_string(),
+            source_edge_ids: vec!["former-ncn-section".to_string()],
+            graph_edge_ids: vec!["former-ncn-edge".to_string()],
+            geometry: vec![vec![[0.0, -0.05], [1.0, -0.05]]],
+            topology_status: "graph-bound".to_string(),
+            attachment_status: "graph-edge".to_string(),
+            provision_status: "unknown".to_string(),
+        },
+        SourceCorridor {
+            id: "source:declassified-ncn".to_string(),
+            reference: "Officially reclassified NCN".to_string(),
+            source_kind: "context".to_string(),
+            source_id: "declassified-ncn-source".to_string(),
+            scope: "governed".to_string(),
+            baseline_role: "declassified-ncn".to_string(),
+            source_edge_ids: vec!["declassified-ncn-section".to_string()],
+            graph_edge_ids: vec!["declassified-ncn-edge".to_string()],
+            geometry: vec![vec![[0.0, -0.08], [1.0, -0.08]]],
+            topology_status: "graph-bound".to_string(),
+            attachment_status: "graph-edge".to_string(),
+            provision_status: "unknown".to_string(),
+        },
+    ]);
     let baseline = report
         .candidates
         .iter_mut()
@@ -439,6 +469,21 @@ fn publishes_illustrative_officer_scenario_with_effective_routes_and_displaced_b
     )
     .expect("valid scenario GeoJSON");
     let features = geojson["features"].as_array().expect("features");
+    for (source_id, baseline_role) in [
+        ("ncn-source", "current-ncn"),
+        ("former-ncn-source", "former-ncn"),
+        ("declassified-ncn-source", "declassified-ncn"),
+    ] {
+        let ncn = features
+            .iter()
+            .find(|feature| feature["properties"]["source_id"] == source_id)
+            .unwrap_or_else(|| panic!("published {baseline_role} source"));
+        assert_eq!(ncn["properties"]["kind"], "source-baseline");
+        assert_eq!(ncn["properties"]["baseline_role"], baseline_role);
+        assert_eq!(ncn["properties"]["baseline_layer"], "source-strategic-ncn");
+        assert_eq!(ncn["properties"]["scenario_layer"], "baseline-network");
+        assert_eq!(ncn["properties"]["provision_status"], "unknown");
+    }
     let baseline_route = features
         .iter()
         .find(|feature| {
@@ -856,6 +901,24 @@ fn publishes_illustrative_officer_scenario_with_effective_routes_and_displaced_b
     assert!(html.contains("#4b5563"));
     assert!(html.contains("#009e73"));
     assert!(html.contains("line('native-baseline-route'"));
+    assert!(html.contains("native-strategic-ncn-current"));
+    assert!(html.contains("native-strategic-ncn-former"));
+    assert!(html.contains("line('native-strategic-ncn-current', currentNcnFilter, '#0072b2', 4)"));
+    assert!(html.contains("line('native-strategic-ncn-former', formerNcnFilter, '#f0e442', 4)"));
+    assert!(html.contains("Current NCN"));
+    assert!(html.contains("Former NCN / officially reclassified NCN"));
+    assert!(html.contains("Colour records source classification, not safety or condition"));
+    assert!(html.contains("add('Source classification', props.baseline_role)"));
+    let baseline_route_layer = html
+        .find("line('native-baseline-route'")
+        .expect("baseline route style");
+    let ncn_layer = html
+        .find("line('native-strategic-ncn-current'")
+        .expect("current NCN style");
+    let former_ncn_layer = html
+        .find("line('native-strategic-ncn-former'")
+        .expect("former NCN style");
+    assert!(baseline_route_layer < former_ncn_layer && former_ncn_layer < ncn_layer);
     assert!(html.contains("line('native-baseline-route', ['all', ['==', ['get', 'scenario_layer'], 'baseline-network'], ['==', ['get', 'kind'], 'selected-alignment'], lineGeometryFilter], '#d71920'"));
     assert!(html.contains("!['selected-alignment', 'provisional-alignment'].includes(kind) ||"));
     assert!(

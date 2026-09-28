@@ -31,6 +31,8 @@ button:focus-visible, input:focus-visible { outline: 3px solid #2563eb; outline-
 .swatch { display: inline-block; width: 1.8rem; height: 0; vertical-align: middle; margin: 0 .25rem; border-top: 3px solid transparent; }
 .source-key { border-top-color: #0072b2; }
 .strategic-network-key { border-top-color: #d71920; }
+.ncn-current-key { border-top-color: #0072b2; }
+.ncn-former-key { border-top-color: #f0e442; filter: drop-shadow(0 0 1px #263238); }
 .officer-selected-key { border-top-color: #d55e00; }
 .officer-baseline-unused-key { border-top-color: #4b5563; }
 .context-key { border-top: 2px dotted #4b5563; }
@@ -102,7 +104,7 @@ __OFFICER_SCENARIO_BANNER__</header>
     <fieldset><legend>Layers</legend><ul class="key">
       __STRATEGIC_LAYER_CONTROLS__
       __COMMUNITY_LAYER_CONTROLS__
-      <li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="source-strategic"> <span class="swatch source-key" aria-hidden="true"></span>Strategic source baseline <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About the strategic source baseline" aria-describedby="layer-help-3">ⓘ</summary></details><span id="layer-help-3" class="layer-help-popup" role="tooltip">The source baseline records mapped strategic corridors as supplied. It is evidence before strategic choices, distinct from the proposed strategic network.</span></li>
+      <li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="source-strategic"> <span class="swatch source-key" aria-hidden="true"></span>Strategic source baseline <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About the strategic source baseline" aria-describedby="layer-help-3">ⓘ</summary></details><span id="layer-help-3" class="layer-help-popup" role="tooltip">The source baseline records mapped strategic corridors as supplied. It preserves source classifications and evidence separately from proposed routes.</span></li>
       <li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="source-context"> <span class="swatch context-key" aria-hidden="true"></span>Additional source evidence <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About additional source evidence" aria-describedby="layer-help-4">ⓘ</summary></details><span id="layer-help-4" class="layer-help-popup" role="tooltip">Additional mapped sources provide context. They do not by themselves show a selected strategic route.</span></li>
       __CANDIDATE_NEIGHBOURHOOD_LAYER_CONTROL__
       <li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="provisional-alignment"> <span class="swatch provisional-key" aria-hidden="true"></span><span class="marker-key marker-triangle-key provisional-point-key" aria-hidden="true"></span>Provisional alignment <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About provisional alignments" aria-describedby="layer-help-5">ⓘ</summary></details><span id="layer-help-5" class="layer-help-popup" role="tooltip">Provisional routes appear provisionally in the strategic network; this layer highlights them for review.</span></li>
@@ -158,6 +160,7 @@ __OFFICER_SCENARIO_BANNER__</header>
   });
   const interactiveLayers = [
     'native-strategic-network', 'native-selected', 'native-selected-point', 'native-provisional-casing', 'native-provisional', 'native-provisional-point',
+    'native-strategic-ncn-casing', 'native-strategic-ncn-current', 'native-strategic-ncn-former',
     'native-officer-baseline-unused', 'native-officer-effective', 'native-officer-strategic-network',
     'native-officer-compiler-comparison', 'native-officer-selected-alignment', 'native-baseline-route',
     'native-baseline-provisional-casing', 'native-baseline-provisional', 'native-baseline-unresolved',
@@ -175,8 +178,8 @@ __OFFICER_SCENARIO_BANNER__</header>
     'native-bus-route', 'native-bus-interchange'
   ];
   const layerGroups = {
-    'strategic-network': ['native-strategic-network', 'native-officer-baseline-unused', 'native-officer-effective', 'native-officer-strategic-network', 'native-officer-compiler-comparison', 'native-officer-selected-alignment'],
-    'baseline-network': ['native-strategic-network', 'native-baseline-route', 'native-baseline-provisional-casing', 'native-baseline-provisional', 'native-baseline-unresolved'],
+    'strategic-network': ['native-strategic-network', 'native-strategic-ncn-casing', 'native-strategic-ncn-current', 'native-strategic-ncn-former', 'native-officer-baseline-unused', 'native-officer-effective', 'native-officer-strategic-network', 'native-officer-compiler-comparison', 'native-officer-selected-alignment'],
+    'baseline-network': ['native-strategic-network', 'native-baseline-route', 'native-baseline-provisional-casing', 'native-baseline-provisional', 'native-baseline-unresolved', 'native-strategic-ncn-casing', 'native-strategic-ncn-current', 'native-strategic-ncn-former'],
     'officer-network': ['native-officer-network-route', 'native-officer-network-provisional-casing', 'native-officer-network-provisional', 'native-officer-network-a-road-scope', 'native-officer-effective', 'native-officer-baseline-unused', 'native-officer-strategic-network', 'native-officer-compiler-comparison', 'native-officer-selected-alignment', 'native-officer-unresolved'],
     'baseline-community-access': ['native-baseline-community-access-casing', 'native-baseline-community-access', 'native-baseline-community-access-point', 'native-baseline-community-access-gap'],
     'officer-community-access': ['native-officer-community-access-casing', 'native-officer-community-access', 'native-officer-community-access-point', 'native-officer-community-access-gap'],
@@ -353,6 +356,7 @@ __OFFICER_SCENARIO_BANNER__</header>
     }
     if (props.provisional !== undefined) add(props.scenario_baseline_context ? 'Baseline decision status' : 'Status', props.provisional ? 'Provisional' : 'Selected');
     add('Role', props.role);
+    add('Source classification', props.baseline_role);
     if (props.length_m !== undefined) add('Distance', formatDistance(props.length_m));
     add('Connection', props.connection_label);
     add('Source', props.source_reference);
@@ -490,6 +494,13 @@ __OFFICER_SCENARIO_BANNER__</header>
       const lineGeometry = ['LineString', 'MultiLineString'].includes(feature.geometry?.type);
       return props.scenario_layer === name && kinds.includes(props.kind) && lineGeometry;
     }).length;
+    const mainStrategicSource = properties => properties.kind === 'source-baseline' && (
+      (properties.baseline_layer === 'source-strategic-a-road' &&
+        (properties.strategic_network_scope_display === true ||
+          properties.strategic_network_scope_original !== true)) ||
+      (properties.baseline_layer === 'source-strategic-ncn' &&
+        ['current-ncn', 'former-ncn', 'declassified-ncn'].includes(properties.baseline_role))
+    );
     const featureCounts = {
       'strategic-network': network.features.filter(feature => {
         const properties = feature.properties || {};
@@ -503,17 +514,14 @@ __OFFICER_SCENARIO_BANNER__</header>
           properties.kind === 'officer-strategic-network' ||
           properties.kind === 'officer-compiler-comparison' ||
           properties.kind === 'officer-selected-alignment' ||
-          (properties.kind === 'source-baseline' &&
-            properties.baseline_layer === 'source-strategic-a-road' &&
-            (properties.strategic_network_scope_display === true ||
-              properties.strategic_network_scope_original !== true))
+          mainStrategicSource(properties)
         );
       }).length,
       'baseline-network': scenarioCount('baseline-network', ['selected-alignment', 'provisional-alignment', 'unresolved-decision']) +
         network.features.filter(feature => {
           const props = feature.properties || {};
           return props.scenario_layer === 'baseline-network' && props.kind === 'source-baseline' &&
-            props.baseline_layer === 'source-strategic-a-road' &&
+            ['source-strategic-a-road', 'source-strategic-ncn'].includes(props.baseline_layer) &&
             ['LineString', 'MultiLineString'].includes(feature.geometry?.type);
         }).length,
       'officer-network': network.features.filter(feature => {
@@ -831,6 +839,22 @@ __OFFICER_SCENARIO_BANNER__</header>
       }
       line('native-officer-compiler-comparison', ['all', ['==', ['get', 'scenario_layer'], 'officer-network'], ['==', ['get', 'kind'], 'officer-compiler-comparison'], ['==', ['geometry-type'], 'LineString']], '#4b5563', 6);
       line('native-officer-selected-alignment', ['all', ['==', ['get', 'scenario_layer'], 'officer-network'], ['==', ['get', 'kind'], 'officer-selected-alignment'], ['==', ['geometry-type'], 'LineString']], '#d55e00', 7);
+      const ncnScenarioFilter = document.body.hasAttribute('data-native-officer-scenario')
+        ? ['==', ['get', 'scenario_layer'], 'baseline-network']
+        : ['!', ['has', 'scenario_layer']];
+      const ncnFilter = ['all', ['==', ['get', 'kind'], 'source-baseline'],
+        ['==', ['get', 'baseline_layer'], 'source-strategic-ncn'], lineGeometryFilter,
+        ['any', ['==', ['get', 'baseline_role'], 'current-ncn'],
+          ['==', ['get', 'baseline_role'], 'former-ncn'],
+          ['==', ['get', 'baseline_role'], 'declassified-ncn']],
+        ncnScenarioFilter];
+      const currentNcnFilter = ['all', ncnFilter, ['==', ['get', 'baseline_role'], 'current-ncn']];
+      const formerNcnFilter = ['all', ncnFilter,
+        ['any', ['==', ['get', 'baseline_role'], 'former-ncn'],
+          ['==', ['get', 'baseline_role'], 'declassified-ncn']]];
+      line('native-strategic-ncn-casing', ncnFilter, '#263238', 7);
+      line('native-strategic-ncn-former', formerNcnFilter, '#f0e442', 4);
+      line('native-strategic-ncn-current', currentNcnFilter, '#0072b2', 4);
       addMarkerImage('native-marker-selected', 'circle', '#009e73');
       addMarkerImage('native-marker-provisional', 'triangle', '#e69f00');
       addMarkerImage('native-marker-network-place', 'square', '#0072b2');

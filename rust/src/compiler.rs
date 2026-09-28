@@ -1753,6 +1753,15 @@ fn admit_source_inventory(
     graph_geometry_bindings: &HashMap<String, Vec<String>>,
 ) -> Vec<SourceCorridor> {
     let mut groups: BTreeMap<String, SourceCorridor> = BTreeMap::new();
+    let mut graph_context_source_bindings = HashMap::<(String, usize), Vec<String>>::new();
+    for edge in &graph.edges {
+        for binding in &edge.context_source_bindings {
+            graph_context_source_bindings
+                .entry((binding.source_id.clone(), binding.line_index))
+                .or_default()
+                .push(edge.id.clone());
+        }
+    }
     for (index, feature) in network_features.iter().enumerate() {
         let references = canonical_tag_values(&feature.properties, "ref");
         let highways = canonical_tag_values(&feature.properties, "highway");
@@ -1822,10 +1831,22 @@ fn admit_source_inventory(
         let scope = string_property(&feature.properties, "network_scope")
             .unwrap_or_else(|| "unknown-scope".to_string());
         for (line_index, geometry) in line_geometries(feature).into_iter().enumerate() {
-            let graph_edge_ids = graph_geometry_bindings
+            let mut graph_edge_ids = graph_geometry_bindings
                 .get(&geometry_key(&geometry))
                 .cloned()
                 .unwrap_or_default();
+            if matches!(baseline_role, "current-ncn" | "declassified-ncn") {
+                let source_binding_key = (source_id.clone(), line_index);
+                graph_edge_ids.extend(
+                    graph_context_source_bindings
+                        .get(&source_binding_key)
+                        .into_iter()
+                        .flatten()
+                        .cloned(),
+                );
+                graph_edge_ids.sort();
+                graph_edge_ids.dedup();
+            }
             add_corridor(
                 &mut groups,
                 format!("source:context:{baseline_role}:{source_id}"),
@@ -3486,12 +3507,23 @@ fn strategic_spine_targets(
     graph: &Graph,
     source_inventory: &[SourceCorridor],
 ) -> (HashMap<String, String>, HashMap<String, String>) {
-    let mut edge_spines: HashMap<String, BTreeSet<String>> = HashMap::new();
-    for source in source_inventory
+    let cycleable_edge_ids = graph
+        .edges
         .iter()
-        .filter(|source| source.baseline_role == "a-road")
-    {
+        .filter(|edge| edge.cycling_allowed())
+        .map(|edge| edge.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut edge_spines: HashMap<String, BTreeSet<String>> = HashMap::new();
+    for source in source_inventory.iter().filter(|source| {
+        matches!(
+            source.baseline_role.as_str(),
+            "a-road" | "current-ncn" | "declassified-ncn"
+        )
+    }) {
         for edge_id in &source.graph_edge_ids {
+            if source.baseline_role != "a-road" && !cycleable_edge_ids.contains(edge_id.as_str()) {
+                continue;
+            }
             edge_spines
                 .entry(edge_id.clone())
                 .or_default()
