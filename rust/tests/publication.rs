@@ -908,7 +908,9 @@ fn publishes_illustrative_officer_scenario_with_effective_routes_and_displaced_b
     assert!(html.contains("Current NCN"));
     assert!(html.contains("Former NCN / officially reclassified NCN"));
     assert!(html.contains("Colour records source classification, not safety or condition"));
-    assert!(html.contains("add('Source classification', props.baseline_role)"));
+    assert!(html.contains(
+        "add(ncnSource ? 'Recorded NCN classification' : 'Source classification', props.baseline_role)"
+    ));
     let baseline_route_layer = html
         .find("line('native-baseline-route'")
         .expect("baseline route style");
