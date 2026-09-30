@@ -1,57 +1,75 @@
-# Generated artifact reference
+# Native publication artifacts
 
-Compilation publishes atomically into `publication.output_dir`.
+The Rust compiler has two output shapes. `--mode mechanical` creates a local
+inspection bundle. Live planning and replay create the decision-map publication
+used for native agentic review.
 
-| Artifact | Use |
+## Mechanical output
+
+| Artifact | Contents |
 | --- | --- |
-| `review-map/index.html` | Backend-free interactive review. Serve the directory over HTTP for normal browser use. |
-| `network.gpkg` | Authoritative multi-layer GIS output. |
-| `network.geojson` | Portable published network features. |
-| `reviewable-network.geojson` | Complete review surface, including non-routable findings where applicable. |
-| `network-map.pdf` | Printable map with title, legend, scale and disclaimer. |
-| `run.json` | Run identity, criteria, status, authoritative feature list and runtime governance. |
-| `agent-records.json` | Typed bounded-agent request/response provenance. Empty or deterministic-test records are valid. |
-| `human-intervention-requests.json` | Structured requests that remain for human action. |
+| `index.html` | Interactive map of admitted source corridors, mechanically prepared candidates, and evidence. |
+| `summary.json` | Mechanical compilation report, source inventory, prepared connections, candidates, and diagnostics. |
+| `network.geojson` | Portable feature collection for GIS inspection. |
+
+This bundle has no `publication.json` and is not by itself a native-agentic Pages
+publication.
+
+## Live and replay publication
+
+| Artifact | Contents |
+| --- | --- |
+| `index.html` | Interactive decision map. |
+| `decision-map.json` | Compact decision manifest, counts, decisions, departures, and source references. |
+| `decision-map.geojson` | Map features and geometry for the published decisions and evidence. |
+| `publication.json` | Public publication identity, status, counts, attributions, and artifact paths. |
+| `planning.json` | CLI result from live planning or replay. |
+| History directory | Retained base, task, attempt and typed-operation records; set with `--history`, otherwise under the output directory. Replay reads existing history rather than creating fresh provider receipts. |
+| `officer-scenario.json` | Present when replay applies an officer decision ledger. |
+
+The map links to the decision and publication manifests. Code validates planning operations before projection; the Pages rendering gate
+checks the packaged publication. Replay consumes retained
+operations without launching providers. See the [decision-process guide](../concepts/decision-process.md).
+
+An optional bus overlay adds `bus-context.geojson` and the map-side loader. It
+preserves the planner's decision-map and publication manifests.
+
+## Pages boundary
+
+The Pages workflow consumes a separately prepared `satn-pages.zip`, checks the
+packaged maps in Chromium, and deploys only the validated tree. It does not run
+compilation or create the archive. The mechanical bundle is for local
+inspection; a native-agentic deployment needs the decision-map publication
+artifacts. See [Review and publish a native deployment](../guides/publish-a-deployment.md).
+
+## Retained Python artifact schema
+
+The `run.json`, `network.gpkg`, `network-map.pdf`, progressive manifests,
+schema-2 Area Deployments, and legacy review-map ZIPs belong to the retained
+Python compiler and packaging scripts. See the
+[historical implementation reference](../compiler-architecture.md#historical-implementations).
+
+The retained Python compiler's local publication used these artifacts:
+
+| Python artifact | Use |
+| --- | --- |
+| `review-map/index.html` | Backend-free interactive review map. |
+| `network.gpkg` | Multi-layer GIS output. |
+| `network.geojson` | Portable network features. |
+| `reviewable-network.geojson` | Review surface including non-routable findings where present. |
+| `network-map.pdf` | Printable map with title, legend, scale, and disclaimer. |
+| `run.json` | Run identity, criteria, status, feature roles, and runtime governance. |
+| `agent-records.json` | Bounded-agent request/response provenance; deterministic records are valid. |
+| `human-intervention-requests.json` | Structured requests remaining for human action. |
 | `divergence-records.json` | Officer/reference/compiler divergence records. |
-| `asset-accounting.json` and `.geojson` | Exhaustive governed asset scope, participation and disposition. |
-| `backbone-comparison.json` | Structured comparison against a configured reference where permitted. |
-| `review-map.zip` | Exact portable local review-map directory. Deployment packaging may omit this duplicate. |
+| `asset-accounting.json` and `.geojson` | Governed asset scope, participation, and disposition. |
+| `backbone-comparison.json` | Comparison against a configured reference where permitted. |
+| `review-map.zip` | Exact portable local review-map directory. |
 
-## Deployment artifacts
-
-`scripts/publish_site.py` builds `build/deployments/DEPLOYMENT_ID/` from the already
-validated compiler publication. It contains `publication.json`, the compiler run,
-progressive layer/topography/evidence manifests, indexed shards and downloads.
-
-`scripts/package_pages.py` assembles the declared deployment roots into a validated
-catalogue tree and temporary `build/satn-pages.zip` release transport. Packaging
-checks catalogue/deployment identity, required files, WGS84 geometry, progressive
-manifest shape and the configured package-size budget. The Pages workflow extracts
-the archive and runs the Chromium rendering gate before upload and deployment.
-The public Area Deployment keeps one canonical Effective Strategic Network
-projection in `data.js` as `reviewable_network`; the compiler-only strategic
-sidecar and portable review-map ZIP are deliberately omitted because they duplicate
-that runtime projection.
-
-## Reading provenance and timing
-
-`publication.json` is the deployment-level index. Its `run_id`, status, input and
-compilation fingerprints, `compilation_metadata.completed_at_utc` and
-`compilation_metadata.duration_seconds` identify when compilation finished and
-publication began, and how much monotonic compiler time elapsed before that boundary.
-`compiler-run.json` carries the criteria, authoritative feature roles and diagnostics.
-A changed snapshot, configuration, accepted decision or active compiler dependency
-produces a new compilation identity rather than silently reusing an old result.
-
-The interactive deployment opens the Strategic Network and Places layers. Optional
-layers include discarded candidates, existing/upgradeable assets, officer divergence,
-graph diagnostics, Candidate Low-Traffic Areas, Schools, traffic evidence and
-topography. Optional does not mean ungoverned: each layer retains its source,
-fingerprints and evidence state, including explicit unknown or unavailable values.
-
-## Stable references
-
-Library callers should refer to artifacts and features through
-`PublishedArtifactReference` and `PublishedNetworkFeatureReference`. These references
-carry source artifact hashes and stable identifiers without copying geometry into an
-untracked decision record.
+Python `scripts/publish_site.py` assembled validated compiler output into
+`build/deployments/DEPLOYMENT_ID/` with progressive manifests, indexed shards,
+and downloads. `scripts/package_pages.py` assembled those schema-2 deployments
+into a catalogue tree and release ZIP. `publication.json` and
+`compiler-run.json` recorded deployment and run identity; the current Rust
+publication instead uses `decision-map.json`, `decision-map.geojson`, and
+`publication.json` under the contract above.

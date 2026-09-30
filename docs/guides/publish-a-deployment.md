@@ -1,57 +1,45 @@
-# Package and publish a deployment
+# Review and publish a native deployment
 
-Publication is a separate authority boundary after compilation and review. These
-steps create reproducible static artifacts; they do not adopt or approve a network.
+The native compiler's mechanical output and its native-agentic publication are
+different artifacts. Mechanical output is for local inspection. Live planning
+or replay produces the decision-map bundle with `publication.json` that the
+native publication validator expects.
 
-## Build one Area Deployment
+## Build and inspect locally
 
-Working directory: repository root. Replace the Area Definition path consistently.
-
-```shell
-uv run satn snapshot path/to/area.yaml
-uv run satn compile path/to/area.yaml --full
-uv run python scripts/publish_site.py path/to/area.yaml
-```
-
-Compilation validates the authoritative output and replaces it atomically. The Area
-Deployment command then copies that validated output into the ignored deployment
-bundle used by the catalogue and release package.
-
-## Catalogue and release package
-
-After each declared deployment has a validated Area Deployment:
+With a pinned snapshot and Rust prerequisites installed, mechanical mode creates
+a local candidate review bundle without model calls:
 
 ```shell
-uv run python scripts/build_deployment_catalogue.py
-uv run python scripts/package_pages.py
+cargo build --release --manifest-path rust/Cargo.toml --locked
+./rust/target/release/satn-rs \
+  --config deployments/banes/area.yaml \
+  --output build/rust-banes-mechanical \
+  --mode mechanical
 ```
 
-`package_pages.py` assembles the declared deployment roots, validates required files,
-progressive manifests, WGS84 geometry and the configured hosting-size budget, then
-writes `build/satn-pages.zip`. It also generates the catalogue root, so the separate
-catalogue command is only useful when inspecting that root locally.
+This output contains `index.html`, `summary.json`, and `network.geojson`. It is
+not a native-agentic Pages publication. Live mode and replay create
+`decision-map.json`, `decision-map.geojson`, `publication.json`, and the review
+map. See the [decision-process guide](../concepts/decision-process.md) before
+using a provider. Live calls require explicit approval for the named service and
+the data it receives.
 
-When the release is published, GitHub Pages downloads and extracts that archive,
-installs Chromium, and runs `scripts/validate_pages_rendering.py pages`. The gate
-opens every packaged review map, verifies that the complete strategic-spine,
-access-connection and cross-spine layers are visible, and proves that strategic-spine
-geometry produces rendered map features. Where governed urban main-road spines are
-present, it also rejects a package unless they are represented in the Effective
-Strategic Network before the validated tree is uploaded and deployed.
+## Pages deployment
 
-## Public versus local evidence
+The [Pages workflow](../../.github/workflows/pages.yml) consumes a
+`satn-pages.zip` release asset prepared before the workflow runs. It checks that
+the selected GitHub release is published and neither a draft nor a prerelease,
+extracts the archive, validates each packaged map with Chromium, then deploys
+the validated tree. A rendering failure stops deployment. The workflow does
+not acquire sources, compile a network, or create the ZIP.
 
-`publication.audience: public` must omit controlled geometry unless redistribution is
-explicitly permitted. A local browser may load a governed comparison file for that
-session without uploading or republishing it.
+The repository does not define a single native command that assembles
+`satn-pages.zip` from the Rust publication. The exact preparation step for the
+release tree and ZIP must therefore be treated as an external release input;
+the Pages workflow verifies the supplied bytes. Do not describe
+`scripts/package_pages.py` as the native package builder: it implements the
+retained Python schema-2 packaging path.
 
-## Release gate
-
-Before external publication, verify:
-
-- the Area Definition and deployment catalogue identities agree;
-- every output carries the experimental disclaimer;
-- source licences and attribution are present;
-- every packaged interactive map passes the automated strategic-network rendering
-  check before Pages upload; and
-- the PDF and downloads were inspected from the packaged bytes.
+Before including evidence in a public release, check the source licence,
+redistribution terms, attributions, and publication disclaimer.

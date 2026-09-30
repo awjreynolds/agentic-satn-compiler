@@ -2,6 +2,11 @@
 
 This context defines the language for a council-portable agentic compiler that develops one continuous, evidence-led Strategic Active Travel Network from connections between places.
 
+This glossary spans current planning concepts and retained historical workflows.
+A definition does not assert that a feature is implemented in every compiler.
+Use the [current decision process](docs/concepts/decision-process.md) and
+[architecture](docs/compiler-architecture.md) for implementation scope.
+
 ## Language
 
 **Agentic Network Compiler**:
@@ -1227,7 +1232,7 @@ evidence snapshot, the current Guidance Profile and the Review Triggers that cau
 it to be prepared.
 _Avoid_: mutated adopted release, automatic supersession, adopted monitoring update
 
-## Experimental network planning
+## Network planning decisions
 
 **Decision Class**:
 The origin of a planning decision: mechanical for deterministic rules and computation, classifier for a Jev typed judgment, or agent for a configured reasoning or specialist proposal. It is independent of compiler stage; mechanical validation does not change the origin of the proposal it checks.

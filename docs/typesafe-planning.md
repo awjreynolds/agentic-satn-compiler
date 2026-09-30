@@ -1,4 +1,10 @@
-# Experimental TypeSafe compiler
+# Historical Python TypeSafe experiment
+
+This page describes the retained Python experiment. Current compilation uses the
+[native Rust implementation](../rust/README.md) and its
+[mechanical → classifier → specialist process](concepts/decision-process.md).
+The Python CLI, history storage and measurements below are historical experiment
+contracts; they do not describe Rust output or current release acceptance.
 
 The planning path separates evidence admission, network decisions and publication. Compiler stages and intelligence capabilities are separate concepts: code, Jev and a configured specialist participate where their capabilities fit the task.
 

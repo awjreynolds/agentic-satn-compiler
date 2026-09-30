@@ -17,7 +17,20 @@ The map remains an analytical SATN review, not an adopted plan, legal access
 finding, safety audit, or scheme design. Missing evidence such as elevation,
 traffic counts, schools, and official cycle-route records remains absent.
 
-To reproduce the local source conversion after downloading the two source files:
+The source conversion below is part of the retained Python snapshot workflow.
+It is not required by the Rust compiler once a governed Wiltshire snapshot has
+been materialized. The native compiler reads the pinned snapshot from
+`deployments/wiltshire/area.yaml`:
+
+```shell
+cargo build --release --manifest-path rust/Cargo.toml --locked
+./rust/target/release/satn-rs \
+  --config deployments/wiltshire/area.yaml \
+  --output build/rust-wiltshire \
+  --mode mechanical
+```
+
+To reproduce the historical Python source conversion after downloading the two source files:
 
 ```shell
 uv pip install --python .venv/bin/python osmium
