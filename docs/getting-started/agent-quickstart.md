@@ -1,100 +1,83 @@
-# Agent quickstart: clone to first map
+# Native compiler quickstart: clone to first map
 
-This is the supported first task for an unfamiliar coding agent. It uses committed
-synthetic evidence, makes no network calls after dependency installation and finishes
-in seconds on an ordinary development machine.
+This runs the current Rust compiler in mechanical mode on the pinned B&NES
+snapshot. It makes no AI calls and does not reacquire live map evidence.
 
-## 1. Clone and install
+## Requirements
 
-Working directory: the parent directory in which the repository should be created.
+- Git, Python 3.12 or newer, and [uv](https://docs.astral.sh/uv/);
+- Rust and Cargo; and
+- CMake and a C++ compiler, needed to build bundled GEOS.
 
-Prerequisites:
+Network access is required for the clone, package installation, and the pinned
+snapshot download. The compiler run itself uses only the downloaded snapshot.
 
-- Git;
-- Python 3.12 or newer; and
-- [uv](https://docs.astral.sh/uv/).
+## 1. Clone and install the snapshot verifier
 
-Network access is required for the clone and may be required the first time `uv`
-fills its package cache.
+Working directory: the parent directory in which the repository should be
+created.
 
 ```shell
 git clone https://github.com/awjreynolds/agentic-satn-compiler.git
 cd agentic-satn-compiler
 uv sync --frozen --all-groups
-uv run satn --help
 ```
 
-Success: help lists `snapshot`, `compile`, `evidence`, `scenario`, `corpus` and
-`proving`. Rerunning `uv sync` is safe.
-
-## 2. Create the immutable fixture snapshot
+## 2. Acquire the immutable B&NES snapshot
 
 Working directory: repository root.
 
 ```shell
+uv run python scripts/acquire_banes_example.py
+```
+
+The script downloads the versioned public-source bundle, checks its SHA-256,
+extracts only the declared snapshot, then validates the member hashes and
+snapshot identity. The snapshot is stored at
+`data/snapshots/banes-osm-open-roads-v1-2026-07-29`. Rerunning validates and
+reuses an existing valid snapshot.
+
+## 3. Build and compile in mechanical mode
+
+```shell
+cargo build --release --manifest-path rust/Cargo.toml --locked
+./rust/target/release/satn-rs \
+  --config deployments/banes/area.yaml \
+  --output build/rust-banes \
+  --mode mechanical
+```
+
+The output directory contains `index.html`, `summary.json`, and
+`network.geojson`. Mechanical mode applies code-owned rules and generates
+candidate paths without calling TypeSafe or a specialist model. It records
+unknown provision and unresolved choices instead of presenting candidate
+generation as an AI-selected final network.
+
+## 4. Inspect the result
+
+```shell
+python3 -m http.server 8000 --directory build/rust-banes
+```
+
+Open <http://localhost:8000> and stop the server with `Ctrl-C`. The map is a
+planning aid. It does not establish route safety, legal access, feasibility,
+adoption, or funding.
+
+For the bounded classifier and optional specialist flow, including the rules
+that decide when each may act, read the [decision-process guide](../concepts/decision-process.md).
+Live calls require explicit approval for the service and the data sent to it.
+
+## Retained Python fixture
+
+The tiny committed fixture is still available for checking the older Python
+`satn` interface. This does not exercise the current Rust compiler or represent
+the current public map:
+
+```shell
 uv run satn snapshot examples/fixture/council.yaml
-```
-
-Success: the command prints a path ending in
-`examples/fixture/work/snapshots/fixture-001`. The snapshot contains five governed
-source files and `snapshot.json`. Rerunning validates and reuses the immutable target.
-
-If it fails, check the reported source path before rerunning. Do not create a partial
-snapshot directory by hand.
-
-## 3. Compile and publish the local result
-
-```shell
 uv run satn compile examples/fixture/council.yaml
-```
-
-Expected result:
-
-```text
-complete: 2 connections, 0 gaps
-.../examples/fixture/work/output
-```
-
-Machine-check the important artifacts:
-
-```shell
-uv run python -c "from pathlib import Path; import json; root=Path('examples/fixture/work/output'); run=json.loads((root/'run.json').read_text()); assert run['status']=='complete'; assert all((root/name).exists() for name in ('network.geojson','network.gpkg','network-map.pdf','review-map/index.html','asset-accounting.json','divergence-records.json')); print(run['run_id'], run['status'])"
-```
-
-The output is about 2–3 MB. Compilation is atomic: a failed replacement does not
-destroy the previous valid output. Rerunning an unchanged compile may reuse the
-validated publication.
-
-## 4. Inspect the map
-
-```shell
-uv run python -m http.server 8000 --directory examples/fixture/work/output/review-map
-```
-
-Open <http://localhost:8000>. Stop the server with `Ctrl-C`.
-
-What this proves:
-
-- the environment can read, snapshot and fingerprint governed evidence;
-- the deterministic compiler can assemble and publish a network;
-- the static review map and portable artifacts agree on their run identity; and
-- no live AI, OSM, terrain or council system is required for the smoke test.
-
-It does **not** prove that the synthetic route is suitable, adopted or representative
-of B&NES.
-
-## 5. Run the semantic acceptance example
-
-```shell
 uv run satn proving check
 ```
 
-This compiles the checked-in composite decision scenario once and compares its
-semantic JSON and SVG expectation. It is the fast test for reuse-first selection,
-intervention state and deterministic fallback behaviour.
-
-## Next
-
-Follow [Reproduce the B&NES example](../guides/reproduce-banes.md). That path verifies
-a real council-scale governed snapshot and shows the features the synthetic fixture
-cannot demonstrate.
+See the [historical implementations](../compiler-architecture.md#historical-implementations)
+section for context on the retained Python path.

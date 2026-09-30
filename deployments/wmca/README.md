@@ -27,11 +27,23 @@ The OSM core snapshot was acquired and validated as
 `wmca-osm-2026-09-06-constituent-authorities`; the configured target adds the
 governed WMCA clip of the same source release as
 `wmca-osm-2026-09-06-constituent-authorities-open-roads-2026-04-07`.
-The preparation commands are:
+These commands belong to the retained Python snapshot/compiler workflow; they
+are not the current native Rust build path:
 
 ```shell
 uv run satn snapshot deployments/wmca/area.yaml
 uv run satn compile deployments/wmca/area.yaml --full
+```
+
+The Rust compiler reads the already materialized pinned snapshot directly. With
+that snapshot available, run the native build from the repository root:
+
+```shell
+cargo build --release --manifest-path rust/Cargo.toml --locked
+./rust/target/release/satn-rs \
+  --config deployments/wmca/area.yaml \
+  --output build/rust-wmca \
+  --mode mechanical
 ```
 
 Elevation is not declared because no WMCA-scoped licensed terrain file was

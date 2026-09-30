@@ -1,55 +1,55 @@
 # Contributing
 
-## Development environment
+The current compiler is in `rust/`. The Python `satn` and `lcwip` packages,
+their `make` targets, and their Area Definition schema are retained legacy
+surfaces. Run checks for the implementation you change.
 
-Python 3.12 and [uv](https://docs.astral.sh/uv/) are required. Do not activate or
-manually manage a virtual environment; run project commands through uv.
+## Native Rust compiler
+
+Install Rust/Cargo, CMake, and a C++ compiler. From the repository root:
 
 ```shell
-uv sync --all-groups
-uv run satn --help
+cargo build --release --manifest-path rust/Cargo.toml --locked
+cargo fmt --manifest-path rust/Cargo.toml --check
+cargo test --manifest-path rust/Cargo.toml --locked --test midend
 ```
 
-Use `uv add <package>` for runtime dependencies and `uv add --group <group>
-<package>` for development dependencies. The `lint`, `test`, and `audit` groups are
-included by the default `dev` group, and `uv.lock` is committed for reproducibility.
+The test command above targets decision orchestration; choose the relevant test
+target for your change. The Rust CI workflow pins toolchain `1.98.1` and runs formatting and the full
+Rust test suite when Rust sources or its workflow change.
 
-## Checks
+## Retained Python tooling
 
-Run the smallest test that exercises a change while iterating:
+Python 3.12 and [uv](https://docs.astral.sh/uv/) are used by snapshot utilities,
+documentation scripts, and the retained Python packages:
 
 ```shell
+uv sync --frozen --all-groups
+uv run ruff check .
+uv run ty check src/
 uv run pytest --no-cov tests/test_relevant_module.py
 ```
 
-Before handing work off, run the relevant tooling targets:
+The `make lint`, `make test`, and `make build` targets operate on the Python
+packages. `make test` enforces their branch-aware coverage baseline. Do not use
+that legacy target as the Rust compiler's test gate.
+
+## Repository hooks
+
+`prek` runs the configured formatting, type, file-integrity, shell, secret,
+GitHub Actions, and supply-chain checks:
 
 ```shell
-make lint
-make test
-make build
+uv run prek install
+uv run prek run
 ```
 
-`make test` enforces the 79.9% branch-aware coverage baseline across `satn` and `lcwip`. Use
-`make test-fast` for a fail-fast local pass without coverage.
+The hook configuration is pinned in the repository. Review the exact checks
+and their scope in the hook configuration when changing repository tooling.
 
-## Git hooks
+## CI and focused checks
 
-[prek](https://github.com/j178/prek) runs Ruff, ty, file-integrity checks,
-ShellCheck, secret detection, actionlint, and zizmor:
-
-```shell
-make hooks-install
-make hooks
-```
-
-`make hooks` checks staged files, which keeps the formatter scoped to touched Python.
-CI runs the non-mutating security and integrity hooks across the complete repository.
-Repository-wide formatting is deliberately deferred because it would rewrite the
-existing codebase independently of a functional change.
-
-Hook revisions are pinned. Update them with a seven-day supply-chain cooldown:
-
-```shell
-uv run prek auto-update --cooldown-days 7
-```
+Choose the smallest test that exercises the changed behavior while iterating.
+Before handoff, run the focused checks for the affected implementation. The
+release Pages workflow validates packaged map rendering separately; it does not
+compile or test source changes.

@@ -1,129 +1,110 @@
 # Agentic SATN Compiler
 
-Build an inspectable Strategic Active Travel Network from governed evidence, explicit
-planning rules and bounded human or AI choices.
+Build and inspect a proposed **Strategic Active Travel Network (SATN)** from
+sourced road and cycle-route evidence, explicit planning rules and attributable
+human or AI decisions.
 
-The current publication step is a **source baseline**: A roads, mapped cycleways
-and cycle routes, current/former National Cycle Network routes, bridleways and
-former railway corridors, with their source classifications. It supplies evidence
-for a separately drawn strategic network. Village connections, route selection and delivery
-prioritisation are deferred. The fuller compiler workflow described below is
-retained for later stages.
+The current implementation is the **native Rust compiler** in [`rust/`](rust/README.md).
+It prepares routes mechanically, uses the Jev classifier for alignment choices,
+and can refer unresolved judgments to a configured reasoning model. Code validates
+and records every applied choice. Planning officers retain policy and adoption
+authority; a selected route is a proposal, not proof of safety, legal access or
+scheme feasibility.
 
-Build the WECA, Wiltshire and West Midlands source maps from the existing local
-snapshots, then check that all three render:
+[Open the published maps](https://awjreynolds.github.io/agentic-satn-compiler/)
+· [Understand the decisions and rules](docs/concepts/decision-process.md)
+· [Build and run the native compiler](rust/README.md)
 
-```sh
-.venv/bin/python scripts/build_source_baseline_maps.py
-.venv/bin/python scripts/validate_pages_rendering.py build/source-baseline-pages
-```
+## For planning and transport readers
 
-This publication path reads the source linework directly and does not run the
-network compiler. Outputs are written to `build/source-baseline-pages`.
+The map separates the strategic network from community connections, source
+context and, where supplied, an illustrative officer network. Current and former
+National Cycle Network (NCN) evidence retains its source designation; that label
+alone does not establish present condition or cycling quality. Schools, bus
+routes and candidate neighbourhoods provide context without automatically becoming
+strategic route obligations.
 
-Supplemental former-railway extracts are kept beside each Area Definition in
-`source-corridors.geojson`, including the OpenStreetMap query and retrieval date.
-The builder clips this evidence to the area boundary.
+Inspect a route's reason, decision origin, source evidence and unknowns together.
+Mechanical computation, AI judgment and officer authority are different things.
+An officer scenario applies explicit choices and rebuilds dependent community
+connections, while retaining the compiler baseline for comparison. An illustrative
+ATM-derived scenario does not imply council approval of this generated network.
 
-> Experimental proof of concept — not an adopted plan, scheme design, safety audit,
-> legal-access finding or investment case.
+Read the [map feature tour](docs/concepts/feature-tour.md) and the
+[plain-language decision guide](docs/concepts/decision-process.md).
 
-[Open SATN Deployments](https://awjreynolds.github.io/agentic-satn-compiler/),
-[explore the WECA deployment](https://awjreynolds.github.io/agentic-satn-compiler/deployments/weca/)
-or [build your first local map](docs/getting-started/agent-quickstart.md).
-
-![B&NES strategic network with intervention states and alignment-basis halos](docs/images/banes-strategic-network.png)
-
-## Why this compiler is different
-
-| Feature | What it gives a reviewer |
-| --- | --- |
-| **Reuse-first route selection** | Existing cycle provision, current and reclassified NCN, Greenways, PROWs and governed local links stay visible and can be preferred through configuration instead of hidden engine rules. |
-| **Intervention-legible network** | Route cores distinguish existing provision, upgrade required and proposed new links. Halos show the physical Alignment Basis, so the map explains both what is followed and what must change. |
-| **Network structure, not a route cloud** | Strategic Spines form the shared backbone, Communities and Schools attach through bounded access, and Cross-Spine Connectors preserve how transverse links were derived. |
-| **Alternatives remain inspectable** | Existing assets and candidates do not disappear when unselected. Officer/compiler divergence is highlighted rather than silently overwritten. |
-| **A map always comes back** | Valid inputs produce a Reviewable Network. Missing evidence and broken continuity remain explicit Network Gaps; the compiler does not invent a route or fail merely to avoid an incomplete result. |
-| **Bounded AI, deterministic authority** | An agent may investigate a typed evidence request or choose from a finite compiler-authored menu. It cannot add geometry, manufacture facts, change policy or publish. |
-| **Reproducible evidence and decisions** | Snapshots, profiles, choices and outputs are fingerprinted. One run produces an interactive map, GeoJSON, GeoPackage, PDF and audit/provenance records. |
-| **Portable local compilation** | The same code and data contracts work for a small fixture, a council and a regional network without requiring a hosted backend. |
-
-[See the features in the B&NES map →](docs/concepts/feature-tour.md)
-
-## The authority boundary in one picture
+## For AI and software readers
 
 ```mermaid
 flowchart LR
-    inputs["Area Definition + governed evidence"] --> compiler
-    officer["Officer decisions\ninitial governed inputs"] --> compiler
-
-    subgraph compiler["Deterministic compiler — sole network authority"]
-        snapshot["Validate and fingerprint"] --> candidates["Generate finite candidates"]
-        candidates --> decide{"Material ambiguity?"}
-        decide -- no --> select["Apply configured selection"]
-        validate["Validate offered choice"] --> select
-        select --> reviewable["Complete Reviewable Network\nincluding visible gaps"]
-    end
-
-    decide -. "typed request + finite choices" .-> agent["Bounded agent investigation"]
-    agent -. "evidence + offered choice ID" .-> validate
-    reviewable --> outputs["Map · GeoJSON · GeoPackage · PDF · audit records"]
+    inputs["Pinned evidence and explicit policy"] --> code["Mechanical preparation and rules"]
+    code --> choice{"Judgment path required?"}
+    choice -- no --> validate["Code validation and recorded operation"]
+    choice -- yes --> jev["Jev: typed classification"]
+    jev -- supported choice --> validate
+    jev -- unresolved or failed --> specialist["Configured reasoning model, or retain unresolved"]
+    specialist --> validate
+    validate --> output["Inspectable map, decisions and unknowns"]
 ```
 
-The compiler creates geometry and applies policy. The agent never does. If evidence is
-missing or a decision is unresolved, compilation retains the limitation and still
-produces a reviewable result.
+A model chooses within an admitted task; it does not draw executable routes or
+supply missing observations. Search weights generate alternatives, not a universal
+quality score. The rural-access path resolves sole or evidentially dominant options mechanically;
+the current live town/city loop asks Jev for each prepared connection. Replay
+uses recorded operations without calling a model; fresh inference can differ.
 
-## Five-minute local map
+The [decision guide](docs/concepts/decision-process.md) documents the mechanical
+rules, escalation conditions and attribution. The [architecture](docs/compiler-architecture.md)
+connects them to code, history and publication.
 
-Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
+## Build a local native map
 
-```shell
-git clone https://github.com/awjreynolds/agentic-satn-compiler.git
-cd agentic-satn-compiler
-uv sync --frozen --all-groups
-uv run satn snapshot examples/fixture/council.yaml
-uv run satn compile examples/fixture/council.yaml
-uv run python -m http.server 8000 --directory examples/fixture/work/output/review-map
+Requires Rust, CMake and a C++ compiler, plus the pinned source snapshot referenced
+by the Area Definition. A clone does **not** include the real-world source cache.
+From the repository root:
+
+```sh
+cargo build --release --manifest-path rust/Cargo.toml --locked
+./rust/target/release/satn-rs \
+  --config deployments/banes/area.yaml \
+  --output build/rust-banes \
+  --mode mechanical
 ```
 
-Open <http://localhost:8000>. The deterministic fixture produces two connections, no
-gaps and a complete set of publication artifacts without downloading external map
-data. Follow the [agent quickstart](docs/getting-started/agent-quickstart.md) for
-machine-checkable success tests, then reproduce the full
-[B&NES example](docs/guides/reproduce-banes.md).
+This produces a mechanical source/candidate map, not a live AI-selected network.
+See the [native instructions](rust/README.md) for live decisions, offline replay,
+officer scenarios, input preparation and output files. Model use needs the
+[per-run approval described in the operations guide](docs/guides/native-clean-build.md).
+If `CARGO_TARGET_DIR` is set, use its `release/satn-rs` binary instead.
 
-## Development
+For a small installation fixture without real-world data acquisition, the
+[retained Python fixture](docs/getting-started/agent-quickstart.md#retained-python-fixture) remains available.
+It exercises the retained Python compiler, not the native implementation.
 
-The repository uses uv for dependency management and command execution, Ruff for
-linting and formatting, ty for type checking, pytest with coverage, and prek for Git
-hooks. Run `make dev`, then `make lint`, `make test`, and `make build`. See
-[CONTRIBUTING.md](CONTRIBUTING.md) for the focused-test and hook workflows.
+## Implementation and documentation status
 
-## Documentation
+| Path | Status and purpose |
+| --- | --- |
+| Native Rust compiler | Current development and native network publication path; mechanical preparation, classifier/specialist decisions, replay, community access and officer scenarios. |
+| Python TypeSafe planner | Retained experiment and evidence for the three decision classes; its history format and CLI are separate from Rust. |
+| Earlier Python `satn compile` | Retained Schema 2.0 workflow, including its own GIS/PDF artifacts and fake-runtime fixtures. |
+| Source-baseline builder | Separate evidence-only map utility; it does not execute network planning or AI. |
 
-- [Documentation index](docs/README.md)
-- [Contributing and development tooling](CONTRIBUTING.md)
-- [Agent quickstart](docs/getting-started/agent-quickstart.md)
-- [B&NES golden-path reproduction](docs/guides/reproduce-banes.md)
-- [Build a new area](docs/guides/build-a-new-area.md)
-- [Feature tour](docs/concepts/feature-tour.md)
-- [Compiler and pipeline architecture](docs/compiler-architecture.md)
-- [Area Definition reference](docs/reference/area-definition.md)
-- [Generated artifact reference](docs/reference/artifacts.md)
-- [Package and publish a deployment](docs/guides/publish-a-deployment.md)
-- [Troubleshooting](docs/troubleshooting.md)
-- [Project background and detailed legacy reference](docs/reference/project-background.md)
+As checked on 30 September 2026, `main` and the latest successful Pages release
+use revision `bba7402`; the release is
+[`asatnc-ncn-label-provenance-2026-09-29`](https://github.com/awjreynolds/agentic-satn-compiler/releases/tag/asatnc-ncn-label-provenance-2026-09-29).
+A release may reuse earlier planning receipts. Its code revision does not mean
+new inference ran, and model attribution must be read from the relevant history.
+Historical screenshots and experiment results are labelled in their own guides.
 
-## Current status
+## Documentation and development
 
-The published maps use **Deterministic Test Mode** (`provider: fake`). No live AI model
-was called. The substitute response passes through the same request, validation and
-restart boundary, proving the control flow without claiming production AI assurance.
+- [Documentation index](docs/README.md): current operations and historical references.
+- [Mechanical rules and AI decisions](docs/concepts/decision-process.md).
+- [Compiler architecture](docs/compiler-architecture.md) and [domain language](CONTEXT.md).
+- [Native build and CLI](rust/README.md), [elevation preparation](docs/guides/native-clean-build.md), and [publication](docs/guides/publish-a-deployment.md).
+- [Contributing](CONTRIBUTING.md): use focused checks appropriate to the changed path.
+- [Issue reconciliation](docs/planning/issue-status-2026-09-30.md): implemented, superseded and remaining work.
 
-B&NES is the canonical quality example for this repository. Its generated network is
-a planning hypothesis for officer review. Every alignment still requires the
-appropriate engineering, land, legal, accessibility, safety and consultation work.
-
-Released under the MIT licence. Derived data retains the attribution and licence of
-its governed sources, including OpenStreetMap/ODbL and applicable Open Government
-Licence sources.
+Released under the MIT licence. Derived data retains its source attribution and
+licence, including OpenStreetMap/ODbL and applicable Open Government Licence data.

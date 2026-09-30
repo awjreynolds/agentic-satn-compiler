@@ -1,5 +1,12 @@
 # Agentic SATN Compiler (ASATNC)
 
+> **Historical reference.** This page records background and design claims from
+> the earlier Python compiler period. The current implementation is the native
+> Rust compiler; use the [current architecture and decision-process
+> documentation](../compiler-architecture.md) for shipped behavior. Treat
+> time-sensitive product status and implementation descriptions below as
+> historical unless confirmed by current source or release evidence.
+
 ASATNC is an experimental agentic (AI-assisted) network compiler for Strategic
 Active Travel Networks. Its deterministic
 geospatial core turns governed transport evidence and explicit planning rules into
