@@ -78,12 +78,18 @@
   const renderFeature = (feature, context) => {
     const properties = feature && feature.properties ? feature.properties : {};
     const isRoute = properties.kind === 'bus-route';
+    const isRailStation = properties.kind === 'rail-station';
     const isTransferCandidate = properties.transfer_candidate === true;
     const provenance = collectionProvenance(context);
+    const stationSource = isRailStation
+      ? provenance.sources?.find(source => source.id === properties.source_id)
+      : null;
     const content = document.createElement('div');
     const heading = document.createElement('h3');
     heading.textContent = isRoute
       ? 'Bus route service evidence'
+      : isRailStation
+        ? 'Train station'
       : isTransferCandidate
         ? 'Timetable-supported transfer candidate'
         : 'Bus station or stop group';
@@ -91,14 +97,18 @@
     const note = document.createElement('p');
     note.textContent = isRoute
       ? 'Route identifiers and shape are source evidence for the stated service date; they do not establish observed transfers.'
+      : isRailStation
+        ? 'Source-recorded station location; this does not describe train services or bus connection times.'
       : isTransferCandidate
         ? 'Services share this selected stop on the stated date; interchange designation and connection timing are not verified.'
         : 'This is a source-labelled facility record; it does not establish an observed transfer connection.';
     content.append(note);
     const sourceRows = [
-      ['Source', firstValue(properties, ['source_title', 'source_name', 'source_label', 'source_id']) ||
+      ['Source', stationSource?.title || firstValue(properties, ['source_title', 'source_name', 'source_label', 'source_id']) ||
         firstValue(provenance, ['source_title', 'dataset_title', 'source_name', 'source_id'])],
-      ['Source date', isTransferCandidate
+      ['Source date', isRailStation
+        ? stationSource?.creation_date_time || properties.source_creation_date_time
+        : isTransferCandidate
         ? properties.source_creation_date_time
         : firstValue(provenance, [
             'source_date', 'dataset_date', 'effective_date', 'service_date'
@@ -153,7 +163,7 @@
     if (propertyRows(properties).length || collectionRows.length) content.append(fullSourceDetails);
     return content;
   };
-  const addControl = (kind, label, count, layers, description) => {
+  const addControl = (kind, label, count, layers, description, stationIcon = null) => {
     const item = document.createElement('li');
     item.className = 'layer-control-row';
     const control = document.createElement('label');
@@ -168,6 +178,18 @@
       : 'marker-key marker-star-key bus-interchange-key';
     const text = document.createTextNode(`${label} (${count})`);
     control.append(toggle, document.createTextNode(' '), swatch, text);
+    const symbolKey = document.createElement('small');
+    symbolKey.hidden = true;
+    if (stationIcon) {
+      const busSymbol = swatch.cloneNode(true);
+      const trainSymbol = document.createElement('img');
+      trainSymbol.src = stationIcon;
+      trainSymbol.width = trainSymbol.height = 16;
+      trainSymbol.alt = '';
+      symbolKey.append(document.createElement('br'), busSymbol,
+        document.createTextNode(' Bus facilities / transfer points · '),
+        trainSymbol, document.createTextNode(' Train stations'));
+    }
     const help = document.createElement('details');
     help.className = 'layer-help';
     help.name = 'native-layer-help';
@@ -181,9 +203,10 @@
     helpText.className = 'layer-help-popup';
     helpText.setAttribute('role', 'tooltip');
     helpText.textContent = description;
-    item.append(control, help, helpText);
+    item.append(control, help, helpText, symbolKey);
     legend.append(item);
     toggle.addEventListener('change', () => {
+      symbolKey.hidden = !toggle.checked;
       layers.forEach(layer => {
         if (window.SATN_NATIVE_MAP.getLayer(layer)) {
           window.SATN_NATIVE_MAP.setLayoutProperty(
@@ -219,6 +242,10 @@
     const interchanges = context.features.filter(
       feature => feature.properties?.kind === 'bus-interchange'
     );
+    const stations = context.features.filter(
+      feature => feature.properties?.kind === 'rail-station'
+    );
+    const facilities = [...interchanges, ...stations];
     const sourceFacilities = interchanges.filter(
       feature => feature.properties?.transfer_candidate !== true
     );
@@ -227,10 +254,10 @@
     );
     window.SATN_BUS_CONTEXT = context;
     window.SATN_NATIVE_BUS_POPUP_CONTENT = feature => renderFeature(feature, context);
-    if (routes.length || interchanges.length) {
+    if (routes.length || facilities.length) {
       map.addSource('native-bus-context', {
         type: 'geojson',
-        data: { type: 'FeatureCollection', features: [...routes, ...interchanges] }
+        data: { type: 'FeatureCollection', features: [...routes, ...facilities] }
       });
       if (routes.length) {
         map.addLayer({
@@ -257,7 +284,7 @@
           'Source route geometry for the stated service date; it does not establish observed transfers or service reliability.'
         );
       }
-      if (interchanges.length) {
+      if (facilities.length) {
         const markerSize = 28;
         const marker = document.createElement('canvas');
         marker.width = marker.height = markerSize;
@@ -283,14 +310,49 @@
           markerContext.getImageData(0, 0, markerSize, markerSize),
           { pixelRatio: 2 }
         );
+        let stationIcon = null;
+        if (stations.length) {
+          const train = document.createElement('canvas');
+          train.width = train.height = 32;
+          const drawing = train.getContext('2d');
+          drawing.fillStyle = '#0072b2';
+          drawing.fillRect(1, 1, 30, 30);
+          drawing.strokeStyle = '#263238';
+          drawing.strokeRect(1, 1, 30, 30);
+          drawing.fillStyle = '#fff';
+          drawing.beginPath();
+          drawing.roundRect(7, 4, 18, 21, 4);
+          drawing.fill();
+          drawing.fillStyle = '#0072b2';
+          drawing.fillRect(10, 7, 12, 8);
+          for (const x of [11, 21]) {
+            drawing.beginPath();
+            drawing.arc(x, 21, 2, 0, Math.PI * 2);
+            drawing.fill();
+          }
+          drawing.strokeStyle = '#fff';
+          drawing.lineWidth = 2;
+          drawing.beginPath();
+          drawing.moveTo(11, 25);
+          drawing.lineTo(8, 29);
+          drawing.moveTo(21, 25);
+          drawing.lineTo(24, 29);
+          drawing.stroke();
+          map.addImage('native-rail-station-train', drawing.getImageData(0, 0, 32, 32),
+            { pixelRatio: 2 });
+          stationIcon = train.toDataURL();
+        }
         map.addLayer({
           id: interchangeLayer,
           type: 'symbol',
           source: 'native-bus-context',
-          filter: ['==', ['get', 'kind'], 'bus-interchange'],
+          filter: ['in', ['get', 'kind'], ['literal', ['bus-interchange', 'rail-station']]],
           layout: {
             visibility: 'none',
-            'icon-image': 'native-bus-interchange-star',
+            'icon-image': stations.length
+              ? ['match', ['get', 'kind'], 'rail-station', 'native-rail-station-train',
+                'native-bus-interchange-star']
+              : 'native-bus-interchange-star',
             'icon-size': 1,
             'icon-allow-overlap': true,
             'icon-ignore-placement': true
@@ -298,15 +360,17 @@
         });
         addControl(
           'interchanges',
-          'Bus facilities and transfer points',
-          interchanges.length,
+          stations.length ? 'Bus stops & train stations' : 'Bus facilities and transfer points',
+          facilities.length,
           [interchangeLayer],
-          `Facility records: ${sourceFacilities.length}. Timetable-supported transfer candidates: ${transferCandidates.length}. Shared-stop evidence does not confirm a practical interchange or connection time.`
+          `Facility records: ${sourceFacilities.length}. Timetable-supported transfer candidates: ${transferCandidates.length}. Train stations: ${stations.length}. Orange star: bus facilities and transfer points. Blue train: train stations. Shared-stop evidence does not confirm a practical interchange or connection time.`,
+          stationIcon
         );
       }
     }
     root.dataset.nativeBusContextRoutes = String(routes.length);
     root.dataset.nativeBusContextInterchanges = String(interchanges.length);
+    root.dataset.nativeBusContextRailStations = String(stations.length);
     root.dataset.nativeBusContextLoaded = 'true';
   };
   const startWhenMapReady = () => {
