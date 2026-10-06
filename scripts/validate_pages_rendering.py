@@ -159,7 +159,8 @@ def _inspect_native_agentic(
                       const root = document.documentElement;
                       const map = window.SATN_NATIVE_MAP;
                       const featureCount = Number(root.dataset.nativeBusContextRoutes || 0) +
-                        Number(root.dataset.nativeBusContextInterchanges || 0);
+                        Number(root.dataset.nativeBusContextInterchanges || 0) +
+                        Number(root.dataset.nativeBusContextRailStations || 0);
                       return root.dataset.nativeBusContextLoaded === 'true' &&
                         (!featureCount || map?.isSourceLoaded('native-bus-context'));
                     }"""
@@ -204,6 +205,10 @@ def _inspect_native_agentic(
                   const facilities = interchanges.filter(
                     feature => feature.properties?.transfer_candidate !== true
                   );
+                  const stations = features.filter(
+                    feature => feature.properties?.kind === 'rail-station'
+                  );
+                  const points = [...interchanges, ...stations];
                   const transferCandidates = interchanges.filter(
                     feature => feature.properties?.transfer_candidate === true
                   );
@@ -252,14 +257,15 @@ def _inspect_native_agentic(
                   } else if (routeToggle || map.getLayer('native-bus-route')) {
                     failures.push('empty bus route context has a control or layer');
                   }
-                  if (interchanges.length) {
+                  if (points.length) {
                     if (!interchangeToggle || !map.getLayer('native-bus-interchange')) {
                       failures.push('bus station and stop-group control or layer is missing');
                     } else {
                       const interchangeLabel = interchangeToggle.closest('label')?.innerText
                         .replace(/\s+/g, ' ').trim() || '';
                       const exactInterchangeTotal =
-                        `Bus facilities and transfer points (${interchanges.length})`;
+                        stations.length ? `Bus stops & train stations (${points.length})` :
+                          `Bus facilities and transfer points (${interchanges.length})`;
                       const expectedLegacyPointCounts = `${interchanges.length} points (` +
                         `${facilities.length} facilities, ` +
                         `${transferCandidates.length} transfer points)`;
@@ -314,6 +320,17 @@ def _inspect_native_agentic(
                     }
                   } else if (interchangeToggle || map.getLayer('native-bus-interchange')) {
                     failures.push('empty bus facility context has a control or layer');
+                  }
+                  if (stations.length) {
+                    const icons = map.getLayoutProperty('native-bus-interchange', 'icon-image');
+                    const key = interchangeToggle?.closest('li').querySelector('small');
+                    if (root.dataset.nativeBusContextRailStations !== String(stations.length) ||
+                        !map.hasImage('native-rail-station-train') ||
+                        !Array.isArray(icons) || icons[3] !== 'native-rail-station-train' ||
+                        icons[4] !== 'native-bus-interchange-star' ||
+                        !key?.textContent.includes('Train stations')) {
+                      failures.push('train station count, distinct symbol or legend is missing');
+                    }
                   }
 
                   const firstPosition = coordinates => {
@@ -416,7 +433,7 @@ def _inspect_native_agentic(
                       }
                     }
                     if (probeFeature) {
-                      await setBusSourceData([...routes, ...interchanges]);
+                      await setBusSourceData([...routes, ...points]);
                     }
                     return safeText;
                   };
@@ -434,6 +451,19 @@ def _inspect_native_agentic(
                       failures.push(
                         'bus facility inspection does not render source fields as safe text'
                       );
+                    }
+                  }
+                  if (stations.length && interchangeToggle) {
+                    if (!await inspect(stations[0], 'native-bus-interchange',
+                      interchangeToggle, true, ['Train station', stations[0].properties.name])) {
+                      failures.push(
+                        'train station inspection does not render source fields safely'
+                      );
+                    }
+                    interchangeToggle.click();
+                    if (document.querySelector('.maplibregl-popup') ||
+                        !interchangeToggle.closest('li').querySelector('small').hidden) {
+                      failures.push('hiding stations does not clear their popup and legend');
                     }
                   }
                   const transferArray = value => {

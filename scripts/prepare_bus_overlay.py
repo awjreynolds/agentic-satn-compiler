@@ -33,9 +33,14 @@ NAPTAN_SOURCE_URL = (
 NAPTAN_ATTRIBUTION = (
     "Contains National Public Transport Access Node data from the Department for Transport."
 )
+RAIL_NAPTAN_SOURCE_ID = "naptan-national-rail"
+RAIL_NAPTAN_SOURCE_URL = (
+    "https://naptan.api.dft.gov.uk/v1/access-nodes?atcoAreaCodes=910&dataFormat=xml"
+)
 STOP_AREA_TYPES = {
     "GBCS": "bus or coach station",
     "GPBS": "paired on-street bus stops",
+    "GRLS": "train station",
 }
 
 
@@ -318,8 +323,10 @@ def _load_naptan_facilities(
     path: Path,
     boundary: BaseGeometry,
     transfer_stop_selection: dict[str, Any] | None = None,
+    *,
+    source_id: str = NAPTAN_SOURCE_ID,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, dict[str, Any]]]:
-    """Read source-identified, active GBCS/GPBS StopAreas with usable in-area points."""
+    """Read active bus facilities and rail stations with usable in-area points."""
     features: list[dict[str, Any]] = []
     selected_stops = {
         stop["atco_code"]: stop for stop in (transfer_stop_selection or {}).get("stops", [])
@@ -414,6 +421,8 @@ def _load_naptan_facilities(
                 continue
             type_code = _text_child(element, "StopAreaType") or ""
             facility_type = STOP_AREA_TYPES.get(type_code)
+            if source_id == RAIL_NAPTAN_SOURCE_ID and type_code != "GRLS":
+                facility_type = None
             if facility_type is None:
                 counts = diagnostics["unsupported_type_codes"]
                 counts[type_code or "(missing)"] = counts.get(type_code or "(missing)", 0) + 1
@@ -458,8 +467,8 @@ def _load_naptan_facilities(
                     "type": "Feature",
                     "id": f"stop-area-{code}",
                     "properties": {
-                        "kind": "bus-interchange",
-                        "source_id": NAPTAN_SOURCE_ID,
+                        "kind": "rail-station" if type_code == "GRLS" else "bus-interchange",
+                        "source_id": source_id,
                         "stop_area_code": code,
                         "name": name,
                         "stop_area_type": type_code,
@@ -749,6 +758,7 @@ def _fresh_overlay(
     boundary_path: Path,
     naptan_path: Path | None,
     transfer_stop_selection_path: Path | None,
+    rail_naptan_path: Path | None = None,
 ) -> dict[str, Any]:
     date.fromisoformat(service_date)
     transfer_stop_selection = (
@@ -815,6 +825,22 @@ def _fresh_overlay(
                 provenance["transfer_stop_selection"]["locality_source"] = transfer_stop_selection[
                     "locality_source"
                 ]
+    if rail_naptan_path is not None:
+        rail_features, rail_metadata, _ = _load_naptan_facilities(
+            rail_naptan_path, boundary, source_id=RAIL_NAPTAN_SOURCE_ID
+        )
+        all_features.extend(rail_features)
+        sources.append(
+            _source_record(
+                source_id=RAIL_NAPTAN_SOURCE_ID,
+                title="Department for Transport NaPTAN national rail stations",
+                url=RAIL_NAPTAN_SOURCE_URL,
+                path=rail_naptan_path,
+                attribution=NAPTAN_ATTRIBUTION,
+                creation_date_time=rail_metadata["creation_date_time"],
+            )
+        )
+        provenance["rail_naptan_diagnostics"] = rail_metadata["diagnostics"]
     all_features.sort(key=lambda feature: (feature.get("id", ""), feature["properties"]["kind"]))
     return {
         "type": "FeatureCollection",
@@ -897,6 +923,9 @@ def main() -> None:
         "--naptan-xml", type=Path, help="optional local NaPTAN XML to add stop-area points"
     )
     parser.add_argument(
+        "--rail-naptan-xml", type=Path, help="optional national rail NaPTAN XML (area 910)"
+    )
+    parser.add_argument(
         "--transfer-stop-selection",
         type=Path,
         help="optional JSON selection of exact NaPTAN StopPoints for dated GTFS transfer evidence",
@@ -919,6 +948,8 @@ def main() -> None:
                 parser.error(f"boundary GeoJSON does not exist: {args.boundary}")
             if args.naptan_xml is not None and not args.naptan_xml.is_file():
                 parser.error(f"NaPTAN XML does not exist: {args.naptan_xml}")
+            if args.rail_naptan_xml is not None and not args.rail_naptan_xml.is_file():
+                parser.error(f"rail NaPTAN XML does not exist: {args.rail_naptan_xml}")
             if args.transfer_stop_selection is not None:
                 if args.naptan_xml is None:
                     parser.error("--transfer-stop-selection requires --naptan-xml")
@@ -932,16 +963,19 @@ def main() -> None:
                 args.boundary,
                 args.naptan_xml,
                 args.transfer_stop_selection,
+                args.rail_naptan_xml,
             )
         else:
             if (
                 args.service_date is not None
                 or args.boundary is not None
                 or args.naptan_xml is not None
+                or args.rail_naptan_xml is not None
                 or args.transfer_stop_selection is not None
             ):
                 parser.error(
-                    "--service-date, --boundary, --naptan-xml and --transfer-stop-selection "
+                    "--service-date, --boundary, --naptan-xml, --rail-naptan-xml "
+                    "and --transfer-stop-selection "
                     "are only used with --gtfs"
                 )
             if args.snapshot is None:
