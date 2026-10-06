@@ -6,8 +6,10 @@ use std::path::{Path, PathBuf};
 use satn_rs::judgment::{ChoiceResult, ProviderReceipt};
 use satn_rs::midend::{
     ChoiceAttempt, ChoiceProvider, MidendConfig, MidendProgress, ProviderSet, SpecialistAttempt,
-    SpecialistProvider, TypedOperation, fork, replay, run, run_prepared,
+    SpecialistProvider, TypedOperation, fork, replay, replay_with_officer_decisions, run,
+    run_prepared,
 };
+use satn_rs::officer::{OfficerDecision, OfficerDecisionLedger};
 use satn_rs::{
     AccessObligation, AccountingSummary, Candidate, CompileOptions, CompileReport, Connection,
     NetworkPlace, Operation, SourceCorridor, UnknownFact, prepare_with_progress,
@@ -821,6 +823,46 @@ struct RuralChoiceJev {
     calls: usize,
     choices: Vec<String>,
     choose_comfort: bool,
+}
+
+struct OfficerOrderingJev {
+    calls: usize,
+    rural_calls: usize,
+}
+
+impl ChoiceProvider for OfficerOrderingJev {
+    fn classify_choice(&mut self, request: &satn_rs::judgment::ChoiceRequest) -> ChoiceAttempt {
+        self.calls += 1;
+        let choice = if request.state["schema"] == "satn-rust-rural-task/v1" {
+            self.rural_calls += 1;
+            request
+                .options
+                .keys()
+                .find(|option| option.ends_with(":comfort"))
+                .expect("comfort rural offer")
+                .clone()
+        } else {
+            if request.options.contains_key("candidate:another-journey") {
+                "candidate:another-journey".to_string()
+            } else {
+                "candidate:baseline-alignment".to_string()
+            }
+        };
+        assert!(request.options.contains_key(&choice));
+        ChoiceAttempt {
+            result: Some(ChoiceResult {
+                model: "jev-officer-ordering-fixture".to_string(),
+                choice,
+                probabilities: BTreeMap::new(),
+                confidence: 0.0,
+            }),
+            receipt: receipt(
+                "typesafe",
+                "jev-officer-ordering-fixture",
+                "{\"choice\":\"fixture\"}",
+            ),
+        }
+    }
 }
 
 impl ChoiceProvider for RuralChoiceJev {
@@ -1665,6 +1707,444 @@ fn prepared_rural_replay_reuses_retained_operations_without_providers() {
     let replayed = replay(&history, "main", &mut |_event| {}).expect("rural replay");
     assert_eq!(replayed.operations, first.operations);
     assert_eq!(replayed.community_access, first.community_access);
+}
+
+#[test]
+fn officer_selection_rebuilds_frontier_before_retained_rural_choices() {
+    let root = rural_prepared_fixture("officer-ordering");
+    let network_path = root.join("snapshot/network.geojson");
+    let mut fixture_network: Value =
+        serde_json::from_str(&fs::read_to_string(&network_path).expect("network"))
+            .expect("network JSON");
+    add_bidirectional(
+        fixture_network["features"]
+            .as_array_mut()
+            .expect("features"),
+        "flat",
+        "officer-network-node",
+        [0.0, 0.01],
+        [0.01, 0.01],
+        8.0,
+        "residential",
+        None,
+    );
+    add_bidirectional(
+        fixture_network["features"]
+            .as_array_mut()
+            .expect("features"),
+        "outside-a2-west",
+        "outside-a2-east",
+        [0.04, 0.0],
+        [0.05, 0.0],
+        10.0,
+        "primary",
+        Some("A2"),
+    );
+    fs::write(
+        &network_path,
+        serde_json::to_vec(&fixture_network).expect("fixture network"),
+    )
+    .expect("write fixture network");
+    let places_path = root.join("snapshot/places.geojson");
+    let mut fixture_places: Value =
+        serde_json::from_str(&fs::read_to_string(&places_path).expect("places"))
+            .expect("places JSON");
+    fixture_places["features"]
+        .as_array_mut()
+        .expect("place features")
+        .push(place_feature(
+            "officer-network-place",
+            "Officer network place",
+            "village",
+            [0.01, 0.01],
+        ));
+    fixture_places["features"]
+        .as_array_mut()
+        .expect("place features")
+        .push(place_feature(
+            "outside-root",
+            "Outside root",
+            "village",
+            [0.04, 0.0],
+        ));
+    fs::write(
+        &places_path,
+        serde_json::to_vec(&fixture_places).expect("fixture places"),
+    )
+    .expect("write fixture places");
+    let mut prepared = prepare_with_progress(
+        &root.join("area.yaml"),
+        CompileOptions::default(),
+        &mut |_event| {},
+    )
+    .expect("prepared rural fixture");
+    let network: Value = serde_json::from_str(
+        &fs::read_to_string(root.join("snapshot/network.geojson")).expect("network"),
+    )
+    .expect("network JSON");
+    let features = network["features"].as_array().expect("network features");
+    let fixture_edge = |from: &str, to: &str| {
+        let (index, feature) = features
+            .iter()
+            .enumerate()
+            .find(|(_, feature)| {
+                feature["properties"]["u"] == from && feature["properties"]["v"] == to
+            })
+            .expect("fixture graph edge");
+        let properties = &feature["properties"];
+        let edge_id = format!(
+            "edge:{from}:{to}:{}:{index}",
+            properties["key"].as_i64().expect("edge key")
+        );
+        let geometry =
+            serde_json::from_value::<Vec<[f64; 2]>>(feature["geometry"]["coordinates"].clone())
+                .expect("edge geometry");
+        let length = properties["length"].as_f64().expect("edge length");
+        (edge_id, geometry, length)
+    };
+    let candidate_for_edge =
+        |id: &str, edge_id: String, geometry: Vec<[f64; 2]>, length_m: f64, a_road_share: f64| {
+            Candidate {
+                id: id.to_string(),
+                connection_id: "connection:fixture-strategic".to_string(),
+                status: "mechanical-candidate".to_string(),
+                decision_class: "mechanical".to_string(),
+                role: "direct".to_string(),
+                role_aliases: Vec::new(),
+                length_m,
+                search_cost_m: length_m,
+                a_road_share,
+                ncn_share: 0.0,
+                cycle_alignment_bases: Vec::new(),
+                topology_status: "graph-supported".to_string(),
+                provision_status: "unknown".to_string(),
+                path_edge_ids: vec![edge_id],
+                path_edge_geometries: vec![geometry.clone()],
+                geometry,
+            }
+        };
+    let (baseline_edge, baseline_geometry, baseline_length) = fixture_edge("high", "spine");
+    let (reverse_baseline_edge, _, _) = fixture_edge("spine", "high");
+    let (officer_edge, officer_geometry, officer_length) = fixture_edge("flat", "spine");
+    let (reverse_officer_edge, _, _) = fixture_edge("spine", "flat");
+    let (officer_network_edge, officer_network_geometry, _) =
+        fixture_edge("flat", "officer-network-node");
+    prepared.report.connections.push(Connection {
+        id: "connection:fixture-strategic".to_string(),
+        origin_place_id: "parent".to_string(),
+        origin_name: "Parent".to_string(),
+        destination_place_id: "spine-town".to_string(),
+        destination_name: "Spine town".to_string(),
+        origin_node: "parent".to_string(),
+        destination_node: "spine".to_string(),
+        cross_region_edge_ids: vec![baseline_edge.clone()],
+        road_classes: vec!["a-road-reference".to_string()],
+        preferred_classes: vec!["a-road-reference".to_string()],
+    });
+    prepared.report.candidates.push(candidate_for_edge(
+        "candidate:baseline-alignment",
+        baseline_edge.clone(),
+        baseline_geometry.clone(),
+        baseline_length,
+        1.0,
+    ));
+    let mut another_journey = prepared.report.candidates.last().unwrap().clone();
+    another_journey.id = "candidate:another-journey".to_string();
+    another_journey.connection_id = "connection:another-journey".to_string();
+    prepared.report.connections.push(Connection {
+        id: "connection:another-journey".to_string(),
+        origin_place_id: "parent".to_string(),
+        origin_name: "Parent".to_string(),
+        destination_place_id: "spine-town".to_string(),
+        destination_name: "Spine town".to_string(),
+        origin_node: "parent".to_string(),
+        destination_node: "spine".to_string(),
+        cross_region_edge_ids: vec![baseline_edge.clone()],
+        road_classes: vec!["a-road-reference".to_string()],
+        preferred_classes: vec!["a-road-reference".to_string()],
+    });
+    prepared.report.candidates.push(another_journey);
+    prepared.report.candidates.push(candidate_for_edge(
+        "candidate:officer-alignment",
+        officer_edge.clone(),
+        officer_geometry,
+        officer_length,
+        0.0,
+    ));
+    prepared.report.connection_count = prepared.report.connections.len();
+    prepared.report.candidate_count = prepared.report.candidates.len();
+
+    let history = root.join("history");
+    let mut jev = OfficerOrderingJev {
+        calls: 0,
+        rural_calls: 0,
+    };
+    let baseline = run_prepared(
+        &history,
+        &prepared,
+        MidendConfig::live(false),
+        ProviderSet {
+            classifier: Some(&mut jev),
+            specialist: None,
+        },
+        &mut |_event| {},
+    )
+    .expect("baseline strategic and rural decisions");
+    assert_eq!(jev.rural_calls, 1);
+    assert!(baseline.operations.iter().any(|operation| matches!(
+        operation,
+        TypedOperation::SelectAlignment { candidate_id, .. }
+            if candidate_id == "candidate:baseline-alignment"
+    )));
+    let baseline_rural_order = baseline
+        .task_ids
+        .iter()
+        .filter_map(|task_id| task_id.strip_prefix("task:rural:"))
+        .collect::<Vec<_>>();
+    assert!(baseline_rural_order.contains(&"parent"));
+    let outside_root = baseline
+        .community_access
+        .iter()
+        .find(|access| access.community_id == "outside-root")
+        .expect("outside A2 community root");
+    assert_eq!(
+        outside_root.root_spine_id.as_deref(),
+        Some("source:network:a-road:A2")
+    );
+    let outside_root_path = outside_root.path_edge_ids.clone();
+
+    let retained_history = ["base.json", "events.jsonl", "branches.json"]
+        .map(|name| fs::read(history.join(name)).expect("retained history file"));
+    let provider_calls = jev.calls;
+    let ledger = OfficerDecisionLedger {
+        decisions: vec![
+            OfficerDecision {
+                decision_id: "officer-example".to_string(),
+                connection_id: "connection:fixture-strategic".to_string(),
+                candidate_id: Some("candidate:officer-alignment".to_string()),
+                source_refs: vec!["fixture-source".to_string()],
+                attribution: "Officer example".to_string(),
+                rationale: "Use the flatter alignment into the community frontier.".to_string(),
+            },
+            OfficerDecision {
+                decision_id: "officer-another-journey".to_string(),
+                connection_id: "connection:another-journey".to_string(),
+                candidate_id: Some("candidate:another-journey".to_string()),
+                source_refs: vec!["fixture-other-source".to_string()],
+                attribution: "Another officer journey".to_string(),
+                rationale: "Retain this journey selection without overriding the network scope."
+                    .to_string(),
+            },
+        ],
+        strategic_network: None,
+    };
+    let mut ledger_json = serde_json::to_value(ledger).expect("serialize officer ledger");
+    ledger_json["strategic_network"] = json!({
+        "selected_graph_edge_ids": [officer_network_edge],
+        "deselected_graph_edge_ids": [baseline_edge],
+        "source_refs": ["fixture-network-source"],
+        "attribution": "Fixture strategic network reference",
+        "rationale": "Only explicitly listed edges are deselected; omitted edges remain outside scope.",
+        "scope_geometry": {
+            "type": "MultiPolygon",
+            "coordinates": [[[
+                [0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0], [0.0, 0.0]
+            ]]]
+        },
+        "selected_alignments": [{
+            "source_id": "kml_10",
+            "geometry": [
+                [[0.1, 0.2], [0.3, 0.4]],
+                [[0.5, 0.6], [0.7, 0.8]]
+            ]
+        }]
+    });
+    let ledger: OfficerDecisionLedger =
+        serde_json::from_value(ledger_json).expect("resolved strategic network input");
+    let mut replay_progress = Vec::new();
+    let (baseline, effective, scenario) =
+        replay_with_officer_decisions(&history, "main", &prepared, &ledger, &mut |event| {
+            replay_progress.push(event)
+        })
+        .expect("officer-first provider-free regeneration");
+    assert_eq!(jev.calls, provider_calls, "replay must not call a provider");
+    assert!(
+        replay_progress
+            .iter()
+            .any(|event| event.stage == "community-access" && event.task_id.is_some())
+    );
+    assert!(scenario.community_access_regenerated);
+    assert_eq!(baseline.base_id, scenario.base_id);
+    assert_eq!(baseline.branch, scenario.baseline_branch);
+    assert!(!baseline.operations.is_empty());
+    assert!(!baseline.community_access.is_empty());
+    assert!(scenario.outcomes.iter().any(|outcome| matches!(
+        outcome.status,
+        satn_rs::officer::OfficerOutcomeStatus::Divergence
+    )));
+    assert!(effective.operations.iter().any(|operation| matches!(
+        operation,
+        TypedOperation::SelectAlignment { candidate_id, .. }
+            if candidate_id == "candidate:officer-alignment"
+    )));
+    let outside_scope_ledger: OfficerDecisionLedger = serde_json::from_value(json!({
+        "decisions": [
+            {
+                "decision_id": "officer-example",
+                "connection_id": "connection:fixture-strategic",
+                "candidate_id": "candidate:officer-alignment",
+                "source_refs": ["fixture-source"],
+                "attribution": "Officer example",
+                "rationale": "Use the flatter alignment into the community frontier."
+            },
+            {
+                "decision_id": "officer-another-journey",
+                "connection_id": "connection:another-journey",
+                "candidate_id": "candidate:another-journey",
+                "source_refs": ["fixture-other-source"],
+                "attribution": "Another officer journey",
+                "rationale": "Retain this journey selection without overriding the network scope."
+            }
+        ],
+        "strategic_network": {
+            "selected_graph_edge_ids": [],
+            "deselected_graph_edge_ids": [
+                baseline_edge,
+                reverse_baseline_edge,
+                officer_edge,
+                reverse_officer_edge
+            ],
+            "selected_alignments": [{
+                "source_id": "final_february25.fixture",
+                "geometry": [[[0.01, 0.0], [0.02, 0.0]]]
+            }],
+            "source_refs": ["fixture-network-source"],
+            "attribution": "Fixture strategic network reference",
+            "rationale": "Source alignment is selected; scoped baseline targets are omitted.",
+            "scope_geometry": {
+                "type": "Polygon",
+                "coordinates": [[
+                    [0.009, -0.002], [0.021, -0.002], [0.021, 0.002],
+                    [0.009, 0.002], [0.009, -0.002]
+                ]]
+            }
+        }
+    }))
+    .expect("source-only scoped network ledger");
+    let (_, source_only_effective, _) = replay_with_officer_decisions(
+        &history,
+        "main",
+        &prepared,
+        &outside_scope_ledger,
+        &mut |_event| {},
+    )
+    .expect("source-only exact-scope replay");
+    assert!(
+        source_only_effective
+            .operations
+            .iter()
+            .any(|operation| matches!(
+                operation,
+                TypedOperation::SelectAlignment { candidate_id, .. }
+                    if candidate_id == "candidate:another-journey"
+            ))
+    );
+    assert!(
+        source_only_effective
+            .operations
+            .iter()
+            .any(|operation| matches!(
+                operation,
+                TypedOperation::UnresolvedCommunityAccess { community_id, .. }
+                    if community_id == "parent"
+            ))
+    );
+    assert!(!source_only_effective.operations.iter().any(|operation| matches!(
+        operation,
+        TypedOperation::SelectCommunityAccess { community_id, root_spine_id, .. }
+            if community_id == "parent" && root_spine_id.as_deref() == Some("source:network:a-road:A1")
+    )));
+    let outside_root_after = source_only_effective
+        .community_access
+        .iter()
+        .find(|access| access.community_id == "outside-root")
+        .expect("unaffected outside root survives replay");
+    assert_eq!(
+        outside_root_after.root_spine_id.as_deref(),
+        Some("source:network:a-road:A2")
+    );
+    assert_eq!(outside_root_after.path_edge_ids, outside_root_path);
+    assert!(effective.operations.iter().any(|operation| matches!(
+        operation,
+        TypedOperation::SelectAlignment { candidate_id, .. }
+            if candidate_id == "candidate:another-journey"
+    )));
+    let regenerated_rural_order = effective
+        .task_ids
+        .iter()
+        .filter_map(|task_id| task_id.strip_prefix("task:rural:"))
+        .collect::<Vec<_>>();
+    assert!(regenerated_rural_order.contains(&"officer-network-place"));
+    let network_access = effective
+        .community_access
+        .iter()
+        .find(|access| access.community_id == "officer-network-place")
+        .expect("new community on selected officer network edge");
+    assert_eq!(
+        network_access.root_spine_id.as_deref(),
+        Some("officer-strategic-network"),
+        "the selected network edge must target a new community independently of journey candidates"
+    );
+    let network = scenario
+        .strategic_network
+        .as_ref()
+        .expect("projected scope");
+    assert_eq!(network.selected_graph_edge_ids, [officer_network_edge]);
+    assert_eq!(network.deselected_graph_edge_ids, [baseline_edge]);
+    assert_eq!(
+        network.edge_geometries[0].geometry,
+        officer_network_geometry
+    );
+    assert_eq!(
+        serde_json::to_value(&network.selected_alignments).expect("source alignments"),
+        json!([{
+            "source_id": "kml_10",
+            "geometry": [
+                [[0.1, 0.2], [0.3, 0.4]],
+                [[0.5, 0.6], [0.7, 0.8]]
+            ]
+        }])
+    );
+    assert_eq!(
+        network.scope_geometry,
+        Some(
+            satn_rs::officer::OfficerStrategicScopeGeometry::MultiPolygon(vec![vec![vec![
+                [0.0, 0.0],
+                [2.0, 0.0],
+                [2.0, 2.0],
+                [0.0, 2.0],
+                [0.0, 0.0],
+            ]]])
+        )
+    );
+    assert!(effective.operations.iter().any(|operation| matches!(
+        operation,
+        TypedOperation::UnresolvedCommunityAccess {
+            decision_class,
+            reason,
+            ..
+        } if decision_class == "classifier"
+            && reason.contains("no longer binds")
+    )));
+    for (name, contents) in ["base.json", "events.jsonl", "branches.json"]
+        .into_iter()
+        .zip(retained_history)
+    {
+        assert_eq!(
+            fs::read(history.join(name)).expect("history after replay"),
+            contents
+        );
+    }
 }
 
 #[test]

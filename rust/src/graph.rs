@@ -5,7 +5,7 @@ use crate::error::{Result, SatnError};
 use crate::geojson::{
     Feature, Geometry, canonical_tag_values, number_property, property_text, string_property,
 };
-use crate::geometry::EdgeEvidence;
+use crate::geometry::{ContextSourceBinding, EdgeEvidence};
 
 #[derive(Debug, Clone)]
 pub(crate) struct GraphEdge {
@@ -21,6 +21,7 @@ pub(crate) struct GraphEdge {
     pub access: Option<String>,
     pub ncn: bool,
     pub cycle_alignment_bases: Vec<String>,
+    pub context_source_bindings: Vec<ContextSourceBinding>,
     pub geometry: Vec<[f64; 2]>,
 }
 
@@ -202,6 +203,7 @@ impl Graph {
                 access: string_property(&feature.properties, "access"),
                 ncn: edge_evidence.ncn,
                 cycle_alignment_bases: edge_evidence.cycle_alignment_bases,
+                context_source_bindings: edge_evidence.context_source_bindings,
                 geometry: geometry.clone(),
             });
         }

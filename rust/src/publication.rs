@@ -9,12 +9,17 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
+use geos::{Geom, Geometry as GeosGeometry};
 use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::compiler::{Candidate, CommunityAccess, CompileReport};
 use crate::error::{Result, SatnError};
 use crate::midend::{MidendRun, TypedOperation};
+use crate::officer::{
+    OfficerOutcomeStatus, OfficerScenario, OfficerSelectedAlignment, OfficerStrategicNetwork,
+    OfficerStrategicScopeGeometry, displaced_baseline_edges,
+};
 
 const MAPLIBRE_JS: &[u8] = include_bytes!("../../src/satn/assets/maplibre-gl.js");
 const MAPLIBRE_CSS: &[u8] = include_bytes!("../../src/satn/assets/maplibre-gl.css");
@@ -107,6 +112,8 @@ struct CompactDecisionMap {
     files: DecisionMapFiles,
     decisions: Vec<PublicDecision>,
     departures: Vec<PublicDeparture>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    officer_scenario: Option<PublicOfficerScenario>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -153,6 +160,51 @@ struct PublicPublicationManifest {
     disclaimer: &'static str,
     counts: DecisionMapCounts,
     files: DecisionMapFiles,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    officer_scenario: Option<PublicOfficerScenario>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PublicOfficerScenario {
+    label: &'static str,
+    authority: String,
+    base_id: String,
+    baseline_branch: String,
+    community_access_regenerated: bool,
+    agreement_count: usize,
+    divergence_count: usize,
+    unavailable_count: usize,
+    outcomes: Vec<PublicOfficerOutcome>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    strategic_network: Option<PublicOfficerStrategicNetwork>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PublicOfficerStrategicNetwork {
+    selected_graph_edge_ids: Vec<String>,
+    deselected_graph_edge_ids: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    selected_alignments: Vec<OfficerSelectedAlignment>,
+    source_refs: Vec<String>,
+    attribution: String,
+    rationale: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scope_geometry: Option<OfficerStrategicScopeGeometry>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PublicOfficerOutcome {
+    decision_id: String,
+    connection_id: String,
+    baseline_candidate_id: Option<String>,
+    officer_candidate_id: Option<String>,
+    effective_candidate_id: Option<String>,
+    status: &'static str,
+    source_refs: Vec<String>,
+    attribution: String,
+    rationale: String,
+    baseline_decision_id: Option<String>,
+    baseline_decision_class: Option<String>,
 }
 
 /// Publish the public decision projection for a live or replayed run.
@@ -163,6 +215,43 @@ pub fn publish_decision_map(
     output_dir: &Path,
     report: &CompileReport,
     run: &MidendRun,
+) -> Result<DecisionMapPublication> {
+    publish_decision_map_inner(output_dir, report, run, None, None)
+}
+
+/// Publish baseline and effective networks as separate illustrative officer scenario layers.
+pub fn publish_officer_scenario_map(
+    output_dir: &Path,
+    report: &CompileReport,
+    baseline_run: &MidendRun,
+    effective_run: &MidendRun,
+    scenario: &OfficerScenario,
+) -> Result<DecisionMapPublication> {
+    if scenario.base_id != effective_run.base_id || scenario.base_id != baseline_run.base_id {
+        return Err(SatnError::InvalidInput(
+            "officer scenario base_id must match the baseline and effective runs".to_string(),
+        ));
+    }
+    if scenario.baseline_branch != baseline_run.branch {
+        return Err(SatnError::InvalidInput(
+            "officer scenario baseline_branch must match the baseline run".to_string(),
+        ));
+    }
+    publish_decision_map_inner(
+        output_dir,
+        report,
+        effective_run,
+        Some(baseline_run),
+        Some(scenario),
+    )
+}
+
+fn publish_decision_map_inner(
+    output_dir: &Path,
+    report: &CompileReport,
+    run: &MidendRun,
+    baseline_run: Option<&MidendRun>,
+    officer_scenario: Option<&OfficerScenario>,
 ) -> Result<DecisionMapPublication> {
     fs::create_dir_all(output_dir)?;
     write_viewer_assets(output_dir)?;
@@ -176,7 +265,65 @@ pub fn publish_decision_map(
     };
     let report = &effective_report;
 
-    let mut features = baseline_features(report);
+    let strategic_scope = officer_scenario
+        .and_then(|scenario| scenario.strategic_network.as_ref())
+        .filter(|network| network.scope_geometry.is_some());
+    let exact_alignment_network = officer_scenario
+        .and_then(|scenario| scenario.strategic_network.as_ref())
+        .filter(|network| !network.selected_alignments.is_empty());
+    if exact_alignment_network.is_some() && strategic_scope.is_none() {
+        return Err(SatnError::InvalidInput(
+            "officer-selected source alignments require an explicit strategic network scope"
+                .to_string(),
+        ));
+    }
+    let mut features = baseline_features(report, strategic_scope)?;
+    if officer_scenario.is_some() {
+        for feature in &mut features {
+            let Some(properties) = feature.properties.as_object_mut() else {
+                continue;
+            };
+            if properties.get("kind").and_then(Value::as_str) == Some("officer-compiler-comparison")
+            {
+                properties.insert("scenario_layer".to_string(), json!("officer-network"));
+            } else if properties.get("kind").and_then(Value::as_str) == Some("source-baseline")
+                && matches!(
+                    properties.get("baseline_layer").and_then(Value::as_str),
+                    Some("source-strategic-a-road" | "source-strategic-ncn")
+                )
+            {
+                let layer = if properties
+                    .get("strategic_network_scope_display")
+                    .and_then(Value::as_bool)
+                    == Some(true)
+                {
+                    "officer-network"
+                } else {
+                    "baseline-network"
+                };
+                properties.insert("scenario_layer".to_string(), json!(layer));
+            }
+        }
+    }
+    if let Some(baseline_run) = baseline_run {
+        add_baseline_network_features(report, baseline_run, &mut features);
+        let baseline_report = report
+            .clone()
+            .with_community_access(baseline_run.community_access.clone());
+        features.extend(community_access_features(
+            &baseline_report,
+            Some("baseline-community-access"),
+        ));
+        if officer_scenario.is_some_and(|scenario| scenario.community_access_regenerated) {
+            features.extend(community_access_features(
+                report,
+                Some("officer-community-access"),
+            ));
+        }
+    } else {
+        features.extend(community_access_features(report, None));
+    }
+    let scenario_feature_start = features.len();
     let mut decisions = Vec::new();
     let mut departures = Vec::new();
     let mut selected_count = 0usize;
@@ -459,6 +606,33 @@ pub fn publish_decision_map(
         }
     }
 
+    let public_officer_scenario = officer_scenario.map(public_officer_scenario);
+    if let Some(scenario) = officer_scenario {
+        add_officer_scenario_features(report, scenario, run, scenario_feature_start, &mut features);
+        if let Some(network) = exact_alignment_network {
+            let scope = strategic_scope
+                .and_then(|network| network.scope_geometry.as_ref())
+                .ok_or_else(|| {
+                    SatnError::InvalidInput(
+                        "officer-selected source alignments require an explicit strategic network scope"
+                            .to_string(),
+                    )
+                })?;
+            split_compiler_candidates_for_source_alignment(
+                &mut features,
+                scenario_feature_start,
+                network,
+                scope,
+            )?;
+            add_selected_alignment_features(network, run, &mut features)?;
+        }
+        for feature in &mut features[scenario_feature_start..] {
+            if let Some(properties) = feature.properties.as_object_mut() {
+                properties.insert("scenario_layer".to_string(), json!("officer-network"));
+            }
+        }
+    }
+
     for departure in &departures {
         if let Some(source) = report
             .source_inventory
@@ -558,6 +732,7 @@ pub fn publish_decision_map(
         files: files.clone(),
         decisions: decisions.clone(),
         departures: departures.clone(),
+        officer_scenario: public_officer_scenario.clone(),
     };
     fs::write(
         output_dir.join("decision-map.json"),
@@ -578,6 +753,7 @@ pub fn publish_decision_map(
             &counts,
             &accounting_status,
             &files,
+            public_officer_scenario.as_ref(),
         ),
     )?;
     let legacy_html = output_dir.join("decision-map.html");
@@ -600,6 +776,7 @@ pub fn publish_decision_map(
         disclaimer: "Experimental SATN POC — not an adopted plan.",
         counts: counts.clone(),
         files: files.clone(),
+        officer_scenario: public_officer_scenario,
     };
     fs::write(
         output_dir.join("publication.json"),
@@ -906,30 +1083,362 @@ fn operation_connection_id(operation: &TypedOperation) -> &str {
     }
 }
 
-fn baseline_features(report: &CompileReport) -> Vec<MapFeature> {
+fn public_officer_scenario(scenario: &OfficerScenario) -> PublicOfficerScenario {
+    let outcomes = scenario
+        .outcomes
+        .iter()
+        .map(|outcome| PublicOfficerOutcome {
+            decision_id: outcome.decision_id.clone(),
+            connection_id: outcome.connection_id.clone(),
+            baseline_candidate_id: outcome.baseline_candidate_id.clone(),
+            officer_candidate_id: outcome.officer_candidate_id.clone(),
+            effective_candidate_id: outcome.effective_candidate_id.clone(),
+            status: officer_status_label(outcome.status),
+            source_refs: outcome.source_refs.clone(),
+            attribution: outcome.attribution.clone(),
+            rationale: outcome.rationale.clone(),
+            baseline_decision_id: outcome.baseline_decision_id.clone(),
+            baseline_decision_class: outcome.baseline_decision_class.clone(),
+        })
+        .collect::<Vec<_>>();
+    PublicOfficerScenario {
+        label: "Illustrative officer-led scenario",
+        authority: scenario.authority.clone(),
+        base_id: scenario.base_id.clone(),
+        baseline_branch: scenario.baseline_branch.clone(),
+        community_access_regenerated: scenario.community_access_regenerated,
+        agreement_count: scenario
+            .outcomes
+            .iter()
+            .filter(|outcome| outcome.status == OfficerOutcomeStatus::Agreement)
+            .count(),
+        divergence_count: scenario
+            .outcomes
+            .iter()
+            .filter(|outcome| outcome.status == OfficerOutcomeStatus::Divergence)
+            .count(),
+        unavailable_count: scenario
+            .outcomes
+            .iter()
+            .filter(|outcome| outcome.status == OfficerOutcomeStatus::Unavailable)
+            .count(),
+        outcomes,
+        strategic_network: scenario.strategic_network.as_ref().map(|network| {
+            PublicOfficerStrategicNetwork {
+                selected_graph_edge_ids: network.selected_graph_edge_ids.clone(),
+                deselected_graph_edge_ids: network.deselected_graph_edge_ids.clone(),
+                selected_alignments: network.selected_alignments.clone(),
+                source_refs: network.source_refs.clone(),
+                attribution: network.attribution.clone(),
+                rationale: network.rationale.clone(),
+                scope_geometry: network.scope_geometry.clone(),
+            }
+        }),
+    }
+}
+
+fn officer_status_label(status: OfficerOutcomeStatus) -> &'static str {
+    match status {
+        OfficerOutcomeStatus::Agreement => "agreement",
+        OfficerOutcomeStatus::Divergence => "divergence",
+        OfficerOutcomeStatus::Unavailable => "unavailable",
+    }
+}
+
+fn add_officer_scenario_features(
+    report: &CompileReport,
+    scenario: &OfficerScenario,
+    effective_run: &MidendRun,
+    effective_feature_start: usize,
+    features: &mut Vec<MapFeature>,
+) {
+    for outcome in &scenario.outcomes {
+        let status = officer_status_label(outcome.status);
+        if let Some(feature) = features[effective_feature_start..]
+            .iter_mut()
+            .find(|feature| {
+                matches!(
+                    feature.kind.as_str(),
+                    "selected-alignment" | "provisional-alignment" | "unresolved-decision"
+                ) && feature.properties["connection_id"] == outcome.connection_id
+                    && (outcome.effective_candidate_id.is_none()
+                        || feature.properties["candidate_id"]
+                            == outcome
+                                .effective_candidate_id
+                                .as_deref()
+                                .unwrap_or_default()
+                        || feature.properties["kind"] == "unresolved-decision")
+            })
+        {
+            let officer_selected = outcome.officer_candidate_id.is_some()
+                && outcome.officer_candidate_id == outcome.effective_candidate_id;
+            if let Some(properties) = feature.properties.as_object_mut() {
+                properties.insert("scenario_status".to_string(), json!(status));
+                properties.insert(
+                    "scenario_authority".to_string(),
+                    json!(if outcome.status == OfficerOutcomeStatus::Unavailable {
+                        "Officer decision unavailable"
+                    } else {
+                        "Illustrative officer-led scenario"
+                    }),
+                );
+                properties.insert(
+                    "baseline_candidate_id".to_string(),
+                    json!(outcome.baseline_candidate_id),
+                );
+                properties.insert(
+                    "officer_candidate_id".to_string(),
+                    json!(outcome.officer_candidate_id),
+                );
+                properties.insert(
+                    "effective_candidate_id".to_string(),
+                    json!(outcome.effective_candidate_id),
+                );
+                properties.insert(
+                    "baseline_decision_id".to_string(),
+                    json!(outcome.baseline_decision_id),
+                );
+                properties.insert(
+                    "baseline_decision_class".to_string(),
+                    json!(outcome.baseline_decision_class),
+                );
+                properties.insert(
+                    "officer_source_refs".to_string(),
+                    json!(outcome.source_refs),
+                );
+                properties.insert(
+                    "officer_attribution".to_string(),
+                    json!(outcome.attribution),
+                );
+                properties.insert("officer_rationale".to_string(), json!(outcome.rationale));
+                properties.insert("officer_selected".to_string(), json!(officer_selected));
+            }
+        }
+    }
+
+    for displaced in displaced_baseline_edges(report, scenario, effective_run) {
+        let outcome = displaced.outcome;
+        let candidate = displaced.baseline_candidate;
+        let (connection_label, road_classes) = connection_details(report, &outcome.connection_id);
+        features.push(MapFeature {
+            kind: "officer-baseline-unused".to_string(),
+            geometry: Some(MapGeometry::Line(displaced.geometry.to_vec())),
+            properties: json!({
+                "kind": "officer-baseline-unused",
+                "label": "Unused original baseline edge",
+                "decision_id": outcome.baseline_decision_id,
+                "connection_id": outcome.connection_id,
+                "connection_label": connection_label,
+                "road_classes": road_classes,
+                "candidate_id": candidate.id,
+                "baseline_candidate_id": candidate.id,
+                "baseline_edge_id": displaced.edge_id,
+                "officer_candidate_id": outcome.officer_candidate_id,
+                "effective_candidate_id": outcome.effective_candidate_id,
+                "decision_class": outcome.baseline_decision_class,
+                "baseline_decision_id": outcome.baseline_decision_id,
+                "baseline_decision_class": outcome.baseline_decision_class,
+                "scenario_status": officer_status_label(outcome.status),
+                "scenario_authority": "Original baseline decision",
+                "officer_source_refs": outcome.source_refs,
+                "officer_attribution": outcome.attribution,
+                "officer_rationale": outcome.rationale,
+                "reason": "This original baseline edge is displaced and is no longer used by any effective selected or provisional strategic candidate.",
+                "evidence_refs": [candidate.id, displaced.edge_id, outcome.source_refs],
+                "branch": scenario.baseline_branch,
+                "base_id": scenario.base_id,
+            }),
+        });
+    }
+
+    if let Some(network) = &scenario
+        .strategic_network
+        .as_ref()
+        .filter(|network| network.selected_alignments.is_empty())
+    {
+        let selected_edges = network
+            .selected_graph_edge_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        let deselected_edges = network
+            .deselected_graph_edge_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        for edge in &network.edge_geometries {
+            let (disposition, status, reason) = if selected_edges.contains(edge.edge_id.as_str()) {
+                (
+                    "selected",
+                    "Included by strategic network reference",
+                    "This graph edge is included by the strategic network reference.",
+                )
+            } else if deselected_edges.contains(edge.edge_id.as_str()) {
+                (
+                    "deselected",
+                    "Inferred deselection from strategic network reference",
+                    "This edge is absent from the strategic network reference and is shown as an inferred deselection, not a recorded rejection.",
+                )
+            } else {
+                continue;
+            };
+            features.push(MapFeature {
+                kind: "officer-strategic-network".to_string(),
+                geometry: Some(MapGeometry::Line(edge.geometry.clone())),
+                properties: json!({
+                    "kind": "officer-strategic-network",
+                    "label": "Strategic network reference edge",
+                    "graph_edge_id": edge.edge_id,
+                    "strategic_network_disposition": disposition,
+                    "scenario_status": status,
+                    "scenario_authority": "Strategic network reference",
+                    "source_refs": network.source_refs,
+                    "attribution": network.attribution,
+                    "rationale": network.rationale,
+                    "reason": reason,
+                    "evidence_refs": network.source_refs,
+                    "branch": scenario.baseline_branch,
+                    "base_id": scenario.base_id,
+                }),
+            });
+        }
+    }
+}
+
+fn baseline_features(
+    report: &CompileReport,
+    strategic_scope: Option<&OfficerStrategicNetwork>,
+) -> Result<Vec<MapFeature>> {
     let mut features = Vec::new();
+    let boundary_scope_geometry = report
+        .boundary_scope
+        .as_ref()
+        .filter(|_| {
+            report
+                .source_inventory
+                .iter()
+                .any(|source| source_layer(&source.baseline_role) == "source-strategic-ncn")
+        })
+        .map(|boundary| {
+            let geometry = json!({
+                "type": "MultiPolygon",
+                "coordinates": boundary.geometry,
+            });
+            GeosGeometry::new_from_geojson(&geometry.to_string()).map_err(scope_geos_error)
+        })
+        .transpose()?;
+    let scope_geometry = strategic_scope
+        .and_then(|network| network.scope_geometry.as_ref())
+        .map(|geometry| {
+            let geometry = serde_json::to_value(geometry)?;
+            GeosGeometry::new_from_geojson(&geometry.to_string()).map_err(scope_geos_error)
+        })
+        .transpose()?;
     for source in &report.source_inventory {
         let baseline_layer = source_layer(&source.baseline_role);
         for (part_index, geometry) in source.geometry.iter().enumerate() {
-            features.push(MapFeature {
+            let scoped_ncn =
+                baseline_layer == "source-strategic-ncn" && boundary_scope_geometry.is_some();
+            let scoped_a_road =
+                baseline_layer == "source-strategic-a-road" && scope_geometry.is_some();
+            let mut properties = json!({
+                "kind": "source-baseline",
+                "source_corridor_id": source.id,
+                "source_reference": source.reference,
+                "source_kind": source.source_kind,
+                "source_id": source.source_id,
+                "label": format!("{} ({})", source.reference, source.baseline_role),
+                "source_geometry_part": part_index,
+                "scope": source.scope,
+                "baseline_role": source.baseline_role,
+                "baseline_layer": baseline_layer,
+                "topology_status": source.topology_status,
+                "attachment_status": source.attachment_status,
+                "provision_status": source.provision_status,
+            });
+            if scoped_a_road {
+                properties["strategic_network_scope_original"] = json!(true);
+            }
+            let original = MapFeature {
                 kind: "source-baseline".to_string(),
                 geometry: Some(MapGeometry::Line(geometry.clone())),
-                properties: json!({
-                    "kind": "source-baseline",
-                    "source_corridor_id": source.id,
-                    "source_reference": source.reference,
-                    "source_kind": source.source_kind,
-                    "source_id": source.source_id,
-                    "label": format!("{} ({})", source.reference, source.baseline_role),
-                    "source_geometry_part": part_index,
-                    "scope": source.scope,
-                    "baseline_role": source.baseline_role,
-                    "baseline_layer": baseline_layer,
-                    "topology_status": source.topology_status,
-                    "attachment_status": source.attachment_status,
-                    "provision_status": source.provision_status,
-                }),
-            });
+                properties,
+            };
+
+            if scoped_ncn {
+                let boundary = boundary_scope_geometry
+                    .as_ref()
+                    .expect("scoped NCN has report boundary scope");
+                for (scope_part, coordinates) in line_inside_scope(geometry, boundary)?
+                    .into_iter()
+                    .enumerate()
+                {
+                    let mut properties = original.properties.clone();
+                    properties["boundary_scope_part"] = json!(scope_part);
+                    features.push(MapFeature {
+                        kind: "source-baseline".to_string(),
+                        geometry: Some(MapGeometry::Line(coordinates)),
+                        properties,
+                    });
+                }
+                continue;
+            }
+
+            features.push(original.clone());
+
+            let Some(scope_geometry) = scope_geometry.as_ref().filter(|_| scoped_a_road) else {
+                continue;
+            };
+            let outside = line_outside_scope(geometry, scope_geometry)?;
+            let network = strategic_scope.expect("scope geometry comes from the network");
+            let exact_source_alignment = !network.selected_alignments.is_empty();
+            if exact_source_alignment {
+                for (inside_part, coordinates) in line_inside_scope(geometry, scope_geometry)?
+                    .into_iter()
+                    .enumerate()
+                {
+                    let mut properties = original.properties.clone();
+                    properties["kind"] = json!("officer-compiler-comparison");
+                    properties["label"] = json!("Compiler A-road baseline (shown for comparison)");
+                    properties["role"] = json!("Compiler A-road baseline");
+                    properties["comparison_subject"] = json!("a-road-source");
+                    properties["strategic_network_scope_part"] = json!(inside_part);
+                    properties["scenario_authority"] = json!("Strategic network reference");
+                    properties["strategic_network_reference_source_refs"] =
+                        json!(network.source_refs);
+                    properties["strategic_network_reference_attribution"] =
+                        json!(network.attribution);
+                    properties["reason"] = json!(
+                        "Compiler baseline geometry within the supplied strategic-reference scope is superseded by the exact source alignment and shown for comparison."
+                    );
+                    properties
+                        .as_object_mut()
+                        .expect("source properties")
+                        .remove("provisional");
+                    features.push(MapFeature {
+                        kind: "officer-compiler-comparison".to_string(),
+                        geometry: Some(MapGeometry::Line(coordinates)),
+                        properties,
+                    });
+                }
+            }
+            for (outside_part, coordinates) in outside.into_iter().enumerate() {
+                let mut properties = original.properties.clone();
+                properties["strategic_network_scope_display"] = json!(true);
+                properties["strategic_network_scope_part"] = json!(outside_part);
+                properties["scenario_authority"] = json!("Strategic network reference");
+                properties["strategic_network_scope_source_refs"] = json!(network.source_refs);
+                properties["strategic_network_scope_attribution"] = json!(network.attribution);
+                properties["strategic_network_scope_rationale"] = json!(network.rationale);
+                properties["reason"] = json!(
+                    "This A-road source segment is outside the geographic scope supplied by the strategic network reference."
+                );
+                features.push(MapFeature {
+                    kind: "source-baseline".to_string(),
+                    geometry: Some(MapGeometry::Line(coordinates)),
+                    properties,
+                });
+            }
         }
     }
     for candidate in &report.candidate_neighbourhoods {
@@ -986,16 +1495,150 @@ fn baseline_features(report: &CompileReport) -> Vec<MapFeature> {
             }),
         });
     }
-    for access in &report.community_access {
-        let geometry = if access.path_geometry.len() >= 2 {
-            Some(MapGeometry::Line(access.path_geometry.clone()))
-        } else {
-            Some(MapGeometry::Point(access.geometry))
+    for obligation in &report.access_obligations {
+        if community_access_represents_obligation(obligation, &report.community_access) {
+            continue;
+        }
+        let Some(point) = obligation.geometry else {
+            continue;
         };
         features.push(MapFeature {
-            kind: "community-access".to_string(),
-            geometry,
+            kind: "access-obligation".to_string(),
+            geometry: Some(MapGeometry::Point(point)),
             properties: json!({
+                "kind": "access-obligation",
+                "obligation_id": obligation.id,
+                "obligation_kind": obligation.kind,
+                "source_id": obligation.source_id,
+                "name": obligation.name,
+                "disposition": obligation.disposition,
+                "reason": obligation.reason,
+            }),
+        });
+    }
+    Ok(features)
+}
+
+fn add_baseline_network_features(
+    report: &CompileReport,
+    baseline_run: &MidendRun,
+    features: &mut Vec<MapFeature>,
+) {
+    for operation in &baseline_run.operations {
+        match operation {
+            TypedOperation::SelectAlignment {
+                id,
+                connection_id,
+                candidate_id,
+                decision_class,
+                provisional,
+                reason,
+                uncertainties,
+                ..
+            } => {
+                let Some(candidate) = report
+                    .candidates
+                    .iter()
+                    .find(|candidate| candidate.id == *candidate_id)
+                else {
+                    continue;
+                };
+                let (connection_label, road_classes) = connection_details(report, connection_id);
+                let reason = reason.as_deref().unwrap_or(
+                    "Baseline compilation selected this admitted route; provision, safety, access and adoption remain unresolved.",
+                );
+                let mut feature = decision_feature(
+                    if *provisional {
+                        "provisional-alignment"
+                    } else {
+                        "selected-alignment"
+                    },
+                    candidate,
+                    &baseline_run.branch,
+                    &baseline_run.base_id,
+                    decision_properties(
+                        id,
+                        connection_id,
+                        &connection_label,
+                        &road_classes,
+                        Some(candidate_id),
+                        decision_class,
+                        *provisional,
+                        reason,
+                        uncertainties,
+                        vec![candidate_id.clone(), connection_id.clone()],
+                    ),
+                );
+                if let Some(properties) = feature.properties.as_object_mut() {
+                    properties.insert("scenario_layer".to_string(), json!("baseline-network"));
+                    properties.insert(
+                        "scenario_authority".to_string(),
+                        json!("Baseline Scenario Compilation"),
+                    );
+                }
+                features.push(feature);
+            }
+            TypedOperation::Unresolved {
+                id,
+                connection_id,
+                decision_class,
+                marker,
+                reason,
+                uncertainties,
+                ..
+            } => {
+                let (connection_label, road_classes) = connection_details(report, connection_id);
+                let candidate = report
+                    .candidates
+                    .iter()
+                    .filter(|candidate| candidate.connection_id == *connection_id)
+                    .min_by(|left, right| left.id.cmp(&right.id));
+                let mut properties = json!({
+                    "kind": "unresolved-decision",
+                    "scenario_layer": "baseline-network",
+                    "scenario_authority": "Baseline Scenario Compilation",
+                    "decision_id": id,
+                    "connection_id": connection_id,
+                    "connection_label": connection_label,
+                    "road_classes": road_classes,
+                    "decision_class": decision_class,
+                    "marker": marker,
+                    "reason": reason,
+                    "uncertainties": uncertainties,
+                    "evidence_refs": candidate
+                        .map(|candidate| vec![candidate.id.clone(), candidate.connection_id.clone()])
+                        .unwrap_or_else(|| vec![connection_id.clone()]),
+                    "branch": baseline_run.branch,
+                    "base_id": baseline_run.base_id,
+                });
+                let geometry =
+                    candidate.map(|candidate| MapGeometry::Line(candidate.geometry.clone()));
+                features.push(MapFeature {
+                    kind: "unresolved-decision".to_string(),
+                    geometry,
+                    properties: std::mem::take(&mut properties),
+                });
+            }
+            TypedOperation::SelectCommunityAccess { .. }
+            | TypedOperation::UnresolvedCommunityAccess { .. } => {}
+        }
+    }
+}
+
+fn community_access_features(
+    report: &CompileReport,
+    scenario_layer: Option<&str>,
+) -> Vec<MapFeature> {
+    report
+        .community_access
+        .iter()
+        .map(|access| {
+            let geometry = if access.path_geometry.len() >= 2 {
+                Some(MapGeometry::Line(access.path_geometry.clone()))
+            } else {
+                Some(MapGeometry::Point(access.geometry))
+            };
+            let mut properties = json!({
                 "kind": "community-access",
                 "community_id": access.community_id,
                 "source_id": access.source_id,
@@ -1034,31 +1677,215 @@ fn baseline_features(report: &CompileReport) -> Vec<MapFeature> {
                 "reason": access.reason,
                 "full_access_topography": topography_summary(access.full_access_topography.as_ref()),
                 "new_link_topography": topography_summary(access.new_link_topography.as_ref()),
-            }),
-        });
-    }
-    for obligation in &report.access_obligations {
-        if community_access_represents_obligation(obligation, &report.community_access) {
-            continue;
-        }
-        let Some(point) = obligation.geometry else {
+            });
+            if let Some(layer) = scenario_layer {
+                properties["scenario_layer"] = json!(layer);
+                properties["scenario_authority"] = json!(if layer == "officer-community-access" {
+                    "Generated after officer strategic choices; this is not officer approval."
+                } else {
+                    "Pre-officer Baseline Scenario Compilation"
+                });
+            }
+            MapFeature {
+                kind: "community-access".to_string(),
+                geometry,
+                properties,
+            }
+        })
+        .collect()
+}
+
+fn split_compiler_candidates_for_source_alignment(
+    features: &mut Vec<MapFeature>,
+    feature_start: usize,
+    network: &OfficerStrategicNetwork,
+    scope_geometry: &OfficerStrategicScopeGeometry,
+) -> Result<()> {
+    let scope_json = serde_json::to_value(scope_geometry)?;
+    let scope =
+        GeosGeometry::new_from_geojson(&scope_json.to_string()).map_err(scope_geos_error)?;
+    let candidates = (feature_start..features.len())
+        .filter(|index| {
+            matches!(
+                features[*index].kind.as_str(),
+                "selected-alignment" | "provisional-alignment"
+            ) && features[*index].properties.get("community_id").is_none()
+        })
+        .collect::<Vec<_>>();
+    for index in candidates {
+        let original = features[index].clone();
+        let Some(MapGeometry::Line(coordinates)) = original.geometry.as_ref() else {
             continue;
         };
-        features.push(MapFeature {
-            kind: "access-obligation".to_string(),
-            geometry: Some(MapGeometry::Point(point)),
-            properties: json!({
-                "kind": "access-obligation",
-                "obligation_id": obligation.id,
-                "obligation_kind": obligation.kind,
-                "source_id": obligation.source_id,
-                "name": obligation.name,
-                "disposition": obligation.disposition,
-                "reason": obligation.reason,
-            }),
-        });
+        features[index].properties["strategic_network_scope_original"] = json!(true);
+        let outside = line_outside_scope(coordinates, &scope)?;
+        let inside = line_inside_scope(coordinates, &scope)?;
+        for (part, geometry) in outside.into_iter().enumerate() {
+            let mut properties = original.properties.clone();
+            properties["strategic_network_scope_display"] = json!(true);
+            properties["strategic_network_scope_part"] = json!(part);
+            properties["scenario_authority"] = json!("Strategic network reference");
+            properties["strategic_network_reference_source_refs"] = json!(network.source_refs);
+            properties["strategic_network_reference_attribution"] = json!(network.attribution);
+            properties["reason"] = json!(
+                "This compiler candidate segment is outside the geographic scope supplied by the strategic network reference."
+            );
+            features.push(MapFeature {
+                kind: original.kind.clone(),
+                geometry: Some(MapGeometry::Line(geometry)),
+                properties,
+            });
+        }
+        for (part, geometry) in inside.into_iter().enumerate() {
+            let mut properties = original.properties.clone();
+            properties["kind"] = json!("officer-compiler-comparison");
+            properties["label"] = json!("Compiler candidate geometry (shown for comparison)");
+            properties["role"] = json!("Compiler candidate geometry");
+            properties["comparison_subject"] = json!("selected-candidate");
+            properties["strategic_network_scope_part"] = json!(part);
+            properties["scenario_authority"] = json!("Strategic network reference");
+            properties["strategic_network_reference_source_refs"] = json!(network.source_refs);
+            properties["strategic_network_reference_attribution"] = json!(network.attribution);
+            properties["source_reference"] = json!(network.attribution);
+            properties["reason"] = json!(
+                "Compiler candidate geometry within the supplied strategic-reference scope is superseded by the exact source alignment and shown for comparison."
+            );
+            let object = properties.as_object_mut().expect("candidate properties");
+            object.remove("provisional");
+            object.remove("officer_selected");
+            features.push(MapFeature {
+                kind: "officer-compiler-comparison".to_string(),
+                geometry: Some(MapGeometry::Line(geometry)),
+                properties,
+            });
+        }
     }
-    features
+    Ok(())
+}
+
+fn add_selected_alignment_features(
+    network: &OfficerStrategicNetwork,
+    run: &MidendRun,
+    features: &mut Vec<MapFeature>,
+) -> Result<()> {
+    for alignment in &network.selected_alignments {
+        if alignment.geometry.is_empty() {
+            return Err(SatnError::InvalidInput(format!(
+                "officer-selected alignment {} must contain line geometry",
+                alignment.source_id
+            )));
+        }
+        for geometry in &alignment.geometry {
+            if geometry.len() < 2 {
+                return Err(SatnError::InvalidInput(format!(
+                    "officer-selected alignment {} must contain at least two coordinates",
+                    alignment.source_id
+                )));
+            }
+            features.push(MapFeature {
+                kind: "officer-selected-alignment".to_string(),
+                geometry: Some(MapGeometry::Line(geometry.clone())),
+                properties: json!({
+                    "kind": "officer-selected-alignment",
+                    "label": "Officer-selected alignment",
+                    "role": "Officer-selected alignment",
+                    "source_id": alignment.source_id,
+                    "source_reference": network.attribution,
+                    "source_refs": network.source_refs,
+                    "scenario_authority": "Strategic network reference",
+                    "reason": "Exact source line supplied as the selected strategic alignment; its geometry is shown without snapping or graph matching.",
+                    "evidence_refs": [alignment.source_id, network.source_refs],
+                    "branch": run.branch,
+                    "base_id": run.base_id,
+                }),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn line_outside_scope(
+    coordinates: &[[f64; 2]],
+    scope: &GeosGeometry,
+) -> Result<Vec<Vec<[f64; 2]>>> {
+    let line = json!({
+        "type": "LineString",
+        "coordinates": coordinates,
+    });
+    let line = GeosGeometry::new_from_geojson(&line.to_string()).map_err(scope_geos_error)?;
+    let outside = line.difference(scope).map_err(scope_geos_error)?;
+    if outside.is_empty().map_err(scope_geos_error)? {
+        return Ok(Vec::new());
+    }
+    let geometry: Value = serde_json::from_str(&outside.to_geojson().map_err(scope_geos_error)?)?;
+    let mut lines = Vec::new();
+    collect_scope_lines(&geometry, &mut lines)?;
+    Ok(lines)
+}
+
+fn line_inside_scope(coordinates: &[[f64; 2]], scope: &GeosGeometry) -> Result<Vec<Vec<[f64; 2]>>> {
+    let line = json!({
+        "type": "LineString",
+        "coordinates": coordinates,
+    });
+    let line = GeosGeometry::new_from_geojson(&line.to_string()).map_err(scope_geos_error)?;
+    let inside = line.intersection(scope).map_err(scope_geos_error)?;
+    if inside.is_empty().map_err(scope_geos_error)? {
+        return Ok(Vec::new());
+    }
+    let geometry: Value = serde_json::from_str(&inside.to_geojson().map_err(scope_geos_error)?)?;
+    let mut lines = Vec::new();
+    collect_scope_lines(&geometry, &mut lines)?;
+    Ok(lines)
+}
+
+fn collect_scope_lines(geometry: &Value, lines: &mut Vec<Vec<[f64; 2]>>) -> Result<()> {
+    match geometry.get("type").and_then(Value::as_str) {
+        Some("LineString") => {
+            let coordinates: Vec<[f64; 2]> =
+                serde_json::from_value(geometry.get("coordinates").cloned().ok_or_else(|| {
+                    SatnError::InvalidInput("scope line has no coordinates".to_string())
+                })?)?;
+            if coordinates.len() >= 2 {
+                lines.push(coordinates);
+            }
+        }
+        Some("MultiLineString") => {
+            let coordinates: Vec<Vec<[f64; 2]>> =
+                serde_json::from_value(geometry.get("coordinates").cloned().ok_or_else(|| {
+                    SatnError::InvalidInput("scope multilinestring has no coordinates".to_string())
+                })?)?;
+            lines.extend(coordinates.into_iter().filter(|line| line.len() >= 2));
+        }
+        Some("GeometryCollection") => {
+            let geometries = geometry
+                .get("geometries")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    SatnError::InvalidInput(
+                        "scope geometry collection has no geometries".to_string(),
+                    )
+                })?;
+            for geometry in geometries {
+                collect_scope_lines(geometry, lines)?;
+            }
+        }
+        Some(other) => {
+            return Err(SatnError::InvalidInput(format!(
+                "strategic network clipping returned non-linear geometry {other}"
+            )));
+        }
+        None => {
+            return Err(SatnError::InvalidInput(
+                "strategic network clipping returned geometry without a type".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn scope_geos_error(error: geos::Error) -> SatnError {
+    SatnError::InvalidInput(format!("strategic network scope clipping failed: {error}"))
 }
 
 fn rural_decision_feature(
@@ -1426,6 +2253,7 @@ fn render_interactive_html(
     counts: &DecisionMapCounts,
     accounting_status: &str,
     files: &DecisionMapFiles,
+    officer_scenario: Option<&PublicOfficerScenario>,
 ) -> String {
     let title = html_escape(&report.title);
     let branch = html_escape(&run.branch);
@@ -1437,17 +2265,48 @@ fn render_interactive_html(
     });
     let attribution = html_escape(&report.attribution);
     let source_attributions = html_escape(&report.source_attributions.join("; "));
+    let (strategic_layer_controls, community_layer_controls, network_description) =
+        if officer_scenario.is_some() {
+            (
+                r#"<li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="baseline-network" checked>Baseline Network <span class="swatch strategic-network-key" aria-hidden="true"></span>A roads <span class="swatch ncn-current-key" aria-hidden="true"></span>Current NCN <span class="swatch ncn-former-key" aria-hidden="true"></span>Former NCN / officially reclassified NCN <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About the baseline network" aria-describedby="layer-help-baseline-network">ⓘ</summary></details><span id="layer-help-baseline-network" class="layer-help-popup" role="tooltip">The baseline retains selected and provisional routes plus A roads in red, current NCN routes in blue, and former NCN / officially reclassified NCN routes in yellow. Colour records source classification, not safety or condition.</span></li>
+<li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="officer-network"> <span class="swatch officer-selected-key" aria-hidden="true"></span>Officer Network <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About the officer network" aria-describedby="layer-help-officer-network">ⓘ</summary></details><span id="layer-help-officer-network" class="layer-help-popup" role="tooltip">Optional effective network after officer strategic choices. Officer attribution and superseded comparisons remain attached to their features.</span></li>"#,
+                r#"<li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="baseline-community-access"> <span class="swatch community-key" aria-hidden="true"></span><span class="marker-key marker-pentagon-key community-point-key" aria-hidden="true"></span><span class="marker-key marker-cross-key gap-point-key" aria-hidden="true"></span>Baseline Community Access <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About baseline community access" aria-describedby="layer-help-baseline-community">ⓘ</summary></details><span id="layer-help-baseline-community" class="layer-help-popup" role="tooltip">Recorded access status from before officer strategic choices.</span></li>
+<li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="officer-community-access"> <span class="swatch community-key" aria-hidden="true"></span><span class="marker-key marker-pentagon-key community-point-key" aria-hidden="true"></span><span class="marker-key marker-cross-key gap-point-key" aria-hidden="true"></span>Officer Community Access <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About officer community access" aria-describedby="layer-help-officer-community">ⓘ</summary></details><span id="layer-help-officer-community" class="layer-help-popup" role="tooltip">Generated by the compiler after officer strategic choices; it does not mean an officer approved each connection.</span></li>"#,
+                "Baseline Network is shown first. It retains A roads in red, current NCN routes in blue, and former NCN / officially reclassified NCN routes in yellow. Colour records source classification, not safety or condition. Officer layers are optional comparisons; community access is regenerated after officer strategic choices; it is compiler output, not officer approval.",
+            )
+        } else {
+            (
+                r#"<li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="strategic-network" checked>Strategic active travel network <span class="swatch strategic-network-key" aria-hidden="true"></span>A roads <span class="swatch ncn-current-key" aria-hidden="true"></span>Current NCN <span class="swatch ncn-former-key" aria-hidden="true"></span>Former NCN / officially reclassified NCN <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About the strategic active travel network" aria-describedby="layer-help-1">ⓘ</summary></details><span id="layer-help-1" class="layer-help-popup" role="tooltip">The strategic network retains A roads in red, current National Cycle Network routes in blue, and former NCN / officially reclassified routes in yellow, alongside chosen and provisional non-community route lines. Colour records source classification, not safety or condition.</span></li>"#,
+                r#"<li class="layer-control-row"><label><input type="checkbox" data-layer-toggle="community-access"> <span class="swatch community-key" aria-hidden="true"></span><span class="marker-key marker-pentagon-key community-point-key" aria-hidden="true"></span><span class="marker-key marker-cross-key gap-point-key" aria-hidden="true"></span>Community Connections <span data-layer-count></span></label><details class="layer-help" name="native-layer-help"><summary aria-label="About Community Connections" aria-describedby="layer-help-2">ⓘ</summary></details><span id="layer-help-2" class="layer-help-popup" role="tooltip">Community Connections show recorded access from a community to the strategic network. A cross marks a missing connection where no connected path is evidenced.</span></li>"#,
+                "The Strategic active travel network retains A roads in red, current National Cycle Network routes in blue, and former NCN / officially reclassified routes in yellow, alongside selected and provisional route lines. Colour records source classification, not safety or condition. Community Connections and other evidence layers remain separate.",
+            )
+        };
     let candidate_neighbourhood_layer_control = if report.candidate_neighbourhoods.is_empty() {
         String::new()
     } else {
         "<li class=\"layer-control-row\"><label><input type=\"checkbox\" data-layer-toggle=\"candidate-neighbourhood\"> <span class=\"swatch candidate-key\"></span>Candidate neighbourhoods <span data-layer-count></span></label><details class=\"layer-help\" name=\"native-layer-help\"><summary aria-label=\"About candidate neighbourhoods\" aria-describedby=\"layer-help-candidate-neighbourhood\">ⓘ</summary></details><span id=\"layer-help-candidate-neighbourhood\" class=\"layer-help-popup\" role=\"tooltip\">Candidate neighbourhoods are generated planning areas based on available evidence; they do not confirm a low-traffic area.</span></li>".to_string()
     };
+    let officer_scenario_attribute = if officer_scenario.is_some() {
+        " data-native-officer-scenario=\"illustrative\""
+    } else {
+        ""
+    };
+    let officer_scenario_banner = officer_scenario
+        .map(officer_scenario_banner)
+        .unwrap_or_default();
+    let officer_findings = officer_scenario.map(officer_findings).unwrap_or_default();
     let template = include_str!("native_map_template.html");
     template
         .replace(
             "__CANDIDATE_NEIGHBOURHOOD_LAYER_CONTROL__",
             &candidate_neighbourhood_layer_control,
         )
+        .replace("__STRATEGIC_LAYER_CONTROLS__", strategic_layer_controls)
+        .replace("__COMMUNITY_LAYER_CONTROLS__", community_layer_controls)
+        .replace("__OFFICER_SCENARIO_ATTRIBUTE__", officer_scenario_attribute)
+        .replace("__OFFICER_SCENARIO_BANNER__", &officer_scenario_banner)
+        .replace("__OFFICER_FINDINGS__", &officer_findings)
+        .replace("__NETWORK_DESCRIPTION__", network_description)
         .replace("__TITLE__", &title)
         .replace("__DEPLOYMENT__", &deployment_id)
         .replace("__BRANCH__", &branch)
@@ -1476,6 +2335,40 @@ fn render_interactive_html(
         .replace("__COMMUNITY_ACCESS__", &counts.community_access.to_string())
         .replace("__COMMUNITY_GAPS__", &counts.community_gaps.to_string())
         .replace("__GEOJSON__", files.geojson)
+}
+
+fn officer_scenario_banner(scenario: &PublicOfficerScenario) -> String {
+    format!(
+        "<section class=\"officer-scenario-banner\" aria-label=\"Illustrative officer scenario notice\"><strong>Illustrative officer-led scenario</strong><p>Scenario authority: {}</p><p>This is an illustrative scenario, not an adopted plan or an actual named-officer-issued decision.</p><p>The decision class describes the mechanical or classifier process; scenario authority is shown separately.</p></section>",
+        html_escape(&scenario.authority)
+    )
+}
+
+fn officer_findings(scenario: &PublicOfficerScenario) -> String {
+    let unavailable = scenario
+        .outcomes
+        .iter()
+        .filter(|outcome| outcome.status == "unavailable")
+        .collect::<Vec<_>>();
+    if unavailable.is_empty() {
+        return String::new();
+    }
+    let findings = unavailable
+        .iter()
+        .map(|outcome| {
+            let source_refs = outcome.source_refs.join("; ");
+            format!(
+                "<li><strong>Officer decision unavailable</strong> for {}. The baseline operation remains as context and is not officer-approved. Attribution: {}. Rationale: {}. Source references: {}.</li>",
+                html_escape(&outcome.connection_id),
+                html_escape(&outcome.attribution),
+                html_escape(&outcome.rationale),
+                html_escape(&source_refs),
+            )
+        })
+        .collect::<String>();
+    format!(
+        "<section class=\"officer-findings\" aria-label=\"Unavailable officer decisions\"><h2>Unavailable officer decisions</h2><ul>{findings}</ul></section>"
+    )
 }
 
 fn html_escape(value: &str) -> String {

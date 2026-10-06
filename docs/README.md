@@ -1,46 +1,69 @@
 # Documentation
 
-Choose the shortest route for what you need to do.
+The current implementation is the **native Rust compiler**. Python workflows,
+research and earlier evaluation results remain available as historical reference;
+they are not a statement of native feature parity or the contents of every release.
 
-## Build and operate
+## Understand the network and its decisions
 
-| Task | Start here |
+| Reader or question | Start here |
 | --- | --- |
-| Prove a clone can build a map | [Agent quickstart](getting-started/agent-quickstart.md) |
-| Reproduce the flagship council map | [B&NES golden path](guides/reproduce-banes.md) |
-| Configure another authority or region | [Build a new area](guides/build-a-new-area.md) |
-| Package and optionally publish | [Publish a deployment](guides/publish-a-deployment.md) |
-| Diagnose a failed or incomplete stage | [Troubleshooting](troubleshooting.md) |
+| Planning officers, transport practitioners and general readers | [Decision process and mechanical rules](concepts/decision-process.md) |
+| AI readers: what is code, classification or reasoning? | [Decision classes and escalation](concepts/decision-process.md#the-decision-process) |
+| Software readers: which module owns each step? | [Current compiler architecture](compiler-architecture.md) |
+| What do map layers and unknowns mean? | [Feature tour](concepts/feature-tour.md) |
+| What does a candidate neighbourhood establish? | [Candidate neighbourhood evidence](guides/candidate-neighbourhoods.md) |
+| How are bus routes and interchange evidence represented? | [Bus-route overlay](guides/bus-route-overlay.md) |
+| Which work is delivered or still open? | [Issue reconciliation, 30 September 2026](planning/issue-status-2026-09-30.md) |
 
-## Understand the product
+## Build and operate the native compiler
 
-| Question | Read |
+- [Clone to a native map](getting-started/agent-quickstart.md).
+- [Native build, modes, outputs, replay and officer scenarios](../rust/README.md).
+- [Reproduce B&NES](guides/reproduce-banes.md), [prepare another area](guides/build-a-new-area.md), and [native configuration](reference/area-definition.md).
+- [Clean native elevation preparation and live-model approval](guides/native-clean-build.md).
+- [Package and publish a deployment](guides/publish-a-deployment.md).
+- [Native troubleshooting](troubleshooting.md) and [contributing/focused validation](../CONTRIBUTING.md).
+
+Real-world builds require pinned source snapshots and any configured elevation or
+built-up-area inputs. Those caches are not supplied by a clone. Mechanical mode
+needs no model; live mode and offline replay are different paths with different
+receipts. Use the native instructions before copying a historical Python command.
+
+## Retained Python workflows
+
+| Task | Reference |
 | --- | --- |
-| What makes the compiler useful? | [B&NES feature tour](concepts/feature-tour.md) |
-| Where may an AI agent act? | [Compiler architecture](compiler-architecture.md) |
-| How are alternatives reduced without hiding them? | [Network-core derivation](compiler-architecture.md#3-what-the-network-core-derives) |
-| Why can a result contain gaps? | [Stop, validate and restart](compiler-architecture.md#5-the-agentic-stop-validate-and-restart-protocol) |
-| What does the published map actually mean? | [Feature tour: network, evidence and provenance](concepts/feature-tour.md) |
-| How are terrain and traffic represented? | [Feature tour: evidence-level inspection](concepts/feature-tour.md#8-inspect-terrain-and-traffic-at-the-evidence-level) |
-| How do I reproduce and publish a result? | [B&NES golden path](guides/reproduce-banes.md) and [publish a deployment](guides/publish-a-deployment.md) |
+| Small offline installation fixture | [Retained fixture in the quickstart](getting-started/agent-quickstart.md) |
+| Configure the retained Python Area Definition | [Historical configuration reference](reference/area-definition.md#retained-python-area-definition-reference) |
+| Inspect earlier artifact contracts | [Generated artifacts](reference/artifacts.md) |
+| Investigate the Python pipeline | [Historical architecture](compiler-architecture.md#historical-implementations) |
+| Understand the earlier TypeSafe prototype | [Python TypeSafe experiment](typesafe-planning.md) |
 
-## Reference
+## Evidence and decisions
 
-- [Area Definition and configuration](reference/area-definition.md)
-- [Generated artifacts and provenance](reference/artifacts.md)
-- [Domain language](../CONTEXT.md)
-- [Architecture decisions](adr/)
-- [Detailed project background](reference/project-background.md)
+[CONTEXT.md](../CONTEXT.md) defines domain terms; it is not a checklist of delivered
+features. [ADRs](adr/) record decisions and amendments. In particular,
+[ADR 0028](adr/0028-rust-mechanical-compiler-and-compact-decisions.md) records the
+native compiler and later access refinements.
 
-## Documentation contract
+[Evidence reports](evidence/), [research](research/), [benchmarks](benchmarks/),
+the [September method reset](planning/satn-method-reset.md), and
+[project background](reference/project-background.md) preserve dated findings.
+Their proposals, timings, provider outcomes and local build status apply to their
+stated inputs and revision. They must not be read as current release guarantees.
+The [image inventory](images/README.md) identifies historical screenshots.
 
-B&NES is the sole real-world worked example and screenshot source. The small synthetic
-fixture exists only to prove installation quickly. WECA may be cited as secondary
-evidence of regional scale, but it is not an onboarding path.
+B&NES is the worked planning example. WECA, Wiltshire and West Midlands also have
+source or deployment configurations; an available configuration does not prove
+all current native features or every evidence source for that area.
 
-Operational pages state their working directory, prerequisites, network needs,
-outputs, success signal and failure recovery. Run the drift check after editing them:
+For canonical page links and the retained Python configuration example, run:
 
-```shell
+```sh
 uv run python scripts/validate_docs.py
 ```
+
+That check validates documentation structure, not current behavior or geographic
+quality. Documentation changes also need comparison with the relevant source and
+focused implementation tests; they do not require fresh live model calls.

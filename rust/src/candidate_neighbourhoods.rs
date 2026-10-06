@@ -232,7 +232,13 @@ pub(crate) fn derive_candidate_neighbourhoods(
 
         let mut selected_faces = Vec::new();
         for face in &faces {
-            if !extent_geometry.covers(&face.geometry).map_err(geos_error)? {
+            if !face
+                .geometry
+                .difference(&extent_geometry)
+                .map_err(geos_error)?
+                .is_empty()
+                .map_err(geos_error)?
+            {
                 continue;
             }
             let frontages = frontage_evidence(face, &roads)?;
@@ -410,4 +416,150 @@ fn geos_error(error: geos::Error) -> SatnError {
     SatnError::InvalidInput(format!(
         "classified-road geometry operation failed: {error}"
     ))
+}
+
+#[cfg(test)]
+mod containment_tests {
+    use super::*;
+
+    #[test]
+    fn polygonized_face_with_two_distinct_frontages_survives_extent_containment() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/candidate-neighbourhood-containment.json"
+        ))
+        .expect("actual BUA and polygonized-face fixture");
+        let area = CandidateBuiltUpArea {
+            source_id: "E63005227".to_string(),
+            name: "Bath".to_string(),
+            geometry: serde_json::from_value(fixture["extent"]["coordinates"].clone())
+                .expect("Bath BUA coordinates"),
+            source_dataset_id: None,
+            source_effective_date: None,
+            source_licence: None,
+            source_url: None,
+            source_attribution: None,
+        };
+        let rings: Vec<Vec<[f64; 2]>> =
+            serde_json::from_value(fixture["face"]["coordinates"].clone())
+                .expect("polygonized face coordinates");
+        let boundary = &rings[0];
+        let midpoint = boundary.len() / 2;
+        let road = |classification: &str, number: &str, coordinates: Vec<[f64; 2]>| Feature {
+            properties: BTreeMap::from([
+                (
+                    "official_classification".to_string(),
+                    Value::String(classification.to_string()),
+                ),
+                (
+                    "official_road_number".to_string(),
+                    Value::String(number.to_string()),
+                ),
+            ]),
+            geometry: SourceGeometry::LineString(coordinates),
+        };
+        let outside_ring = vec![
+            [-2.51, 51.45],
+            [-2.50, 51.45],
+            [-2.50, 51.46],
+            [-2.51, 51.46],
+            [-2.51, 51.45],
+        ];
+        let mut roads = vec![
+            road("a-road", "A3062", boundary[..=midpoint].to_vec()),
+            road("b-road", "B3110", boundary[midpoint..].to_vec()),
+        ];
+        roads.extend([
+            road(
+                "a-road",
+                "A4",
+                vec![outside_ring[0], outside_ring[1], outside_ring[2]],
+            ),
+            road(
+                "b-road",
+                "B3110",
+                vec![outside_ring[2], outside_ring[3], outside_ring[4]],
+            ),
+        ]);
+        let extent_geometry = GeosGeometry::new_from_geojson(&fixture["extent"].to_string())
+            .expect("Bath BUA extent geometry");
+        let outside_geometry = GeosGeometry::new_from_geojson(
+            &json!({
+                "type": "Polygon",
+                "coordinates": [outside_ring.clone()],
+            })
+            .to_string(),
+        )
+        .expect("road-enclosed outside face");
+        let outside_face = PolygonFace {
+            geometry: Clone::clone(&outside_geometry),
+            coordinates: vec![outside_ring],
+            canonical_key: String::new(),
+        };
+        let outside_roads = roads[2..]
+            .iter()
+            .map(|feature| {
+                let classification =
+                    string_property(&feature.properties, "official_classification")
+                        .expect("outside road classification");
+                let line = source_line_parts(&feature.geometry)[0];
+                ClassifiedRoad {
+                    geometry: geos_line(line).expect("outside road geometry"),
+                    identity: road_identity(feature, &classification),
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            frontage_evidence(&outside_face, &outside_roads)
+                .expect("outside frontage evidence")
+                .len(),
+            2,
+            "the excluded outside face otherwise has two classified-road frontages"
+        );
+        assert!(
+            !outside_geometry
+                .difference(&extent_geometry)
+                .expect("outside face minus BUA extent")
+                .is_empty()
+                .expect("outside difference emptiness"),
+            "outside fixture face must have geometry beyond the BUA extent"
+        );
+        let candidates = derive_candidate_neighbourhoods(&roads, &[area])
+            .expect("derive Bath candidate neighbourhoods");
+        let point = GeosGeometry::new_from_geojson(
+            r#"{"type":"Point","coordinates":[-2.3550699,51.3702347]}"#,
+        )
+        .expect("Lyncombe Vale point");
+        let lyncombe_vale = candidates
+            .iter()
+            .find(|candidate| {
+                let geometry = GeosGeometry::new_from_geojson(
+                    &json!({
+                        "type": "Polygon",
+                        "coordinates": candidate.geometry.coordinates,
+                    })
+                    .to_string(),
+                )
+                .expect("candidate geometry");
+                geometry.covers(&point).expect("point-in-polygon relation")
+            })
+            .expect("retain candidate covering Lyncombe Vale");
+        assert_eq!(lyncombe_vale.classified_road_frontages.len(), 2);
+
+        let outside_point =
+            GeosGeometry::new_from_geojson(r#"{"type":"Point","coordinates":[-2.505,51.455]}"#)
+                .expect("point outside the Bath extent");
+        assert!(!candidates.iter().any(|candidate| {
+            let geometry = GeosGeometry::new_from_geojson(
+                &json!({
+                    "type": "Polygon",
+                    "coordinates": candidate.geometry.coordinates,
+                })
+                .to_string(),
+            )
+            .expect("candidate geometry");
+            geometry
+                .covers(&outside_point)
+                .expect("outside point-in-polygon relation")
+        }));
+    }
 }

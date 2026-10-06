@@ -1,20 +1,26 @@
 # Native SATN compiler
 
-This is the Rust implementation of the SATN compiler. It reads pinned GeoJSON
-sources directly; the Python compiler is retained as a reference.
+The Rust compiler is the current implementation. It reads pinned GeoJSON and an
+Area Definition directly, builds a source-accounted graph, prepares route
+candidates, runs the configured decision process, and publishes an inspectable
+map plus machine-readable records. The Python compiler and its documentation are
+retained historical references; see the [current decision-process guide](../docs/concepts/decision-process.md)
+and [historical implementation notes](../docs/compiler-architecture.md#historical-implementations).
 
 ```text
-pinned sources and area configuration
-  → front end: source admission, indexed graph, corridor inventory
-  → mechanical mid-end: prepared town/city connections and route candidates
-  → backend: review map, GeoJSON, decision records and explicit unknowns
+pinned sources + Area Definition
+  → admit source corridors and build the indexed graph
+  → generate route candidates and apply mechanical rules
+  → classify bounded choices when live mode is enabled
+  → validate typed outcomes and retain unresolved work
+  → publish the review map, GeoJSON, summary, and decision history
 ```
 
-Build and run from the repository root, with the configured snapshot present:
+## Build a local review map
 
-Building requires CMake and a C++ compiler as well as Rust. Classified-road
-polygonization uses statically linked GEOS; the first build compiles the bundled
-library, while the resulting executable needs no separate GEOS installation.
+Build and run from the repository root with the configured snapshot present.
+Building requires Rust, CMake, and a C++ compiler. The build links GEOS
+statically; the resulting executable does not need a separate GEOS installation.
 
 ```sh
 cargo build --release --manifest-path rust/Cargo.toml --locked
@@ -24,71 +30,76 @@ cargo build --release --manifest-path rust/Cargo.toml --locked
   --mode mechanical
 ```
 
-If `CARGO_TARGET_DIR` is set, the executable is under that directory's `release/`
-instead. Progress goes to stderr and the final report goes to stdout. Open the
-output directory's `index.html` to inspect the source baseline and candidates;
-`summary.json` and `network.geojson` contain the corresponding data.
+Progress is written to stderr and the report to stdout. The output contains
+`index.html`, `summary.json`, and `network.geojson`. The map presents source
+baseline, generated candidates, access evidence, and unknowns. Mechanical mode
+does not call a model. A candidate or road classification does not establish
+current provision, safety, legal access, or adoption.
 
-The mechanical foundation generates candidates; it does not claim to have chosen
-a final network. Road classification does not establish current provision,
-safety, access or adoption. Source-only A-roads remain visible with unresolved
-topology. Candidate generation is recorded separately from alignment selection.
-Urban attachment uses the configured scope. Prepared urban connections come
-from graph adjacency; the legacy rural-backbone distance limit does not cap
-their routed length.
+## What the mechanical rules do
 
-Candidate neighbourhoods are complete planar enclosures formed from official A,
-B and Classified Unnumbered roads, selected where they intersect an admitted
-urban extent. They are not clipped to that extent or subdivided by size. Dataset
-provenance and measured area support inspection; individual boundary-road
-attribution and internal neighbourhood connectivity are not claimed. The layer
-does not alter route selection or establish existing low traffic or safe access.
+For each admitted town/city connection, the compiler searches the same directed
+graph under four named cost rules: `direct` uses measured edge length;
+`strategic-spine` lowers cost on A-road reference edges and raises it elsewhere;
+`ncn-informed` lowers cost where current or context-derived cycle-route evidence
+supports the edge and raises it elsewhere; and `low-traffic` lowers cost for
+configured low-traffic highway classes and raises it elsewhere. These costs
+generate distinct candidate paths. They are search rules, not safety scores or
+probabilities. `length_m` remains the measured source length;
+`search_cost_m` records the rule-specific search cost. Identical paths retain
+all role names in `role_aliases`.
 
-Each prepared connection searches the same directed graph four times: `direct`
-uses measured edge length, `strategic-spine` uses `0.35 × length` for an A-road
-reference and `1.6 × length` otherwise, `ncn-informed` uses `0.4 × length` for
-an edge supported by current or context-derived cycle-route evidence and
-`1.3 × length` otherwise, and `low-traffic` uses `0.75 × length` for the
-configured low-traffic highway classes and `4.0 × length` otherwise. The
-reported `length_m` is always the measured source length; `search_cost_m` is
-the role's mechanical search cost. Identical ordered edge paths retain their
-additional role names in `role_aliases`.
+Context-derived NCN evidence uses a 20 m buffer and 50% edge-overlap share in
+projected metres. The current Rust projection is the frozen gridless WGS84 to
+BNG Helmert fallback, not OSTN15. Source-only A roads remain visible even when
+they cannot be matched to graph topology. Candidate topology and provision are
+separate; provision stays `unknown` unless the evidence supports a later status.
 
-Context-derived NCN evidence is computed in native projected metres with a
-20m buffer and a 50% edge overlap share. The projection is the explicitly
-frozen gridless WGS84 to BNG Helmert fallback (`GRIDLESS_BNG_PROJECTION_POLICY`);
-the Rust compiler does not claim OSTN15 accuracy. Candidate topology is
-graph-supported, while provision remains an explicit `unknown` until a later
-evidence or judgment stage.
+Candidate-neighbourhood geometry is derived from a separately sourced ONS
+built-up-area polygon. A candidate face must be fully inside that area and have
+positive-length boundary frontages on at least two distinct official A, B, or
+Classified Unnumbered roads; the built-up-area edge may close the remaining
+sides. Road numbers, or an official road name for a Classified Unnumbered Road,
+identify distinct frontages. Segment IDs and unnamed roads do not. Point
+contacts are not frontages. The output reports provenance and measured area;
+there is no size limit, and the geometry does not claim connected internal
+streets, an existing low-traffic scheme, or safe access.
 
-Run the focused foundation check with:
+## Optional AI classification and replay
+
+Live mode sends each prepared urban connection's frozen, compiler-authored
+decision packet to the configured TypeSafe classifier. Rural decisions can
+bypass classification when a single admissible candidate or a mechanical
+dominance rule resolves the offered choice; otherwise they use the classifier.
+The response must select an offered choice and pass schema, binding, and scope
+validation before the compiler records and applies a typed operation. If the
+classifier cannot support an outcome, an explicitly configured Codex specialist
+may be called once for a provisional proposal; it cannot add facts or geometry,
+and the compiler still validates its operation. Provisional choices require
+`--allow-provisional`; otherwise the outcome remains unresolved.
+The full rules and decision classes are in the [decision-process guide](../docs/concepts/decision-process.md).
+
+Before a live run, obtain explicit approval for the named TypeSafe service and,
+if configured, the Codex specialist, and for the planning inputs sent to each.
+The CLI does not enforce that approval. Keep API keys in the environment and
+never in tracked files or command-line arguments.
+
+Use separate history and output directories. For a configured live run:
 
 ```sh
-cargo test --manifest-path rust/Cargo.toml --test foundation
-```
-
-The remaining integrated classifier, reasoning, replay and publication work is
-tracked in [the Rust compiler roadmap](https://github.com/awjreynolds/agentic-satn-compiler/issues/538).
-
-To run the compact live decision mid-end, keep the history directory separate
-from the rendered bundle and opt into the one-shot specialist explicitly:
-
-```sh
-TYPESAFE_API_KEY=... \
 ./rust/target/release/satn-rs \
   --config deployments/banes/area.yaml \
   --output build/rust-banes-live \
   --history build/rust-banes-history \
   --mode live \
   --specialist-model gpt-5.6-luna \
-  --specialist-reasoning-effort max \
-  --allow-provisional
+  --specialist-reasoning-effort max
 ```
 
-The live run writes `planning.json` and append-only `history/` records. Jev is
-asked first for each admitted connection; an explicit unresolved Jev outcome
-can invoke the configured Codex process once for a typed provisional proposal.
-Replay reads those retained operations without launching either provider:
+The invocation above requires `TYPESAFE_API_KEY` to be set in the environment.
+It does not permit provisional selection unless `--allow-provisional` is added.
+Live attempts and typed operations are retained in the history directory.
+Replay uses those records without launching either provider:
 
 ```sh
 ./rust/target/release/satn-rs \
@@ -98,5 +109,54 @@ Replay reads those retained operations without launching either provider:
   --mode replay
 ```
 
-`--allow-provisional` is required for a specialist proposal to select an
-alignment; otherwise the typed result remains unresolved.
+The Rust compiler's focused checks run with:
+
+```sh
+cargo test --manifest-path rust/Cargo.toml --locked --test midend
+```
+
+The GitHub Pages release workflow validates each packaged map in Chromium before
+deployment. The successful current deployment is built from the native
+publication path; it is not the old Python review-map publication.
+
+## Offline officer scenario
+
+Apply a separate attributable officer ledger to recorded planning history. The
+configuration is required to regenerate community access after strategic choices:
+
+```sh
+./rust/target/release/satn-rs \
+  --config deployments/banes/area.yaml \
+  --output build/rust-banes-officer \
+  --history build/rust-banes-history \
+  --mode replay \
+  --officer-decisions path/to/officer-decisions.json
+```
+
+For an exact admitted candidate binding, the ledger shape is:
+
+```json
+{
+  "decisions": [{
+    "decision_id": "example-decision",
+    "connection_id": "connection-from-the-retained-run",
+    "candidate_id": "candidate-admitted-on-that-connection",
+    "source_refs": ["source-record-reference"],
+    "attribution": "Illustrative officer decision",
+    "rationale": "The sourced reason for this choice."
+  }]
+}
+```
+
+Use the actual retained IDs and attributable evidence; these strings are
+placeholders. An omitted candidate may record an unavailable/unbound decision;
+a candidate on another connection is rejected. The exact-source strategic-network
+scenario has a separate typed representation in [`officer.rs`](src/officer.rs),
+used by the ATM demonstration; it is not produced by assigning arbitrary geometry
+to a candidate ID.
+
+The output retains `officer-scenario.json` alongside the effective planning and
+map artifacts. Baseline network/access and officer network/access have separate
+layers. Changed community judgments remain unresolved unless the retained route
+and parent/root bindings still apply. Replay leaves the original history intact
+and makes no model calls. An illustrative officer scenario is not council adoption.

@@ -1,4 +1,61 @@
-# How the Agentic SATN Compiler works
+# Current compiler architecture
+
+The active compiler is native Rust. It separates exact source/graph computation,
+focused model judgment and publication. Start with the
+[decision process and mechanical rules](concepts/decision-process.md) for the
+planning explanation, or the [native CLI](../rust/README.md) to run it.
+[ADR 0028](adr/0028-rust-mechanical-compiler-and-compact-decisions.md) records why
+this implementation replaced the Python planning hot path.
+
+```mermaid
+flowchart TD
+    Input["Pinned GeoJSON + Area Definition"] --> Front["compiler.rs / graph.rs: admit sources, index graph, prepare alternatives"]
+    Front --> Base["Prepared planning base"]
+    Base --> Mid["midend.rs: mechanical rules, then focused judgment if needed"]
+    Mid -.-> Models["judgment.rs: Jev and optional Codex specialist"]
+    Models -. "typed proposal and receipt" .-> Mid
+    Mid --> History["Validated operations and compact history"]
+    History --> Replay["Offline replay or explicit branch"]
+    Replay --> Officer["Optional attributable officer scenario; rebuild dependent access"]
+    Mid --> Output["publication.rs: map, GeoJSON, reasons and unknowns"]
+    Officer --> Output
+```
+
+| Responsibility | Current implementation | Boundary |
+| --- | --- | --- |
+| Input configuration and source admission | `rust/src/config.rs`, `compiler.rs`, `geojson.rs` | Read pinned evidence; preserve source-only corridors and unavailable facts. |
+| Routing and alternative preparation | `graph.rs`, `compiler.rs` | Directed graph paths and measured evidence; search cost is not a planning-quality score. |
+| Terrain and moving time | `topography.rs`, `travel_time.rs` | Sourced ordered elevations and named rider assumptions; missing profiles stay unknown. |
+| Mechanical and model decisions | `midend.rs`, `judgment.rs` | Code offers and validates operations; model receipts retain actual provider attribution. |
+| Officer scenarios | `officer.rs`, `midend.rs` | Apply bound human inputs, preserve baseline comparison and rebuild dependent community access. |
+| Context layers | `candidate_neighbourhoods.rs`, `publication.rs` | Candidate neighbourhoods, schools and transport context do not silently select strategic routes. |
+| Publication | `output.rs`, `publication.rs` | Project prepared/decided state and explicit gaps; map interactions do not decide the network. |
+| CLI and modes | `main.rs` | `mechanical`/`deterministic` prepare without providers; `live` records judgments; `replay` consumes retained operations. |
+
+The native history stores a prepared base and compact ordered task, attempt,
+receipt and decision records. An unresolved result, failed provider attempt and
+accepted selection remain distinguishable. A recorded decision can be replayed
+without fresh inference; a branch preserves its prefix rather than silently
+continuing the old branch. Python's experimental content-addressed history is a
+separate contract, not the Rust storage design.
+
+Live model approval is an [operational requirement](guides/native-clean-build.md);
+the CLI does not enforce consent. Publication completeness is also separate from
+planning completeness: a renderable map can contain unknown provision, source-only
+corridors and unresolved access. Native output is HTML, GeoJSON and JSON records;
+the Python GeoPackage/PDF artifact list below does not describe native output.
+
+## Historical implementations
+
+[Python TypeSafe planning](typesafe-planning.md) documents the earlier experimental
+planner. The remainder of this page preserves the **earlier Python `satn compile`
+Schema 2.0 architecture**, including its own stop/restart protocol, agents,
+school-access obligations and publication gates. These are reference contracts,
+not claims of native feature parity or current published-map behavior.
+
+---
+
+# Historical Python Schema 2.0 architecture
 
 The Agentic SATN Compiler is a deterministic geospatial compiler with bounded
 decision points. It turns governed evidence and explicit planning rules into one
@@ -51,7 +108,7 @@ The solid path is authoritative and deterministic. The dashed path is optional a
 non-authoritative. No edge runs from the Agent Runtime to geometry, policy, lifecycle
 state or publication.
 
-The published B&NES and West of England proofs of concept use Deterministic Test Mode
+The earlier Python B&NES and West of England proofs of concept used Deterministic Test Mode
 (`provider: fake`). They exercise this boundary reproducibly without calling a live
 model or external evidence system.
 

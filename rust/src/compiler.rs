@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
 use std::path::Path;
 use std::time::Instant;
 
@@ -19,6 +19,7 @@ use crate::graph::{
     EdgeAttachment, FrontierEdgeTarget, FrontierTarget, FrontierTerminal, Graph, GraphEdge, Route,
     UrbanEntryTarget,
 };
+use crate::officer::same_or_reversed_geometry;
 use crate::output::write_bundle;
 use crate::topography::{
     ElevationEvidenceIndex, RouteTopographyProfile, TopographyAvailability, unknown_route_profile,
@@ -875,6 +876,12 @@ impl PreparedCompilation {
             self.elevation.as_ref(),
             &self.elevation_file,
         )
+    }
+
+    pub(crate) fn graph_edge_geometry(&self, edge_id: &str) -> Option<&[[f64; 2]]> {
+        self.graph
+            .edge_by_id(edge_id)
+            .map(|edge| edge.geometry.as_slice())
     }
 
     /// Compare one accepted rural path, an already-retained alternative, and
@@ -1746,6 +1753,15 @@ fn admit_source_inventory(
     graph_geometry_bindings: &HashMap<String, Vec<String>>,
 ) -> Vec<SourceCorridor> {
     let mut groups: BTreeMap<String, SourceCorridor> = BTreeMap::new();
+    let mut graph_context_source_bindings = HashMap::<(String, usize), Vec<String>>::new();
+    for edge in &graph.edges {
+        for binding in &edge.context_source_bindings {
+            graph_context_source_bindings
+                .entry((binding.source_id.clone(), binding.line_index))
+                .or_default()
+                .push(edge.id.clone());
+        }
+    }
     for (index, feature) in network_features.iter().enumerate() {
         let references = canonical_tag_values(&feature.properties, "ref");
         let highways = canonical_tag_values(&feature.properties, "highway");
@@ -1807,7 +1823,13 @@ fn admit_source_inventory(
             continue;
         };
         let reference = string_property(&feature.properties, "name")
-            .filter(|value| is_a_reference(value))
+            .filter(|value| {
+                is_a_reference(value)
+                    || matches!(
+                        baseline_role,
+                        "current-ncn" | "former-ncn" | "declassified-ncn"
+                    )
+            })
             .or_else(|| string_property(&feature.properties, "ncn_evidence_role"))
             .unwrap_or_else(|| baseline_role.to_string());
         let source_id = string_property(&feature.properties, "evidence_id")
@@ -1815,10 +1837,22 @@ fn admit_source_inventory(
         let scope = string_property(&feature.properties, "network_scope")
             .unwrap_or_else(|| "unknown-scope".to_string());
         for (line_index, geometry) in line_geometries(feature).into_iter().enumerate() {
-            let graph_edge_ids = graph_geometry_bindings
+            let mut graph_edge_ids = graph_geometry_bindings
                 .get(&geometry_key(&geometry))
                 .cloned()
                 .unwrap_or_default();
+            if matches!(baseline_role, "current-ncn" | "declassified-ncn") {
+                let source_binding_key = (source_id.clone(), line_index);
+                graph_edge_ids.extend(
+                    graph_context_source_bindings
+                        .get(&source_binding_key)
+                        .into_iter()
+                        .flatten()
+                        .cloned(),
+                );
+                graph_edge_ids.sort();
+                graph_edge_ids.dedup();
+            }
             add_corridor(
                 &mut groups,
                 format!("source:context:{baseline_role}:{source_id}"),
@@ -2126,6 +2160,71 @@ impl<'a> RuralAccessPlanner<'a> {
                 insert_spine_target(&mut self.target_edges, &edge.id, &candidate.id);
                 insert_spine_target(&mut self.target_nodes, &edge.from, &candidate.id);
                 insert_spine_target(&mut self.target_nodes, &edge.to, &candidate.id);
+            }
+        }
+    }
+
+    pub(crate) fn exclude_displaced_baseline_targets(&mut self, geometries: &[&[[f64; 2]]]) {
+        let displaced_edge_ids = self
+            .graph
+            .edges
+            .iter()
+            .filter(|edge| {
+                geometries
+                    .iter()
+                    .any(|geometry| same_or_reversed_geometry(&edge.geometry, geometry))
+            })
+            .map(|edge| edge.id.as_str())
+            .collect::<BTreeSet<_>>();
+        self.target_edges
+            .retain(|edge_id, _| !displaced_edge_ids.contains(edge_id.as_str()));
+
+        self.rebuild_target_nodes();
+    }
+
+    /// Replace only the graph edges explicitly scoped by a network-wide
+    /// officer reference. This runs after default and per-journey targets are
+    /// collected so another journey cannot reintroduce a scoped deselection.
+    pub(crate) fn apply_strategic_network_scope(
+        &mut self,
+        selected_graph_edge_ids: &[String],
+        deselected_graph_edge_ids: &[String],
+    ) -> Result<()> {
+        for edge_id in selected_graph_edge_ids
+            .iter()
+            .chain(deselected_graph_edge_ids)
+        {
+            if self.graph.edge_by_id(edge_id).is_none() {
+                return Err(SatnError::InvalidInput(format!(
+                    "officer strategic network references unknown prepared graph edge {edge_id}"
+                )));
+            }
+        }
+
+        let scoped_edge_ids = selected_graph_edge_ids
+            .iter()
+            .chain(deselected_graph_edge_ids)
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        self.target_edges
+            .retain(|edge_id, _| !scoped_edge_ids.contains(edge_id.as_str()));
+        for edge_id in selected_graph_edge_ids {
+            insert_spine_target(&mut self.target_edges, edge_id, "officer-strategic-network");
+        }
+
+        self.rebuild_target_nodes();
+        Ok(())
+    }
+
+    fn rebuild_target_nodes(&mut self) {
+        self.target_nodes.clear();
+        for edge in &self.graph.edges {
+            let Some(spines) = self.target_edges.get(&edge.id) else {
+                continue;
+            };
+            for spine in spines.split('+') {
+                insert_spine_target(&mut self.target_nodes, &edge.from, spine);
+                insert_spine_target(&mut self.target_nodes, &edge.to, spine);
             }
         }
     }
@@ -3414,12 +3513,23 @@ fn strategic_spine_targets(
     graph: &Graph,
     source_inventory: &[SourceCorridor],
 ) -> (HashMap<String, String>, HashMap<String, String>) {
-    let mut edge_spines: HashMap<String, BTreeSet<String>> = HashMap::new();
-    for source in source_inventory
+    let cycleable_edge_ids = graph
+        .edges
         .iter()
-        .filter(|source| source.baseline_role == "a-road")
-    {
+        .filter(|edge| edge.cycling_allowed())
+        .map(|edge| edge.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut edge_spines: HashMap<String, BTreeSet<String>> = HashMap::new();
+    for source in source_inventory.iter().filter(|source| {
+        matches!(
+            source.baseline_role.as_str(),
+            "a-road" | "current-ncn" | "declassified-ncn"
+        )
+    }) {
         for edge_id in &source.graph_edge_ids {
+            if source.baseline_role != "a-road" && !cycleable_edge_ids.contains(edge_id.as_str()) {
+                continue;
+            }
             edge_spines
                 .entry(edge_id.clone())
                 .or_default()
@@ -3958,5 +4068,115 @@ fn candidate_from_route(id: String, connection_id: String, role: &str, route: Ro
         path_edge_ids: route.edge_ids,
         path_edge_geometries: route.edge_geometries,
         geometry: route.geometry,
+    }
+}
+
+#[cfg(test)]
+mod officer_strategic_network_tests {
+    use super::*;
+    use crate::geojson::Properties;
+
+    fn edge(from: &str, to: &str, index: usize, reference: Option<&str>) -> Feature {
+        let mut properties = Properties::from([
+            ("u".to_string(), json!(from)),
+            ("v".to_string(), json!(to)),
+            ("key".to_string(), json!("0")),
+            ("length".to_string(), json!(1.0)),
+            ("highway".to_string(), json!("primary")),
+        ]);
+        if let Some(reference) = reference {
+            properties.insert("ref".to_string(), json!(reference));
+        }
+        let offset = index as f64;
+        Feature {
+            properties,
+            geometry: Geometry::LineString(vec![[offset, 0.0], [offset + 1.0, 0.0]]),
+        }
+    }
+
+    fn selected_candidate(id: &str, edge_id: &str) -> Candidate {
+        Candidate {
+            id: id.to_string(),
+            connection_id: format!("connection:{id}"),
+            status: "mechanical-candidate".to_string(),
+            decision_class: "mechanical".to_string(),
+            role: "direct".to_string(),
+            role_aliases: Vec::new(),
+            length_m: 1.0,
+            search_cost_m: 1.0,
+            a_road_share: 1.0,
+            ncn_share: 0.0,
+            cycle_alignment_bases: Vec::new(),
+            topology_status: "graph-supported".to_string(),
+            provision_status: "unknown".to_string(),
+            path_edge_ids: vec![edge_id.to_string()],
+            path_edge_geometries: Vec::new(),
+            geometry: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn strategic_network_scope_overrides_journey_targets_and_preserves_unscoped_edges() {
+        let features = vec![
+            edge("baseline-from", "baseline-to", 0, Some("A1")),
+            edge("outside-from", "outside-to", 1, Some("A1")),
+            edge("selected-from", "selected-to", 2, None),
+        ];
+        let graph = Graph::from_features(&features, &[]).expect("fixture graph");
+        let edge_id = |from: &str| {
+            graph
+                .edges
+                .iter()
+                .find(|edge| edge.from == from)
+                .expect("fixture edge")
+                .id
+                .clone()
+        };
+        let baseline_edge = edge_id("baseline-from");
+        let outside_edge = edge_id("outside-from");
+        let selected_edge = edge_id("selected-from");
+        let source_inventory = vec![SourceCorridor {
+            id: "source:a1".to_string(),
+            reference: "A1".to_string(),
+            source_kind: "fixture".to_string(),
+            source_id: "fixture".to_string(),
+            scope: "fixture".to_string(),
+            baseline_role: "a-road".to_string(),
+            source_edge_ids: Vec::new(),
+            graph_edge_ids: vec![baseline_edge.clone(), outside_edge.clone()],
+            geometry: Vec::new(),
+            topology_status: "graph-supported".to_string(),
+            attachment_status: "attached".to_string(),
+            provision_status: "unknown".to_string(),
+        }];
+        let baseline_choice = selected_candidate("candidate:baseline", &baseline_edge);
+        let another_journey_choice = selected_candidate("candidate:another", &baseline_edge);
+        let mut planner = RuralAccessPlanner::new(&[], &graph, &source_inventory, &[], None, "");
+        planner.add_selected_alignment_targets(&[&baseline_choice, &another_journey_choice]);
+        assert!(planner.target_edges.contains_key(&baseline_edge));
+
+        planner
+            .apply_strategic_network_scope(
+                std::slice::from_ref(&selected_edge),
+                std::slice::from_ref(&baseline_edge),
+            )
+            .expect("apply graph-edge scope");
+
+        assert!(!planner.target_edges.contains_key(&baseline_edge));
+        assert_eq!(
+            planner.target_edges.get(&outside_edge).map(String::as_str),
+            Some("source:a1")
+        );
+        assert_eq!(
+            planner.target_edges.get(&selected_edge).map(String::as_str),
+            Some("officer-strategic-network")
+        );
+
+        let targets_before_invalid_id = planner.target_edges.clone();
+        let error = planner
+            .apply_strategic_network_scope(&["unknown-edge".to_string()], &[])
+            .expect_err("unknown edge IDs must not be projected onto the prepared graph");
+        assert!(error.to_string().contains("unknown prepared graph edge"));
+        assert_eq!(planner.target_edges, targets_before_invalid_id);
     }
 }

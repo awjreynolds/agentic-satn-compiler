@@ -1,0 +1,445 @@
+//! Replays an attributable officer example as a separate scenario overlay.
+
+use std::collections::HashSet;
+use std::fs;
+use std::path::Path;
+
+use serde::{Deserialize, Serialize};
+
+use crate::compiler::{Candidate, CompileReport};
+use crate::error::{Result, SatnError};
+use crate::midend::{MidendRun, TypedOperation, validate_officer_candidate};
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct OfficerDecisionLedger {
+    pub decisions: Vec<OfficerDecision>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strategic_network: Option<OfficerStrategicNetworkDecision>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct OfficerDecision {
+    pub decision_id: String,
+    pub connection_id: String,
+    #[serde(default)]
+    pub candidate_id: Option<String>,
+    pub source_refs: Vec<String>,
+    pub attribution: String,
+    pub rationale: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct OfficerStrategicNetworkDecision {
+    pub selected_graph_edge_ids: Vec<String>,
+    pub deselected_graph_edge_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selected_alignments: Vec<OfficerSelectedAlignment>,
+    pub source_refs: Vec<String>,
+    pub attribution: String,
+    pub rationale: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_geometry: Option<OfficerStrategicScopeGeometry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OfficerScenario {
+    pub authority: String,
+    pub base_id: String,
+    pub baseline_branch: String,
+    #[serde(default)]
+    pub community_access_regenerated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strategic_network: Option<OfficerStrategicNetwork>,
+    pub outcomes: Vec<OfficerOutcome>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct OfficerStrategicNetwork {
+    pub selected_graph_edge_ids: Vec<String>,
+    pub deselected_graph_edge_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selected_alignments: Vec<OfficerSelectedAlignment>,
+    pub edge_geometries: Vec<OfficerStrategicEdgeGeometry>,
+    pub source_refs: Vec<String>,
+    pub attribution: String,
+    pub rationale: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_geometry: Option<OfficerStrategicScopeGeometry>,
+}
+
+/// Explicit polygonal coverage declared by a strategic network reference.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", content = "coordinates")]
+pub enum OfficerStrategicScopeGeometry {
+    #[serde(rename = "Polygon")]
+    Polygon(Vec<Vec<[f64; 2]>>),
+    #[serde(rename = "MultiPolygon")]
+    MultiPolygon(Vec<Vec<Vec<[f64; 2]>>>),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct OfficerStrategicEdgeGeometry {
+    pub edge_id: String,
+    pub geometry: Vec<[f64; 2]>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct OfficerSelectedAlignment {
+    pub source_id: String,
+    pub geometry: Vec<Vec<[f64; 2]>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OfficerOutcome {
+    pub decision_id: String,
+    pub connection_id: String,
+    pub baseline_candidate_id: Option<String>,
+    pub officer_candidate_id: Option<String>,
+    pub effective_candidate_id: Option<String>,
+    pub status: OfficerOutcomeStatus,
+    pub source_refs: Vec<String>,
+    pub attribution: String,
+    pub rationale: String,
+    pub baseline_decision_id: Option<String>,
+    pub baseline_decision_class: Option<String>,
+    pub baseline_operation: Option<TypedOperation>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum OfficerOutcomeStatus {
+    Agreement,
+    Divergence,
+    Unavailable,
+}
+
+/// One baseline candidate edge whose exact geometry is absent from every
+/// currently selected strategic route in an officer scenario.
+pub(crate) struct DisplacedBaselineEdge<'a> {
+    pub outcome: &'a OfficerOutcome,
+    pub baseline_candidate: &'a Candidate,
+    pub edge_id: &'a str,
+    pub geometry: &'a [[f64; 2]],
+}
+
+/// Find baseline candidate edges that an effective selection actually
+/// displaces. Geometry identity is exact, including exact reversal; nearby or
+/// partially overlapping linework is not treated as shared.
+pub(crate) fn displaced_baseline_edges<'a>(
+    report: &'a CompileReport,
+    scenario: &'a OfficerScenario,
+    effective_run: &MidendRun,
+) -> Vec<DisplacedBaselineEdge<'a>> {
+    let selected_geometries = effective_run
+        .operations
+        .iter()
+        .filter_map(|operation| match operation {
+            TypedOperation::SelectAlignment { candidate_id, .. } => report
+                .candidates
+                .iter()
+                .find(|candidate| candidate.id == *candidate_id),
+            TypedOperation::Unresolved { .. }
+            | TypedOperation::SelectCommunityAccess { .. }
+            | TypedOperation::UnresolvedCommunityAccess { .. } => None,
+        })
+        .flat_map(|candidate| candidate.path_edge_geometries.iter())
+        .collect::<Vec<_>>();
+
+    scenario
+        .outcomes
+        .iter()
+        .filter_map(|outcome| {
+            report
+                .candidates
+                .iter()
+                .find(|candidate| outcome.baseline_candidate_id.as_deref() == Some(&candidate.id))
+                .map(|candidate| (outcome, candidate))
+        })
+        .flat_map(|(outcome, baseline_candidate)| {
+            baseline_candidate
+                .path_edge_ids
+                .iter()
+                .zip(&baseline_candidate.path_edge_geometries)
+                .filter(|(_, geometry)| {
+                    !geometry.is_empty()
+                        && !selected_geometries
+                            .iter()
+                            .any(|selected| same_or_reversed_geometry(geometry, selected))
+                })
+                .map(move |(edge_id, geometry)| DisplacedBaselineEdge {
+                    outcome,
+                    baseline_candidate,
+                    edge_id,
+                    geometry,
+                })
+        })
+        .collect()
+}
+
+pub(crate) fn same_or_reversed_geometry(first: &[[f64; 2]], second: &[[f64; 2]]) -> bool {
+    first == second || first.iter().rev().eq(second.iter())
+}
+
+pub fn load_officer_decisions(path: &Path) -> Result<OfficerDecisionLedger> {
+    Ok(serde_json::from_str(&fs::read_to_string(path)?)?)
+}
+
+pub fn apply_officer_decisions(
+    report: &CompileReport,
+    baseline: &MidendRun,
+    ledger: &OfficerDecisionLedger,
+) -> Result<(MidendRun, OfficerScenario)> {
+    validate_ledger(ledger)?;
+
+    let mut effective = baseline.clone();
+    let mut outcomes = Vec::with_capacity(ledger.decisions.len());
+    for decision in &ledger.decisions {
+        let baseline_operation = baseline_operation_for(baseline, &decision.connection_id)?;
+        let baseline_candidate_id = baseline_operation
+            .as_ref()
+            .and_then(TypedOperation::candidate_id)
+            .map(str::to_string);
+        let baseline_decision_id = baseline_operation.as_ref().map(operation_id);
+        let baseline_decision_class = baseline_operation
+            .as_ref()
+            .map(|operation| operation.decision_class().to_string());
+
+        let officer_candidate = match &decision.candidate_id {
+            Some(candidate_id) => match report
+                .candidates
+                .iter()
+                .find(|candidate| candidate.id == *candidate_id)
+            {
+                Some(_) => Some(
+                    validate_officer_candidate(report, &decision.connection_id, candidate_id)
+                        .map_err(|error| SatnError::InvalidInput(error.to_string()))?,
+                ),
+                None => None,
+            },
+            None => None,
+        };
+        let target_exists = report
+            .connections
+            .iter()
+            .any(|connection| connection.id == decision.connection_id);
+
+        let status = match (target_exists, officer_candidate) {
+            (true, Some(candidate)) => {
+                let status = if baseline_candidate_id.as_deref() == Some(&candidate.id) {
+                    OfficerOutcomeStatus::Agreement
+                } else {
+                    OfficerOutcomeStatus::Divergence
+                };
+                replace_effective_selection(&mut effective, decision);
+                status
+            }
+            _ => OfficerOutcomeStatus::Unavailable,
+        };
+        let effective_candidate_id = if status == OfficerOutcomeStatus::Unavailable {
+            baseline_candidate_id.clone()
+        } else {
+            decision.candidate_id.clone()
+        };
+
+        outcomes.push(OfficerOutcome {
+            decision_id: decision.decision_id.clone(),
+            connection_id: decision.connection_id.clone(),
+            baseline_candidate_id,
+            officer_candidate_id: decision.candidate_id.clone(),
+            effective_candidate_id,
+            status,
+            source_refs: decision.source_refs.clone(),
+            attribution: decision.attribution.clone(),
+            rationale: decision.rationale.clone(),
+            baseline_decision_id,
+            baseline_decision_class,
+            baseline_operation,
+        });
+    }
+
+    effective.status = if effective
+        .operations
+        .iter()
+        .any(TypedOperation::is_unresolved)
+    {
+        "unresolved".to_string()
+    } else {
+        "replayed".to_string()
+    };
+
+    Ok((
+        effective,
+        OfficerScenario {
+            authority: "officer-example".to_string(),
+            base_id: baseline.base_id.clone(),
+            baseline_branch: baseline.branch.clone(),
+            community_access_regenerated: false,
+            strategic_network: None,
+            outcomes,
+        },
+    ))
+}
+
+fn validate_ledger(ledger: &OfficerDecisionLedger) -> Result<()> {
+    let mut decision_ids = HashSet::new();
+    let mut connection_ids = HashSet::new();
+    for decision in &ledger.decisions {
+        if decision.decision_id.trim().is_empty()
+            || decision.connection_id.trim().is_empty()
+            || decision.attribution.trim().is_empty()
+            || decision.rationale.trim().is_empty()
+            || decision.source_refs.is_empty()
+            || decision
+                .source_refs
+                .iter()
+                .any(|reference| reference.trim().is_empty())
+            || decision
+                .candidate_id
+                .as_ref()
+                .is_some_and(|candidate_id| candidate_id.trim().is_empty())
+        {
+            return Err(invalid(
+                "officer decisions require nonempty identities and attribution",
+            ));
+        }
+        if !decision_ids.insert(&decision.decision_id) {
+            return Err(invalid(format!(
+                "duplicate officer decision id {}",
+                decision.decision_id
+            )));
+        }
+        if !connection_ids.insert(&decision.connection_id) {
+            return Err(invalid(format!(
+                "multiple officer decisions target connection {}",
+                decision.connection_id
+            )));
+        }
+    }
+    if let Some(network) = &ledger.strategic_network {
+        if network.attribution.trim().is_empty()
+            || network.rationale.trim().is_empty()
+            || network.source_refs.is_empty()
+            || network
+                .source_refs
+                .iter()
+                .any(|reference| reference.trim().is_empty())
+        {
+            return Err(invalid(
+                "officer strategic network requires source references, attribution, and rationale",
+            ));
+        }
+        if network.selected_alignments.iter().any(|alignment| {
+            alignment.source_id.trim().is_empty()
+                || alignment.geometry.is_empty()
+                || alignment.geometry.iter().any(|part| part.len() < 2)
+        }) {
+            return Err(invalid(
+                "officer selected alignments require source IDs and nonempty line parts",
+            ));
+        }
+        let mut selected = HashSet::new();
+        for edge_id in &network.selected_graph_edge_ids {
+            if edge_id.trim().is_empty() || !selected.insert(edge_id) {
+                return Err(invalid(
+                    "officer strategic network selected graph edge IDs must be nonempty and unique",
+                ));
+            }
+        }
+        let mut deselected = HashSet::new();
+        for edge_id in &network.deselected_graph_edge_ids {
+            if edge_id.trim().is_empty()
+                || selected.contains(edge_id)
+                || !deselected.insert(edge_id)
+            {
+                return Err(invalid(
+                    "officer strategic network deselected graph edge IDs must be nonempty, unique, and disjoint from selected IDs",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn baseline_operation_for(
+    baseline: &MidendRun,
+    connection_id: &str,
+) -> Result<Option<TypedOperation>> {
+    let mut matching = baseline
+        .operations
+        .iter()
+        .filter(|operation| match operation {
+            TypedOperation::SelectAlignment {
+                connection_id: id, ..
+            }
+            | TypedOperation::Unresolved {
+                connection_id: id, ..
+            } => id == connection_id,
+            TypedOperation::SelectCommunityAccess { .. }
+            | TypedOperation::UnresolvedCommunityAccess { .. } => false,
+        });
+    let operation = matching.next().cloned();
+    if matching.next().is_some() {
+        return Err(invalid(format!(
+            "baseline has multiple alignment decisions for connection {connection_id}"
+        )));
+    }
+    Ok(operation)
+}
+
+fn operation_id(operation: &TypedOperation) -> String {
+    match operation {
+        TypedOperation::SelectAlignment { id, .. } | TypedOperation::Unresolved { id, .. } => {
+            id.clone()
+        }
+        TypedOperation::SelectCommunityAccess { id, .. }
+        | TypedOperation::UnresolvedCommunityAccess { id, .. } => id.clone(),
+    }
+}
+
+fn replace_effective_selection(effective: &mut MidendRun, decision: &OfficerDecision) {
+    let operation_id = format!("officer-ledger:{}", decision.decision_id);
+    let operation = TypedOperation::SelectAlignment {
+        id: operation_id.clone(),
+        task_id: operation_id.clone(),
+        attempt_id: operation_id,
+        connection_id: decision.connection_id.clone(),
+        candidate_id: decision
+            .candidate_id
+            .as_ref()
+            .expect("only applicable decisions reach operation replacement")
+            .clone(),
+        decision_class: "mechanical".to_string(),
+        provisional: false,
+        reason: Some(format!(
+            "Binding illustrative officer decision {} applied from ledger",
+            decision.decision_id
+        )),
+        uncertainties: Vec::new(),
+    };
+
+    let index = effective
+        .operations
+        .iter()
+        .position(|existing| match existing {
+            TypedOperation::SelectAlignment { connection_id, .. }
+            | TypedOperation::Unresolved { connection_id, .. } => {
+                connection_id == &decision.connection_id
+            }
+            TypedOperation::SelectCommunityAccess { .. }
+            | TypedOperation::UnresolvedCommunityAccess { .. } => false,
+        });
+    match index {
+        Some(index) => effective.operations[index] = operation,
+        None => effective.operations.push(operation),
+    }
+}
+
+fn invalid(message: impl Into<String>) -> SatnError {
+    SatnError::InvalidInput(message.into())
+}

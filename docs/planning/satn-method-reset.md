@@ -1,5 +1,11 @@
 # SATN method reset
 
+Historical method and Python recovery record. Later owner decisions and the
+[native Rust approach](../adr/0028-rust-mechanical-compiler-and-compact-decisions.md)
+supersede implementation and release-status statements below. For current behavior
+read the [decision guide](../concepts/decision-process.md); this record preserves
+what was proposed and verified at the time.
+
 B&NES implementation and real-data verification, 6 September 2026. The owner authorised execution through a real B&NES proof. The policy below is the intended POC; the implementation evidence distinguishes what the local build proves from wider regional work. The [Wayfinder map](https://github.com/awjreynolds/agentic-satn-compiler/issues/421) indexes the authoritative decisions.
 
 ## Agreed selection policy

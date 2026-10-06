@@ -2,6 +2,11 @@
 
 This context defines the language for a council-portable agentic compiler that develops one continuous, evidence-led Strategic Active Travel Network from connections between places.
 
+This glossary spans current planning concepts and retained historical workflows.
+A definition does not assert that a feature is implemented in every compiler.
+Use the [current decision process](docs/concepts/decision-process.md) and
+[architecture](docs/compiler-architecture.md) for implementation scope.
+
 ## Language
 
 **Agentic Network Compiler**:
@@ -498,15 +503,19 @@ A frozen, versioned and attributable human planning decision bound to one stable
 _Avoid_: agent decision, expiring decision, stale decision, Area Definition exception, hidden override, edited evidence
 
 **Material Officer–Compiler Divergence**:
-An explicit finding that a current valid Officer Decision selects a different eligible alignment from the compiler's current evidence-preferred option. The officer-selected route remains the primary route in that Officer-Informed Scenario Compilation, while the compiler-preferred alternative is highlighted distinctly rather than muted as an ordinary rejected option; the finding does not declare either route objectively correct.
-_Avoid_: officer error, correct route, grey rejected alternative, silent override
+An explicit finding that a current valid Officer Decision selects a different eligible alignment from the compiler's current evidence-preferred option. The officer-selected route remains the primary route in that Officer-Informed Scenario Compilation. The map exposes the generated Baseline Network and Baseline Community Access independently from the Officer Network and Officer Community Access. The baseline network is shown initially; officer geometry and superseded comparisons do not replace or recolour that baseline. Officer Community Access describes compiler-generated connections after officer strategic choices, not individual officer approval. The retained comparison and attribution explain the divergence without declaring either route objectively correct.
+_Avoid_: officer error, correct route, unlabelled rejected alternative, silent override
+
+**Officer Strategic Network Reference**:
+A source-derived officer selection of a complete strategic network within an explicitly bounded area. Only the source category designated Strategic establishes membership; quiet and community routes have separate roles. A compiler corridor absent from this reference is an inferred deselection, not a documented statement of officer rejection. The reference takes precedence across individual journey choices and defines the strategic targets used for subsequent community planning. Unresolved source correspondence remains explicit rather than being treated as absence. The reference may retain exact source alignment geometry without a routable graph counterpart. The map labels that geometry Officer-selected alignment and identifies its source; source selection alone does not establish existing infrastructure or cycling rights. Community connections unsupported by the effective reference remain unresolved.
+_Avoid_: quiet-route promotion, journey-only override, invented rejection rationale, matching failure as deselection
 
 **Officer Decision Target Unavailable**:
 An explicit governance finding that the stable logical target of a continuing Officer Decision no longer exists among the current materially equivalent compiler targets. Generation still completes, but the decision is neither expired nor silently transferred to a different route and remains visible until an authorised human supersedes or withdraws it; when no other Officer Decision applies, the new output is a Generated Scenario Compilation with an unresolved-decision warning rather than an Officer-Informed Scenario Compilation.
 _Avoid_: stale decision, automatic remapping, nearest-route substitution, silent expiry
 
 **Officer Decision Ledger**:
-The immutable canonical set of Officer Decisions supplied as initial governed input to generation. Every applicable decision controls its stable logical target, all other targets resolve normally, and a non-empty applied ledger creates an Officer-Informed Scenario Compilation; changed evidence or profile does not expire a decision and instead may produce a highlighted Material Officer–Compiler Divergence.
+The immutable canonical set of Officer Decisions supplied as initial governed input to generation. Every applicable decision controls its stable logical target within its strategic-route or community-connection scope. Strategic choices take effect before dependent community connections are determined; community choices apply to those resulting connections and retain their separate role. A changed strategic network requires affected community choices to be reconsidered without losing their attribution. All other targets resolve normally, and a non-empty applied ledger creates an Officer-Informed Scenario Compilation; changed evidence or profile does not expire a decision and instead may produce a highlighted Material Officer–Compiler Divergence.
 _Avoid_: interactive approval gate, mutable configuration, expiring decision ledger, second network source, agent ledger, output patch
 
 **Human Intervention Response**:
@@ -1223,7 +1232,7 @@ evidence snapshot, the current Guidance Profile and the Review Triggers that cau
 it to be prepared.
 _Avoid_: mutated adopted release, automatic supersession, adopted monitoring update
 
-## Experimental network planning
+## Network planning decisions
 
 **Decision Class**:
 The origin of a planning decision: mechanical for deterministic rules and computation, classifier for a Jev typed judgment, or agent for a configured reasoning or specialist proposal. It is independent of compiler stage; mechanical validation does not change the origin of the proposal it checks.

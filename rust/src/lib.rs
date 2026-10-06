@@ -7,6 +7,7 @@ mod geometry;
 mod graph;
 pub mod judgment;
 pub mod midend;
+pub mod officer;
 mod output;
 pub mod publication;
 pub mod topography;
@@ -24,7 +25,11 @@ pub use compiler::{
 };
 pub use error::{Result, SatnError};
 pub use geometry::{GRIDLESS_BNG_PROJECTION_POLICY, project_wgs84_to_bng};
+pub use officer::{
+    OfficerDecision, OfficerDecisionLedger, OfficerOutcome, OfficerOutcomeStatus, OfficerScenario,
+    apply_officer_decisions, load_officer_decisions,
+};
 pub use publication::{
     BusContextPublication, DecisionMapPublication, add_bus_context, load_retained_report,
-    publish_decision_map,
+    publish_decision_map, publish_officer_scenario_map,
 };

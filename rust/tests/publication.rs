@@ -2,11 +2,15 @@ use std::fs;
 use std::process::Command;
 
 use satn_rs::midend::{MidendRun, PlanningBase, TypedOperation};
+use satn_rs::officer::{
+    OfficerOutcome, OfficerOutcomeStatus, OfficerScenario, OfficerStrategicEdgeGeometry,
+    OfficerStrategicNetwork,
+};
 use satn_rs::{
     AccessObligation, AccountingSummary, Candidate, CandidateNeighbourhood,
     CandidateNeighbourhoodGeometry, CommunityAccess, CompileReport, Connection, NetworkPlace,
     SchoolContext, SourceCorridor, UnknownFact, UrbanEntry, add_bus_context, load_retained_report,
-    publish_decision_map,
+    publish_decision_map, publish_officer_scenario_map,
 };
 use serde_json::{Value, json};
 
@@ -239,6 +243,807 @@ fn publishes_compact_decision_map_with_real_departure_sections() {
     assert!(root.join("assets/maplibre-gl.js").is_file());
     assert!(root.join("assets/maplibre-gl.css").is_file());
     assert!(root.join("assets/MAPLIBRE-LICENSE.txt").is_file());
+}
+
+#[test]
+fn publishes_illustrative_officer_scenario_with_effective_routes_and_displaced_baseline_edges() {
+    let root = tempfile_root("satn-rs-officer-scenario");
+    let mut report = report_fixture();
+    report
+        .source_inventory
+        .iter_mut()
+        .find(|source| source.id == "source:a-road")
+        .expect("A-road baseline")
+        .geometry[1] = vec![[0.5, 0.0], [1.0, 0.0], [1.5, 0.0]];
+    let a_road = report
+        .source_inventory
+        .iter_mut()
+        .find(|source| source.id == "source:a-road")
+        .expect("A-road baseline");
+    a_road.geometry.extend([
+        vec![[0.0, 0.0], [1.0, 0.0]],
+        vec![[0.4, 0.0], [0.6, 0.0]],
+        vec![[2.0, 0.0], [3.0, 0.0]],
+    ]);
+    report.source_inventory.extend([
+        SourceCorridor {
+            id: "source:former-ncn".to_string(),
+            reference: "Former NCN".to_string(),
+            source_kind: "context".to_string(),
+            source_id: "former-ncn-source".to_string(),
+            scope: "governed".to_string(),
+            baseline_role: "former-ncn".to_string(),
+            source_edge_ids: vec!["former-ncn-section".to_string()],
+            graph_edge_ids: vec!["former-ncn-edge".to_string()],
+            geometry: vec![vec![[0.0, -0.05], [1.0, -0.05]]],
+            topology_status: "graph-bound".to_string(),
+            attachment_status: "graph-edge".to_string(),
+            provision_status: "unknown".to_string(),
+        },
+        SourceCorridor {
+            id: "source:declassified-ncn".to_string(),
+            reference: "Officially reclassified NCN".to_string(),
+            source_kind: "context".to_string(),
+            source_id: "declassified-ncn-source".to_string(),
+            scope: "governed".to_string(),
+            baseline_role: "declassified-ncn".to_string(),
+            source_edge_ids: vec!["declassified-ncn-section".to_string()],
+            graph_edge_ids: vec!["declassified-ncn-edge".to_string()],
+            geometry: vec![vec![[0.0, -0.08], [1.0, -0.08]]],
+            topology_status: "graph-bound".to_string(),
+            attachment_status: "graph-edge".to_string(),
+            provision_status: "unknown".to_string(),
+        },
+    ]);
+    let baseline = report
+        .candidates
+        .iter_mut()
+        .find(|candidate| candidate.id == "candidate:selected")
+        .expect("baseline candidate");
+    let baseline_a = vec![[0.0, 0.0], [0.5, 0.0]];
+    let baseline_b = vec![[0.5, 0.0], [1.0, 0.0]];
+    let baseline_c = vec![[1.0, 0.0], [1.5, 0.0]];
+    baseline.path_edge_ids = vec![
+        "baseline-a".to_string(),
+        "baseline-b".to_string(),
+        "baseline-c".to_string(),
+    ];
+    baseline.path_edge_geometries =
+        vec![baseline_a.clone(), baseline_b.clone(), baseline_c.clone()];
+    baseline.geometry = vec![[0.0, 0.0], [0.5, 0.0], [1.0, 0.0], [1.5, 0.0]];
+    let officer_candidate = report
+        .candidates
+        .iter_mut()
+        .find(|candidate| candidate.id == "candidate:strategic")
+        .expect("strategic candidate");
+    officer_candidate.path_edge_ids = vec![
+        "baseline-a".to_string(),
+        "baseline-b".to_string(),
+        "officer-new".to_string(),
+    ];
+    officer_candidate.path_edge_geometries = vec![
+        baseline_a.clone(),
+        baseline_b.clone(),
+        vec![[1.0, 0.0], [1.0, 1.0]],
+    ];
+    officer_candidate.geometry = vec![[0.0, 0.0], [0.5, 0.0], [1.0, 0.0], [1.0, 1.0]];
+    let other_effective_candidate = report
+        .candidates
+        .iter_mut()
+        .find(|candidate| candidate.id == "candidate:provisional")
+        .expect("other effective candidate");
+    other_effective_candidate.path_edge_ids =
+        vec!["baseline-a".to_string(), "other-route-new".to_string()];
+    other_effective_candidate.path_edge_geometries =
+        vec![baseline_a.clone(), vec![[0.5, 0.0], [0.5, -1.0]]];
+    other_effective_candidate.geometry = vec![[0.0, 0.0], [0.5, 0.0], [0.5, -1.0]];
+    let baseline_selection = TypedOperation::SelectAlignment {
+        id: "baseline:selected".to_string(),
+        task_id: "task:selected".to_string(),
+        attempt_id: "attempt:selected".to_string(),
+        connection_id: "connection:selected".to_string(),
+        candidate_id: "candidate:selected".to_string(),
+        decision_class: "classifier".to_string(),
+        provisional: false,
+        reason: None,
+        uncertainties: Vec::new(),
+    };
+    let unavailable_baseline = TypedOperation::SelectAlignment {
+        id: "baseline:unavailable".to_string(),
+        task_id: "task:provisional".to_string(),
+        attempt_id: "attempt:provisional".to_string(),
+        connection_id: "connection:provisional".to_string(),
+        candidate_id: "candidate:provisional".to_string(),
+        decision_class: "agent".to_string(),
+        provisional: false,
+        reason: None,
+        uncertainties: Vec::new(),
+    };
+    let run = MidendRun {
+        branch: "illustrative-officer-led".to_string(),
+        base_id: "base:fixture:snapshot".to_string(),
+        status: "replayed".to_string(),
+        task_ids: Vec::new(),
+        operations: vec![
+            TypedOperation::SelectAlignment {
+                id: "scenario:selected".to_string(),
+                task_id: "task:selected".to_string(),
+                attempt_id: "attempt:officer".to_string(),
+                connection_id: "connection:selected".to_string(),
+                candidate_id: "candidate:strategic".to_string(),
+                decision_class: "mechanical".to_string(),
+                provisional: false,
+                reason: Some("Illustrative officer-led choice.".to_string()),
+                uncertainties: Vec::new(),
+            },
+            unavailable_baseline.clone(),
+        ],
+        community_access: report.community_access.clone(),
+    };
+    let mut baseline_access = report.community_access[0].clone();
+    baseline_access.status = "network-gap".to_string();
+    baseline_access.geometry = [0.25, 0.0];
+    baseline_access.path_geometry = vec![[0.25, 0.0], [0.75, 0.0]];
+    let baseline_run = MidendRun {
+        branch: "review-branch".to_string(),
+        base_id: "base:fixture:snapshot".to_string(),
+        status: "replayed".to_string(),
+        task_ids: Vec::new(),
+        operations: vec![baseline_selection.clone(), unavailable_baseline.clone()],
+        community_access: vec![baseline_access],
+    };
+    let scenario = OfficerScenario {
+        authority: "officer-example".to_string(),
+        base_id: "base:fixture:snapshot".to_string(),
+        baseline_branch: "review-branch".to_string(),
+        community_access_regenerated: true,
+        strategic_network: Some(OfficerStrategicNetwork {
+            selected_graph_edge_ids: vec!["officer-new".to_string()],
+            deselected_graph_edge_ids: vec!["baseline-a".to_string()],
+            edge_geometries: vec![
+                OfficerStrategicEdgeGeometry {
+                    edge_id: "baseline-a".to_string(),
+                    geometry: baseline_a.clone(),
+                },
+                OfficerStrategicEdgeGeometry {
+                    edge_id: "officer-new".to_string(),
+                    geometry: vec![[1.0, 0.0], [1.0, 1.0]],
+                },
+            ],
+            selected_alignments: Vec::new(),
+            source_refs: vec!["ATM-FID-REFERENCE".to_string()],
+            attribution: "B&NES Active Travel Masterplan".to_string(),
+            rationale: "Included only where the source designates the Strategic route class."
+                .to_string(),
+            scope_geometry: None,
+        }),
+        outcomes: vec![
+            OfficerOutcome {
+                decision_id: "scenario:selected".to_string(),
+                connection_id: "connection:selected".to_string(),
+                baseline_candidate_id: Some("candidate:selected".to_string()),
+                officer_candidate_id: Some("candidate:strategic".to_string()),
+                effective_candidate_id: Some("candidate:strategic".to_string()),
+                status: OfficerOutcomeStatus::Divergence,
+                source_refs: vec!["ATM-FID-42".to_string()],
+                attribution: "Fixture Council source attribution".to_string(),
+                rationale: "The illustrative officer chooses the strategic candidate.".to_string(),
+                baseline_decision_id: Some("baseline:selected".to_string()),
+                baseline_decision_class: Some("classifier".to_string()),
+                baseline_operation: Some(baseline_selection),
+            },
+            OfficerOutcome {
+                decision_id: "scenario:unavailable".to_string(),
+                connection_id: "connection:provisional".to_string(),
+                baseline_candidate_id: Some("candidate:provisional".to_string()),
+                officer_candidate_id: None,
+                effective_candidate_id: Some("candidate:provisional".to_string()),
+                status: OfficerOutcomeStatus::Unavailable,
+                source_refs: vec!["ATM-FID-43".to_string()],
+                attribution: "Fixture Council source attribution".to_string(),
+                rationale: "No officer decision was supplied for this connection.".to_string(),
+                baseline_decision_id: Some("baseline:unavailable".to_string()),
+                baseline_decision_class: Some("agent".to_string()),
+                baseline_operation: Some(unavailable_baseline),
+            },
+        ],
+    };
+    let mut scenario_json = serde_json::to_value(&scenario).expect("scenario JSON");
+    scenario_json["strategic_network"]["scope_geometry"] = json!({
+        "type": "Polygon",
+        "coordinates": [[
+            [0.25, -0.1], [0.75, -0.1], [0.75, 0.1], [0.25, 0.1], [0.25, -0.1]
+        ]]
+    });
+    scenario_json["strategic_network"]["selected_alignments"] = json!([{
+        "source_id": "ATM-FID-OFFICER",
+        "geometry": [[[0.3, 0.05], [0.7, 0.05]]]
+    }]);
+    let scenario: OfficerScenario =
+        serde_json::from_value(scenario_json).expect("scenario with network scope");
+
+    publish_officer_scenario_map(&root, &report, &baseline_run, &run, &scenario)
+        .expect("publish illustrative officer scenario");
+    let geojson: Value = serde_json::from_str(
+        &fs::read_to_string(root.join("decision-map.geojson")).expect("scenario GeoJSON"),
+    )
+    .expect("valid scenario GeoJSON");
+    let features = geojson["features"].as_array().expect("features");
+    for (source_id, baseline_role) in [
+        ("ncn-source", "current-ncn"),
+        ("former-ncn-source", "former-ncn"),
+        ("declassified-ncn-source", "declassified-ncn"),
+    ] {
+        let ncn = features
+            .iter()
+            .find(|feature| feature["properties"]["source_id"] == source_id)
+            .unwrap_or_else(|| panic!("published {baseline_role} source"));
+        assert_eq!(ncn["properties"]["kind"], "source-baseline");
+        assert_eq!(ncn["properties"]["baseline_role"], baseline_role);
+        assert_eq!(ncn["properties"]["baseline_layer"], "source-strategic-ncn");
+        assert_eq!(ncn["properties"]["scenario_layer"], "baseline-network");
+        assert_eq!(ncn["properties"]["provision_status"], "unknown");
+    }
+    let baseline_route = features
+        .iter()
+        .find(|feature| {
+            feature["properties"]["scenario_layer"] == "baseline-network"
+                && feature["properties"]["candidate_id"] == "candidate:selected"
+        })
+        .expect("actual pre-officer baseline route");
+    assert_eq!(baseline_route["properties"]["decision_class"], "classifier");
+    assert_eq!(
+        baseline_route["geometry"]["coordinates"],
+        json!([[0.0, 0.0], [0.5, 0.0], [1.0, 0.0], [1.5, 0.0]])
+    );
+    let baseline_access = features
+        .iter()
+        .find(|feature| {
+            feature["properties"]["kind"] == "community-access"
+                && feature["properties"]["scenario_layer"] == "baseline-community-access"
+        })
+        .expect("pre-officer community access");
+    let officer_access = features
+        .iter()
+        .find(|feature| {
+            feature["properties"]["kind"] == "community-access"
+                && feature["properties"]["scenario_layer"] == "officer-community-access"
+        })
+        .expect("community access generated after officer choices");
+    assert_eq!(baseline_access["properties"]["status"], "network-gap");
+    assert_eq!(officer_access["properties"]["status"], "served");
+    assert_ne!(
+        baseline_access["geometry"]["coordinates"],
+        officer_access["geometry"]["coordinates"]
+    );
+    let effective = features
+        .iter()
+        .find(|feature| {
+            feature["properties"]["kind"] == "selected-alignment"
+                && feature["properties"]["candidate_id"] == "candidate:strategic"
+        })
+        .expect("effective strategic candidate");
+    assert_eq!(effective["properties"]["scenario_status"], "divergence");
+    assert_eq!(effective["properties"]["decision_class"], "mechanical");
+    assert_eq!(
+        effective["properties"]["scenario_authority"],
+        "Illustrative officer-led scenario"
+    );
+    assert_eq!(
+        effective["properties"]["officer_source_refs"][0],
+        "ATM-FID-42"
+    );
+    assert_eq!(effective["properties"]["officer_selected"], true);
+    let displaced_edges = features
+        .iter()
+        .filter(|feature| feature["properties"]["kind"] == "officer-baseline-unused")
+        .collect::<Vec<_>>();
+    assert_eq!(displaced_edges.len(), 1);
+    assert_eq!(
+        displaced_edges[0]["properties"]["baseline_candidate_id"],
+        "candidate:selected"
+    );
+    assert_eq!(
+        displaced_edges[0]["properties"]["baseline_edge_id"],
+        "baseline-c"
+    );
+    assert_eq!(
+        displaced_edges[0]["geometry"]["coordinates"],
+        serde_json::json!([[1.0, 0.0], [1.5, 0.0]])
+    );
+    assert_eq!(
+        displaced_edges[0]["properties"]["officer_source_refs"][0],
+        "ATM-FID-42"
+    );
+    assert_eq!(
+        displaced_edges[0]["properties"]["officer_attribution"],
+        "Fixture Council source attribution"
+    );
+    assert_eq!(
+        displaced_edges[0]["properties"]["officer_rationale"],
+        "The illustrative officer chooses the strategic candidate."
+    );
+    assert!(
+        displaced_edges[0]["properties"]["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("displaced and is no longer used")
+    );
+    let selected_journeys_using_shared_edge = features
+        .iter()
+        .filter(|feature| {
+            ["selected-alignment", "provisional-alignment"]
+                .contains(&feature["properties"]["kind"].as_str().unwrap_or_default())
+                && ["candidate:strategic", "candidate:provisional"].contains(
+                    &feature["properties"]["candidate_id"]
+                        .as_str()
+                        .unwrap_or_default(),
+                )
+                && feature["properties"]["scenario_layer"] == "officer-network"
+                && feature["geometry"]["coordinates"][0] == serde_json::json!([0.0, 0.0])
+                && feature["geometry"]["coordinates"][1] == serde_json::json!([0.5, 0.0])
+        })
+        .count();
+    assert_eq!(selected_journeys_using_shared_edge, 2);
+    assert!(features.iter().any(|feature| {
+        feature["properties"]["kind"] == "source-baseline"
+            && feature["properties"]["source_corridor_id"] == "source:a-road"
+            && feature["properties"]["source_geometry_part"] == 1
+            && feature["geometry"]["coordinates"]
+                == serde_json::json!([[0.5, 0.0], [1.0, 0.0], [1.5, 0.0]])
+    }));
+    let scoped_a_road_parts = features
+        .iter()
+        .filter(|feature| {
+            feature["properties"]["kind"] == "source-baseline"
+                && feature["properties"]["source_corridor_id"] == "source:a-road"
+                && feature["properties"]["strategic_network_scope_display"] == true
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        scoped_a_road_parts
+            .iter()
+            .all(|feature| { feature["properties"]["scenario_layer"] == "officer-network" })
+    );
+    let crossing_parts = scoped_a_road_parts
+        .iter()
+        .filter(|feature| feature["properties"]["source_geometry_part"] == 2)
+        .map(|feature| feature["geometry"]["coordinates"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(crossing_parts.len(), 2);
+    assert!(crossing_parts.contains(&json!([[0.0, 0.0], [0.25, 0.0]])));
+    assert!(crossing_parts.contains(&json!([[0.75, 0.0], [1.0, 0.0]])));
+    let crossing_display = scoped_a_road_parts
+        .iter()
+        .find(|feature| feature["properties"]["source_geometry_part"] == 2)
+        .expect("clipped outside A-road feature");
+    assert_eq!(
+        crossing_display["properties"]["strategic_network_scope_source_refs"][0],
+        "ATM-FID-REFERENCE"
+    );
+    assert_eq!(
+        crossing_display["properties"]["strategic_network_scope_attribution"],
+        "B&NES Active Travel Masterplan"
+    );
+    assert_eq!(
+        crossing_display["properties"]["reason"],
+        "This A-road source segment is outside the geographic scope supplied by the strategic network reference."
+    );
+    assert!(
+        !scoped_a_road_parts
+            .iter()
+            .any(|feature| feature["properties"]["source_geometry_part"] == 3)
+    );
+    assert!(scoped_a_road_parts.iter().any(|feature| {
+        feature["properties"]["source_geometry_part"] == 4
+            && feature["geometry"]["coordinates"] == json!([[2.0, 0.0], [3.0, 0.0]])
+    }));
+    assert!(features.iter().any(|feature| {
+        feature["properties"]["source_geometry_part"] == 3
+            && feature["properties"]["strategic_network_scope_original"] == true
+            && feature["geometry"]["coordinates"] == json!([[0.4, 0.0], [0.6, 0.0]])
+    }));
+    assert!(features.iter().any(|feature| {
+        feature["properties"]["source_geometry_part"] == 2
+            && feature["properties"]["strategic_network_scope_original"] == true
+            && feature["properties"]["scenario_layer"] == "baseline-network"
+            && feature["geometry"]["coordinates"] == json!([[0.0, 0.0], [1.0, 0.0]])
+    }));
+    let exact_officer_alignments = features
+        .iter()
+        .filter(|feature| feature["properties"]["kind"] == "officer-selected-alignment")
+        .collect::<Vec<_>>();
+    assert_eq!(exact_officer_alignments.len(), 1);
+    assert_eq!(
+        exact_officer_alignments[0]["properties"]["label"],
+        "Officer-selected alignment"
+    );
+    assert_eq!(
+        exact_officer_alignments[0]["properties"]["source_reference"],
+        "B&NES Active Travel Masterplan"
+    );
+    assert_eq!(
+        exact_officer_alignments[0]["properties"]["source_id"],
+        "ATM-FID-OFFICER"
+    );
+    assert_eq!(
+        exact_officer_alignments[0]["geometry"]["coordinates"],
+        json!([[0.3, 0.05], [0.7, 0.05]])
+    );
+    let compiler_comparisons = features
+        .iter()
+        .filter(|feature| feature["properties"]["kind"] == "officer-compiler-comparison")
+        .collect::<Vec<_>>();
+    assert!(compiler_comparisons.iter().any(|feature| {
+        feature["properties"]["comparison_subject"] == "a-road-source"
+            && feature["properties"]["source_id"] == "a-road-source"
+            && feature["geometry"]["coordinates"] == json!([[0.4, 0.0], [0.6, 0.0]])
+    }));
+    assert!(compiler_comparisons.iter().any(|feature| {
+        feature["properties"]["comparison_subject"] == "selected-candidate"
+            && feature["properties"]["candidate_id"] == "candidate:strategic"
+            && feature["geometry"]["coordinates"] == json!([[0.25, 0.0], [0.5, 0.0], [0.75, 0.0]])
+    }));
+    assert!(compiler_comparisons.iter().all(|feature| {
+        feature["properties"]["scenario_layer"] == "officer-network"
+            && feature["properties"]["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("shown for comparison")
+            && !feature["properties"]["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("rejection")
+    }));
+    let outside_candidate_parts = features
+        .iter()
+        .filter(|feature| {
+            feature["properties"]["kind"] == "selected-alignment"
+                && feature["properties"]["candidate_id"] == "candidate:strategic"
+                && feature["properties"]["strategic_network_scope_display"] == true
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        outside_candidate_parts.iter().any(|feature| {
+            feature["geometry"]["coordinates"] == json!([[0.0, 0.0], [0.25, 0.0]])
+        })
+    );
+    assert!(outside_candidate_parts.iter().any(|feature| {
+        feature["geometry"]["coordinates"] == json!([[0.75, 0.0], [1.0, 0.0], [1.0, 1.0]])
+    }));
+    assert!(
+        !features
+            .iter()
+            .any(|feature| feature["properties"]["kind"] == "officer-strategic-network")
+    );
+    assert!(!features.iter().any(|feature| {
+        feature["properties"]["kind"] == "officer-baseline-unused"
+            && ["baseline-a", "baseline-b"].contains(
+                &feature["properties"]["baseline_edge_id"]
+                    .as_str()
+                    .unwrap_or_default(),
+            )
+    }));
+    assert!(features.iter().any(|feature| {
+        feature["properties"]["kind"] == "source-baseline"
+            && feature["properties"]["baseline_layer"] == "source-strategic-a-road"
+    }));
+    assert!(features.iter().any(|feature| {
+        feature["properties"]["kind"] == "community-access"
+            && feature["properties"]["scenario_layer"] == "baseline-community-access"
+    }));
+    assert!(!features.iter().any(|feature| {
+        feature["properties"]["kind"] == "officer-baseline-unused"
+            && feature["properties"]["baseline_candidate_id"] == "candidate:provisional"
+    }));
+
+    let mut legacy_network_scenario = scenario.clone();
+    legacy_network_scenario
+        .strategic_network
+        .as_mut()
+        .expect("network reference")
+        .selected_alignments
+        .clear();
+    let legacy_network_root = tempfile_root("satn-rs-officer-network-without-source-alignments");
+    publish_officer_scenario_map(
+        &legacy_network_root,
+        &report,
+        &baseline_run,
+        &run,
+        &legacy_network_scenario,
+    )
+    .expect("publish network reference without exact source alignments");
+    let legacy_network_geojson: Value = serde_json::from_str(
+        &fs::read_to_string(legacy_network_root.join("decision-map.geojson"))
+            .expect("legacy network GeoJSON"),
+    )
+    .expect("valid legacy network GeoJSON");
+    let legacy_network_features = legacy_network_geojson["features"]
+        .as_array()
+        .expect("legacy network features");
+    assert_eq!(
+        legacy_network_features
+            .iter()
+            .filter(|feature| feature["properties"]["kind"] == "officer-strategic-network")
+            .count(),
+        2
+    );
+    assert!(!legacy_network_features.iter().any(|feature| {
+        ["officer-selected-alignment", "officer-compiler-comparison"]
+            .contains(&feature["properties"]["kind"].as_str().unwrap_or_default())
+    }));
+    let mut empty_source_alignment_scenario = scenario.clone();
+    empty_source_alignment_scenario
+        .strategic_network
+        .as_mut()
+        .expect("network reference")
+        .selected_alignments[0]
+        .geometry
+        .clear();
+    let empty_source_alignment_root =
+        tempfile_root("satn-rs-officer-empty-source-alignment-rejected");
+    assert!(
+        publish_officer_scenario_map(
+            &empty_source_alignment_root,
+            &report,
+            &baseline_run,
+            &run,
+            &empty_source_alignment_scenario,
+        )
+        .is_err()
+    );
+
+    let details: Value = serde_json::from_str(
+        &fs::read_to_string(root.join("decision-map.json")).expect("scenario details"),
+    )
+    .expect("valid scenario details");
+    assert_eq!(details["officer_scenario"]["authority"], "officer-example");
+    assert_eq!(
+        details["officer_scenario"]["strategic_network"]["selected_graph_edge_ids"][0],
+        "officer-new"
+    );
+    assert_eq!(
+        details["officer_scenario"]["strategic_network"]["deselected_graph_edge_ids"][0],
+        "baseline-a"
+    );
+    assert_eq!(
+        details["officer_scenario"]["strategic_network"]["attribution"],
+        "B&NES Active Travel Masterplan"
+    );
+    assert_eq!(
+        details["officer_scenario"]["strategic_network"]["rationale"],
+        "Included only where the source designates the Strategic route class."
+    );
+    assert_eq!(
+        details["officer_scenario"]["strategic_network"]["scope_geometry"]["type"],
+        "Polygon"
+    );
+    assert_eq!(
+        details["officer_scenario"]["strategic_network"]["scope_geometry"]["coordinates"],
+        json!([[
+            [0.25, -0.1],
+            [0.75, -0.1],
+            [0.75, 0.1],
+            [0.25, 0.1],
+            [0.25, -0.1]
+        ]])
+    );
+    assert_eq!(
+        details["officer_scenario"]["strategic_network"]["selected_alignments"][0]["source_id"],
+        "ATM-FID-OFFICER"
+    );
+    assert_eq!(
+        details["officer_scenario"]["strategic_network"]["selected_alignments"][0]["geometry"],
+        json!([[[0.3, 0.05], [0.7, 0.05]]])
+    );
+    assert_eq!(
+        details["officer_scenario"]["community_access_regenerated"],
+        true
+    );
+    assert_eq!(
+        details["officer_scenario"]["outcomes"][1]["status"],
+        "unavailable"
+    );
+    assert_eq!(
+        details["officer_scenario"]["outcomes"][1]["effective_candidate_id"],
+        "candidate:provisional"
+    );
+    assert!(
+        details["officer_scenario"]["outcomes"][0]
+            .get("baseline_operation")
+            .is_none()
+    );
+
+    let html = fs::read_to_string(root.join("index.html")).expect("scenario viewer");
+    assert!(html.contains("Illustrative officer-led scenario"));
+    assert!(html.contains("not officer-approved"));
+    assert!(html.contains("Baseline Network"));
+    assert!(html.contains("Baseline Community Access"));
+    assert!(html.contains("Officer Network"));
+    assert!(html.contains("Officer Community Access"));
+    assert!(html.contains("data-layer-toggle=\"baseline-network\" checked"));
+    assert!(html.contains("data-layer-toggle=\"baseline-community-access\""));
+    assert!(html.contains("data-layer-toggle=\"officer-network\""));
+    assert!(html.contains("data-layer-toggle=\"officer-community-access\""));
+    assert!(html.contains("Generated by the compiler after officer strategic choices; it does not mean an officer approved each connection."));
+    assert!(html.contains("Baseline Network is shown first."));
+    assert!(html.contains("ATM-FID-43"));
+    assert!(!html.contains("data-layer-toggle=\"strategic-network\""));
+    assert!(!html.contains("data-layer-toggle=\"community-access\""));
+    assert!(html.contains("superseded comparisons remain attached to their features"));
+    assert!(
+        html.contains("'native-officer-compiler-comparison', 'native-officer-selected-alignment']")
+    );
+    assert!(html.contains("line('native-officer-network-route'"));
+    assert!(html.contains("line('native-officer-network-a-road-scope'"));
+    assert!(html.contains("line('native-officer-effective'"));
+    assert!(html.contains("line('native-officer-baseline-unused'"));
+    assert!(html.contains("line('native-officer-strategic-network'"));
+    assert!(html.contains("strategic_network_scope_display"));
+    assert!(html.contains("strategic_network_scope_original"));
+    assert!(html.contains("Strategic reference attribution"));
+    assert!(html.contains("Strategic reference rationale"));
+    assert!(html.contains("strategic_network_scope_display'], true"));
+    assert!(html.contains("strategic_network_scope_original']]]"));
+    assert!(html.contains("['!', ['has', 'strategic_network_scope_display']]"));
+    assert!(html.contains("Officer Network"));
+    assert!(html.contains("native-officer-compiler-comparison"));
+    assert!(html.contains("native-officer-selected-alignment"));
+    let comparison_layer = html
+        .find("line('native-officer-compiler-comparison'")
+        .expect("compiler comparison style");
+    let source_alignment_layer = html
+        .find("line('native-officer-selected-alignment'")
+        .expect("exact source alignment style");
+    assert!(comparison_layer < source_alignment_layer);
+    assert!(html.contains("#d71920"));
+    assert!(html.contains("#d55e00"));
+    assert!(html.contains("#4b5563"));
+    assert!(html.contains("#009e73"));
+    assert!(html.contains("line('native-baseline-route'"));
+    assert!(html.contains("native-strategic-ncn-current"));
+    assert!(html.contains("native-strategic-ncn-former"));
+    assert!(html.contains("line('native-strategic-ncn-current', currentNcnFilter, '#0072b2', 4)"));
+    assert!(html.contains("line('native-strategic-ncn-former', formerNcnFilter, '#f0e442', 4)"));
+    assert!(html.contains("Current NCN"));
+    assert!(html.contains("Former NCN / officially reclassified NCN"));
+    assert!(html.contains("Colour records source classification, not safety or condition"));
+    assert!(html.contains(
+        "add(ncnSource ? 'Recorded NCN classification' : 'Source classification', props.baseline_role)"
+    ));
+    let baseline_route_layer = html
+        .find("line('native-baseline-route'")
+        .expect("baseline route style");
+    let ncn_layer = html
+        .find("line('native-strategic-ncn-current'")
+        .expect("current NCN style");
+    let former_ncn_layer = html
+        .find("line('native-strategic-ncn-former'")
+        .expect("former NCN style");
+    assert!(baseline_route_layer < former_ncn_layer && former_ncn_layer < ncn_layer);
+    assert!(html.contains("line('native-baseline-route', ['all', ['==', ['get', 'scenario_layer'], 'baseline-network'], ['==', ['get', 'kind'], 'selected-alignment'], lineGeometryFilter], '#d71920'"));
+    assert!(html.contains("!['selected-alignment', 'provisional-alignment'].includes(kind) ||"));
+    assert!(
+        html.contains("['case', ['==', ['get', 'officer_selected'], true], '#d55e00', '#009e73']")
+    );
+    let network_layer = html
+        .find("line('native-strategic-network'")
+        .expect("base network style");
+    let displaced_layer = html
+        .find("line('native-officer-baseline-unused'")
+        .expect("grey overlay style");
+    let officer_layer = html
+        .find("line('native-officer-effective'")
+        .expect("orange overlay style");
+    let strategic_network_layer = html
+        .find("line('native-officer-strategic-network'")
+        .expect("reference network overlay style");
+    assert!(network_layer < displaced_layer && displaced_layer < officer_layer);
+    assert!(officer_layer < strategic_network_layer);
+    assert!(strategic_network_layer < comparison_layer);
+    assert!(html.contains("data-native-officer-scenario=\"illustrative\""));
+
+    let mut legacy_scenario = scenario.clone();
+    legacy_scenario.strategic_network = None;
+    let legacy_root = tempfile_root("satn-rs-officer-scenario-without-network-reference");
+    publish_officer_scenario_map(&legacy_root, &report, &baseline_run, &run, &legacy_scenario)
+        .expect("publish legacy per-journey officer scenario");
+    let legacy_geojson: Value = serde_json::from_str(
+        &fs::read_to_string(legacy_root.join("decision-map.geojson")).expect("legacy GeoJSON"),
+    )
+    .expect("valid legacy GeoJSON");
+    assert!(
+        !legacy_geojson["features"]
+            .as_array()
+            .expect("legacy features")
+            .iter()
+            .any(|feature| feature["properties"]["kind"] == "officer-strategic-network")
+    );
+    let mut unscoped_network_scenario = scenario.clone();
+    let unscoped_network = unscoped_network_scenario
+        .strategic_network
+        .as_mut()
+        .expect("network reference");
+    unscoped_network.scope_geometry = None;
+    unscoped_network.selected_alignments.clear();
+    let unscoped_network_root =
+        tempfile_root("satn-rs-officer-scenario-network-without-geographic-scope");
+    publish_officer_scenario_map(
+        &unscoped_network_root,
+        &report,
+        &baseline_run,
+        &run,
+        &unscoped_network_scenario,
+    )
+    .expect("publish network reference without geographic scope");
+    let unscoped_geojson: Value = serde_json::from_str(
+        &fs::read_to_string(unscoped_network_root.join("decision-map.geojson"))
+            .expect("unscoped network GeoJSON"),
+    )
+    .expect("valid unscoped network GeoJSON");
+    let unscoped_a_roads = unscoped_geojson["features"]
+        .as_array()
+        .expect("unscoped features")
+        .iter()
+        .filter(|feature| feature["properties"]["source_corridor_id"] == "source:a-road")
+        .collect::<Vec<_>>();
+    assert_eq!(unscoped_a_roads.len(), 5);
+    assert!(!unscoped_a_roads.iter().any(|feature| {
+        feature["properties"]
+            .get("strategic_network_scope_display")
+            .is_some()
+            || feature["properties"]
+                .get("strategic_network_scope_original")
+                .is_some()
+    }));
+    let unscoped_details: Value = serde_json::from_str(
+        &fs::read_to_string(unscoped_network_root.join("decision-map.json"))
+            .expect("unscoped network details"),
+    )
+    .expect("valid unscoped network details");
+    assert!(
+        unscoped_details["officer_scenario"]["strategic_network"]
+            .get("scope_geometry")
+            .is_none()
+    );
+    let legacy_html = fs::read_to_string(legacy_root.join("index.html")).expect("legacy viewer");
+    assert!(legacy_html.contains("Officer Network"));
+    assert!(!legacy_html.contains("Inferred network-reference deselection"));
+
+    let mut refreshed_scenario = scenario.clone();
+    refreshed_scenario.community_access_regenerated = true;
+    let refreshed_root = tempfile_root("satn-rs-officer-scenario-refreshed");
+    publish_officer_scenario_map(
+        &refreshed_root,
+        &report,
+        &baseline_run,
+        &run,
+        &refreshed_scenario,
+    )
+    .expect("publish officer scenario with recomputed community access");
+    let refreshed_html =
+        fs::read_to_string(refreshed_root.join("index.html")).expect("refreshed scenario viewer");
+    assert!(refreshed_html.contains("Officer Community Access"));
+    assert!(refreshed_html.contains("not officer approval"));
+    let refreshed_geojson: Value = serde_json::from_str(
+        &fs::read_to_string(refreshed_root.join("decision-map.geojson"))
+            .expect("refreshed scenario GeoJSON"),
+    )
+    .expect("valid refreshed scenario GeoJSON");
+    let refreshed_access = refreshed_geojson["features"]
+        .as_array()
+        .expect("refreshed features")
+        .iter()
+        .find(|feature| {
+            feature["properties"]["kind"] == "community-access"
+                && feature["properties"]["scenario_layer"] == "officer-community-access"
+        })
+        .expect("recomputed community access feature");
+    assert!(
+        refreshed_access["properties"]
+            .get("scenario_baseline_context")
+            .is_none()
+    );
 }
 
 #[test]
@@ -863,6 +1668,116 @@ if (labels.some((label, index) => labels.indexOf(label) !== index)) process.exit
         .status()
         .expect("run formatter test");
     assert!(status.success());
+}
+
+#[test]
+fn clips_current_former_and_declassified_ncn_linework_to_report_boundary() {
+    let root = tempfile_root("satn-rs-publication-ncn-boundary");
+    let mut report = report_fixture();
+    report.boundary_scope = Some(
+        serde_json::from_value(json!({
+            "id": "scope:fixture",
+            "name": "Configured area",
+            "geometry": [
+                [[[0.25, -0.1], [0.5, -0.1], [0.5, 0.1], [0.25, 0.1], [0.25, -0.1]]],
+                [[[0.75, -0.1], [1.0, -0.1], [1.0, 0.1], [0.75, 0.1], [0.75, -0.1]]]
+            ]
+        }))
+        .expect("configured boundary scope"),
+    );
+    let current = report
+        .source_inventory
+        .iter_mut()
+        .find(|source| source.id == "source:cycleway")
+        .expect("current NCN source");
+    current.reference = "NCN 4.0".to_string();
+    current.geometry = vec![vec![[0.0, 0.0], [1.0, 0.0]]];
+    report.source_inventory.extend([
+        SourceCorridor {
+            id: "source:former-ncn".to_string(),
+            reference: "Former NCN".to_string(),
+            source_kind: "context".to_string(),
+            source_id: "former-ncn-source".to_string(),
+            scope: "governed".to_string(),
+            baseline_role: "former-ncn".to_string(),
+            source_edge_ids: Vec::new(),
+            graph_edge_ids: Vec::new(),
+            geometry: vec![vec![[0.0, -0.05], [1.0, -0.05]]],
+            topology_status: "source-only".to_string(),
+            attachment_status: "unknown".to_string(),
+            provision_status: "unknown".to_string(),
+        },
+        SourceCorridor {
+            id: "source:declassified-ncn".to_string(),
+            reference: "Officially reclassified NCN".to_string(),
+            source_kind: "context".to_string(),
+            source_id: "declassified-ncn-source".to_string(),
+            scope: "governed".to_string(),
+            baseline_role: "declassified-ncn".to_string(),
+            source_edge_ids: Vec::new(),
+            graph_edge_ids: Vec::new(),
+            geometry: vec![
+                vec![[0.0, -0.08], [1.0, -0.08]],
+                vec![[2.0, -0.08], [3.0, -0.08]],
+            ],
+            topology_status: "source-only".to_string(),
+            attachment_status: "unknown".to_string(),
+            provision_status: "unknown".to_string(),
+        },
+    ]);
+    let run = MidendRun {
+        branch: "main".to_string(),
+        base_id: "base:fixture:snapshot".to_string(),
+        status: "completed".to_string(),
+        task_ids: Vec::new(),
+        operations: Vec::new(),
+        community_access: Vec::new(),
+    };
+
+    publish_decision_map(&root, &report, &run).expect("publish map");
+    let geojson: Value = serde_json::from_str(
+        &fs::read_to_string(root.join("decision-map.geojson")).expect("GeoJSON output"),
+    )
+    .expect("valid GeoJSON");
+    let features = geojson["features"].as_array().expect("features");
+    for (source_id, role, y) in [
+        ("ncn-source", "current-ncn", 0.0),
+        ("former-ncn-source", "former-ncn", -0.05),
+        ("declassified-ncn-source", "declassified-ncn", -0.08),
+    ] {
+        let mut fragments = features
+            .iter()
+            .filter(|feature| {
+                feature["properties"]["kind"] == "source-baseline"
+                    && feature["properties"]["source_id"] == source_id
+            })
+            .collect::<Vec<_>>();
+        fragments.sort_by(|left, right| {
+            left["geometry"]["coordinates"][0][0]
+                .as_f64()
+                .partial_cmp(&right["geometry"]["coordinates"][0][0].as_f64())
+                .expect("coordinates are numbers")
+        });
+        assert_eq!(fragments.len(), 2, "published {role} fragments");
+        assert_eq!(fragments[0]["properties"]["baseline_role"], role);
+        assert_eq!(fragments[1]["properties"]["baseline_role"], role);
+        assert_eq!(
+            fragments[0]["geometry"]["coordinates"],
+            json!([[0.25, y], [0.5, y]])
+        );
+        assert_eq!(
+            fragments[1]["geometry"]["coordinates"],
+            json!([[0.75, y], [1.0, y]])
+        );
+        assert!(fragments.iter().all(|feature| {
+            feature["properties"]["baseline_layer"] == "source-strategic-ncn"
+                && feature["properties"]["source_geometry_part"] == 0
+        }));
+    }
+    assert!(features.iter().any(|feature| {
+        feature["properties"]["source_id"] == "a-road-source"
+            && feature["geometry"]["coordinates"] == json!([[0.0, 0.0], [0.5, 0.0]])
+    }));
 }
 
 #[test]

@@ -1,8 +1,41 @@
-# Feature tour: what the B&NES map demonstrates
+# Feature tour: the current native map
 
-Start with the [live WECA map](https://awjreynolds.github.io/agentic-satn-compiler/deployments/weca/).
-The screenshots below use the reproducible B&NES local example; every map is a
-generated planning hypothesis, not an adopted network.
+The [published WECA map](https://awjreynolds.github.io/agentic-satn-compiler/deployments/weca/)
+uses the native Rust decision publication. Read the active legend and inspect
+features rather than inferring condition from a line colour.
+
+1. **Separate network from access.** Strategic corridors and community connections
+   serve different purposes. A community branch is not automatically a strategic
+   through-route, and a visible gap is not invented connecting geometry.
+2. **Compare officer and compiler choices.** Where an officer scenario is supplied,
+   baseline network/access and officer network/access are separate layers. Inspect
+   the source, rationale and baseline decision class alongside the effective choice.
+3. **Read source designation carefully.** NCN labels identify the imported source
+   and recorded current/former designation. They do not independently confirm
+   current designation, completed provision, safety or cycling quality.
+4. **Inspect uncertainty and attribution.** Decision class distinguishes mechanical,
+   classifier and reasoning-model origins. Provisional selections retain that
+   status, reason and uncertainty; unknown provision remains separate.
+5. **Use context for investigation.** Schools, available bus context and candidate
+   neighbourhoods inform review. A school point does not prove accessible routing;
+   a candidate polygon does not establish low traffic or traversable crossings.
+
+The [decision guide](decision-process.md) explains the rules behind these records;
+[artifact reference](../reference/artifacts.md) identifies the machine-readable
+files. The screenshots below belong to the earlier Python interface and are
+retained for interpreting historical outputs.
+
+---
+
+# Historical B&NES Python interface
+
+> **Historical interface.** These screenshots were captured from the retained
+> Python compiler's B&NES review map on 2026-08-02. They do not depict the
+> current native Rust publication or establish its behavior. Open the [current
+> WECA deployment](https://awjreynolds.github.io/agentic-satn-compiler/deployments/weca/)
+> and read the [current decision-process guide](decision-process.md) for the
+> native implementation. Every output remains a planning aid, not an adopted
+> network.
 
 ## 1. Read the strategic network before the evidence inventory
 

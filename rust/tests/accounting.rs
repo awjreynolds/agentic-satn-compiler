@@ -58,7 +58,13 @@ fn accounts_strategic_baseline_places_and_school_gaps() {
     write_collection(
         &snapshot.join("context.geojson"),
         vec![
-            context_line("ncn-route", "ncn-route-1", "NCN 1", [0.0, 0.0], [1.0, 0.0]),
+            context_line(
+                "ncn-route",
+                "ncn-route-1",
+                "NCN 416.0",
+                [0.0, 0.0],
+                [1.0, 0.0],
+            ),
             context_line("ncn-link", "ncn-link-1", "NCN link", [0.0, 0.0], [1.0, 0.0]),
             context_line(
                 "declassified-ncn-route",
@@ -124,6 +130,18 @@ fn accounts_strategic_baseline_places_and_school_gaps() {
     assert!(roles.contains("greenway-cycleway"));
     assert!(roles.contains("railway"));
     assert!(roles.contains("former-railway"));
+    let current_ncn = report
+        .source_inventory
+        .iter()
+        .find(|source| source.source_id == "ncn-route-1")
+        .expect("current NCN source");
+    assert_eq!(current_ncn.reference, "NCN 416.0");
+    let declassified_ncn = report
+        .source_inventory
+        .iter()
+        .find(|source| source.source_id == "former-ncn-1")
+        .expect("declassified NCN source");
+    assert_eq!(declassified_ncn.reference, "Former NCN");
     let railway = report
         .source_inventory
         .iter()
@@ -227,6 +245,215 @@ fn accounts_strategic_baseline_places_and_school_gaps() {
     assert!(map.contains("class=\"community-access\""));
 }
 
+#[test]
+fn overlapping_ncn_sources_bind_graph_edges_and_supply_rural_access() {
+    let root = tempfile_root("satn-rs-ncn-spine-access");
+    let snapshot = root.join("snapshot");
+    fs::create_dir_all(&snapshot).expect("snapshot directory");
+    fs::write(
+        snapshot.join("snapshot.json"),
+        r#"{"attribution":"Fixture attribution","evidence_sources":{}}"#,
+    )
+    .expect("snapshot metadata");
+    fs::write(
+        root.join("area.yaml"),
+        format!(
+            "area_id: fixture\narea_name: Fixture\nsource:\n  snapshot_dir: {}\n  snapshot_id: snapshot\n  community_place_types: [village]\ncompilation:\n  max_connection_km: 15\n",
+            root.display()
+        ),
+    )
+    .expect("area config");
+
+    let community = [-2.360, 51.380];
+    let junction = [-2.359, 51.3801];
+    let ncn_end = [-2.358, 51.3801];
+    write_collection(
+        &snapshot.join("network.geojson"),
+        vec![
+            edge(
+                "community",
+                "junction",
+                community,
+                junction,
+                100.0,
+                None,
+                "residential",
+            ),
+            edge(
+                "junction",
+                "community",
+                junction,
+                community,
+                100.0,
+                None,
+                "residential",
+            ),
+            edge(
+                "junction", "ncn-end", junction, ncn_end, 100.0, None, "path",
+            ),
+            edge(
+                "ncn-end", "junction", ncn_end, junction, 100.0, None, "path",
+            ),
+        ],
+    );
+    write_collection(
+        &snapshot.join("places.geojson"),
+        vec![place_with_eligibility(
+            "village", "Village", community, "village", true,
+        )],
+    );
+    write_collection(
+        &snapshot.join("context.geojson"),
+        vec![
+            context_line(
+                "ncn-route",
+                "current-ncn-near",
+                "NCN 4",
+                [-2.359, 51.380],
+                [-2.358, 51.380],
+            ),
+            context_line(
+                "declassified-ncn-route",
+                "declassified-ncn-near",
+                "Former NCN",
+                [-2.359, 51.38005],
+                [-2.358, 51.38005],
+            ),
+            context_line(
+                "ncn-link",
+                "ncn-link-near",
+                "NCN link",
+                [-2.359, 51.380],
+                [-2.358, 51.380],
+            ),
+            context_line(
+                "ncn-route",
+                "current-ncn-far",
+                "Remote NCN",
+                [-2.350, 51.390],
+                [-2.349, 51.390],
+            ),
+            json!({
+                "type":"Feature",
+                "properties":{"feature_type":"ncn-route","evidence_id":"current-ncn-multipart","name":"Multipart current NCN"},
+                "geometry":{"type":"MultiLineString","coordinates":[[[-2.359,51.38006],[-2.358,51.38006]],[[-2.350,51.390],[-2.349,51.390]]]}
+            }),
+        ],
+    );
+
+    let report = compile(
+        &root.join("area.yaml"),
+        &root.join("output"),
+        CompileOptions::default(),
+    )
+    .expect("NCN-only fixture compiles");
+    let current_ncn = report
+        .source_inventory
+        .iter()
+        .find(|source| source.source_id == "current-ncn-near")
+        .expect("current NCN source");
+    let declassified_ncn = report
+        .source_inventory
+        .iter()
+        .find(|source| source.source_id == "declassified-ncn-near")
+        .expect("declassified NCN source");
+    let access = report
+        .community_access
+        .iter()
+        .find(|access| access.community_id == "village" && access.is_primary)
+        .expect("primary village access");
+    let ncn_link = report
+        .source_inventory
+        .iter()
+        .find(|source| source.source_id == "ncn-link-near")
+        .expect("NCN link context");
+    let far_ncn = report
+        .source_inventory
+        .iter()
+        .find(|source| source.source_id == "current-ncn-far")
+        .expect("far NCN source");
+    let multipart_ncn = report
+        .source_inventory
+        .iter()
+        .find(|source| source.source_id == "current-ncn-multipart")
+        .expect("multipart NCN source");
+
+    assert_eq!(current_ncn.baseline_role, "current-ncn");
+    assert_eq!(declassified_ncn.baseline_role, "declassified-ncn");
+    assert!(!current_ncn.graph_edge_ids.is_empty());
+    assert!(!declassified_ncn.graph_edge_ids.is_empty());
+    assert_eq!(access.status, "served");
+    assert!(
+        access
+            .root_spine_id
+            .as_deref()
+            .unwrap()
+            .contains(&current_ncn.id)
+    );
+    assert!(
+        access
+            .root_spine_id
+            .as_deref()
+            .unwrap()
+            .contains(&declassified_ncn.id)
+    );
+    assert!(
+        !access
+            .root_spine_id
+            .as_deref()
+            .unwrap()
+            .contains(&ncn_link.id)
+    );
+    assert!(ncn_link.graph_edge_ids.is_empty());
+    assert!(far_ncn.graph_edge_ids.is_empty());
+    assert_eq!(far_ncn.attachment_status, "unknown");
+    write_collection(
+        &snapshot.join("network.geojson"),
+        vec![
+            edge(
+                "community",
+                "junction",
+                community,
+                junction,
+                100.0,
+                None,
+                "residential",
+            ),
+            edge(
+                "junction",
+                "community",
+                junction,
+                community,
+                100.0,
+                None,
+                "residential",
+            ),
+            edge_with_bicycle(
+                "junction", "ncn-end", junction, ncn_end, 100.0, None, "path", "no",
+            ),
+            edge_with_bicycle(
+                "ncn-end", "junction", ncn_end, junction, 100.0, None, "path", "no",
+            ),
+        ],
+    );
+    let denied_report = compile(
+        &root.join("area.yaml"),
+        &root.join("output-ncn-denied"),
+        CompileOptions::default(),
+    )
+    .expect("denied NCN fixture compiles");
+    let denied_access = denied_report
+        .community_access
+        .iter()
+        .find(|access| access.community_id == "village" && access.is_primary)
+        .expect("primary village access with denied NCN");
+    assert_eq!(denied_access.status, "network-gap");
+    assert!(denied_access.root_spine_id.is_none());
+    assert_eq!(multipart_ncn.attachment_status, "partial");
+    assert_eq!(multipart_ncn.topology_status, "partially-graph-bound");
+    assert!(!multipart_ncn.graph_edge_ids.is_empty());
+}
+
 fn edge(
     from: &str,
     to: &str,
@@ -241,6 +468,21 @@ fn edge(
         properties["ref"] = json!(reference);
     }
     json!({"type":"Feature","properties":properties,"geometry":{"type":"LineString","coordinates":[start,end]}})
+}
+
+fn edge_with_bicycle(
+    from: &str,
+    to: &str,
+    start: [f64; 2],
+    end: [f64; 2],
+    length: f64,
+    reference: Option<&str>,
+    highway: &str,
+    bicycle: &str,
+) -> Value {
+    let mut feature = edge(from, to, start, end, length, reference, highway);
+    feature["properties"]["bicycle"] = json!(bicycle);
+    feature
 }
 
 fn place(id: &str, name: &str, point: [f64; 2]) -> Value {

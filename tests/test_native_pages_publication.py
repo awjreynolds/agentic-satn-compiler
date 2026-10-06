@@ -4,6 +4,7 @@ import http.server
 import importlib.util
 import json
 import os
+import re
 import shutil
 import sys
 import threading
@@ -196,6 +197,59 @@ def _write_native_bundle(
         "__DEPLOYMENT__": "native-area",
         "__BRANCH__": "review-branch",
         "__BASE_ID__": "base-1",
+        "__OFFICER_SCENARIO_ATTRIBUTE__": "",
+        "__STRATEGIC_LAYER_CONTROLS__": (
+            '<li class="layer-control-row"><label><input type="checkbox" '
+            'data-layer-toggle="strategic-network" checked> '
+            '<span class="swatch strategic-network-key" aria-hidden="true"></span>'
+            "Strategic active travel network <span data-layer-count></span></label>"
+            '<details class="layer-help" name="native-layer-help"><summary '
+            'aria-label="About the strategic active travel network" '
+            'aria-describedby="layer-help-1">ⓘ</summary></details>'
+            '<span id="layer-help-1" class="layer-help-popup" role="tooltip">'
+            "The proposed strategic network includes chosen and provisional "
+            "non-community route lines plus A-road reference sections. Provisional "
+            "routes remain available in the separate review layer.</span></li>"
+        ),
+        "__COMMUNITY_LAYER_CONTROLS__": (
+            '<li class="layer-control-row"><label><input type="checkbox" '
+            'data-layer-toggle="community-access"> '
+            '<span class="swatch community-key" aria-hidden="true"></span>'
+            '<span class="marker-key marker-pentagon-key community-point-key" '
+            'aria-hidden="true"></span><span class="marker-key marker-cross-key '
+            'gap-point-key" aria-hidden="true"></span>Community Connections '
+            '<span data-layer-count></span></label><details class="layer-help" '
+            'name="native-layer-help"><summary aria-label="About Community Connections" '
+            'aria-describedby="layer-help-2">ⓘ</summary></details><span '
+            'id="layer-help-2" class="layer-help-popup" role="tooltip">'
+            "Community Connections show recorded access from a community to the strategic "
+            "network. A cross marks a missing connection where no connected path is evidenced."
+            "</span></li>"
+        ),
+        "__CANDIDATE_NEIGHBOURHOOD_LAYER_CONTROL__": "",
+        "__STRATEGIC_NETWORK_LEGEND__": (
+            '<span class="swatch strategic-network-key" aria-hidden="true"></span>'
+            "Strategic active travel network"
+        ),
+        "__STRATEGIC_NETWORK_HELP__": (
+            "The proposed strategic network includes chosen and provisional non-community "
+            "route lines plus A-road reference sections. Provisional routes remain available "
+            "in the separate review layer."
+        ),
+        "__NETWORK_DESCRIPTION__": (
+            "The Strategic active travel network shows selected and provisional route lines. "
+            "Community Connections, source baseline and other evidence layers are optional "
+            "overlays. Provision, safety, access and adoption remain explicit unknowns where "
+            "evidence is absent."
+        ),
+        "__OFFICER_SCENARIO_BANNER__": "",
+        "__OFFICER_FINDINGS__": "",
+        "__COMMUNITY_ACCESS_LABEL__": "Community Connections",
+        "__COMMUNITY_ACCESS_HELP_LABEL__": "About Community Connections",
+        "__COMMUNITY_ACCESS_HELP__": (
+            "Community Connections show recorded access from a community to the strategic "
+            "network. A cross marks a missing connection where no connected path is evidenced."
+        ),
         "__ACCOUNTING__": "reviewable-with-gaps",
         "__STATUS__": "complete",
         "__ATTRIBUTION__": "Fixture attribution",
@@ -207,6 +261,8 @@ def _write_native_bundle(
         "__DECISION_COUNT__": "3",
         "__UNRESOLVED_FACTS__": "0",
         "__UNRESOLVED_ACCESS__": "0",
+        "__COMMUNITY_ACCESS__": "0",
+        "__COMMUNITY_GAPS__": "0",
     }.items():
         html = html.replace(placeholder, value)
     (bundle / "index.html").write_text(html, encoding="utf-8")
@@ -324,6 +380,137 @@ def _write_native_bundle(
     )
 
 
+def _add_ncn_baseline(bundle: Path) -> None:
+    network_path = bundle / "decision-map.geojson"
+    network = json.loads(network_path.read_text(encoding="utf-8"))
+    for source_id, baseline_role, source_reference, coordinates in [
+        ("source:ncn-current:999", "current-ncn", "NCN 4.0", [[-2, 51.3], [-1.95, 51.3]]),
+        ("source:ncn-former", "former-ncn", "Former NCN", [[-2, 51.28], [-1.95, 51.28]]),
+        (
+            "source:ncn-declassified",
+            "declassified-ncn",
+            "Officially reclassified NCN",
+            [[-2, 51.25], [-1.95, 51.25]],
+        ),
+    ]:
+        network["features"].append(
+            {
+                "type": "Feature",
+                "properties": {
+                    "kind": "source-baseline",
+                    "source_corridor_id": source_id,
+                    "source_id": source_id,
+                    "source_reference": source_reference,
+                    "source_kind": "context",
+                    "baseline_role": baseline_role,
+                    "baseline_layer": "source-strategic-ncn",
+                    "provision_status": "unknown",
+                },
+                "geometry": {"type": "LineString", "coordinates": coordinates},
+            }
+        )
+    network_path.write_text(json.dumps(network), encoding="utf-8")
+    index_path = bundle / "index.html"
+    html = index_path.read_text(encoding="utf-8")
+    strategic_swatch = '<span class="swatch strategic-network-key" aria-hidden="true"></span>'
+    ncn_swatches = (
+        strategic_swatch
+        + '<span class="swatch ncn-current-key" aria-hidden="true"></span>Current NCN '
+        + '<span class="swatch ncn-former-key" aria-hidden="true"></span>Former NCN '
+    )
+    if strategic_swatch not in html:
+        raise AssertionError("native fixture has no strategic-network legend swatch")
+    index_path.write_text(html.replace(strategic_swatch, ncn_swatches, 1), encoding="utf-8")
+
+
+def _make_legacy_ncn_renderer(bundle: Path) -> None:
+    index_path = bundle / "index.html"
+    html = index_path.read_text(encoding="utf-8")
+    html = html.replace(
+        '<span class="swatch ncn-current-key" aria-hidden="true"></span>Current NCN ',
+        "",
+    )
+    html = html.replace(
+        '<span class="swatch ncn-former-key" aria-hidden="true"></span>Former NCN ',
+        "",
+    )
+    start = html.index("      const ncnScenarioFilter =")
+    end_marker = "      line('native-strategic-ncn-current', currentNcnFilter, '#0072b2', 4);\n"
+    end = html.index(end_marker, start) + len(end_marker)
+    html = html[:start] + html[end:]
+    for layer in (
+        "native-strategic-ncn-casing",
+        "native-strategic-ncn-current",
+        "native-strategic-ncn-former",
+    ):
+        html = re.sub(rf",\s*'{layer}'", "", html)
+    html = html.replace(
+        " ||\n      (properties.baseline_layer === 'source-strategic-ncn' &&\n"
+        "        ['current-ncn', 'former-ncn', 'declassified-ncn'].includes("
+        "properties.baseline_role))",
+        "",
+    )
+    if "native-strategic-ncn-" in html:
+        remaining = [line for line in html.splitlines() if "native-strategic-ncn-" in line]
+        raise AssertionError(f"legacy fixture still contains native NCN layers: {remaining}")
+    index_path.write_text(html, encoding="utf-8")
+
+
+def _make_separated_scenario_layers(
+    bundle: Path,
+    *,
+    default_layer: str = "baseline-network",
+    empty_baseline_decision_evidence: bool = False,
+) -> None:
+    network_path = bundle / "decision-map.geojson"
+    network = json.loads(network_path.read_text(encoding="utf-8"))
+    officer_features = []
+    for feature in network["features"]:
+        properties = feature["properties"]
+        kind = properties.get("kind")
+        if kind in {"selected-alignment", "provisional-alignment", "unresolved-decision"}:
+            officer_features.append(
+                {
+                    **feature,
+                    "properties": {**properties, "scenario_layer": "officer-network"},
+                }
+            )
+            properties["scenario_layer"] = "baseline-network"
+            if empty_baseline_decision_evidence:
+                properties.update({"reason": "", "uncertainties": [], "evidence_refs": []})
+        elif (
+            kind == "source-baseline"
+            and properties.get("baseline_layer") == "source-strategic-a-road"
+        ):
+            properties["scenario_layer"] = "baseline-network"
+    network["features"].extend(officer_features)
+    network_path.write_text(json.dumps(network), encoding="utf-8")
+
+    index_path = bundle / "index.html"
+    html = index_path.read_text(encoding="utf-8")
+    html = html.replace(
+        "<body data-native-publication=",
+        "<body data-native-officer-scenario data-native-publication=",
+    )
+    html = html.replace(
+        'data-layer-toggle="strategic-network" checked',
+        f'data-layer-toggle="{default_layer}" checked',
+    )
+    html = html.replace(
+        'data-layer-toggle="community-access"',
+        'data-layer-toggle="baseline-community-access"',
+    )
+    html = html.replace(
+        "    </ul></fieldset>",
+        '      <li><label><input type="checkbox" data-layer-toggle="officer-network"> '
+        "Officer Network</label></li>\n"
+        '      <li><label><input type="checkbox" '
+        'data-layer-toggle="officer-community-access"> Officer Community Access</label></li>\n'
+        "    </ul></fieldset>",
+    )
+    index_path.write_text(html, encoding="utf-8")
+
+
 def _make_on_spine_decision_point(bundle: Path, *, include_access: bool) -> None:
     network_path = bundle / "decision-map.geojson"
     network = json.loads(network_path.read_text(encoding="utf-8"))
@@ -365,6 +552,27 @@ def _make_on_spine_decision_point(bundle: Path, *, include_access: bool) -> None
         document = json.loads(path.read_text(encoding="utf-8"))
         document["counts"]["community_access"] = int(include_access)
         path.write_text(json.dumps(document), encoding="utf-8")
+
+
+def _make_unresolved_community_decision_point(
+    bundle: Path,
+    *,
+    community_id: str | None = "community:unresolved",
+    access_status: str = "unresolved",
+    coordinates: object = [-1.95, 51.05],
+) -> None:
+    network_path = bundle / "decision-map.geojson"
+    network = json.loads(network_path.read_text(encoding="utf-8"))
+    unresolved = next(
+        feature
+        for feature in network["features"]
+        if feature["properties"].get("kind") == "unresolved-decision"
+    )
+    unresolved["geometry"] = {"type": "Point", "coordinates": coordinates}
+    if community_id is not None:
+        unresolved["properties"]["community_id"] = community_id
+    unresolved["properties"]["access_status"] = access_status
+    network_path.write_text(json.dumps(network), encoding="utf-8")
 
 
 def _add_community_gap(bundle: Path) -> None:
@@ -514,6 +722,185 @@ def test_package_pages_rejects_an_unproven_zero_length_decision_point(
         )
 
 
+def test_package_pages_accepts_an_unresolved_community_decision_point(
+    tmp_path: Path,
+) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    _write_native_catalogue(catalogue)
+    _write_native_bundle(bundles)
+    _make_unresolved_community_decision_point(bundles / "native-area")
+
+    result = package_pages(
+        catalogue,
+        bundles,
+        tmp_path / "pages",
+        tmp_path / "satn-pages.zip",
+    )
+
+    network = json.loads(
+        (result.pages_directory / "deployments" / "native-area" / "decision-map.geojson").read_text(
+            encoding="utf-8"
+        )
+    )
+    unresolved = next(
+        feature
+        for feature in network["features"]
+        if feature["properties"].get("kind") == "unresolved-decision"
+    )
+    assert unresolved["geometry"] == {"type": "Point", "coordinates": [-1.95, 51.05]}
+
+
+@pytest.mark.parametrize(
+    ("community_id", "access_status"),
+    [(None, "unresolved"), ("community:unresolved", "served")],
+)
+def test_package_pages_rejects_an_unidentified_unresolved_decision_point(
+    tmp_path: Path,
+    community_id: str | None,
+    access_status: str,
+) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    _write_native_catalogue(catalogue)
+    _write_native_bundle(bundles)
+    _make_unresolved_community_decision_point(
+        bundles / "native-area",
+        community_id=community_id,
+        access_status=access_status,
+    )
+
+    with pytest.raises(ValueError, match=r"unresolved-decision.*non-empty line geometry"):
+        package_pages(
+            catalogue,
+            bundles,
+            tmp_path / "pages",
+            tmp_path / "satn-pages.zip",
+        )
+
+
+def test_package_pages_rejects_an_empty_unresolved_community_point_geometry(
+    tmp_path: Path,
+) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    _write_native_catalogue(catalogue)
+    _write_native_bundle(bundles)
+    _make_unresolved_community_decision_point(
+        bundles / "native-area",
+        coordinates=[],
+    )
+
+    with pytest.raises(ValueError, match=r"unresolved-decision.*non-empty line geometry"):
+        package_pages(
+            catalogue,
+            bundles,
+            tmp_path / "pages",
+            tmp_path / "satn-pages.zip",
+        )
+
+
+def test_package_pages_rejects_point_geometry_for_officer_strategic_network_edge(
+    tmp_path: Path,
+) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    _write_native_catalogue(catalogue)
+    _write_native_bundle(bundles)
+    network_path = bundles / "native-area" / "decision-map.geojson"
+    network = json.loads(network_path.read_text(encoding="utf-8"))
+    network["features"].append(
+        {
+            "type": "Feature",
+            "properties": {
+                "kind": "officer-strategic-network",
+                "strategic_network_disposition": "deselected",
+                "graph_edge_id": "reference-edge",
+            },
+            "geometry": {"type": "Point", "coordinates": [-1.95, 51.05]},
+        }
+    )
+    network_path.write_text(json.dumps(network), encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match=r"officer-strategic-network.*non-empty line geometry",
+    ):
+        package_pages(
+            catalogue,
+            bundles,
+            tmp_path / "pages",
+            tmp_path / "satn-pages.zip",
+        )
+
+
+def test_package_pages_excludes_baseline_scenario_layers_from_effective_decisions(
+    tmp_path: Path,
+) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    _write_native_catalogue(catalogue)
+    _write_native_bundle(bundles)
+    network_path = bundles / "native-area" / "decision-map.geojson"
+    network = json.loads(network_path.read_text(encoding="utf-8"))
+    features = network["features"]
+    for scenario_layer in ("baseline-network", "baseline-community-access"):
+        for kind in ("selected-alignment", "provisional-alignment", "unresolved-decision"):
+            original = next(
+                feature for feature in features if feature["properties"]["kind"] == kind
+            )
+            baseline_feature = json.loads(json.dumps(original))
+            baseline_feature["properties"]["scenario_layer"] = scenario_layer
+            features.append(baseline_feature)
+    network_path.write_text(json.dumps(network), encoding="utf-8")
+
+    result = package_pages(
+        catalogue,
+        bundles,
+        tmp_path / "pages",
+        tmp_path / "satn-pages.zip",
+    )
+
+    assert result.release_artifact.is_file()
+
+
+def test_package_pages_counts_scope_display_candidate_parts_once(tmp_path: Path) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    _write_native_catalogue(catalogue)
+    _write_native_bundle(bundles)
+    network_path = bundles / "native-area" / "decision-map.geojson"
+    network = json.loads(network_path.read_text(encoding="utf-8"))
+    features = network["features"]
+    for kind in ("selected-alignment", "provisional-alignment"):
+        original = next(feature for feature in features if feature["properties"]["kind"] == kind)
+        display_part = json.loads(json.dumps(original))
+        display_part["properties"]["strategic_network_scope_display"] = True
+        display_part["geometry"]["coordinates"] = [[-2, 51], [-1.95, 51.05]]
+        features.append(display_part)
+    for kind in ("officer-compiler-comparison", "officer-selected-alignment"):
+        features.append(
+            {
+                "type": "Feature",
+                "properties": {"kind": kind, "source_id": f"source:{kind}"},
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [[-2, 51], [-1.95, 51.05]],
+                },
+            }
+        )
+    network_path.write_text(json.dumps(network), encoding="utf-8")
+
+    result = package_pages(
+        catalogue,
+        bundles,
+        tmp_path / "pages",
+        tmp_path / "satn-pages.zip",
+    )
+
+    assert result.release_artifact.is_file()
+
+
 @pytest.mark.browser
 def test_native_rendering_gate_accepts_a_valid_on_spine_decision_point(
     tmp_path: Path,
@@ -534,6 +921,61 @@ def test_native_rendering_gate_accepts_a_valid_on_spine_decision_point(
 
     assert validated[0].strategic_spines == 2
     assert validated[0].rendered_strategic_spines == 3
+
+
+@pytest.mark.browser
+def test_native_rendering_gate_accepts_separated_baseline_scenario_layers(
+    tmp_path: Path,
+) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    _write_native_catalogue(catalogue)
+    _write_native_bundle(bundles)
+    _make_separated_scenario_layers(bundles / "native-area")
+    result = package_pages(
+        catalogue,
+        bundles,
+        tmp_path / "pages",
+        tmp_path / "satn-pages.zip",
+    )
+
+    validated = VALIDATOR.validate_pages_rendering(result.pages_directory)
+
+    assert validated[0].deployment_id == "native-area"
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize(
+    ("default_layer", "empty_baseline_decision_evidence", "message"),
+    [
+        ("officer-network", False, "not the sole default layer"),
+        ("baseline-network", True, "native mapped decision evidence is unavailable"),
+    ],
+)
+def test_native_rendering_gate_rejects_separated_scenario_layer_failures(
+    tmp_path: Path,
+    default_layer: str,
+    empty_baseline_decision_evidence: bool,
+    message: str,
+) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    _write_native_catalogue(catalogue)
+    _write_native_bundle(bundles)
+    _make_separated_scenario_layers(
+        bundles / "native-area",
+        default_layer=default_layer,
+        empty_baseline_decision_evidence=empty_baseline_decision_evidence,
+    )
+    result = package_pages(
+        catalogue,
+        bundles,
+        tmp_path / "pages",
+        tmp_path / "satn-pages.zip",
+    )
+
+    with pytest.raises(ValueError, match=message):
+        VALIDATOR.validate_pages_rendering(result.pages_directory)
 
 
 def test_package_pages_accepts_the_explicit_native_agentic_publication(tmp_path: Path) -> None:
@@ -749,6 +1191,177 @@ def test_native_rendering_gate_uses_the_loaded_map_and_public_decision_sections(
     assert validated[0].strategic_spines == 2
     assert validated[0].cross_spine_connectors == 1
     assert validated[0].rendered_strategic_spines == 4
+
+
+@pytest.mark.browser
+def test_native_rendering_gate_includes_ncn_roles_in_the_main_network(tmp_path: Path) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    _write_native_catalogue(catalogue)
+    _write_native_bundle(bundles)
+    _add_ncn_baseline(bundles / "native-area")
+    result = package_pages(
+        catalogue,
+        bundles,
+        tmp_path / "pages",
+        tmp_path / "satn-pages.zip",
+    )
+
+    validated = VALIDATOR.validate_pages_rendering(result.pages_directory)
+
+    assert len(validated) == 1
+    assert validated[0].deployment_id == "native-area"
+
+
+@pytest.mark.browser
+def test_native_rendering_gate_preserves_legacy_maps_with_ncn_sources(tmp_path: Path) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    _write_native_catalogue(catalogue)
+    _write_native_bundle(bundles)
+    legacy_bundle = bundles / "native-area"
+    _add_ncn_baseline(legacy_bundle)
+    _make_legacy_ncn_renderer(legacy_bundle)
+    result = package_pages(
+        catalogue,
+        bundles,
+        tmp_path / "pages",
+        tmp_path / "satn-pages.zip",
+    )
+
+    validated = VALIDATOR.validate_pages_rendering(result.pages_directory)
+
+    assert len(validated) == 1
+    assert validated[0].deployment_id == "native-area"
+
+
+@pytest.mark.browser
+def test_native_ncn_routes_render_solid_and_expose_only_known_route_numbers(
+    tmp_path: Path,
+) -> None:
+    catalogue = tmp_path / "catalogue.yaml"
+    bundles = tmp_path / "bundles"
+    _write_native_catalogue(catalogue)
+    _write_native_bundle(bundles)
+    _add_ncn_baseline(bundles / "native-area")
+    result = package_pages(
+        catalogue,
+        bundles,
+        tmp_path / "pages",
+        tmp_path / "satn-pages.zip",
+    )
+
+    with (
+        VALIDATOR._serve(result.pages_directory) as origin,
+        VALIDATOR.sync_playwright() as playwright,
+    ):
+        executable = os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE")
+        browser = playwright.chromium.launch(headless=True, executable_path=executable)
+        try:
+            page = browser.new_page(viewport={"width": 1280, "height": 900})
+            page.goto(f"{origin}/deployments/native-area/index.html", wait_until="domcontentloaded")
+            page.wait_for_function(
+                "() => document.documentElement.dataset.nativeReady === 'true' && "
+                "window.SATN_NATIVE_MAP?.isStyleLoaded()"
+            )
+            styles = page.evaluate(
+                """() => {
+                  const map = window.SATN_NATIVE_MAP;
+                  return {
+                    hasCasing: Boolean(map.getLayer('native-strategic-ncn-casing')),
+                    current: map.getPaintProperty('native-strategic-ncn-current', 'line-color'),
+                    former: map.getPaintProperty('native-strategic-ncn-former', 'line-color'),
+                    legendShadow: getComputedStyle(
+                      document.querySelector('.ncn-former-key')
+                    ).filter
+                  };
+                }"""
+            )
+            assert styles == {
+                "hasCasing": False,
+                "current": "#0072b2",
+                "former": "#f0e442",
+                "legendShadow": "none",
+            }
+
+            point = page.evaluate(
+                """() => {
+                  const map = window.SATN_NATIVE_MAP;
+                  const feature = map.queryRenderedFeatures({
+                    layers: ['native-strategic-ncn-current']
+                  }).find(candidate =>
+                    candidate.properties.source_id === 'source:ncn-current:999'
+                  );
+                  if (!feature) return null;
+                  const coordinates = feature.geometry.coordinates;
+                  const coordinate = [
+                    (coordinates[0][0] + coordinates[coordinates.length - 1][0]) / 2,
+                    (coordinates[0][1] + coordinates[coordinates.length - 1][1]) / 2
+                  ];
+                  const screen = map.project(coordinate);
+                  const rect = map.getContainer().getBoundingClientRect();
+                  return {x: screen.x + rect.left, y: screen.y + rect.top};
+                }"""
+            )
+            assert point is not None
+            page.mouse.move(point["x"], point["y"])
+            page.wait_for_function(
+                "() => document.querySelector('.maplibregl-popup-content')?.innerText "
+                ".includes('NCN route number')"
+            )
+            popup = page.locator(".maplibregl-popup-content").inner_text()
+            assert "NCN route number" in popup
+
+            def popup_value(label: str) -> str:
+                return (
+                    page.locator(".maplibregl-popup-content dt", has_text=label)
+                    .locator("xpath=following-sibling::dd[1]")
+                    .inner_text()
+                )
+
+            assert popup_value("NCN route number") == "4"
+            assert popup_value("Recorded NCN classification") == "current-ncn"
+            assert popup_value("Recorded source reference") == "NCN 4.0"
+            assert (
+                popup_value("Label source")
+                == "Imported NCN dataset; see the map source attribution."
+            )
+            assert popup_value("Designation context") == (
+                "A recorded NCN designation does not by itself confirm that the designation is "
+                "current, the route is complete, or its safety or cycling quality."
+            )
+
+            page.locator("[data-native-clear]").click()
+            page.wait_for_function("() => !document.querySelector('.maplibregl-popup')")
+            generic_point = page.evaluate(
+                """() => {
+                  const map = window.SATN_NATIVE_MAP;
+                  const feature = map.queryRenderedFeatures({
+                    layers: ['native-strategic-ncn-former']
+                  }).find(candidate => candidate.properties.source_id === 'source:ncn-former');
+                  if (!feature) return null;
+                  const coordinates = feature.geometry.coordinates;
+                  const coordinate = [
+                    (coordinates[0][0] + coordinates[coordinates.length - 1][0]) / 2,
+                    (coordinates[0][1] + coordinates[coordinates.length - 1][1]) / 2
+                  ];
+                  const screen = map.project(coordinate);
+                  const rect = map.getContainer().getBoundingClientRect();
+                  return {x: screen.x + rect.left, y: screen.y + rect.top};
+                }"""
+            )
+            assert generic_point is not None
+            page.mouse.move(generic_point["x"], generic_point["y"])
+            page.wait_for_function(
+                "() => document.querySelector('.maplibregl-popup-content')?.innerText "
+                ".includes('Former NCN')"
+            )
+            assert (
+                page.locator(".maplibregl-popup-content dt", has_text="NCN route number").count()
+                == 0
+            )
+        finally:
+            browser.close()
 
 
 @pytest.mark.browser
